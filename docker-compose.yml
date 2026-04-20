@@ -46,11 +46,12 @@ services:
       start_period: 20s
 
   jaeger:
-    image: jaegertracing/all-in-one:1.76.0
+    image: jaegertracing/jaeger:2.17.0
     container_name: codeflow-jaeger
     restart: unless-stopped
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+    command:
+      - --set=receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
+      - --set=receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
     ports:
       - "16686:16686"
       - "4317:4317"
