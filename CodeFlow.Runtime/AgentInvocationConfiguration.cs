@@ -13,4 +13,5 @@ public sealed record AgentInvocationConfiguration(
     double? Temperature = null,
     bool EnableHostTools = true,
     IReadOnlyDictionary<string, AgentInvocationConfiguration>? SubAgents = null,
-    IReadOnlyList<McpToolDefinition>? McpTools = null);
+    IReadOnlyList<McpToolDefinition>? McpTools = null,
+    RetryContext? RetryContext = null);

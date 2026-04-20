@@ -338,6 +338,73 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task FailedDecisionWithRetryEdge_ShouldIncludeRetryContextOnHandoff()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflow(
+            key: "retry",
+            maxRounds: 5,
+            edges:
+            [
+                Edge("reviewer", RuntimeDecisionKind.Failed, "reviewer", rotatesRound: false)
+            ]);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 2 });
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                traceId, roundId, workflow.Key, workflow.Version,
+                "reviewer", 2, new Uri("file:///tmp/in.bin")));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            var failurePayload = JsonDocument.Parse("""
+            {
+              "kind": "Failed",
+              "reason": "tool_call_budget_exceeded",
+              "failure_context": {
+                "reason": "tool_call_budget_exceeded",
+                "last_output": "Attempted 10 refactors without success.",
+                "tool_calls_executed": 10
+              }
+            }
+            """).RootElement;
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                AgentKey: "reviewer",
+                AgentVersion: 2,
+                OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
+                Decision: AgentDecisionKind.Failed,
+                DecisionPayload: failurePayload,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Count(x => x.Context.Message.AgentKey == "reviewer") >= 2);
+
+            var retryPublish = harness.Published.Select<AgentInvokeRequested>()
+                .Where(x => x.Context.Message.AgentKey == "reviewer")
+                .Skip(1)
+                .Single();
+
+            retryPublish.Context.Message.RetryContext.Should().NotBeNull();
+            retryPublish.Context.Message.RetryContext!.AttemptNumber.Should().Be(2, "first failure + 1 = 2nd attempt");
+            retryPublish.Context.Message.RetryContext.PriorFailureReason.Should().Be("tool_call_budget_exceeded");
+            retryPublish.Context.Message.RetryContext.PriorAttemptSummary.Should().Contain("Attempted 10 refactors without success.");
+            retryPublish.Context.Message.RetryContext.PriorAttemptSummary.Should().Contain("Tool calls executed: 10");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     private static ITestHarness BuildHarness(
         Workflow workflow,
         IReadOnlyDictionary<string, int> agentVersions)

@@ -24,7 +24,21 @@ public static class AuthServiceCollectionExtensions
 
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUser, ClaimsCurrentUser>();
-        services.AddSingleton<IPermissionChecker, RoleBasedPermissionChecker>();
+        services.AddSingleton<RoleBasedPermissionChecker>();
+        services.AddMemoryCache();
+        services.AddHttpClient<IPermissionsApiClient, PermissionsApiClient>();
+
+        var authMode = ResolveAuthMode(authSection);
+        if (authMode == AuthMode.Company)
+        {
+            services.AddSingleton<IPermissionChecker, CompanyPermissionChecker>();
+        }
+        else
+        {
+            services.AddSingleton<IPermissionChecker>(sp =>
+                sp.GetRequiredService<RoleBasedPermissionChecker>());
+        }
+
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
         services.AddAuthentication(PolicySchemeName)
@@ -85,8 +99,26 @@ public static class AuthServiceCollectionExtensions
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.TracesWrite)))
             .AddPolicy(CodeFlowApiDefaults.Policies.HitlWrite, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.HitlWrite)));
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.HitlWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.OpsRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.OpsRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.OpsWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.OpsWrite)));
 
         return services;
+    }
+
+    private static AuthMode ResolveAuthMode(IConfigurationSection section)
+    {
+        var modeValue = section["Mode"];
+        if (!string.IsNullOrWhiteSpace(modeValue)
+            && Enum.TryParse<AuthMode>(modeValue, ignoreCase: true, out var parsed))
+        {
+            return parsed;
+        }
+
+        return AuthMode.Generic;
     }
 }

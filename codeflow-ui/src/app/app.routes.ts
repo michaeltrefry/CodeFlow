@@ -42,5 +42,9 @@ export const routes: Routes = [
     path: 'hitl',
     loadComponent: () => import('./pages/hitl/hitl-queue.component').then(m => m.HitlQueueComponent)
   },
+  {
+    path: 'ops/dlq',
+    loadComponent: () => import('./pages/ops/dlq.component').then(m => m.DlqComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];
