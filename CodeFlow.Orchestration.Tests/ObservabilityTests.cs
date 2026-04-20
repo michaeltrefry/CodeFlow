@@ -113,6 +113,9 @@ public sealed class ObservabilityTests
 
         public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
+
+        public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     private sealed class FakeAgentInvoker(AgentInvocationResult result) : IAgentInvoker

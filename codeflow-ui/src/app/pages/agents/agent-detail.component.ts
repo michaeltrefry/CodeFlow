@@ -1,6 +1,6 @@
 import { Component, inject, input, signal, OnInit } from '@angular/core';
 import { DatePipe, JsonPipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { AgentVersion, AgentVersionSummary } from '../../core/models';
 
@@ -11,18 +11,35 @@ import { AgentVersion, AgentVersionSummary } from '../../core/models';
   template: `
     <header class="page-header">
       <div>
-        <h1>{{ key() }}</h1>
+        <h1>
+          {{ key() }}
+          @if (retired()) {
+            <span class="tag error">Retired</span>
+          }
+        </h1>
         @if (viewing(); as v) {
           <p class="muted">Viewing v{{ v.version }} &middot; created {{ v.createdAtUtc | date:'medium' }} by {{ v.createdBy ?? 'unknown' }}</p>
         }
+        @if (retired()) {
+          <p class="muted">This agent is retired. Running workflows continue to use their pinned version, but new workflows cannot reference it.</p>
+        }
       </div>
       <div class="row">
-        <a [routerLink]="['/agents', key()]" [queryParams]="{ mode: 'edit' }">
-          <button routerLink="/agents/new" [queryParams]="{ key: key() }">New version</button>
-        </a>
+        @if (!retired()) {
+          <a [routerLink]="['/agents', key()]" [queryParams]="{ mode: 'edit' }">
+            <button routerLink="/agents/new" [queryParams]="{ key: key() }">New version</button>
+          </a>
+          <button class="secondary" (click)="retire()" [disabled]="retiring()">
+            {{ retiring() ? 'Retiring…' : 'Retire agent' }}
+          </button>
+        }
         <a routerLink="/agents"><button class="secondary">Back</button></a>
       </div>
     </header>
+
+    @if (retireError()) {
+      <p class="tag error">{{ retireError() }}</p>
+    }
 
     <div class="grid-two">
       <div>
@@ -78,10 +95,14 @@ import { AgentVersion, AgentVersionSummary } from '../../core/models';
 })
 export class AgentDetailComponent implements OnInit {
   private readonly api = inject(AgentsApi);
+  private readonly router = inject(Router);
   readonly key = input.required<string>();
 
   readonly versions = signal<AgentVersionSummary[]>([]);
   readonly viewing = signal<AgentVersion | null>(null);
+  readonly retired = signal(false);
+  readonly retiring = signal(false);
+  readonly retireError = signal<string | null>(null);
 
   ngOnInit(): void {
     const key = this.key();
@@ -97,7 +118,29 @@ export class AgentDetailComponent implements OnInit {
 
   select(version: number): void {
     this.api.getVersion(this.key(), version).subscribe({
-      next: v => this.viewing.set(v)
+      next: v => {
+        this.viewing.set(v);
+        this.retired.set(v.isRetired);
+      }
+    });
+  }
+
+  retire(): void {
+    const key = this.key();
+    if (!confirm(`Retire agent "${key}"? Running workflows keep their pinned version, but new workflows cannot use it. This cannot be undone.`)) {
+      return;
+    }
+    this.retiring.set(true);
+    this.retireError.set(null);
+    this.api.retire(key).subscribe({
+      next: () => {
+        this.retiring.set(false);
+        this.router.navigate(['/agents']);
+      },
+      error: err => {
+        this.retiring.set(false);
+        this.retireError.set(err?.error?.error ?? err?.message ?? 'Retire failed');
+      }
     });
   }
 }

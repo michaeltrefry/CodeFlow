@@ -42,9 +42,16 @@ public sealed class AgentConfigEntityConfiguration : IEntityTypeConfiguration<Ag
             .HasColumnName("is_active")
             .IsRequired();
 
+        builder.Property(agent => agent.IsRetired)
+            .HasColumnName("is_retired")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.HasIndex(agent => new { agent.Key, agent.Version })
             .IsUnique();
 
         builder.HasIndex(agent => new { agent.Key, agent.IsActive });
+
+        builder.HasIndex(agent => new { agent.Key, agent.IsRetired });
     }
 }

@@ -9,6 +9,7 @@ export interface AgentSummary {
   type: string;
   latestCreatedAtUtc: string;
   latestCreatedBy?: string | null;
+  isRetired: boolean;
 }
 
 export interface AgentVersionSummary {
@@ -25,6 +26,7 @@ export interface AgentVersion {
   config: AgentConfig | null;
   createdAtUtc: string;
   createdBy?: string | null;
+  isRetired: boolean;
 }
 
 export interface AgentConfig {

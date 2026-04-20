@@ -15,4 +15,6 @@ public sealed class AgentConfigEntity
     public string? CreatedBy { get; set; }
 
     public bool IsActive { get; set; }
+
+    public bool IsRetired { get; set; }
 }

@@ -11,4 +11,6 @@ public interface IAgentConfigRepository
         CancellationToken cancellationToken = default);
 
     Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default);
+
+    Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default);
 }

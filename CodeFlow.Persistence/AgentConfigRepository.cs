@@ -96,6 +96,37 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             cancellationToken);
     }
 
+    public async Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var normalizedKey = NormalizeKey(key);
+
+        var entities = await dbContext.Agents
+            .Where(agent => agent.Key == normalizedKey)
+            .ToListAsync(cancellationToken);
+
+        if (entities.Count == 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        foreach (var entity in entities)
+        {
+            if (!entity.IsRetired)
+            {
+                entity.IsRetired = true;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return true;
+    }
+
     public async Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default)
     {
         var normalizedKey = NormalizeKey(key);
