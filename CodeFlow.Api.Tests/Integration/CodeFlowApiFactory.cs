@@ -9,6 +9,14 @@ namespace CodeFlow.Api.Tests.Integration;
 
 public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
+    static CodeFlowApiFactory()
+    {
+        // WebApplication.CreateBuilder reads configuration at builder-construction time, before
+        // WebApplicationFactory.ConfigureWebHost has a chance to inject in-memory values.
+        // Seed the mandatory Secrets master key via an environment variable so the host starts.
+        Environment.SetEnvironmentVariable("Secrets__MasterKey", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+    }
+
     private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
         .WithDatabase("codeflow_api_tests")
         .WithUsername("codeflow")

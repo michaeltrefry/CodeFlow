@@ -17,6 +17,10 @@ public static class CodeFlowApiDefaults
         public const string HitlWrite = "HitlWrite";
         public const string OpsRead = "OpsRead";
         public const string OpsWrite = "OpsWrite";
+        public const string McpServersRead = "McpServersRead";
+        public const string McpServersWrite = "McpServersWrite";
+        public const string AgentRolesRead = "AgentRolesRead";
+        public const string AgentRolesWrite = "AgentRolesWrite";
     }
 
     public static class Permissions
@@ -30,6 +34,10 @@ public static class CodeFlowApiDefaults
         public const string HitlWrite = "hitl:write";
         public const string OpsRead = "ops:read";
         public const string OpsWrite = "ops:write";
+        public const string McpServersRead = "mcp_servers:read";
+        public const string McpServersWrite = "mcp_servers:write";
+        public const string AgentRolesRead = "agent_roles:read";
+        public const string AgentRolesWrite = "agent_roles:write";
     }
 
     public static class Roles

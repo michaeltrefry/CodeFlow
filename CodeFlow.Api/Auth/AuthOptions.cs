@@ -58,7 +58,9 @@ public sealed class AuthOptions
             {
                 CodeFlowApiDefaults.Permissions.AgentsRead,
                 CodeFlowApiDefaults.Permissions.WorkflowsRead,
-                CodeFlowApiDefaults.Permissions.TracesRead
+                CodeFlowApiDefaults.Permissions.TracesRead,
+                CodeFlowApiDefaults.Permissions.McpServersRead,
+                CodeFlowApiDefaults.Permissions.AgentRolesRead
             },
             [CodeFlowApiDefaults.Roles.Author] = new List<string>
             {
@@ -66,7 +68,11 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.AgentsWrite,
                 CodeFlowApiDefaults.Permissions.WorkflowsRead,
                 CodeFlowApiDefaults.Permissions.WorkflowsWrite,
-                CodeFlowApiDefaults.Permissions.TracesRead
+                CodeFlowApiDefaults.Permissions.TracesRead,
+                CodeFlowApiDefaults.Permissions.McpServersRead,
+                CodeFlowApiDefaults.Permissions.McpServersWrite,
+                CodeFlowApiDefaults.Permissions.AgentRolesRead,
+                CodeFlowApiDefaults.Permissions.AgentRolesWrite
             },
             [CodeFlowApiDefaults.Roles.Operator] = new List<string>
             {
@@ -76,7 +82,9 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.TracesWrite,
                 CodeFlowApiDefaults.Permissions.HitlWrite,
                 CodeFlowApiDefaults.Permissions.OpsRead,
-                CodeFlowApiDefaults.Permissions.OpsWrite
+                CodeFlowApiDefaults.Permissions.OpsWrite,
+                CodeFlowApiDefaults.Permissions.McpServersRead,
+                CodeFlowApiDefaults.Permissions.AgentRolesRead
             },
             [CodeFlowApiDefaults.Roles.Admin] = new List<string>
             {
@@ -88,7 +96,11 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.TracesWrite,
                 CodeFlowApiDefaults.Permissions.HitlWrite,
                 CodeFlowApiDefaults.Permissions.OpsRead,
-                CodeFlowApiDefaults.Permissions.OpsWrite
+                CodeFlowApiDefaults.Permissions.OpsWrite,
+                CodeFlowApiDefaults.Permissions.McpServersRead,
+                CodeFlowApiDefaults.Permissions.McpServersWrite,
+                CodeFlowApiDefaults.Permissions.AgentRolesRead,
+                CodeFlowApiDefaults.Permissions.AgentRolesWrite
             }
         };
     }
