@@ -1,0 +1,11 @@
+<Solution>
+  <Project Path="CodeFlow.Contracts.Tests/CodeFlow.Contracts.Tests.csproj" />
+  <Project Path="CodeFlow.Contracts/CodeFlow.Contracts.csproj" />
+  <Project Path="CodeFlow.Host/CodeFlow.Host.csproj" />
+  <Project Path="CodeFlow.Orchestration.Tests/CodeFlow.Orchestration.Tests.csproj" />
+  <Project Path="CodeFlow.Orchestration/CodeFlow.Orchestration.csproj" />
+  <Project Path="CodeFlow.Persistence.Tests/CodeFlow.Persistence.Tests.csproj" />
+  <Project Path="CodeFlow.Persistence/CodeFlow.Persistence.csproj" />
+  <Project Path="CodeFlow.Runtime.Tests/CodeFlow.Runtime.Tests.csproj" />
+  <Project Path="CodeFlow.Runtime/CodeFlow.Runtime.csproj" />
+</Solution>

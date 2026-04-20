@@ -1,0 +1,50 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: codeflow-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: codeflow_root
+      MARIADB_DATABASE: codeflow
+      MARIADB_USER: codeflow
+      MARIADB_PASSWORD: codeflow_dev
+    ports:
+      - "3306:3306"
+    volumes:
+      - codeflow-mariadb-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mariadb-admin ping --host=127.0.0.1 --user=$$MARIADB_USER --password=$$MARIADB_PASSWORD
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:4.0-management
+    container_name: codeflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: codeflow
+      RABBITMQ_DEFAULT_PASS: codeflow_dev
+      RABBITMQ_DEFAULT_VHOST: codeflow
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - codeflow-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  codeflow-mariadb-data:
+  codeflow-rabbitmq-data:

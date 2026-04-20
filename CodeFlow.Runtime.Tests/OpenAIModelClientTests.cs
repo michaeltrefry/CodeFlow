@@ -1,0 +1,224 @@
+using FluentAssertions;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json.Nodes;
+using CodeFlow.Runtime.OpenAI;
+
+namespace CodeFlow.Runtime.Tests;
+
+public sealed class OpenAIModelClientTests
+{
+    [Fact]
+    public async Task InvokeAsync_ShouldTranslateMessagesToolsAndRetryTransientFailures()
+    {
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Headers =
+                {
+                    RetryAfter = new RetryConditionHeaderValue(TimeSpan.Zero)
+                }
+            },
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        {
+                          "type": "output_text",
+                          "text": "Paris is the capital of France."
+                        }
+                      ]
+                    }
+                  ],
+                  "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(
+            httpClient,
+            new OpenAIModelClientOptions
+            {
+                ApiKey = "test-key",
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages:
+                [
+                    new ChatMessage(ChatMessageRole.System, "You are a geography assistant."),
+                    new ChatMessage(ChatMessageRole.User, "What is the capital of France?"),
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        string.Empty,
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "call_123",
+                                "search_docs",
+                                new JsonObject { ["query"] = "France capital" })
+                        ]),
+                    new ChatMessage(ChatMessageRole.Tool, "{\"capital\":\"Paris\"}", ToolCallId: "call_123")
+                ],
+                Tools:
+                [
+                    new ToolSchema(
+                        "search_docs",
+                        "Search indexed documents.",
+                        new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JsonObject
+                            {
+                                ["query"] = new JsonObject
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        })
+                ],
+                Model: "gpt-5",
+                MaxTokens: 200,
+                Temperature: 0.1));
+
+        handler.Requests.Should().HaveCount(2);
+        response.Message.Content.Should().Be("Paris is the capital of France.");
+
+        var requestJson = JsonNode.Parse(handler.Requests[1].Body)!;
+        requestJson["model"]!.GetValue<string>().Should().Be("gpt-5");
+        requestJson["store"]!.GetValue<bool>().Should().BeFalse();
+        requestJson["max_output_tokens"]!.GetValue<int>().Should().Be(200);
+        requestJson["temperature"]!.GetValue<double>().Should().Be(0.1);
+        requestJson["tools"]!.AsArray().Should().HaveCount(1);
+
+        var inputItems = requestJson["input"]!.AsArray();
+        inputItems.Should().HaveCount(4);
+        inputItems[0]!["type"]!.GetValue<string>().Should().Be("message");
+        inputItems[0]!["role"]!.GetValue<string>().Should().Be("system");
+        inputItems[1]!["role"]!.GetValue<string>().Should().Be("user");
+        inputItems[2]!["type"]!.GetValue<string>().Should().Be("function_call");
+        inputItems[2]!["call_id"]!.GetValue<string>().Should().Be("call_123");
+        inputItems[2]!["arguments"]!.GetValue<string>().Should().Contain("France capital");
+        inputItems[3]!["type"]!.GetValue<string>().Should().Be("function_call_output");
+        inputItems[3]!["call_id"]!.GetValue<string>().Should().Be("call_123");
+
+        handler.Requests.Should().OnlyContain(request =>
+            request.AuthorizationScheme == "Bearer" && request.AuthorizationParameter == "test-key");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldTranslateFunctionCallsFromResponsesOutput()
+    {
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        {
+                          "type": "output_text",
+                          "text": "Let me check that."
+                        }
+                      ]
+                    },
+                    {
+                      "id": "fc_abc",
+                      "call_id": "call_abc",
+                      "type": "function_call",
+                      "name": "get_weather",
+                      "arguments": "{\"location\":\"Paris\"}"
+                    }
+                  ],
+                  "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 6,
+                    "total_tokens": 26
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(httpClient, new OpenAIModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "What is the weather in Paris?")],
+                Tools:
+                [
+                    new ToolSchema(
+                        "get_weather",
+                        "Gets weather by location.",
+                        new JsonObject())
+                ],
+                Model: "gpt-5"));
+
+        response.StopReason.Should().Be(InvocationStopReason.ToolCalls);
+        response.Message.Content.Should().Be("Let me check that.");
+        response.Message.ToolCalls.Should().ContainSingle();
+        response.Message.ToolCalls![0].Id.Should().Be("call_abc");
+        response.Message.ToolCalls![0].Name.Should().Be("get_weather");
+        response.Message.ToolCalls![0].Arguments!["location"]!.GetValue<string>().Should().Be("Paris");
+        response.TokenUsage.Should().BeEquivalentTo(new TokenUsage(20, 6, 26));
+    }
+
+    private static StringContent JsonContent(string json)
+    {
+        return new StringContent(json, Encoding.UTF8, "application/json");
+    }
+
+    private sealed class StubHttpMessageHandler(IReadOnlyList<Func<HttpRequestMessage, HttpResponseMessage>> responses) : HttpMessageHandler
+    {
+        private int nextResponseIndex;
+
+        public List<CapturedRequest> Requests { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+
+            Requests.Add(new CapturedRequest(
+                request.RequestUri,
+                request.Headers.Authorization?.Scheme,
+                request.Headers.Authorization?.Parameter,
+                body));
+
+            if (nextResponseIndex >= responses.Count)
+            {
+                throw new InvalidOperationException("No more stubbed responses were configured.");
+            }
+
+            return responses[nextResponseIndex++](request);
+        }
+    }
+
+    private sealed record CapturedRequest(
+        Uri? Uri,
+        string? AuthorizationScheme,
+        string? AuthorizationParameter,
+        string Body);
+}

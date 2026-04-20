@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="MassTransit.TestFramework" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Testcontainers.MariaDb" />
+    <PackageReference Include="Testcontainers.RabbitMq" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeFlow.Contracts\CodeFlow.Contracts.csproj" />
+    <ProjectReference Include="..\CodeFlow.Host\CodeFlow.Host.csproj" />
+    <ProjectReference Include="..\CodeFlow.Orchestration\CodeFlow.Orchestration.csproj" />
+    <ProjectReference Include="..\CodeFlow.Persistence\CodeFlow.Persistence.csproj" />
+    <ProjectReference Include="..\CodeFlow.Runtime\CodeFlow.Runtime.csproj" />
+  </ItemGroup>
+
+</Project>
