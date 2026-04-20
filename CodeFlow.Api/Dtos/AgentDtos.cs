@@ -11,7 +11,8 @@ public sealed record AgentSummaryDto(
     string? Model,
     string Type,
     DateTime LatestCreatedAtUtc,
-    string? LatestCreatedBy);
+    string? LatestCreatedBy,
+    bool IsRetired);
 
 public sealed record AgentVersionSummaryDto(
     string Key,
@@ -25,7 +26,8 @@ public sealed record AgentVersionDto(
     string Type,
     JsonNode? Config,
     DateTime CreatedAtUtc,
-    string? CreatedBy);
+    string? CreatedBy,
+    bool IsRetired);
 
 public sealed record CreateAgentRequest(string? Key, JsonElement? Config);
 

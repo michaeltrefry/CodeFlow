@@ -33,4 +33,11 @@ export class AgentsApi {
       { config }
     );
   }
+
+  retire(key: string): Observable<{ key: string; isRetired: boolean }> {
+    return this.http.post<{ key: string; isRetired: boolean }>(
+      `/api/agents/${encodeURIComponent(key)}/retire`,
+      {}
+    );
+  }
 }

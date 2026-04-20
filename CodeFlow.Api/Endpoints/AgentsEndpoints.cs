@@ -37,6 +37,9 @@ public static class AgentsEndpoints
         group.MapPut("/{key}", CreateAgentVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
+        group.MapPost("/{key}/retire", RetireAgentAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
+
         return routes;
     }
 
@@ -46,6 +49,7 @@ public static class AgentsEndpoints
     {
         var entities = await dbContext.Agents
             .AsNoTracking()
+            .Where(agent => !agent.IsRetired)
             .OrderBy(agent => agent.Key)
             .ThenByDescending(agent => agent.Version)
             .ToListAsync(cancellationToken);
@@ -64,7 +68,8 @@ public static class AgentsEndpoints
                     Model: ReadString(configNode, "model"),
                     Type: ReadString(configNode, "type") ?? "agent",
                     LatestCreatedAtUtc: DateTime.SpecifyKind(latest.CreatedAtUtc, DateTimeKind.Utc),
-                    LatestCreatedBy: latest.CreatedBy);
+                    LatestCreatedBy: latest.CreatedBy,
+                    IsRetired: latest.IsRetired);
             })
             .ToArray();
 
@@ -212,13 +217,20 @@ public static class AgentsEndpoints
         }
 
         var normalizedKey = NormalizeKey(key);
-        var exists = await dbContext.Agents
+        var latest = await dbContext.Agents
             .AsNoTracking()
-            .AnyAsync(agent => agent.Key == normalizedKey, cancellationToken);
+            .Where(agent => agent.Key == normalizedKey)
+            .OrderByDescending(agent => agent.Version)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (!exists)
+        if (latest is null)
         {
             return Results.NotFound(new { error = $"Agent with key '{normalizedKey}' does not exist. Use POST to create it." });
+        }
+
+        if (latest.IsRetired)
+        {
+            return Results.Conflict(new { error = $"Agent with key '{normalizedKey}' is retired. Create a new agent with a different key." });
         }
 
         var configJson = request.Config!.Value.GetRawText();
@@ -231,6 +243,30 @@ public static class AgentsEndpoints
         return Results.Ok(new { key = normalizedKey, version });
     }
 
+    private static async Task<IResult> RetireAgentAsync(
+        string key,
+        IAgentConfigRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var keyValidation = AgentConfigValidator.ValidateKey(key);
+        if (!keyValidation.IsValid)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["key"] = new[] { keyValidation.Error! }
+            });
+        }
+
+        var normalizedKey = NormalizeKey(key);
+        var found = await repository.RetireAsync(normalizedKey, cancellationToken);
+        if (!found)
+        {
+            return Results.NotFound(new { error = $"Agent with key '{normalizedKey}' does not exist." });
+        }
+
+        return Results.Ok(new { key = normalizedKey, isRetired = true });
+    }
+
     private static AgentVersionDto MapVersion(AgentConfigEntity entity)
     {
         var configNode = TryParseNode(entity.ConfigJson);
@@ -240,7 +276,8 @@ public static class AgentsEndpoints
             Type: ReadString(configNode, "type") ?? "agent",
             Config: configNode,
             CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
-            CreatedBy: entity.CreatedBy);
+            CreatedBy: entity.CreatedBy,
+            IsRetired: entity.IsRetired);
     }
 
     private static string NormalizeKey(string key) => key.Trim();

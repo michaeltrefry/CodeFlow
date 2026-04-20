@@ -544,5 +544,10 @@ public sealed class WorkflowSagaStateMachineTests
 
             throw new AgentConfigNotFoundException(key, 0);
         }
+
+        public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }
