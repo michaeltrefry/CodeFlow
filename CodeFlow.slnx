@@ -2,6 +2,15 @@
   <Project Path="CodeFlow.Contracts.Tests/CodeFlow.Contracts.Tests.csproj" />
   <Project Path="CodeFlow.Contracts/CodeFlow.Contracts.csproj" />
   <Project Path="CodeFlow.Api/CodeFlow.Api.csproj" />
+  <Folder Name="/SolutionFolder/">
+    <File Path=".gitignore" />
+    <File Path="docker-compose.yml" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/SolutionFolder/Docs/">
+    <File Path="docs\kickoff-implementation-plan.md" />
+    <File Path="docs\local-integration-stack.md" />
+  </Folder>
   <Project Path="CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj" />
   <Project Path="CodeFlow.Host/CodeFlow.Host.csproj" />
   <Project Path="CodeFlow.Worker/CodeFlow.Worker.csproj" />
