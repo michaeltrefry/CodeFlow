@@ -46,5 +46,29 @@ export const routes: Routes = [
     path: 'ops/dlq',
     loadComponent: () => import('./pages/ops/dlq.component').then(m => m.DlqComponent)
   },
+  {
+    path: 'settings/mcp-servers',
+    loadComponent: () => import('./pages/settings/mcp-servers/mcp-servers-list.component').then(m => m.McpServersListComponent)
+  },
+  {
+    path: 'settings/mcp-servers/new',
+    loadComponent: () => import('./pages/settings/mcp-servers/mcp-server-editor.component').then(m => m.McpServerEditorComponent)
+  },
+  {
+    path: 'settings/mcp-servers/:id',
+    loadComponent: () => import('./pages/settings/mcp-servers/mcp-server-editor.component').then(m => m.McpServerEditorComponent)
+  },
+  {
+    path: 'settings/roles',
+    loadComponent: () => import('./pages/settings/roles/roles-list.component').then(m => m.RolesListComponent)
+  },
+  {
+    path: 'settings/roles/new',
+    loadComponent: () => import('./pages/settings/roles/role-editor.component').then(m => m.RoleEditorComponent)
+  },
+  {
+    path: 'settings/roles/:id',
+    loadComponent: () => import('./pages/settings/roles/role-editor.component').then(m => m.RoleEditorComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];

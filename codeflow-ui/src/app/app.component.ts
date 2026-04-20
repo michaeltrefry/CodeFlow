@@ -19,6 +19,9 @@ import { AuthService } from './auth/auth.service';
           <a routerLink="/traces" routerLinkActive="active">Traces</a>
           <a routerLink="/hitl" routerLinkActive="active">HITL Queue</a>
           <a routerLink="/ops/dlq" routerLinkActive="active">DLQ Ops</a>
+          <div class="nav-section-label">Settings</div>
+          <a routerLink="/settings/mcp-servers" routerLinkActive="active">MCP Servers</a>
+          <a routerLink="/settings/roles" routerLinkActive="active">Roles</a>
         </nav>
         <footer class="nav-user">
           @if (auth.currentUser(); as user) {
@@ -80,6 +83,14 @@ import { AuthService } from './auth/auth.service';
     .nav-links a.active {
       background: rgba(56,189,248,0.12);
       color: var(--color-accent);
+    }
+    .nav-section-label {
+      margin-top: 0.75rem;
+      padding: 0 0.75rem;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--color-muted);
     }
     .nav-user {
       border-top: 1px solid var(--color-border);
