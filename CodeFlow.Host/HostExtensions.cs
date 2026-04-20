@@ -81,6 +81,8 @@ public static class HostExtensions
         services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
+        services.AddScoped<IMcpServerRepository, McpServerRepository>();
+        services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<ContextAssembler>();

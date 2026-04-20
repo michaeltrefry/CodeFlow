@@ -15,6 +15,16 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<HitlTaskEntity> HitlTasks => Set<HitlTaskEntity>();
 
+    public DbSet<McpServerEntity> McpServers => Set<McpServerEntity>();
+
+    public DbSet<McpServerToolEntity> McpServerTools => Set<McpServerToolEntity>();
+
+    public DbSet<AgentRoleEntity> AgentRoles => Set<AgentRoleEntity>();
+
+    public DbSet<AgentRoleToolGrantEntity> AgentRoleToolGrants => Set<AgentRoleToolGrantEntity>();
+
+    public DbSet<AgentRoleAssignmentEntity> AgentRoleAssignments => Set<AgentRoleAssignmentEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
