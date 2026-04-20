@@ -18,6 +18,7 @@ import { AuthService } from './auth/auth.service';
           <a routerLink="/workflows" routerLinkActive="active">Workflows</a>
           <a routerLink="/traces" routerLinkActive="active">Traces</a>
           <a routerLink="/hitl" routerLinkActive="active">HITL Queue</a>
+          <a routerLink="/ops/dlq" routerLinkActive="active">DLQ Ops</a>
         </nav>
         <footer class="nav-user">
           @if (auth.currentUser(); as user) {

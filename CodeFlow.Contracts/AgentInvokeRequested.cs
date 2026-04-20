@@ -8,4 +8,5 @@ public sealed record AgentInvokeRequested(
     string AgentKey,
     int AgentVersion,
     Uri InputRef,
-    IReadOnlyDictionary<string, string>? CorrelationHeaders = null);
+    IReadOnlyDictionary<string, string>? CorrelationHeaders = null,
+    RetryContext? RetryContext = null);

@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using CodeFlow.Runtime.Observability;
+
 namespace CodeFlow.Runtime;
 
 public sealed class Agent : IAgentInvoker
@@ -29,13 +32,22 @@ public sealed class Agent : IAgentInvoker
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
+        using var activity = CodeFlowActivity.StartChild("agent.invoke");
+        activity?.SetTag(CodeFlowActivity.TagNames.AgentProvider, configuration.Provider);
+        activity?.SetTag(CodeFlowActivity.TagNames.AgentModel, configuration.Model);
+        if (configuration.RetryContext is { } retryContext)
+        {
+            activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
+        }
+
         var modelClient = modelClients.Resolve(configuration.Provider);
         var messages = contextAssembler.Assemble(new ContextAssemblyRequest(
             configuration.SystemPrompt,
             configuration.PromptTemplate,
             input,
             configuration.History,
-            configuration.Variables));
+            configuration.Variables,
+            configuration.RetryContext));
 
         var toolRegistry = new ToolRegistry(BuildProviders(configuration));
         var invocationLoop = new InvocationLoop(modelClient, toolRegistry, nowProvider);
@@ -48,6 +60,17 @@ public sealed class Agent : IAgentInvoker
                 configuration.MaxTokens,
                 configuration.Temperature),
             cancellationToken);
+
+        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, loopResult.Decision.Kind.ToString());
+        if (loopResult.Decision is FailedDecision failed)
+        {
+            activity?.SetTag(CodeFlowActivity.TagNames.FailureReason, failed.Reason);
+            activity?.SetStatus(ActivityStatusCode.Error, failed.Reason);
+        }
+        else
+        {
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
 
         return new AgentInvocationResult(
             loopResult.Output,

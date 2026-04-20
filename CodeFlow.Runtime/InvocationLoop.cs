@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Observability;
 
 namespace CodeFlow.Runtime;
 
@@ -198,12 +200,26 @@ public sealed class InvocationLoop
         ToolAccessPolicy? policy,
         CancellationToken cancellationToken)
     {
+        using var activity = CodeFlowActivity.StartChild("tool.call");
+        activity?.SetTag(CodeFlowActivity.TagNames.ToolName, toolCall.Name);
+
         try
         {
-            return await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken);
+            var result = await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken);
+            if (result.IsError)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "tool reported error");
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+
+            return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
             return new ToolResult(toolCall.Id, exception.Message, IsError: true);
         }
     }

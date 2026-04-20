@@ -13,6 +13,7 @@ public static class CodeFlowEndpoints
         routes.MapAgentsEndpoints();
         routes.MapWorkflowsEndpoints();
         routes.MapTracesEndpoints();
+        routes.MapOpsEndpoints();
 
         return routes;
     }
