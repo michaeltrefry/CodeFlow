@@ -298,6 +298,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
         public Task<AgentInvocationResult> InvokeAsync(
             AgentInvocationConfiguration configuration,
             string? input,
+            ResolvedAgentTools tools,
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref invocationCount);

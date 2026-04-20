@@ -40,15 +40,13 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
             Provider: "openai",
             Model: "gpt-5.4",
             SystemPrompt: "Write clearly.",
-            PromptTemplate: "Draft: {{input}}",
-            EnableHostTools: true), SerializerOptions);
+            PromptTemplate: "Draft: {{input}}"), SerializerOptions);
         var v2Json = JsonSerializer.Serialize(new AgentInvocationConfiguration(
             Provider: "anthropic",
             Model: "claude-sonnet-4.5",
             SystemPrompt: "Revise carefully.",
             PromptTemplate: "Review: {{input}}",
-            MaxTokens: 2048,
-            EnableHostTools: false), SerializerOptions);
+            MaxTokens: 2048), SerializerOptions);
 
         await using var writeContext = CreateDbContext();
         var repository = new AgentConfigRepository(writeContext);
@@ -71,14 +69,12 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
         version1.ConfigJson.Should().Be(v1Json);
         version1.Configuration.Provider.Should().Be("openai");
         version1.Configuration.Model.Should().Be("gpt-5.4");
-        version1.Configuration.EnableHostTools.Should().BeTrue();
 
         version2.Version.Should().Be(2);
         version2.ConfigJson.Should().Be(v2Json);
         version2.Configuration.Provider.Should().Be("anthropic");
         version2.Configuration.Model.Should().Be("claude-sonnet-4.5");
         version2.Configuration.MaxTokens.Should().Be(2048);
-        version2.Configuration.EnableHostTools.Should().BeFalse();
 
         var persistedStates = await readContext.Agents
             .AsNoTracking()

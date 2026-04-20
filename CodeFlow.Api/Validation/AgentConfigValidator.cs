@@ -12,6 +12,7 @@ public static class AgentConfigValidator
         "anthropic",
         "lmstudio"
     };
+    private static readonly string[] LegacyToolFields = new[] { "enableHostTools", "mcpTools" };
 
     public static ValidationResult ValidateKey(string? key)
     {
@@ -43,6 +44,15 @@ public static class AgentConfigValidator
         if (config.Value.ValueKind != JsonValueKind.Object)
         {
             return ValidationResult.Fail("Agent config must be a JSON object.");
+        }
+
+        foreach (var legacy in LegacyToolFields)
+        {
+            if (HasProperty(config.Value, legacy))
+            {
+                return ValidationResult.Fail(
+                    $"'{legacy}' has been removed from agent configuration. Grant tools by assigning agent roles instead.");
+            }
         }
 
         var type = ReadStringProperty(config.Value, "type") ?? "agent";
@@ -79,6 +89,18 @@ public static class AgentConfigValidator
         }
 
         return property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+    }
+
+    private static bool HasProperty(JsonElement element, string propertyName)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
