@@ -32,7 +32,8 @@ public sealed class AgentTests
                 Provider: "test",
                 Model: "alpha-model",
                 SystemPrompt: "You are concise."),
-            "Summarize kickoff for runtime.");
+            "Summarize kickoff for runtime.",
+            ResolvedAgentTools.Empty);
 
         result.Output.Should().Be("Runtime kickoff summarized.");
         result.Decision.Should().BeOfType<CompletedDecision>();
@@ -73,7 +74,8 @@ public sealed class AgentTests
             new AgentInvocationConfiguration(
                 Provider: "test",
                 Model: "tool-model"),
-            "What time is it?");
+            "What time is it?",
+            ResolvedAgentTools.Empty with { EnableHostTools = true });
 
         result.Output.Should().Be("The current UTC timestamp is captured.");
         result.Decision.Should().BeOfType<CompletedDecision>();
@@ -129,21 +131,20 @@ public sealed class AgentTests
 
         var childConfig = new AgentInvocationConfiguration(
             Provider: "child",
-            Model: "child-model",
-            EnableHostTools: false);
+            Model: "child-model");
 
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(
                 Provider: "parent",
                 Model: "parent-model",
-                EnableHostTools: false,
                 SubAgents: new Dictionary<string, AgentInvocationConfiguration>
                 {
                     ["alpha"] = childConfig,
                     ["beta"] = childConfig,
                     ["gamma"] = childConfig
                 }),
-            "Coordinate the reviewers.");
+            "Coordinate the reviewers.",
+            ResolvedAgentTools.Empty);
 
         result.Output.Should().Be("Children finished.");
         result.Decision.Should().BeOfType<CompletedDecision>();
@@ -185,10 +186,12 @@ public sealed class AgentTests
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(
                 Provider: "test",
-                Model: "mcp-model",
-                EnableHostTools: false,
-                McpTools:
-                [
+                Model: "mcp-model"),
+            "Search docs.",
+            new ResolvedAgentTools(
+                AllowedToolNames: new[] { "mcp:docs:search" },
+                McpTools: new[]
+                {
                     new McpToolDefinition(
                         "docs",
                         "search",
@@ -197,8 +200,8 @@ public sealed class AgentTests
                         {
                             ["type"] = "object"
                         })
-                ]),
-            "Search docs.");
+                },
+                EnableHostTools: false));
 
         result.Output.Should().Be("MCP query complete.");
         mcpClient.Invocations.Should().ContainSingle();

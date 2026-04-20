@@ -18,17 +18,20 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private readonly IAgentConfigRepository agentConfigRepository;
     private readonly IArtifactStore artifactStore;
     private readonly IAgentInvoker agentInvoker;
+    private readonly IRoleResolutionService roleResolution;
     private readonly CodeFlowDbContext dbContext;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
         IArtifactStore artifactStore,
         IAgentInvoker agentInvoker,
+        IRoleResolutionService roleResolution,
         CodeFlowDbContext dbContext)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.agentInvoker = agentInvoker ?? throw new ArgumentNullException(nameof(agentInvoker));
+        this.roleResolution = roleResolution ?? throw new ArgumentNullException(nameof(roleResolution));
         this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
@@ -77,9 +80,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
         }
 
+        var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
+
         var invocationResult = await agentInvoker.InvokeAsync(
             invocationConfig,
             input,
+            resolvedTools,
             context.CancellationToken);
 
         await using var outputStream = new MemoryStream(Encoding.UTF8.GetBytes(invocationResult.Output));
