@@ -57,6 +57,81 @@ services:
       - "4317:4317"
       - "4318:4318"
 
+  codeflow-api:
+    build:
+      context: .
+      dockerfile: CodeFlow.Api/Dockerfile
+    container_name: codeflow-api
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__VirtualHost: codeflow
+      RabbitMq__Username: codeflow
+      RabbitMq__Password: codeflow_dev
+      Observability__OtlpEndpoint: http://jaeger:4317
+      Observability__EnableConsoleExporter: "false"
+      Auth__DevelopmentBypass: "true"
+      Auth__RequireHttpsMetadata: "false"
+      Cors__AllowedOrigins__0: http://localhost:4200
+      Cors__AllowedOrigins__1: http://localhost:8080
+      Artifacts__RootDirectory: /app/artifacts
+      DeadLetter__ManagementHost: rabbitmq
+      DeadLetter__ManagementPort: "15672"
+      DeadLetter__VirtualHost: codeflow
+      DeadLetter__Username: codeflow
+      DeadLetter__Password: codeflow_dev
+    ports:
+      - "5080:8080"
+    volumes:
+      - codeflow-artifacts:/app/artifacts
+
+  codeflow-worker:
+    build:
+      context: .
+      dockerfile: CodeFlow.Worker/Dockerfile
+    container_name: codeflow-worker
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      codeflow-api:
+        condition: service_started
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__VirtualHost: codeflow
+      RabbitMq__Username: codeflow
+      RabbitMq__Password: codeflow_dev
+      Observability__OtlpEndpoint: http://jaeger:4317
+      Observability__EnableConsoleExporter: "false"
+      Artifacts__RootDirectory: /app/artifacts
+    volumes:
+      - codeflow-artifacts:/app/artifacts
+
+  codeflow-ui:
+    build:
+      context: .
+      dockerfile: codeflow-ui/Dockerfile
+    container_name: codeflow-ui
+    restart: unless-stopped
+    depends_on:
+      - codeflow-api
+    ports:
+      - "4200:80"
+
 volumes:
   codeflow-mariadb-data:
   codeflow-rabbitmq-data:
+  codeflow-artifacts:
