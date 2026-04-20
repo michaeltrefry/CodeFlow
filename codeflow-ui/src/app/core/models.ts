@@ -37,11 +37,111 @@ export interface AgentConfig {
   model?: string;
   systemPrompt?: string;
   promptTemplate?: string;
-  allowedTools?: string[];
   maxTokens?: number;
   temperature?: number;
-  enableHostTools?: boolean;
   [key: string]: unknown;
+}
+
+export type McpTransportKind = 'StreamableHttp' | 'HttpSse';
+export type McpServerHealthStatus = 'Unverified' | 'Healthy' | 'Unhealthy';
+export type BearerTokenAction = 'Preserve' | 'Clear' | 'Replace';
+
+export interface McpServer {
+  id: number;
+  key: string;
+  displayName: string;
+  transport: McpTransportKind;
+  endpointUrl: string;
+  hasBearerToken: boolean;
+  healthStatus: McpServerHealthStatus;
+  lastVerifiedAtUtc?: string | null;
+  lastVerificationError?: string | null;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+  isArchived: boolean;
+}
+
+export interface McpServerTool {
+  id: number;
+  serverId: number;
+  toolName: string;
+  description?: string | null;
+  parameters?: unknown;
+  isMutating: boolean;
+  syncedAtUtc: string;
+}
+
+export interface McpServerCreateRequest {
+  key: string;
+  displayName: string;
+  transport: McpTransportKind;
+  endpointUrl: string;
+  bearerToken?: string | null;
+}
+
+export interface BearerTokenPayload {
+  action: BearerTokenAction;
+  value?: string;
+}
+
+export interface McpServerUpdateRequest {
+  displayName: string;
+  transport: McpTransportKind;
+  endpointUrl: string;
+  bearerToken: BearerTokenPayload;
+}
+
+export interface McpServerVerifyResponse {
+  healthStatus: McpServerHealthStatus;
+  lastVerifiedAtUtc?: string | null;
+  lastVerificationError?: string | null;
+  discoveredToolCount?: number | null;
+}
+
+export interface McpServerRefreshResponse {
+  healthStatus: McpServerHealthStatus;
+  lastVerifiedAtUtc?: string | null;
+  lastVerificationError?: string | null;
+  tools: McpServerTool[];
+}
+
+export type AgentRoleToolCategory = 'Host' | 'Mcp';
+
+export interface AgentRole {
+  id: number;
+  key: string;
+  displayName: string;
+  description?: string | null;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+  isArchived: boolean;
+}
+
+export interface AgentRoleGrant {
+  category: AgentRoleToolCategory;
+  toolIdentifier: string;
+}
+
+export interface AgentRoleCreateRequest {
+  key: string;
+  displayName: string;
+  description?: string | null;
+}
+
+export interface AgentRoleUpdateRequest {
+  displayName: string;
+  description?: string | null;
+}
+
+export interface HostTool {
+  name: string;
+  description: string;
+  parameters?: unknown;
+  isMutating: boolean;
 }
 
 export interface WorkflowEdge {

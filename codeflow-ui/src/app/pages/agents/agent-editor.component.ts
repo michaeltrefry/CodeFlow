@@ -1,37 +1,29 @@
-import { Component, inject, input, signal, OnInit } from '@angular/core';
+import { Component, computed, inject, input, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { forkJoin } from 'rxjs';
 import { AgentsApi } from '../../core/agents.api';
-import { AgentConfig } from '../../core/models';
-
-type ToolCategory = 'host' | 'execution' | 'mcp' | 'sub-agent';
-
-interface ToolEntry {
-  id: string;
-  label: string;
-  category: ToolCategory;
-}
-
-const KNOWN_TOOLS: ToolEntry[] = [
-  { id: 'host.search', label: 'Host: search', category: 'host' },
-  { id: 'host.fetch', label: 'Host: HTTP fetch', category: 'host' },
-  { id: 'execution.python', label: 'Execution: Python', category: 'execution' },
-  { id: 'execution.bash', label: 'Execution: Bash', category: 'execution' },
-  { id: 'mcp:artifact-store:read', label: 'MCP: artifact-store/read', category: 'mcp' },
-  { id: 'mcp:artifact-store:write', label: 'MCP: artifact-store/write', category: 'mcp' },
-  { id: 'sub-agent.summarize', label: 'Sub-agent: summarize', category: 'sub-agent' },
-  { id: 'sub-agent.review', label: 'Sub-agent: review', category: 'sub-agent' }
-];
+import { AgentRolesApi } from '../../core/agent-roles.api';
+import { HostToolsApi } from '../../core/host-tools.api';
+import { McpServersApi } from '../../core/mcp-servers.api';
+import {
+  AgentConfig,
+  AgentRole,
+  AgentRoleGrant,
+  HostTool,
+  McpServer,
+} from '../../core/models';
+import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-picker/tool-picker.component';
 
 @Component({
   selector: 'cf-agent-editor',
   standalone: true,
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, ToolPickerComponent],
   template: `
     <header class="page-header">
       <div>
         <h1>{{ existingKey() ? 'New version of ' + existingKey() : 'New agent' }}</h1>
-        <p class="muted">Saving always creates a new immutable version.</p>
+        <p class="muted">Saving always creates a new immutable version. Tool access flows through assigned roles.</p>
       </div>
       <a routerLink="/agents"><button class="secondary">Cancel</button></a>
     </header>
@@ -89,23 +81,6 @@ const KNOWN_TOOLS: ToolEntry[] = [
           <textarea [(ngModel)]="promptTemplate" name="promptTemplate" rows="4" placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
         </div>
 
-        <div class="form-field">
-          <label>Allowed tools</label>
-          <div class="tool-grid">
-            @for (group of toolGroups; track group.category) {
-              <div class="tool-group">
-                <div class="tool-group-title">{{ group.label }}</div>
-                @for (tool of group.tools; track tool.id) {
-                  <label class="tool-option">
-                    <input type="checkbox" [checked]="allowedTools().has(tool.id)" (change)="toggleTool(tool.id, $event)" />
-                    <span>{{ tool.label }}</span>
-                  </label>
-                }
-              </div>
-            }
-          </div>
-        </div>
-
         <div class="grid-two">
           <div class="form-field">
             <label>Max tokens</label>
@@ -115,13 +90,6 @@ const KNOWN_TOOLS: ToolEntry[] = [
             <label>Temperature</label>
             <input type="number" [(ngModel)]="temperature" name="temperature" step="0.1" min="0" max="2" />
           </div>
-        </div>
-
-        <div class="form-field">
-          <label>
-            <input type="checkbox" [(ngModel)]="enableHostTools" name="enableHostTools" />
-            Enable host tools
-          </label>
         </div>
       }
 
@@ -135,45 +103,79 @@ const KNOWN_TOOLS: ToolEntry[] = [
         </button>
       </div>
     </form>
+
+    @if (existingKey()) {
+      <section class="roles-section">
+        <header class="section-header">
+          <h2>Roles</h2>
+          <span class="muted small">Tool access = union of assigned roles' grants</span>
+        </header>
+
+        @if (rolesLoading()) {
+          <p>Loading roles&hellip;</p>
+        } @else if (allRoles().length === 0) {
+          <p class="muted">
+            No roles defined yet.
+            <a routerLink="/settings/roles/new">Create one</a> and come back to assign it.
+          </p>
+        } @else {
+          <div class="role-grid">
+            @for (role of allRoles(); track role.id) {
+              <label class="role-option card" [class.selected]="isAssigned(role.id)">
+                <input type="checkbox" [checked]="isAssigned(role.id)" (change)="toggleRole(role, $event)" />
+                <div>
+                  <div class="role-key">{{ role.key }}</div>
+                  <div class="role-name muted small">{{ role.displayName }}</div>
+                </div>
+              </label>
+            }
+          </div>
+
+          @if (assignmentsSaving()) {
+            <p class="muted small">Saving assignments…</p>
+          }
+        }
+
+        @if (assignedRoles().length > 0) {
+          <div class="effective">
+            <h3>Effective tools</h3>
+            <p class="muted small">
+              Derived from the selected roles. This is what the agent can call at runtime.
+            </p>
+            <cf-tool-picker
+              [hostTools]="hostTools()"
+              [mcpServers]="mcpCatalogs()"
+              [value]="effectiveGrants()"
+              [readOnly]="true" />
+          </div>
+        }
+      </section>
+    } @else {
+      <p class="muted small role-hint">Roles are assigned after the agent is created.</p>
+    }
   `,
   styles: [`
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 1.5rem;
-    }
-    .muted {
-      color: var(--color-muted);
-    }
-    .small {
-      font-size: 0.8rem;
-    }
-    .tool-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-    }
-    .tool-group-title {
-      font-weight: 600;
-      margin-bottom: 0.25rem;
-      text-transform: uppercase;
-      color: var(--color-muted);
-      font-size: 0.8rem;
-    }
-    .tool-option {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      text-transform: none;
-      letter-spacing: normal;
-      margin-bottom: 0.25rem;
-      color: var(--color-text);
-    }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
+    .muted { color: var(--color-muted); }
+    .small { font-size: 0.8rem; }
+    .role-hint { margin-top: 2rem; }
+    .roles-section { margin-top: 2rem; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+    .section-header h2 { margin: 0; font-size: 1.1rem; }
+    .role-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.5rem; }
+    .role-option { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.75rem; cursor: pointer; }
+    .role-option.selected { border-color: var(--color-accent); background: rgba(56,189,248,0.05); }
+    .role-key { font-family: var(--font-mono, monospace); font-weight: 600; }
+    .role-name { margin-top: 0.15rem; }
+    .effective { margin-top: 1.5rem; }
+    .effective h3 { margin: 0 0 0.25rem; font-size: 1rem; }
   `]
 })
 export class AgentEditorComponent implements OnInit {
-  private readonly api = inject(AgentsApi);
+  private readonly agentsApi = inject(AgentsApi);
+  private readonly rolesApi = inject(AgentRolesApi);
+  private readonly hostToolsApi = inject(HostToolsApi);
+  private readonly mcpApi = inject(McpServersApi);
   private readonly router = inject(Router);
 
   readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
@@ -186,26 +188,42 @@ export class AgentEditorComponent implements OnInit {
   readonly model = signal('gpt-5');
   readonly systemPrompt = signal('');
   readonly promptTemplate = signal('');
-  readonly allowedTools = signal<Set<string>>(new Set());
   readonly maxTokens = signal<number | undefined>(undefined);
   readonly temperature = signal<number | undefined>(undefined);
-  readonly enableHostTools = signal(true);
 
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
 
-  readonly toolGroups = [
-    { category: 'host' as ToolCategory, label: 'Host tools', tools: KNOWN_TOOLS.filter(t => t.category === 'host') },
-    { category: 'execution' as ToolCategory, label: 'Execution', tools: KNOWN_TOOLS.filter(t => t.category === 'execution') },
-    { category: 'mcp' as ToolCategory, label: 'MCP', tools: KNOWN_TOOLS.filter(t => t.category === 'mcp') },
-    { category: 'sub-agent' as ToolCategory, label: 'Sub-agents', tools: KNOWN_TOOLS.filter(t => t.category === 'sub-agent') }
-  ];
+  readonly rolesLoading = signal(false);
+  readonly allRoles = signal<AgentRole[]>([]);
+  readonly assignedRoles = signal<AgentRole[]>([]);
+  readonly assignmentsSaving = signal(false);
+
+  readonly hostTools = signal<HostTool[]>([]);
+  readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
+  readonly grantsByRole = signal<Record<number, AgentRoleGrant[]>>({});
+
+  readonly effectiveGrants = computed<AgentRoleGrant[]>(() => {
+    const grants = this.grantsByRole();
+    const seen = new Set<string>();
+    const out: AgentRoleGrant[] = [];
+    for (const role of this.assignedRoles()) {
+      for (const grant of grants[role.id] ?? []) {
+        const key = `${grant.category}::${grant.toolIdentifier}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(grant);
+        }
+      }
+    }
+    return out;
+  });
 
   ngOnInit(): void {
     const existing = this.existingKey();
     if (existing) {
       this.key.set(existing);
-      this.api.getLatest(existing).subscribe({
+      this.agentsApi.getLatest(existing).subscribe({
         next: version => {
           const config = version.config ?? {};
           this.type.set(version.type === 'hitl' ? 'hitl' : 'agent');
@@ -215,24 +233,82 @@ export class AgentEditorComponent implements OnInit {
           this.model.set((config['model'] as string) ?? 'gpt-5');
           this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
           this.promptTemplate.set((config['promptTemplate'] as string) ?? '');
-          const allowed = (config['allowedTools'] as string[]) ?? [];
-          this.allowedTools.set(new Set(allowed));
           this.maxTokens.set(config['maxTokens'] as number | undefined);
           this.temperature.set(config['temperature'] as number | undefined);
-          this.enableHostTools.set(config['enableHostTools'] !== false);
         }
       });
+
+      this.loadRolesAndCatalogs(existing);
     }
   }
 
-  toggleTool(id: string, event: Event): void {
-    const next = new Set(this.allowedTools());
-    if ((event.target as HTMLInputElement).checked) {
-      next.add(id);
-    } else {
-      next.delete(id);
+  private loadRolesAndCatalogs(agentKey: string): void {
+    this.rolesLoading.set(true);
+    forkJoin({
+      allRoles: this.rolesApi.list(),
+      assignedRoles: this.rolesApi.getRolesForAgent(agentKey),
+      hostTools: this.hostToolsApi.list(),
+      mcpServers: this.mcpApi.list(),
+    }).subscribe({
+      next: ({ allRoles, assignedRoles, hostTools, mcpServers }) => {
+        this.allRoles.set(allRoles.filter(r => !r.isArchived));
+        this.assignedRoles.set(assignedRoles);
+        this.hostTools.set(hostTools);
+        this.loadGrantsForRoles(assignedRoles);
+        this.loadMcpCatalogs(mcpServers.filter(s => !s.isArchived));
+        this.rolesLoading.set(false);
+      },
+      error: () => this.rolesLoading.set(false)
+    });
+  }
+
+  private loadMcpCatalogs(servers: McpServer[]): void {
+    if (servers.length === 0) {
+      this.mcpCatalogs.set([]);
+      return;
     }
-    this.allowedTools.set(next);
+    forkJoin(servers.map(s => this.mcpApi.getTools(s.id))).subscribe(toolLists => {
+      this.mcpCatalogs.set(servers.map<McpServerToolCatalog>((server, i) => ({
+        server,
+        tools: toolLists[i],
+      })));
+    });
+  }
+
+  private loadGrantsForRoles(roles: AgentRole[]): void {
+    if (roles.length === 0) {
+      this.grantsByRole.set({});
+      return;
+    }
+    forkJoin(roles.map(r => this.rolesApi.getGrants(r.id))).subscribe(lists => {
+      const map: Record<number, AgentRoleGrant[]> = {};
+      roles.forEach((r, i) => { map[r.id] = lists[i]; });
+      this.grantsByRole.set(map);
+    });
+  }
+
+  isAssigned(roleId: number): boolean {
+    return this.assignedRoles().some(r => r.id === roleId);
+  }
+
+  toggleRole(role: AgentRole, event: Event): void {
+    const existing = this.existingKey();
+    if (!existing) return;
+    const checked = (event.target as HTMLInputElement).checked;
+    const current = this.assignedRoles();
+    const nextIds = checked
+      ? [...current.map(r => r.id), role.id]
+      : current.map(r => r.id).filter(id => id !== role.id);
+
+    this.assignmentsSaving.set(true);
+    this.rolesApi.replaceAssignments(existing, nextIds).subscribe({
+      next: next => {
+        this.assignedRoles.set(next);
+        this.loadGrantsForRoles(next);
+        this.assignmentsSaving.set(false);
+      },
+      error: () => this.assignmentsSaving.set(false)
+    });
   }
 
   submit(event: Event): void {
@@ -243,7 +319,7 @@ export class AgentEditorComponent implements OnInit {
     const config: AgentConfig = {
       type: this.type(),
       name: this.name() || undefined,
-      description: this.description() || undefined
+      description: this.description() || undefined,
     };
 
     if (this.type() === 'agent') {
@@ -251,23 +327,14 @@ export class AgentEditorComponent implements OnInit {
       config.model = this.model();
       config.systemPrompt = this.systemPrompt() || undefined;
       config.promptTemplate = this.promptTemplate() || undefined;
-      const toolsArr = Array.from(this.allowedTools());
-      if (toolsArr.length) {
-        config.allowedTools = toolsArr;
-      }
-      if (this.maxTokens() !== undefined) {
-        config.maxTokens = this.maxTokens();
-      }
-      if (this.temperature() !== undefined) {
-        config.temperature = this.temperature();
-      }
-      config.enableHostTools = this.enableHostTools();
+      if (this.maxTokens() !== undefined) config.maxTokens = this.maxTokens();
+      if (this.temperature() !== undefined) config.temperature = this.temperature();
     }
 
     const existingKey = this.existingKey();
     const save$ = existingKey
-      ? this.api.addVersion(existingKey, config)
-      : this.api.create(this.key(), config);
+      ? this.agentsApi.addVersion(existingKey, config)
+      : this.agentsApi.create(this.key(), config);
 
     save$.subscribe({
       next: result => {
