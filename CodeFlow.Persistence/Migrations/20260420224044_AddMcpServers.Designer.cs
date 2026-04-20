@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260420224044_AddMcpServers")]
+    partial class AddMcpServers
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -76,133 +79,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("agents", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleAssignmentEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("AgentKey")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("agent_key");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("created_at");
-
-                    b.Property<long>("RoleId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("role_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AgentKey");
-
-                    b.HasIndex("RoleId");
-
-                    b.HasIndex("AgentKey", "RoleId")
-                        .IsUnique();
-
-                    b.ToTable("agent_role_assignments", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("CreatedBy")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("created_by");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("text")
-                        .HasColumnName("description");
-
-                    b.Property<string>("DisplayName")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
-                        .HasColumnName("display_name");
-
-                    b.Property<bool>("IsArchived")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("tinyint(1)")
-                        .HasDefaultValue(false)
-                        .HasColumnName("is_archived");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("key");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("updated_at");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("IsArchived");
-
-                    b.HasIndex("Key")
-                        .IsUnique();
-
-                    b.ToTable("agent_roles", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleToolGrantEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("Category")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("varchar(16)")
-                        .HasColumnName("category");
-
-                    b.Property<long>("RoleId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("role_id");
-
-                    b.Property<string>("ToolIdentifier")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("varchar(512)")
-                        .HasColumnName("tool_identifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RoleId", "Category", "ToolIdentifier")
-                        .IsUnique();
-
-                    b.ToTable("agent_role_tool_grants", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.HitlTaskEntity", b =>
@@ -373,49 +249,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("mcp_servers", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.McpServerToolEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("Description")
-                        .HasColumnType("text")
-                        .HasColumnName("description");
-
-                    b.Property<bool>("IsMutating")
-                        .HasColumnType("tinyint(1)")
-                        .HasColumnName("is_mutating");
-
-                    b.Property<string>("ParametersJson")
-                        .HasColumnType("longtext")
-                        .HasColumnName("parameters_json");
-
-                    b.Property<long>("ServerId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("server_id");
-
-                    b.Property<DateTime>("SyncedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("synced_at");
-
-                    b.Property<string>("ToolName")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
-                        .HasColumnName("tool_name");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ServerId", "ToolName")
-                        .IsUnique();
-
-                    b.ToTable("mcp_server_tools", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.WorkflowEdgeEntity", b =>
@@ -757,39 +590,6 @@ namespace CodeFlow.Persistence.Migrations
                     b.HasIndex("Created");
 
                     b.ToTable("OutboxState");
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleAssignmentEntity", b =>
-                {
-                    b.HasOne("CodeFlow.Persistence.AgentRoleEntity", "Role")
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Role");
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleToolGrantEntity", b =>
-                {
-                    b.HasOne("CodeFlow.Persistence.AgentRoleEntity", "Role")
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Role");
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.McpServerToolEntity", b =>
-                {
-                    b.HasOne("CodeFlow.Persistence.McpServerEntity", "Server")
-                        .WithMany()
-                        .HasForeignKey("ServerId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Server");
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.WorkflowEdgeEntity", b =>
