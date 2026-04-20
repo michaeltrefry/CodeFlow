@@ -1,7 +1,26 @@
 namespace CodeFlow.Api.Auth;
 
+public enum AuthMode
+{
+    Generic = 0,
+    Company = 1
+}
+
+public sealed class CompanyAuthOptions
+{
+    public string? PermissionsApiBaseUrl { get; set; }
+
+    public string? PermissionsApiApiKey { get; set; }
+
+    public int PermissionsCacheSeconds { get; set; } = 60;
+}
+
 public sealed class AuthOptions
 {
+    public AuthMode Mode { get; set; } = AuthMode.Generic;
+
+    public CompanyAuthOptions Company { get; set; } = new();
+
     public string? Authority { get; set; }
 
     public string? Audience { get; set; }
@@ -55,7 +74,9 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.WorkflowsRead,
                 CodeFlowApiDefaults.Permissions.TracesRead,
                 CodeFlowApiDefaults.Permissions.TracesWrite,
-                CodeFlowApiDefaults.Permissions.HitlWrite
+                CodeFlowApiDefaults.Permissions.HitlWrite,
+                CodeFlowApiDefaults.Permissions.OpsRead,
+                CodeFlowApiDefaults.Permissions.OpsWrite
             },
             [CodeFlowApiDefaults.Roles.Admin] = new List<string>
             {
@@ -65,7 +86,9 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.WorkflowsWrite,
                 CodeFlowApiDefaults.Permissions.TracesRead,
                 CodeFlowApiDefaults.Permissions.TracesWrite,
-                CodeFlowApiDefaults.Permissions.HitlWrite
+                CodeFlowApiDefaults.Permissions.HitlWrite,
+                CodeFlowApiDefaults.Permissions.OpsRead,
+                CodeFlowApiDefaults.Permissions.OpsWrite
             }
         };
     }

@@ -1,8 +1,10 @@
 using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.Observability;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -35,6 +37,16 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         ArgumentNullException.ThrowIfNull(context);
 
         var message = context.Message;
+        using var activity = CodeFlowActivity.StartWorkflowRoot(
+            "agent.invocation.consume",
+            message.TraceId,
+            ActivityKind.Consumer);
+        activity?.SetTag(CodeFlowActivity.TagNames.RoundId, message.RoundId);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowKey, message.WorkflowKey);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowVersion, message.WorkflowVersion);
+        activity?.SetTag(CodeFlowActivity.TagNames.AgentKey, message.AgentKey);
+        activity?.SetTag(CodeFlowActivity.TagNames.AgentVersion, message.AgentVersion);
+
         var startedAt = DateTimeOffset.UtcNow;
         var agentConfig = await agentConfigRepository.GetAsync(
             message.AgentKey,
@@ -52,8 +64,21 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             return;
         }
 
+        var invocationConfig = agentConfig.Configuration;
+        if (message.RetryContext is { } retryContext)
+        {
+            invocationConfig = invocationConfig with
+            {
+                RetryContext = new Runtime.RetryContext(
+                    retryContext.AttemptNumber,
+                    retryContext.PriorFailureReason,
+                    retryContext.PriorAttemptSummary)
+            };
+            activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
+        }
+
         var invocationResult = await agentInvoker.InvokeAsync(
-            agentConfig.Configuration,
+            invocationConfig,
             input,
             context.CancellationToken);
 
@@ -76,10 +101,28 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 message.AgentVersion,
                 outputRef,
                 MapDecisionKind(invocationResult.Decision.Kind),
-                BuildDecisionPayload(invocationResult.Decision),
+                BuildDecisionPayload(invocationResult.Decision, invocationResult),
                 DateTimeOffset.UtcNow - startedAt,
                 MapTokenUsage(invocationResult.TokenUsage)),
             context.CancellationToken);
+    }
+
+    private static JsonObject? BuildFailureContext(
+        FailedDecision failed,
+        AgentInvocationResult result)
+    {
+        var snippet = result.Output;
+        if (!string.IsNullOrWhiteSpace(snippet) && snippet.Length > 1024)
+        {
+            snippet = snippet[..1024];
+        }
+
+        return new JsonObject
+        {
+            ["reason"] = failed.Reason,
+            ["last_output"] = snippet,
+            ["tool_calls_executed"] = result.ToolCallsExecuted
+        };
     }
 
     private async Task CreateHitlTaskAsync(
@@ -153,7 +196,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             : new CodeFlow.Contracts.TokenUsage(tokenUsage.InputTokens, tokenUsage.OutputTokens, tokenUsage.TotalTokens);
     }
 
-    private static JsonElement BuildDecisionPayload(AgentDecision decision)
+    private static JsonElement BuildDecisionPayload(AgentDecision decision, AgentInvocationResult result)
     {
         var json = new JsonObject
         {
@@ -176,6 +219,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             case FailedDecision failed:
                 json["reason"] = failed.Reason;
+                var failureContext = BuildFailureContext(failed, result);
+                if (failureContext is not null)
+                {
+                    json["failure_context"] = failureContext;
+                }
                 break;
         }
 

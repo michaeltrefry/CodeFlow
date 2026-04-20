@@ -1,7 +1,9 @@
 using CodeFlow.Contracts;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Observability;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace CodeFlow.Orchestration;
@@ -113,6 +115,16 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     {
         var saga = context.Saga;
         var message = context.Message;
+
+        using var activity = CodeFlowActivity.StartWorkflowRoot(
+            "workflow.saga.route",
+            saga.TraceId);
+        activity?.SetTag(CodeFlowActivity.TagNames.RoundId, saga.CurrentRoundId);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowKey, saga.WorkflowKey);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowVersion, saga.WorkflowVersion);
+        activity?.SetTag(CodeFlowActivity.TagNames.AgentKey, message.AgentKey);
+        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, message.Decision.ToString());
+
         var services = context.GetPayload<IServiceProvider>();
         var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
         var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
@@ -150,6 +162,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var targetRoundId = edge.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = edge.RotatesRound ? 0 : saga.RoundCount + 1;
+        var retryContext = BuildRetryContextForHandoff(saga, message);
 
         if (!edge.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
@@ -162,7 +175,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     workflow.EscalationAgentKey,
                     inputRef: message.OutputRef,
                     roundId: saga.CurrentRoundId,
-                    roundCount: saga.RoundCount);
+                    roundCount: saga.RoundCount,
+                    retryContext: retryContext);
 
                 saga.PendingTransition = PendingTransitionEscalated;
             }
@@ -182,12 +196,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             edge.ToAgentKey,
             inputRef: message.OutputRef,
             roundId: targetRoundId,
-            roundCount: targetRoundCount);
+            roundCount: targetRoundCount,
+            retryContext: retryContext);
 
         saga.CurrentAgentKey = edge.ToAgentKey;
         saga.CurrentRoundId = targetRoundId;
         saga.RoundCount = targetRoundCount;
         saga.UpdatedAtUtc = DateTime.UtcNow;
+
+        activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }
 
     private static async Task PublishHandoffAsync(
@@ -197,7 +214,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         string targetAgentKey,
         Uri inputRef,
         Guid roundId,
-        int roundCount)
+        int roundCount,
+        CodeFlow.Contracts.RetryContext? retryContext = null)
     {
         var pinnedVersion = saga.GetPinnedVersion(targetAgentKey);
 
@@ -217,9 +235,93 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             WorkflowVersion: saga.WorkflowVersion,
             AgentKey: targetAgentKey,
             AgentVersion: pinnedVersion.Value,
-            InputRef: inputRef));
+            InputRef: inputRef,
+            RetryContext: retryContext));
 
         _ = roundCount;
+    }
+
+    private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
+        WorkflowSagaStateEntity saga,
+        AgentInvocationCompleted message)
+    {
+        if (message.Decision != AgentDecisionKind.Failed)
+        {
+            return null;
+        }
+
+        var attemptNumber = CountPriorFailedAttempts(saga, message.AgentKey) + 1;
+        var (reason, summary) = ExtractFailureContext(message.DecisionPayload);
+
+        return new CodeFlow.Contracts.RetryContext(
+            AttemptNumber: attemptNumber,
+            PriorFailureReason: reason,
+            PriorAttemptSummary: summary);
+    }
+
+    private static int CountPriorFailedAttempts(
+        WorkflowSagaStateEntity saga,
+        string agentKey)
+    {
+        var history = saga.GetDecisionHistory();
+        return history.Count(record =>
+            record.RoundId == saga.CurrentRoundId
+            && record.Decision == Runtime.AgentDecisionKind.Failed);
+    }
+
+    private static (string? Reason, string? Summary) ExtractFailureContext(JsonElement? payload)
+    {
+        if (payload is null || payload.Value.ValueKind != JsonValueKind.Object)
+        {
+            return (null, null);
+        }
+
+        string? reason = null;
+        if (payload.Value.TryGetProperty("reason", out var reasonProperty)
+            && reasonProperty.ValueKind == JsonValueKind.String)
+        {
+            reason = reasonProperty.GetString();
+        }
+
+        if (!payload.Value.TryGetProperty("failure_context", out var failureContext)
+            || failureContext.ValueKind != JsonValueKind.Object)
+        {
+            return (reason, null);
+        }
+
+        string? lastOutput = null;
+        if (failureContext.TryGetProperty("last_output", out var lastOutputProperty)
+            && lastOutputProperty.ValueKind == JsonValueKind.String)
+        {
+            lastOutput = lastOutputProperty.GetString();
+        }
+
+        int? toolCallsExecuted = null;
+        if (failureContext.TryGetProperty("tool_calls_executed", out var toolCallsProperty)
+            && toolCallsProperty.ValueKind == JsonValueKind.Number
+            && toolCallsProperty.TryGetInt32(out var toolCalls))
+        {
+            toolCallsExecuted = toolCalls;
+        }
+
+        var summaryBuilder = new System.Text.StringBuilder();
+        if (!string.IsNullOrWhiteSpace(lastOutput))
+        {
+            summaryBuilder.Append("Last output: ").Append(lastOutput!.Trim());
+        }
+
+        if (toolCallsExecuted is { } calls)
+        {
+            if (summaryBuilder.Length > 0)
+            {
+                summaryBuilder.Append(Environment.NewLine);
+            }
+
+            summaryBuilder.Append("Tool calls executed: ").Append(calls);
+        }
+
+        var summary = summaryBuilder.Length == 0 ? null : summaryBuilder.ToString();
+        return (reason, summary);
     }
 
     private static Runtime.AgentDecisionKind MapDecisionKind(AgentDecisionKind kind)

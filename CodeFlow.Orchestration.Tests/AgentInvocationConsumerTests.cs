@@ -95,6 +95,138 @@ public sealed class AgentInvocationConsumerTests
         }
     }
 
+    [Fact]
+    public async Task Consumer_WhenRetryContextPresent_ShouldForwardItToAgentInvoker()
+    {
+        var retryContext = new CodeFlow.Contracts.RetryContext(
+            AttemptNumber: 2,
+            PriorFailureReason: "tool_call_budget_exceeded",
+            PriorAttemptSummary: "Last output: tried X three times");
+
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "retry-flow",
+            WorkflowVersion: 1,
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            CorrelationHeaders: null,
+            RetryContext: retryContext);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", SystemPrompt: "you are reviewer"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "Review done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-retry-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var invocation = agentInvoker.Invocations[0];
+            invocation.Configuration.RetryContext.Should().NotBeNull();
+            invocation.Configuration.RetryContext!.AttemptNumber.Should().Be(2);
+            invocation.Configuration.RetryContext.PriorFailureReason.Should().Be("tool_call_budget_exceeded");
+            invocation.Configuration.RetryContext.PriorAttemptSummary.Should().Contain("three times");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_WhenAgentFails_ShouldIncludeFailureContextInDecisionPayload()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "failure-flow",
+            WorkflowVersion: 1,
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"));
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "Partial draft from a failed attempt",
+            Decision: new FailedDecision("tool_call_budget_exceeded"),
+            Transcript: [],
+            ToolCallsExecuted: 7));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-failure-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            var completion = harness.Published
+                .Select<AgentInvocationCompleted>()
+                .Single()
+                .Context.Message;
+
+            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Failed);
+            completion.DecisionPayload.Should().NotBeNull();
+            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
+            var failureContext = completion.DecisionPayload.Value.GetProperty("failure_context");
+            failureContext.GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
+            failureContext.GetProperty("last_output").GetString().Should().Contain("Partial draft");
+            failureContext.GetProperty("tool_calls_executed").GetInt32().Should().Be(7);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     private sealed class FakeAgentConfigRepository(AgentConfig agentConfig) : IAgentConfigRepository
     {
         public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)

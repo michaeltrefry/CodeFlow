@@ -52,6 +52,30 @@ public sealed class ContextAssemblerTests
     }
 
     [Fact]
+    public void Assemble_ShouldPrependRetryNote_WhenRetryContextProvided()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are a release reviewer.",
+            PromptTemplate: null,
+            Input: "Review this draft.",
+            RetryContext: new RetryContext(
+                AttemptNumber: 2,
+                PriorFailureReason: "tool_call_budget_exceeded",
+                PriorAttemptSummary: "Last output: attempted a large refactor. Tool calls executed: 10")));
+
+        messages.Should().HaveCount(3);
+        messages[0].Should().Be(new ChatMessage(ChatMessageRole.System, "You are a release reviewer."));
+        messages[1].Role.Should().Be(ChatMessageRole.System);
+        messages[1].Content.Should().Contain("This is attempt #2.");
+        messages[1].Content.Should().Contain("Prior attempt #1 failed");
+        messages[1].Content.Should().Contain("tool_call_budget_exceeded");
+        messages[1].Content.Should().Contain("Summary of prior attempt");
+        messages[1].Content.Should().Contain("Tool calls executed: 10");
+        messages[1].Content.Should().Contain("Address the prior failure");
+        messages[2].Role.Should().Be(ChatMessageRole.User);
+    }
+
+    [Fact]
     public void Assemble_ShouldCarryForwardHistoryBeforeAppendingNextUserTurn()
     {
         var history = new[]

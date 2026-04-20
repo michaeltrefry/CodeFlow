@@ -15,6 +15,8 @@ public static class CodeFlowApiDefaults
         public const string TracesRead = "TracesRead";
         public const string TracesWrite = "TracesWrite";
         public const string HitlWrite = "HitlWrite";
+        public const string OpsRead = "OpsRead";
+        public const string OpsWrite = "OpsWrite";
     }
 
     public static class Permissions
@@ -26,6 +28,8 @@ public static class CodeFlowApiDefaults
         public const string TracesRead = "traces:read";
         public const string TracesWrite = "traces:write";
         public const string HitlWrite = "hitl:write";
+        public const string OpsRead = "ops:read";
+        public const string OpsWrite = "ops:write";
     }
 
     public static class Roles
