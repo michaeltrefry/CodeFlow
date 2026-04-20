@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/.vs/
+**/.idea/
+**/.vscode/
+**/*.user
+**/*.suo
+.git/
+.gitignore
+.github/
+.claude/
+docs/
+README.md
+codeflow-ui/dist/
+codeflow-ui/node_modules/
