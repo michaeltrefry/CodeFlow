@@ -3,11 +3,13 @@ using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Anthropic;
 using CodeFlow.Runtime.LMStudio;
+using CodeFlow.Runtime.Mcp;
 using CodeFlow.Runtime.OpenAI;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using System.Net.Http;
 
@@ -60,11 +62,14 @@ public static class HostExtensions
         var openAiOptions = ResolveOpenAiOptions(configuration);
         var anthropicOptions = ResolveAnthropicOptions(configuration);
         var lmStudioOptions = ResolveLmStudioOptions(configuration);
+        var secretsOptions = ResolveSecretsOptions(configuration);
 
         services.AddSingleton(artifactOptions);
         services.AddSingleton(openAiOptions);
         services.AddSingleton(anthropicOptions);
         services.AddSingleton(lmStudioOptions);
+        services.AddSingleton(secretsOptions);
+        services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
 
         services.AddDbContext<CodeFlowDbContext>(builder =>
         {
@@ -82,6 +87,11 @@ public static class HostExtensions
         services.AddSingleton<HostToolProvider>();
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
+
+        services.AddSingleton<IMcpSessionFactory, ModelContextProtocolSessionFactory>();
+        services.TryAddSingleton<IMcpConnectionInfoProvider, NullMcpConnectionInfoProvider>();
+        services.AddSingleton<IMcpClient, DefaultMcpClient>();
+        services.AddSingleton<McpToolDiscovery>();
 
         return services;
     }
@@ -247,6 +257,14 @@ public static class HostExtensions
             MaxRetryAttempts = ParseInt(section["MaxRetryAttempts"], 3),
             InitialRetryDelay = ParseTimeSpan(section["InitialRetryDelay"], TimeSpan.FromSeconds(1))
         };
+    }
+
+    private static SecretsOptions ResolveSecretsOptions(IConfiguration configuration)
+    {
+        var masterKeyBase64 = configuration
+            .GetSection(CodeFlowHostDefaults.SecretsSectionName)["MasterKey"];
+
+        return SecretsOptions.FromBase64(masterKeyBase64 ?? string.Empty);
     }
 
     private static LMStudioModelClientOptions ResolveLmStudioOptions(IConfiguration configuration)

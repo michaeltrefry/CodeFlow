@@ -71,7 +71,8 @@ public sealed class BusIntegrationTests : IAsyncLifetime
                 ["RabbitMq:VirtualHost"] = "/",
                 ["RabbitMq:Username"] = "codeflow",
                 ["RabbitMq:Password"] = "codeflow_dev",
-                ["Artifacts:RootDirectory"] = artifactRoot
+                ["Artifacts:RootDirectory"] = artifactRoot,
+                ["Secrets:MasterKey"] = TestSecrets.DeterministicMasterKeyBase64
             })
             .Build();
 
