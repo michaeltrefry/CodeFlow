@@ -19,16 +19,48 @@ public static class HostExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        return AddCodeFlowHost(services, configuration, configureBus: null);
+    }
+
+    public static IServiceCollection AddCodeFlowHost(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        Action<IBusRegistrationConfigurator>? configureBus)
+    {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var rabbitMqOptions = ResolveRabbitMqOptions(configuration);
+        services.AddCodeFlowInfrastructure(configuration);
+
+        services.AddCodeFlowBus(configuration, x =>
+        {
+            x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+
+            x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity, WorkflowSagaStateMachineDefinition>()
+                .EntityFrameworkRepository(r =>
+                {
+                    r.ExistingDbContext<CodeFlowDbContext>();
+                    r.UseMySql();
+                });
+
+            configureBus?.Invoke(x);
+        });
+
+        return services;
+    }
+
+    public static IServiceCollection AddCodeFlowInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
         var artifactOptions = ResolveArtifactOptions(configuration);
         var openAiOptions = ResolveOpenAiOptions(configuration);
         var anthropicOptions = ResolveAnthropicOptions(configuration);
         var lmStudioOptions = ResolveLmStudioOptions(configuration);
 
-        services.AddSingleton(rabbitMqOptions);
         services.AddSingleton(artifactOptions);
         services.AddSingleton(openAiOptions);
         services.AddSingleton(anthropicOptions);
@@ -51,17 +83,25 @@ public static class HostExtensions
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 
+        return services;
+    }
+
+    public static IServiceCollection AddCodeFlowBus(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        Action<IBusRegistrationConfigurator>? configureBus = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var rabbitMqOptions = ResolveRabbitMqOptions(configuration);
+        services.AddSingleton(rabbitMqOptions);
+
         services.AddMassTransit(x =>
         {
             x.SetKebabCaseEndpointNameFormatter();
-            x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
 
-            x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity, WorkflowSagaStateMachineDefinition>()
-                .EntityFrameworkRepository(r =>
-                {
-                    r.ExistingDbContext<CodeFlowDbContext>();
-                    r.UseMySql();
-                });
+            configureBus?.Invoke(x);
 
             x.AddEntityFrameworkOutbox<CodeFlowDbContext>(o =>
             {
@@ -111,6 +151,15 @@ public static class HostExtensions
         ArgumentNullException.ThrowIfNull(host);
 
         await using var scope = host.Services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        await dbContext.Database.MigrateAsync();
+    }
+
+    public static async Task ApplyDatabaseMigrationsAsync(this IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        await using var scope = services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
         await dbContext.Database.MigrateAsync();
     }

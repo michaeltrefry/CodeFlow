@@ -2,6 +2,7 @@ using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using MassTransit;
+using Microsoft.EntityFrameworkCore;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -10,18 +11,23 @@ namespace CodeFlow.Orchestration;
 
 public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 {
+    private const int HitlInputPreviewLength = 2048;
+
     private readonly IAgentConfigRepository agentConfigRepository;
     private readonly IArtifactStore artifactStore;
     private readonly IAgentInvoker agentInvoker;
+    private readonly CodeFlowDbContext dbContext;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
         IArtifactStore artifactStore,
-        IAgentInvoker agentInvoker)
+        IAgentInvoker agentInvoker,
+        CodeFlowDbContext dbContext)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.agentInvoker = agentInvoker ?? throw new ArgumentNullException(nameof(agentInvoker));
+        this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -39,6 +45,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             message.InputRef,
             context.CancellationToken);
         var input = await ReadInputAsync(inputStream, context.CancellationToken);
+
+        if (agentConfig.Kind == AgentKind.Hitl)
+        {
+            await CreateHitlTaskAsync(message, input, context.CancellationToken);
+            return;
+        }
 
         var invocationResult = await agentInvoker.InvokeAsync(
             agentConfig.Configuration,
@@ -68,6 +80,47 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 DateTimeOffset.UtcNow - startedAt,
                 MapTokenUsage(invocationResult.TokenUsage)),
             context.CancellationToken);
+    }
+
+    private async Task CreateHitlTaskAsync(
+        AgentInvokeRequested message,
+        string? input,
+        CancellationToken cancellationToken)
+    {
+        var preview = input is null
+            ? null
+            : input.Length > HitlInputPreviewLength
+                ? input[..HitlInputPreviewLength]
+                : input;
+
+        var existing = await dbContext.HitlTasks
+            .FirstOrDefaultAsync(
+                task => task.TraceId == message.TraceId
+                    && task.RoundId == message.RoundId
+                    && task.AgentKey == message.AgentKey,
+                cancellationToken);
+
+        if (existing is not null)
+        {
+            return;
+        }
+
+        var entity = new HitlTaskEntity
+        {
+            TraceId = message.TraceId,
+            RoundId = message.RoundId,
+            AgentKey = message.AgentKey,
+            AgentVersion = message.AgentVersion,
+            WorkflowKey = message.WorkflowKey,
+            WorkflowVersion = message.WorkflowVersion,
+            InputRef = message.InputRef.ToString(),
+            InputPreview = preview,
+            State = HitlTaskState.Pending,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        dbContext.HitlTasks.Add(entity);
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task<string?> ReadInputAsync(

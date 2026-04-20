@@ -1,0 +1,32 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace CodeFlow.Api.Dtos;
+
+public sealed record AgentSummaryDto(
+    string Key,
+    int LatestVersion,
+    string? Name,
+    string? Provider,
+    string? Model,
+    string Type,
+    DateTime LatestCreatedAtUtc,
+    string? LatestCreatedBy);
+
+public sealed record AgentVersionSummaryDto(
+    string Key,
+    int Version,
+    DateTime CreatedAtUtc,
+    string? CreatedBy);
+
+public sealed record AgentVersionDto(
+    string Key,
+    int Version,
+    string Type,
+    JsonNode? Config,
+    DateTime CreatedAtUtc,
+    string? CreatedBy);
+
+public sealed record CreateAgentRequest(string? Key, JsonElement? Config);
+
+public sealed record UpdateAgentRequest(JsonElement? Config);

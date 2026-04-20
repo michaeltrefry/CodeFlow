@@ -5,6 +5,8 @@ namespace CodeFlow.Persistence;
 
 internal static class AgentConfigJson
 {
+    private const string TypeProperty = "type";
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     public static AgentInvocationConfiguration Deserialize(string configJson)
@@ -33,5 +35,40 @@ internal static class AgentConfigJson
         ArgumentNullException.ThrowIfNull(configuration);
 
         return JsonSerializer.Serialize(configuration, SerializerOptions);
+    }
+
+    public static AgentKind ReadKind(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return AgentKind.Agent;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(configJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return AgentKind.Agent;
+            }
+
+            if (!document.RootElement.TryGetProperty(TypeProperty, out var typeElement))
+            {
+                return AgentKind.Agent;
+            }
+
+            if (typeElement.ValueKind != JsonValueKind.String)
+            {
+                return AgentKind.Agent;
+            }
+
+            return Enum.TryParse<AgentKind>(typeElement.GetString(), ignoreCase: true, out var kind)
+                ? kind
+                : AgentKind.Agent;
+        }
+        catch (JsonException)
+        {
+            return AgentKind.Agent;
+        }
     }
 }
