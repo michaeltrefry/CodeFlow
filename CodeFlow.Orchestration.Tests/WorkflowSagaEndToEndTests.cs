@@ -78,7 +78,8 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 ["RabbitMq:Password"] = "codeflow_dev",
                 ["Artifacts:RootDirectory"] = artifactRoot,
                 ["RabbitMq:PrefetchCount"] = "1",
-                ["RabbitMq:ConsumerConcurrencyLimit"] = "1"
+                ["RabbitMq:ConsumerConcurrencyLimit"] = "1",
+                ["Secrets:MasterKey"] = TestSecrets.DeterministicMasterKeyBase64
             })
             .Build();
 

@@ -70,7 +70,8 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
                 ["RabbitMq:Password"] = "codeflow_dev",
                 ["Artifacts:RootDirectory"] = artifactRoot,
                 ["Auth:DevelopmentBypass"] = "true",
-                ["Auth:RequireHttpsMetadata"] = "false"
+                ["Auth:RequireHttpsMetadata"] = "false",
+                ["Secrets:MasterKey"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
             });
         });
     }
