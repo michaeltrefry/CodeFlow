@@ -4,8 +4,10 @@ namespace CodeFlow.Runtime;
 
 public sealed class SubAgentToolProvider : IToolProvider
 {
+    public const string SpawnToolName = "spawn_subagent";
+
     private static readonly ToolSchema SpawnSubAgentTool = new(
-        "spawn_subagent",
+        SpawnToolName,
         "Invoke one or more configured child agents in parallel and return their results.",
         new JsonObject
         {
@@ -38,13 +40,16 @@ public sealed class SubAgentToolProvider : IToolProvider
 
     private readonly Agent agent;
     private readonly IReadOnlyDictionary<string, AgentInvocationConfiguration> subAgents;
+    private readonly ResolvedAgentTools inheritedTools;
 
     public SubAgentToolProvider(
         Agent agent,
-        IReadOnlyDictionary<string, AgentInvocationConfiguration> subAgents)
+        IReadOnlyDictionary<string, AgentInvocationConfiguration> subAgents,
+        ResolvedAgentTools inheritedTools)
     {
         this.agent = agent ?? throw new ArgumentNullException(nameof(agent));
         this.subAgents = subAgents ?? throw new ArgumentNullException(nameof(subAgents));
+        this.inheritedTools = inheritedTools ?? throw new ArgumentNullException(nameof(inheritedTools));
     }
 
     public ToolCategory Category => ToolCategory.SubAgent;
@@ -91,7 +96,7 @@ public sealed class SubAgentToolProvider : IToolProvider
             throw new InvalidOperationException($"Unknown sub-agent '{invocation.Agent}'.");
         }
 
-        var result = await agent.InvokeAsync(configuration, invocation.Input, cancellationToken);
+        var result = await agent.InvokeAsync(configuration, invocation.Input, inheritedTools, cancellationToken);
 
         return new JsonObject
         {

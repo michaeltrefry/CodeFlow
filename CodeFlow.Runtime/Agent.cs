@@ -28,9 +28,11 @@ public sealed class Agent : IAgentInvoker
     public async Task<AgentInvocationResult> InvokeAsync(
         AgentInvocationConfiguration configuration,
         string? input,
+        ResolvedAgentTools tools,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(tools);
 
         using var activity = CodeFlowActivity.StartChild("agent.invoke");
         activity?.SetTag(CodeFlowActivity.TagNames.AgentProvider, configuration.Provider);
@@ -49,13 +51,15 @@ public sealed class Agent : IAgentInvoker
             configuration.Variables,
             configuration.RetryContext));
 
-        var toolRegistry = new ToolRegistry(BuildProviders(configuration));
+        var toolAccessPolicy = MergeToolAccessPolicy(configuration.ToolAccessPolicy, tools, configuration);
+
+        var toolRegistry = new ToolRegistry(BuildProviders(configuration, tools));
         var invocationLoop = new InvocationLoop(modelClient, toolRegistry, nowProvider);
         var loopResult = await invocationLoop.RunAsync(
             new InvocationLoopRequest(
                 messages,
                 configuration.Model,
-                configuration.ToolAccessPolicy,
+                toolAccessPolicy,
                 configuration.Budget,
                 configuration.MaxTokens,
                 configuration.Temperature),
@@ -80,26 +84,53 @@ public sealed class Agent : IAgentInvoker
             loopResult.ToolCallsExecuted);
     }
 
-    private IEnumerable<IToolProvider> BuildProviders(AgentInvocationConfiguration configuration)
+    private IEnumerable<IToolProvider> BuildProviders(
+        AgentInvocationConfiguration configuration,
+        ResolvedAgentTools tools)
     {
-        if (configuration.EnableHostTools)
+        if (tools.EnableHostTools)
         {
             yield return hostToolProvider;
         }
 
+        // Sub-agents inherit the parent's resolved tool set (v1 semantics — no independent
+        // role resolution per sub-agent).
         if (configuration.SubAgents is { Count: > 0 })
         {
-            yield return new SubAgentToolProvider(this, configuration.SubAgents);
+            yield return new SubAgentToolProvider(this, configuration.SubAgents, tools);
         }
 
-        if (configuration.McpTools is { Count: > 0 })
+        if (tools.McpTools is { Count: > 0 })
         {
             if (mcpClient is null)
             {
-                throw new InvalidOperationException("MCP tools were configured, but no IMcpClient is registered.");
+                throw new InvalidOperationException("MCP tools were resolved, but no IMcpClient is registered.");
             }
 
-            yield return new McpToolProvider(mcpClient, configuration.McpTools);
+            yield return new McpToolProvider(mcpClient, tools.McpTools);
         }
+    }
+
+    private static ToolAccessPolicy MergeToolAccessPolicy(
+        ToolAccessPolicy? configured,
+        ResolvedAgentTools tools,
+        AgentInvocationConfiguration configuration)
+    {
+        if (tools.AllowedToolNames.Count == 0)
+        {
+            return configured ?? ToolAccessPolicy.AllowAll;
+        }
+
+        // spawn_subagent is a runtime-managed meta-tool; callers don't (and shouldn't) grant
+        // it through a role. Implicitly allow it whenever SubAgents is configured.
+        var allowed = new List<string>(tools.AllowedToolNames);
+        if (configuration.SubAgents is { Count: > 0 })
+        {
+            allowed.Add(SubAgentToolProvider.SpawnToolName);
+        }
+
+        return new ToolAccessPolicy(
+            AllowedToolNames: allowed,
+            CategoryToolLimits: configured?.CategoryToolLimits);
     }
 }

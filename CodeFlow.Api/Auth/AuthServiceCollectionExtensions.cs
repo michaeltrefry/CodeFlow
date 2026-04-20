@@ -105,7 +105,19 @@ public static class AuthServiceCollectionExtensions
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.OpsRead)))
             .AddPolicy(CodeFlowApiDefaults.Policies.OpsWrite, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.OpsWrite)));
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.OpsWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.McpServersRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.McpServersRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.McpServersWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.McpServersWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.AgentRolesRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.AgentRolesRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.AgentRolesWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.AgentRolesWrite)));
 
         return services;
     }

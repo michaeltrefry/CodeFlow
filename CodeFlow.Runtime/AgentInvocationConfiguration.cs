@@ -11,7 +11,5 @@ public sealed record AgentInvocationConfiguration(
     InvocationLoopBudget? Budget = null,
     int? MaxTokens = null,
     double? Temperature = null,
-    bool EnableHostTools = true,
     IReadOnlyDictionary<string, AgentInvocationConfiguration>? SubAgents = null,
-    IReadOnlyList<McpToolDefinition>? McpTools = null,
     RetryContext? RetryContext = null);

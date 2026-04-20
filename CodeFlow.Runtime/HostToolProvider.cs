@@ -23,7 +23,7 @@ public sealed class HostToolProvider : IToolProvider
             return [];
         }
 
-        return GetTools().Take(limit).ToArray();
+        return GetCatalog().Take(limit).ToArray();
     }
 
     public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
@@ -40,7 +40,7 @@ public sealed class HostToolProvider : IToolProvider
         return Task.FromResult(new ToolResult(toolCall.Id, content));
     }
 
-    private static IReadOnlyList<ToolSchema> GetTools()
+    public static IReadOnlyList<ToolSchema> GetCatalog()
     {
         return
         [
