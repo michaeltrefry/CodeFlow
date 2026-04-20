@@ -5,6 +5,7 @@ using CodeFlow.Runtime;
 using FluentAssertions;
 using MassTransit;
 using MassTransit.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text;
 using System.Text.Json;
@@ -28,6 +29,7 @@ public sealed class AgentInvocationConsumerTests
         var agentConfig = new AgentConfig(
             Key: request.AgentKey,
             Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
             Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
             ConfigJson: "{}",
             CreatedAtUtc: DateTime.UtcNow,
@@ -44,6 +46,8 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"agent-consumer-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();

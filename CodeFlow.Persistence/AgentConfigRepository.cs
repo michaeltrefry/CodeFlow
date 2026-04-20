@@ -125,6 +125,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         return new AgentConfig(
             entity.Key,
             entity.Version,
+            AgentConfigJson.ReadKind(entity.ConfigJson),
             configuration,
             entity.ConfigJson,
             DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),

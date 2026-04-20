@@ -423,6 +423,21 @@ public sealed class WorkflowSagaStateMachineTests
             return Task.FromResult(workflow);
         }
 
+        public Task<Workflow?> GetLatestAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<Workflow?>(workflow);
+        }
+
+        public Task<IReadOnlyList<Workflow>> ListLatestAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
+        }
+
+        public Task<IReadOnlyList<Workflow>> ListVersionsAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
+        }
+
         public Task<WorkflowEdge?> FindNextAsync(
             string key,
             int version,
@@ -432,6 +447,11 @@ public sealed class WorkflowSagaStateMachineTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(workflow.FindNext(fromAgentKey, decision, discriminator));
+        }
+
+        public Task<int> CreateNewVersionAsync(WorkflowDraft draft, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
     }
 

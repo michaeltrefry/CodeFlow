@@ -70,6 +70,89 @@ namespace CodeFlow.Persistence.Migrations
                     b.ToTable("agents", (string)null);
                 });
 
+            modelBuilder.Entity("CodeFlow.Persistence.HitlTaskEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AgentKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("agent_key");
+
+                    b.Property<int>("AgentVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("agent_version");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("decided_at");
+
+                    b.Property<string>("DeciderId")
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)")
+                        .HasColumnName("decider_id");
+
+                    b.Property<int?>("Decision")
+                        .HasColumnType("int")
+                        .HasColumnName("decision");
+
+                    b.Property<string>("DecisionPayloadJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("decision_payload_json");
+
+                    b.Property<string>("InputPreview")
+                        .HasMaxLength(4096)
+                        .HasColumnType("varchar(4096)")
+                        .HasColumnName("input_preview");
+
+                    b.Property<string>("InputRef")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("varchar(1024)")
+                        .HasColumnName("input_ref");
+
+                    b.Property<Guid>("RoundId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("round_id");
+
+                    b.Property<int>("State")
+                        .HasColumnType("int")
+                        .HasColumnName("state");
+
+                    b.Property<Guid>("TraceId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("trace_id");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("workflow_key");
+
+                    b.Property<int>("WorkflowVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("workflow_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("State");
+
+                    b.HasIndex("TraceId", "RoundId", "AgentKey")
+                        .IsUnique();
+
+                    b.ToTable("hitl_tasks", (string)null);
+                });
+
             modelBuilder.Entity("CodeFlow.Persistence.WorkflowEdgeEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -213,11 +296,6 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("round_count");
 
-                    b.Property<int>("Version")
-                        .IsConcurrencyToken()
-                        .HasColumnType("int")
-                        .HasColumnName("version");
-
                     b.Property<Guid>("TraceId")
                         .HasColumnType("char(36)")
                         .HasColumnName("trace_id");
@@ -225,6 +303,11 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)")
                         .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
 
                     b.Property<string>("WorkflowKey")
                         .IsRequired()

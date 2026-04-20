@@ -1,0 +1,46 @@
+import { Routes } from '@angular/router';
+
+export const routes: Routes = [
+  { path: '', pathMatch: 'full', redirectTo: '/traces' },
+  {
+    path: 'agents',
+    loadComponent: () => import('./pages/agents/agents-list.component').then(m => m.AgentsListComponent)
+  },
+  {
+    path: 'agents/new',
+    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorComponent)
+  },
+  {
+    path: 'agents/:key',
+    loadComponent: () => import('./pages/agents/agent-detail.component').then(m => m.AgentDetailComponent)
+  },
+  {
+    path: 'workflows',
+    loadComponent: () => import('./pages/workflows/workflows-list.component').then(m => m.WorkflowsListComponent)
+  },
+  {
+    path: 'workflows/new',
+    loadComponent: () => import('./pages/workflows/workflow-editor.component').then(m => m.WorkflowEditorComponent)
+  },
+  {
+    path: 'workflows/:key',
+    loadComponent: () => import('./pages/workflows/workflow-detail.component').then(m => m.WorkflowDetailComponent)
+  },
+  {
+    path: 'traces',
+    loadComponent: () => import('./pages/traces/traces-list.component').then(m => m.TracesListComponent)
+  },
+  {
+    path: 'traces/new',
+    loadComponent: () => import('./pages/traces/trace-submit.component').then(m => m.TraceSubmitComponent)
+  },
+  {
+    path: 'traces/:id',
+    loadComponent: () => import('./pages/traces/trace-detail.component').then(m => m.TraceDetailComponent)
+  },
+  {
+    path: 'hitl',
+    loadComponent: () => import('./pages/hitl/hitl-queue.component').then(m => m.HitlQueueComponent)
+  },
+  { path: '**', redirectTo: '/traces' }
+];
