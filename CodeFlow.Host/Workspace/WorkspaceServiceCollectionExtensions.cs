@@ -86,6 +86,9 @@ public static class WorkspaceServiceCollectionExtensions
             nowProvider: null,
             sp.GetService<Microsoft.Extensions.Logging.ILogger<WorktreeSweeper>>()));
 
+        services.AddSingleton<IWorkspaceUsageReporter>(sp => new WorkspaceUsageReporter(
+            sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
+
         services.AddHostedService<WorkspaceRootInitializer>();
         services.AddHostedService<WorktreeSweepHostedService>();
 

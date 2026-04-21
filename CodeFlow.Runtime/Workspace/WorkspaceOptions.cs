@@ -31,6 +31,10 @@ public sealed class WorkspaceOptions
         "SHELL",
     };
 
+    public long DiskUsageWarnBytes { get; set; } = 10L * 1024 * 1024 * 1024;
+
+    public TimeSpan DiskUsageCacheDuration { get; set; } = TimeSpan.FromSeconds(60);
+
     public string CachePath => Path.Combine(Root, CacheDirectoryName);
 
     public string WorkPath => Path.Combine(Root, WorkDirectoryName);
