@@ -1,29 +1,14 @@
-import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Component, OnInit, inject, input, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { WorkflowDetail, WorkflowNode } from '../../core/models';
-
-interface GraphNode {
-  node: WorkflowNode;
-  x: number;
-  y: number;
-  radius: number;
-}
-
-interface GraphEdge {
-  fromX: number;
-  fromY: number;
-  toX: number;
-  toY: number;
-  label: string;
-  rotatesRound: boolean;
-}
+import { WorkflowReadonlyCanvasComponent } from './editor/workflow-readonly-canvas.component';
 
 @Component({
   selector: 'cf-workflow-detail',
   standalone: true,
-  imports: [CommonModule, RouterLink, DatePipe],
+  imports: [CommonModule, RouterLink, DatePipe, WorkflowReadonlyCanvasComponent],
   template: `
     <header class="page-header">
       <div>
@@ -73,54 +58,12 @@ interface GraphEdge {
 
       <section class="card">
         <h3>Graph</h3>
-        @if (graphNodes().length === 0) {
+        @if (wf.nodes.length === 0) {
           <p class="muted">No nodes configured.</p>
         } @else {
-          <svg [attr.viewBox]="viewBox()" preserveAspectRatio="xMidYMid meet" class="graph-svg">
-            <defs>
-              <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
-              </marker>
-            </defs>
-            @for (edge of graphEdges(); track $index) {
-              <line
-                [attr.x1]="edge.fromX"
-                [attr.y1]="edge.fromY"
-                [attr.x2]="edge.toX"
-                [attr.y2]="edge.toY"
-                stroke="#58a6ff"
-                [attr.stroke-dasharray]="edge.rotatesRound ? '4 4' : null"
-                stroke-width="1.5"
-                marker-end="url(#arrow)"/>
-              <text
-                [attr.x]="(edge.fromX + edge.toX) / 2"
-                [attr.y]="(edge.fromY + edge.toY) / 2 - 6"
-                fill="#c9d1d9"
-                font-size="10"
-                text-anchor="middle">
-                {{ edge.label }}
-              </text>
-            }
-            @for (node of graphNodes(); track node.node.id) {
-              <g>
-                <circle
-                  [attr.cx]="node.x"
-                  [attr.cy]="node.y"
-                  [attr.r]="node.radius"
-                  [attr.fill]="fillFor(node.node.kind)"
-                  stroke="#c9d1d9" stroke-width="1.5"/>
-                <text
-                  [attr.x]="node.x"
-                  [attr.y]="node.y + 2"
-                  text-anchor="middle"
-                  fill="#0f172a"
-                  font-weight="600"
-                  font-size="10">
-                  {{ labelFor(node.node) }}
-                </text>
-              </g>
-            }
-          </svg>
+          <div class="graph-host">
+            <cf-workflow-readonly-canvas [workflow]="wf"></cf-workflow-readonly-canvas>
+          </div>
         }
       </section>
 
@@ -164,7 +107,7 @@ interface GraphEdge {
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; }
     .muted { color: var(--color-muted); }
-    .graph-svg { width: 100%; height: 400px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; }
+    .graph-host { height: 500px; }
     table.edges, table.nodes, table.inputs { width: 100%; border-collapse: collapse; }
     table th, table td { padding: 0.4rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
     table th { color: var(--color-muted); text-transform: uppercase; font-size: 0.75rem; }
@@ -182,45 +125,6 @@ export class WorkflowDetailComponent implements OnInit {
 
   readonly key = input.required<string>();
   readonly workflow = signal<WorkflowDetail | null>(null);
-
-  readonly graphNodes = computed<GraphNode[]>(() => {
-    const wf = this.workflow();
-    if (!wf || wf.nodes.length === 0) return [];
-    const n = wf.nodes.length;
-    const width = 800;
-    const height = 400;
-    const radius = Math.min(width, height) / 2.6;
-    return wf.nodes.map((node, index) => {
-      const angle = (index / n) * 2 * Math.PI - Math.PI / 2;
-      return {
-        node,
-        x: width / 2 + radius * Math.cos(angle),
-        y: height / 2 + radius * Math.sin(angle),
-        radius: 40
-      };
-    });
-  });
-
-  readonly graphEdges = computed<GraphEdge[]>(() => {
-    const wf = this.workflow();
-    if (!wf) return [];
-    const byId = new Map(this.graphNodes().map(g => [g.node.id, g]));
-    return wf.edges.map(edge => {
-      const from = byId.get(edge.fromNodeId);
-      const to = byId.get(edge.toNodeId);
-      if (!from || !to) return null;
-      return {
-        fromX: from.x,
-        fromY: from.y,
-        toX: to.x,
-        toY: to.y,
-        label: edge.fromPort,
-        rotatesRound: edge.rotatesRound
-      };
-    }).filter((x): x is GraphEdge => x !== null);
-  });
-
-  readonly viewBox = signal('0 0 800 400');
 
   ngOnInit(): void {
     this.api.getLatest(this.key()).subscribe({
@@ -243,15 +147,5 @@ export class WorkflowDetailComponent implements OnInit {
     if (!wf) return nodeId;
     const node = wf.nodes.find(n => n.id === nodeId);
     return node ? this.labelFor(node) : nodeId;
-  }
-
-  fillFor(kind: WorkflowNode['kind']): string {
-    switch (kind) {
-      case 'Start': return '#3fb950';
-      case 'Agent': return '#58a6ff';
-      case 'Logic': return '#d29922';
-      case 'Hitl': return '#bc8cff';
-      case 'Escalation': return '#f85149';
-    }
   }
 }
