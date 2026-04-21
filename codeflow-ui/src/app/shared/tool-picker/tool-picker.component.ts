@@ -71,13 +71,7 @@ function grantKey(grant: AgentRoleGrant): string {
             <ul class="tool-list">
               @for (tool of group.tools; track tool.identifier) {
                 <li class="tool-item" [class.ghost-tool]="tool.isGhost">
-                  <label>
-                    <input
-                      type="checkbox"
-                      [checked]="isSelected(tool)"
-                      (change)="toggle(tool, $event)"
-                      [disabled]="readOnly()"
-                    />
+                  @if (readOnly()) {
                     <span class="tool-label">
                       <span class="tool-name">{{ tool.label }}</span>
                       @if (tool.isGhost) {
@@ -87,9 +81,26 @@ function grantKey(grant: AgentRoleGrant): string {
                         <span class="tag small">mutating</span>
                       }
                     </span>
-                  </label>
+                  } @else {
+                    <label>
+                      <input
+                        type="checkbox"
+                        [checked]="isSelected(tool)"
+                        (change)="toggle(tool, $event)"
+                      />
+                      <span class="tool-label">
+                        <span class="tool-name">{{ tool.label }}</span>
+                        @if (tool.isGhost) {
+                          <span class="tag warn small">ghost</span>
+                        }
+                        @if (tool.isMutating) {
+                          <span class="tag small">mutating</span>
+                        }
+                      </span>
+                    </label>
+                  }
                   @if (tool.description) {
-                    <div class="tool-desc">{{ tool.description }}</div>
+                    <div class="tool-desc" [class.indented]="!readOnly()">{{ tool.description }}</div>
                   }
                 </li>
               }
@@ -118,7 +129,8 @@ function grantKey(grant: AgentRoleGrant): string {
     .tool-list { list-style: none; padding: 0.5rem 0.75rem; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
     .tool-item label { display: inline-flex; align-items: center; gap: 0.5rem; }
     .tool-label { display: inline-flex; align-items: center; gap: 0.5rem; }
-    .tool-desc { color: var(--color-muted); font-size: 0.8rem; padding-left: 1.5rem; }
+    .tool-desc { color: var(--color-muted); font-size: 0.8rem; }
+    .tool-desc.indented { padding-left: 1.5rem; }
     .tag.small { font-size: 0.7rem; padding: 0 0.35rem; }
     .tag.warn { background: rgba(250,204,21,0.15); color: #eab308; }
     .ghost-tool .tool-name { color: var(--color-muted); font-style: italic; }
