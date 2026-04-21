@@ -9,4 +9,6 @@ public sealed record DecisionRecord(
     AgentDecisionKind Decision,
     JsonElement? DecisionPayload,
     Guid RoundId,
-    DateTime RecordedAtUtc);
+    DateTime RecordedAtUtc,
+    Guid? NodeId = null,
+    string? OutputPortName = null);

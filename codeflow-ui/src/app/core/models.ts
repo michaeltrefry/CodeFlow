@@ -273,6 +273,19 @@ export interface TraceDecision {
   decisionPayload?: unknown;
   roundId: string;
   recordedAtUtc: string;
+  nodeId?: string | null;
+  outputPortName?: string | null;
+}
+
+export interface TraceLogicEvaluation {
+  nodeId: string;
+  outputPortName?: string | null;
+  roundId: string;
+  duration: string;
+  logs: string[];
+  failureKind?: string | null;
+  failureMessage?: string | null;
+  recordedAtUtc: string;
 }
 
 export interface HitlTask {
@@ -300,6 +313,7 @@ export interface TraceDetail {
   roundCount: number;
   pinnedAgentVersions: Record<string, number>;
   decisions: TraceDecision[];
+  logicEvaluations: TraceLogicEvaluation[];
   pendingHitl: HitlTask[];
   createdAtUtc: string;
   updatedAtUtc: string;

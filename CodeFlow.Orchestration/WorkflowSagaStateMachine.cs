@@ -124,7 +124,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             Decision: runtimeKind,
             DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
             RoundId: saga.CurrentRoundId,
-            RecordedAtUtc: DateTime.UtcNow));
+            RecordedAtUtc: DateTime.UtcNow,
+            NodeId: message.FromNodeId,
+            OutputPortName: message.OutputPortName));
 
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,

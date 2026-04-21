@@ -14,7 +14,11 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { 'data-testid': 'node' },
   template: `
-    <div class="node" [class.selected]="selected" [attr.data-kind]="kindLower">
+    <div class="node"
+         [class.selected]="selected"
+         [class.trace-active]="data.traceState === 'active'"
+         [class.trace-dimmed]="data.traceState === 'dimmed'"
+         [attr.data-kind]="kindLower">
       <div class="header">
         <span class="kind-badge">{{ kindLabel }}</span>
         <span class="title" data-testid="title">{{ data.label }}</span>
@@ -70,6 +74,12 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
     .node.selected {
       border-color: #fbbf24;
       box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+    }
+    .node.trace-active {
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.45), 0 2px 10px rgba(0, 0, 0, 0.35);
+    }
+    .node.trace-dimmed {
+      opacity: 0.35;
     }
 
     .header {
