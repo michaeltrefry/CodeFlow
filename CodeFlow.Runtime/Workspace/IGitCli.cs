@@ -42,6 +42,8 @@ public interface IGitCli
 
     Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default);
 
+    Task<string> GetSymbolicHeadAsync(string gitDirectory, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<string>> LsFilesAsync(string worktreePath, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<GitStatusEntry>> StatusAsync(string worktreePath, CancellationToken cancellationToken = default);

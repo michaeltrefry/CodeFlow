@@ -193,6 +193,16 @@ public sealed class GitCli : IGitCli
         return result.StandardOutput.Trim();
     }
 
+    public async Task<string> GetSymbolicHeadAsync(
+        string gitDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gitDirectory);
+
+        var result = await RunAsync(gitDirectory, ["symbolic-ref", "--short", "HEAD"], cancellationToken);
+        return result.StandardOutput.Trim();
+    }
+
     public async Task<IReadOnlyList<string>> LsFilesAsync(
         string worktreePath,
         CancellationToken cancellationToken = default)
