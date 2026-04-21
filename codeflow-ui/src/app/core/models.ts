@@ -29,6 +29,12 @@ export interface AgentVersion {
   isRetired: boolean;
 }
 
+export interface AgentOutputDeclaration {
+  kind: string;
+  description?: string | null;
+  payloadExample?: unknown;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -40,6 +46,7 @@ export interface AgentConfig {
   outputTemplate?: string;
   maxTokens?: number;
   temperature?: number;
+  outputs?: AgentOutputDeclaration[];
   [key: string]: unknown;
 }
 

@@ -160,7 +160,8 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             configuration,
             entity.ConfigJson,
             DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
-            entity.CreatedBy);
+            entity.CreatedBy,
+            AgentConfigJson.ReadOutputs(entity.ConfigJson));
     }
 
     private static string NormalizeKey(string key)

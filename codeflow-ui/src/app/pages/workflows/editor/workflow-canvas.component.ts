@@ -611,6 +611,19 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     node.agentKey = value || null;
     node.label = labelFor(node);
     this.selectedNodeId.set(this.selectedNodeId());
+
+    if (!value) return;
+
+    this.agentsApi.getLatest(value).subscribe({
+      next: version => {
+        const declared = version.config?.outputs;
+        if (!declared || declared.length === 0) return;
+        const portNames = declared.map(d => d.kind).filter(n => typeof n === 'string' && n.length > 0);
+        if (portNames.length === 0) return;
+        this.applyNodePorts(node, portNames);
+      },
+      error: () => { /* best-effort; leave existing ports in place */ }
+    });
   }
 
   onOutputPortsChanged(node: WorkflowEditorNode, value: string): void {
@@ -618,12 +631,15 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(line => line.length > 0);
+    this.applyNodePorts(node, next);
+  }
 
+  private applyNodePorts(node: WorkflowEditorNode, desired: string[]): void {
     const current = new Set(node.outputPortNames);
-    const desired = new Set(next);
+    const desiredSet = new Set(desired);
 
     for (const port of current) {
-      if (!desired.has(port)) {
+      if (!desiredSet.has(port)) {
         this.editor?.getConnections()
           .filter(c => c.source === node.id && c.sourceOutput === port)
           .forEach(c => this.editor?.removeConnection(c.id));
@@ -631,7 +647,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       }
     }
 
-    for (const port of next) {
+    for (const port of desired) {
       if (!current.has(port)) {
         node.addOutput(port, new ClassicPreset.Output(new ClassicPreset.Socket('port'), port));
       }
