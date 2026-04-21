@@ -22,6 +22,8 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public string DecisionHistoryJson { get; set; } = "[]";
 
+    public string LogicEvaluationHistoryJson { get; set; } = "[]";
+
     public string WorkflowKey { get; set; } = null!;
 
     public int WorkflowVersion { get; set; }
@@ -86,5 +88,19 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
         var history = GetDecisionHistory().ToList();
         history.Add(record);
         DecisionHistoryJson = WorkflowSagaJson.SerializeDecisionHistory(history);
+    }
+
+    public IReadOnlyList<LogicEvaluationRecord> GetLogicEvaluationHistory()
+    {
+        return WorkflowSagaJson.DeserializeLogicEvaluationHistory(LogicEvaluationHistoryJson);
+    }
+
+    public void AppendLogicEvaluation(LogicEvaluationRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        var history = GetLogicEvaluationHistory().ToList();
+        history.Add(record);
+        LogicEvaluationHistoryJson = WorkflowSagaJson.SerializeLogicEvaluationHistory(history);
     }
 }
