@@ -81,9 +81,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
+        var invocationContext = new Runtime.AgentInvocationContext(message.TraceId);
 
         var invocationResult = await agentInvoker.InvokeAsync(
             invocationConfig,
+            invocationContext,
             input,
             resolvedTools,
             context.CancellationToken);

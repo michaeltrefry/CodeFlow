@@ -40,13 +40,15 @@ public sealed class ToolRegistry
 
     public Task<ToolResult> InvokeAsync(
         ToolCall toolCall,
+        AgentInvocationContext context,
         ToolAccessPolicy? policy = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
+        ArgumentNullException.ThrowIfNull(context);
 
         var provider = ResolveProvider(toolCall.Name, policy ?? ToolAccessPolicy.AllowAll);
-        return provider.InvokeAsync(toolCall, cancellationToken);
+        return provider.InvokeAsync(toolCall, context, cancellationToken);
     }
 
     private IToolProvider ResolveProvider(string toolName, ToolAccessPolicy policy)

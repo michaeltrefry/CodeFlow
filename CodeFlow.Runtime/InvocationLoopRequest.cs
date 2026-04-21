@@ -6,4 +6,5 @@ public sealed record InvocationLoopRequest(
     ToolAccessPolicy? ToolAccessPolicy = null,
     InvocationLoopBudget? Budget = null,
     int? MaxTokens = null,
-    double? Temperature = null);
+    double? Temperature = null,
+    AgentInvocationContext? Context = null);

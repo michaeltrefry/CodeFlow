@@ -40,6 +40,13 @@ public interface IGitCli
         string? branch = null,
         CancellationToken cancellationToken = default);
 
+    Task PushWithBearerAsync(
+        string worktreePath,
+        string bearerToken,
+        string? remote = null,
+        string? branch = null,
+        CancellationToken cancellationToken = default);
+
     Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default);
 
     Task<string> GetSymbolicHeadAsync(string gitDirectory, CancellationToken cancellationToken = default);

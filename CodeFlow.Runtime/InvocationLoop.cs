@@ -170,7 +170,7 @@ public sealed class InvocationLoop
                     continue;
                 }
 
-                var toolResult = await InvokeToolAsync(toolCall, request.ToolAccessPolicy, cancellationToken);
+                var toolResult = await InvokeToolAsync(toolCall, request.Context ?? new AgentInvocationContext(Guid.NewGuid()), request.ToolAccessPolicy, cancellationToken);
                 transcript.Add(new ChatMessage(
                     ChatMessageRole.Tool,
                     toolResult.Content,
@@ -197,6 +197,7 @@ public sealed class InvocationLoop
 
     private async Task<ToolResult> InvokeToolAsync(
         ToolCall toolCall,
+        AgentInvocationContext context,
         ToolAccessPolicy? policy,
         CancellationToken cancellationToken)
     {
@@ -205,7 +206,7 @@ public sealed class InvocationLoop
 
         try
         {
-            var result = await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken);
+            var result = await toolRegistry.InvokeAsync(toolCall, context, policy, cancellationToken);
             if (result.IsError)
             {
                 activity?.SetStatus(ActivityStatusCode.Error, "tool reported error");

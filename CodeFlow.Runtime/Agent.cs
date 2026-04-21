@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CodeFlow.Runtime.Observability;
+using CodeFlow.Runtime.Workspace;
 
 namespace CodeFlow.Runtime;
 
@@ -8,6 +9,8 @@ public sealed class Agent : IAgentInvoker
     private readonly ContextAssembler contextAssembler;
     private readonly ModelClientRegistry modelClients;
     private readonly HostToolProvider hostToolProvider;
+    private readonly WorkspaceToolProvider? workspaceToolProvider;
+    private readonly VcsToolProvider? vcsToolProvider;
     private readonly IMcpClient? mcpClient;
     private readonly Func<DateTimeOffset> nowProvider;
 
@@ -15,23 +18,36 @@ public sealed class Agent : IAgentInvoker
         ModelClientRegistry modelClients,
         ContextAssembler? contextAssembler = null,
         HostToolProvider? hostToolProvider = null,
+        WorkspaceToolProvider? workspaceToolProvider = null,
+        VcsToolProvider? vcsToolProvider = null,
         IMcpClient? mcpClient = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
         this.modelClients = modelClients ?? throw new ArgumentNullException(nameof(modelClients));
         this.contextAssembler = contextAssembler ?? new ContextAssembler();
         this.hostToolProvider = hostToolProvider ?? new HostToolProvider();
+        this.workspaceToolProvider = workspaceToolProvider;
+        this.vcsToolProvider = vcsToolProvider;
         this.mcpClient = mcpClient;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
+    public Task<AgentInvocationResult> InvokeAsync(
+        AgentInvocationConfiguration configuration,
+        string? input,
+        ResolvedAgentTools tools,
+        CancellationToken cancellationToken = default)
+        => InvokeAsync(configuration, new AgentInvocationContext(Guid.NewGuid()), input, tools, cancellationToken);
+
     public async Task<AgentInvocationResult> InvokeAsync(
         AgentInvocationConfiguration configuration,
+        AgentInvocationContext context,
         string? input,
         ResolvedAgentTools tools,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(tools);
 
         using var activity = CodeFlowActivity.StartChild("agent.invoke");
@@ -62,7 +78,8 @@ public sealed class Agent : IAgentInvoker
                 toolAccessPolicy,
                 configuration.Budget,
                 configuration.MaxTokens,
-                configuration.Temperature),
+                configuration.Temperature,
+                context),
             cancellationToken);
 
         activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, loopResult.Decision.Kind.ToString());
@@ -91,6 +108,18 @@ public sealed class Agent : IAgentInvoker
         if (tools.EnableHostTools)
         {
             yield return hostToolProvider;
+        }
+
+        if (workspaceToolProvider is not null
+            && tools.AllowedToolNames.Any(name => name.StartsWith("workspace.", StringComparison.OrdinalIgnoreCase)))
+        {
+            yield return workspaceToolProvider;
+        }
+
+        if (vcsToolProvider is not null
+            && tools.AllowedToolNames.Any(name => name.StartsWith("vcs.", StringComparison.OrdinalIgnoreCase)))
+        {
+            yield return vcsToolProvider;
         }
 
         // Sub-agents inherit the parent's resolved tool set (v1 semantics — no independent

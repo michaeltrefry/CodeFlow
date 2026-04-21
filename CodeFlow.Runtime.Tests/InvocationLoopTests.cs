@@ -266,7 +266,10 @@ public sealed class InvocationLoopTests
             return tools;
         }
 
-        public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+        public Task<ToolResult> InvokeAsync(
+            ToolCall toolCall,
+            AgentInvocationContext context,
+            CancellationToken cancellationToken = default)
         {
             InvokedToolNames.Add(toolCall.Name);
 

@@ -1,5 +1,6 @@
 using CodeFlow.Api.Dtos;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.Workspace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -20,7 +21,9 @@ public static class HostToolsEndpoints
 
     private static IResult ListAsync()
     {
-        var catalog = HostToolProvider.GetCatalog();
+        var catalog = HostToolProvider.GetCatalog()
+            .Concat(WorkspaceToolProvider.GetCatalog())
+            .Concat(VcsToolProvider.GetCatalog());
         var response = catalog
             .Select(tool => new HostToolResponse(
                 Name: tool.Name,
