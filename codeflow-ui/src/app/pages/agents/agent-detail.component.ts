@@ -92,8 +92,8 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
           <h3>Effective tools</h3>
           <p class="muted small">Derived from the selected roles. This is what the agent can call at runtime.</p>
           <cf-tool-picker
-            [hostTools]="hostTools()"
-            [mcpServers]="mcpCatalogs()"
+            [hostTools]="grantedHostTools()"
+            [mcpServers]="grantedMcpCatalogs()"
             [value]="effectiveGrants()"
             [readOnly]="true" />
         </div>
@@ -199,6 +199,41 @@ export class AgentDetailComponent implements OnInit {
       }
     }
     return out;
+  });
+
+  readonly grantedHostTools = computed<HostTool[]>(() => {
+    const granted = new Set(
+      this.effectiveGrants()
+        .filter(g => g.category === 'Host')
+        .map(g => g.toolIdentifier.toLowerCase())
+    );
+    return this.hostTools().filter(t => granted.has(t.name.toLowerCase()));
+  });
+
+  readonly grantedMcpCatalogs = computed<McpServerToolCatalog[]>(() => {
+    const grantedByServer = new Map<string, Set<string>>();
+    for (const grant of this.effectiveGrants()) {
+      if (grant.category !== 'Mcp') continue;
+      const parts = grant.toolIdentifier.split(':', 3);
+      if (parts.length !== 3 || parts[0].toLowerCase() !== 'mcp') continue;
+      const serverKey = parts[1].toLowerCase();
+      const toolName = parts[2].toLowerCase();
+      let set = grantedByServer.get(serverKey);
+      if (!set) {
+        set = new Set<string>();
+        grantedByServer.set(serverKey, set);
+      }
+      set.add(toolName);
+    }
+
+    return this.mcpCatalogs()
+      .map<McpServerToolCatalog>(catalog => ({
+        server: catalog.server,
+        tools: catalog.tools.filter(t =>
+          grantedByServer.get(catalog.server.key.toLowerCase())?.has(t.toolName.toLowerCase()) ?? false
+        ),
+      }))
+      .filter(catalog => catalog.tools.length > 0);
   });
 
   ngOnInit(): void {
