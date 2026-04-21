@@ -23,6 +23,8 @@ public static class CodeFlowApiDefaults
         public const string AgentRolesWrite = "AgentRolesWrite";
         public const string SkillsRead = "SkillsRead";
         public const string SkillsWrite = "SkillsWrite";
+        public const string GitHostRead = "GitHostRead";
+        public const string GitHostWrite = "GitHostWrite";
     }
 
     public static class Permissions
@@ -42,6 +44,8 @@ public static class CodeFlowApiDefaults
         public const string AgentRolesWrite = "agent_roles:write";
         public const string SkillsRead = "skills:read";
         public const string SkillsWrite = "skills:write";
+        public const string GitHostRead = "git_host:read";
+        public const string GitHostWrite = "git_host:write";
     }
 
     public static class Roles

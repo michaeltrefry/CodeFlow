@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260421002910_AddGitHostSettings")]
+    partial class AddGitHostSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -170,33 +173,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("agent_roles", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleSkillGrantEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<long>("RoleId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("role_id");
-
-                    b.Property<long>("SkillId")
-                        .HasColumnType("bigint")
-                        .HasColumnName("skill_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SkillId");
-
-                    b.HasIndex("RoleId", "SkillId")
-                        .IsUnique();
-
-                    b.ToTable("agent_role_skill_grants", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.AgentRoleToolGrantEntity", b =>
@@ -484,60 +460,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("mcp_server_tools", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.SkillEntity", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("Body")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("body");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("CreatedBy")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("created_by");
-
-                    b.Property<bool>("IsArchived")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("tinyint(1)")
-                        .HasDefaultValue(false)
-                        .HasColumnName("is_archived");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("name");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("updated_at");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("IsArchived");
-
-                    b.HasIndex("Name")
-                        .IsUnique();
-
-                    b.ToTable("skills", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.WorkflowEdgeEntity", b =>
@@ -890,25 +812,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Role");
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AgentRoleSkillGrantEntity", b =>
-                {
-                    b.HasOne("CodeFlow.Persistence.AgentRoleEntity", "Role")
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("CodeFlow.Persistence.SkillEntity", "Skill")
-                        .WithMany()
-                        .HasForeignKey("SkillId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Role");
-
-                    b.Navigation("Skill");
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.AgentRoleToolGrantEntity", b =>

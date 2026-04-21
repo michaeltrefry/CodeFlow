@@ -29,6 +29,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<AgentRoleSkillGrantEntity> AgentRoleSkillGrants => Set<AgentRoleSkillGrantEntity>();
 
+    public DbSet<GitHostSettingsEntity> GitHostSettings => Set<GitHostSettingsEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

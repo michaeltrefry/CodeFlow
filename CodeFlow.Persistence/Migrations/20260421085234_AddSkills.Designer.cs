@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    [Migration("20260421075934_AddSkills")]
+    [Migration("20260421085234_AddSkills")]
     partial class AddSkills
     {
         /// <inheritdoc />
@@ -233,6 +233,47 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("agent_role_tool_grants", (string)null);
+                });
+
+            modelBuilder.Entity("CodeFlow.Persistence.GitHostSettingsEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("BaseUrl")
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)")
+                        .HasColumnName("base_url");
+
+                    b.Property<byte[]>("EncryptedToken")
+                        .IsRequired()
+                        .HasColumnType("varbinary(1024)")
+                        .HasColumnName("encrypted_token");
+
+                    b.Property<DateTime?>("LastVerifiedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("last_verified_at");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasColumnName("mode");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("git_host_settings", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.HitlTaskEntity", b =>

@@ -82,5 +82,9 @@ export const routes: Routes = [
     path: 'settings/skills/:id',
     loadComponent: () => import('./pages/settings/skills/skill-editor.component').then(m => m.SkillEditorComponent)
   },
+  {
+    path: 'settings/git-host',
+    loadComponent: () => import('./pages/settings/git-host/git-host-settings.component').then(m => m.GitHostSettingsComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];
