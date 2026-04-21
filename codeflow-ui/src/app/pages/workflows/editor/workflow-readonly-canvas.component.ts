@@ -22,6 +22,7 @@ import {
 } from './workflow-node-schemes';
 import { loadIntoEditor, workflowDetailToModel } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
+import { WorkflowNodeComponent } from './workflow-node.component';
 
 @Component({
   selector: 'cf-workflow-readonly-canvas',
@@ -83,7 +84,11 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       accumulating: AreaExtensions.accumulateOnCtrl()
     });
 
-    angularRender.addPreset(AngularPresets.classic.setup());
+    angularRender.addPreset(AngularPresets.classic.setup({
+      customize: {
+        node: () => WorkflowNodeComponent
+      }
+    }));
 
     editor.use(area);
     area.use(angularRender);

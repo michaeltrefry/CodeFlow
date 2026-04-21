@@ -36,6 +36,7 @@ import {
   workflowDetailToModel
 } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
+import { WorkflowNodeComponent } from './workflow-node.component';
 
 interface SelectedNode {
   editor: WorkflowEditorNode;
@@ -473,7 +474,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       accumulating: AreaExtensions.accumulateOnCtrl()
     });
 
-    angularRender.addPreset(AngularPresets.classic.setup());
+    angularRender.addPreset(AngularPresets.classic.setup({
+      customize: {
+        node: () => WorkflowNodeComponent
+      }
+    }));
     connection.addPreset(ConnectionPresets.classic.setup());
 
     editor.use(area);
