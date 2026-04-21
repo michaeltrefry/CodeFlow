@@ -39,6 +39,7 @@ public static class HostExtensions
         services.AddCodeFlowBus(configuration, x =>
         {
             x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            x.AddConsumer<CodeFlow.Host.Workspace.WorkflowTerminatedConsumer>();
 
             x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity, WorkflowSagaStateMachineDefinition>()
                 .EntityFrameworkRepository(r =>
