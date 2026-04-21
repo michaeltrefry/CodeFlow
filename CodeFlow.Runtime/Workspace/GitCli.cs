@@ -78,6 +78,12 @@ public sealed class GitCli : IGitCli
         await RunAsync(mirrorPath, args, cancellationToken);
     }
 
+    public async Task WorktreePruneAsync(string mirrorPath, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mirrorPath);
+        await RunAsync(mirrorPath, ["worktree", "prune"], cancellationToken);
+    }
+
     public async Task CreateBranchAsync(
         string worktreePath,
         string branchName,

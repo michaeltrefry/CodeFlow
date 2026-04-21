@@ -19,6 +19,8 @@ public interface IGitCli
         bool force = false,
         CancellationToken cancellationToken = default);
 
+    Task WorktreePruneAsync(string mirrorPath, CancellationToken cancellationToken = default);
+
     Task CreateBranchAsync(
         string worktreePath,
         string branchName,

@@ -58,19 +58,35 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     context => context.Saga.PendingTransition == PendingTransitionCompleted,
                     completeBinder => completeBinder
                         .Then(ClearPendingTransition)
-                        .TransitionTo(Completed),
+                        .TransitionTo(Completed)
+                        .ThenAsync(context => PublishTerminatedAsync(context, WorkflowTerminalKind.Completed)),
                     continueBinder => continueBinder
                         .IfElse(
                             context => context.Saga.PendingTransition == PendingTransitionFailed,
                             failBinder => failBinder
                                 .Then(ClearPendingTransition)
-                                .TransitionTo(Failed),
+                                .TransitionTo(Failed)
+                                .ThenAsync(context => PublishTerminatedAsync(context, WorkflowTerminalKind.Failed)),
                             continueElseBinder => continueElseBinder
                                 .If(
                                     context => context.Saga.PendingTransition == PendingTransitionEscalated,
                                     escalateBinder => escalateBinder
                                         .Then(ClearPendingTransition)
-                                        .TransitionTo(Escalated)))));
+                                        .TransitionTo(Escalated)
+                                        .ThenAsync(context => PublishTerminatedAsync(context, WorkflowTerminalKind.Escalated))))));
+    }
+
+    private static Task PublishTerminatedAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        WorkflowTerminalKind kind)
+    {
+        var saga = context.Saga;
+        return context.Publish(new WorkflowTerminated(
+            TraceId: saga.TraceId,
+            WorkflowKey: saga.WorkflowKey,
+            WorkflowVersion: saga.WorkflowVersion,
+            Kind: kind,
+            TerminatedAtUtc: DateTime.UtcNow));
     }
 
     private static WorkflowSagaStateEntity InitializeSagaInstance(AgentInvokeRequested message)

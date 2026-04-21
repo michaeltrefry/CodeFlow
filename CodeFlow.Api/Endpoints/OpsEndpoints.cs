@@ -1,5 +1,6 @@
 using CodeFlow.Api.Dtos;
 using CodeFlow.Host.DeadLetter;
+using CodeFlow.Runtime.Workspace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -52,9 +53,13 @@ public static class OpsEndpoints
         })
         .RequireAuthorization(CodeFlowApiDefaults.Policies.OpsWrite);
 
-        group.MapGet("/metrics", async (IDeadLetterStore store, CancellationToken cancellationToken) =>
+        group.MapGet("/metrics", async (
+            IDeadLetterStore store,
+            IWorkspaceUsageReporter usageReporter,
+            CancellationToken cancellationToken) =>
         {
             var queues = await store.ListQueuesAsync(cancellationToken);
+            var usage = await usageReporter.GetUsageAsync(cancellationToken);
 
             var builder = new StringBuilder();
             builder.AppendLine("# HELP codeflow_dlq_messages Number of messages currently in the dead-letter queue.");
@@ -69,7 +74,29 @@ public static class OpsEndpoints
                     .AppendLine();
             }
 
+            builder.AppendLine("# HELP codeflow_workspace_bytes Bytes used by the CodeFlow workspace root.");
+            builder.AppendLine("# TYPE codeflow_workspace_bytes gauge");
+            builder.Append("codeflow_workspace_bytes{scope=\"root\"} ").Append(usage.RootBytes).AppendLine();
+            builder.Append("codeflow_workspace_bytes{scope=\"cache\"} ").Append(usage.CacheBytes).AppendLine();
+            builder.AppendLine("# HELP codeflow_workspace_worktree_count Active per-correlation worktree directories.");
+            builder.AppendLine("# TYPE codeflow_workspace_worktree_count gauge");
+            builder.Append("codeflow_workspace_worktree_count ").Append(usage.WorktreeCount).AppendLine();
+
             return Results.Text(builder.ToString(), "text/plain; version=0.0.4; charset=utf-8");
+        })
+        .RequireAuthorization(CodeFlowApiDefaults.Policies.OpsRead);
+
+        group.MapGet("/workspace", async (
+            IWorkspaceUsageReporter usageReporter,
+            CancellationToken cancellationToken) =>
+        {
+            var usage = await usageReporter.GetUsageAsync(cancellationToken);
+            return Results.Ok(new WorkspaceUsageResponse(
+                RootBytes: usage.RootBytes,
+                CacheBytes: usage.CacheBytes,
+                WorktreeCount: usage.WorktreeCount,
+                WarnThresholdBytes: usage.WarnThresholdBytes,
+                AboveWarn: usage.AboveWarn));
         })
         .RequireAuthorization(CodeFlowApiDefaults.Policies.OpsRead);
 

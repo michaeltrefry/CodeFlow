@@ -148,6 +148,7 @@ public sealed class RepoUrlHostPolicyTests
         public Task FetchAsync(string mirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeAddAsync(string mirrorPath, string worktreePath, string branchName, string? startPoint = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeRemoveAsync(string mirrorPath, string worktreePath, bool force = false, CancellationToken cancellationToken = default) => throw NotCalled();
+        public Task WorktreePruneAsync(string mirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task CreateBranchAsync(string worktreePath, string branchName, string? startPoint = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task CheckoutAsync(string worktreePath, string branchOrRef, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task AddAsync(string worktreePath, IReadOnlyList<string>? paths = null, CancellationToken cancellationToken = default) => throw NotCalled();
