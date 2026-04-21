@@ -69,7 +69,8 @@ public static class WorkspaceServiceCollectionExtensions
         services.AddSingleton<WorkspaceToolProvider>(sp =>
             new WorkspaceToolProvider(
                 sp.GetRequiredService<IWorkspaceService>(),
-                sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
+                sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
+                sp.GetService<Microsoft.Extensions.Logging.ILogger<WorkspaceToolProvider>>()));
 
         services.AddHostedService<WorkspaceRootInitializer>();
 

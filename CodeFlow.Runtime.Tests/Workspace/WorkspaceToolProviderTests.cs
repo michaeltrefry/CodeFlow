@@ -234,4 +234,138 @@ public sealed class WorkspaceToolProviderTests : IDisposable
             CategoryToolLimits: new Dictionary<ToolCategory, int> { [ToolCategory.Host] = 2 }));
         two.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task WriteFile_creates_file_and_returns_byte_count()
+    {
+        var origin = MakeOrigin("acme", "widget");
+        var ctx = new AgentInvocationContext(Guid.NewGuid());
+        var open = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.OpenToolName, new JsonObject { ["repoUrl"] = origin }),
+            ctx);
+        var repoSlug = JsonNode.Parse(open.Content)!["repoSlug"]!.GetValue<string>();
+
+        var write = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.WriteFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "docs/hello.md",
+                ["content"] = "# hi",
+            }),
+            ctx);
+
+        write.IsError.Should().BeFalse();
+        var payload = JsonNode.Parse(write.Content)!.AsObject();
+        payload["byteCount"]!.GetValue<int>().Should().Be(4);
+
+        var workspace = workspaceService.Get(ctx.CorrelationId, repoSlug)!;
+        File.ReadAllText(Path.Combine(workspace.RootPath, "docs", "hello.md")).Should().Be("# hi");
+    }
+
+    [Fact]
+    public async Task WriteFile_read_back_roundtrips_through_ReadFile()
+    {
+        var origin = MakeOrigin("acme", "widget");
+        var ctx = new AgentInvocationContext(Guid.NewGuid());
+        var open = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.OpenToolName, new JsonObject { ["repoUrl"] = origin }),
+            ctx);
+        var repoSlug = JsonNode.Parse(open.Content)!["repoSlug"]!.GetValue<string>();
+
+        await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.WriteFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "new.txt",
+                ["content"] = "fresh",
+            }),
+            ctx);
+
+        var read = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.ReadFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "new.txt",
+            }),
+            ctx);
+
+        read.IsError.Should().BeFalse();
+        read.Content.Should().Be("fresh");
+    }
+
+    [Fact]
+    public async Task WriteFile_rejects_path_outside_workspace()
+    {
+        var origin = MakeOrigin("acme", "widget");
+        var ctx = new AgentInvocationContext(Guid.NewGuid());
+        var open = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.OpenToolName, new JsonObject { ["repoUrl"] = origin }),
+            ctx);
+        var repoSlug = JsonNode.Parse(open.Content)!["repoSlug"]!.GetValue<string>();
+
+        var write = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.WriteFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "../../../escape.txt",
+                ["content"] = "pwned",
+            }),
+            ctx);
+
+        write.IsError.Should().BeTrue();
+        write.Content.Should().Contain("outside");
+    }
+
+    [Fact]
+    public async Task DeleteFile_removes_file_and_returns_success()
+    {
+        var origin = MakeOrigin("acme", "widget", seed: repo =>
+        {
+            File.WriteAllText(Path.Combine(repo, "doomed.txt"), "goodbye");
+            GitTestRepo.RunGit(repo, "add", ".");
+            GitTestRepo.RunGit(repo, "commit", "-m", "add doomed");
+        });
+
+        var ctx = new AgentInvocationContext(Guid.NewGuid());
+        var open = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.OpenToolName, new JsonObject { ["repoUrl"] = origin }),
+            ctx);
+        var repoSlug = JsonNode.Parse(open.Content)!["repoSlug"]!.GetValue<string>();
+        var workspace = workspaceService.Get(ctx.CorrelationId, repoSlug)!;
+        var fullPath = Path.Combine(workspace.RootPath, "doomed.txt");
+        File.Exists(fullPath).Should().BeTrue();
+
+        var delete = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.DeleteFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "doomed.txt",
+            }),
+            ctx);
+
+        delete.IsError.Should().BeFalse();
+        File.Exists(fullPath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteFile_returns_tool_error_for_nonexistent_path()
+    {
+        var origin = MakeOrigin("acme", "widget");
+        var ctx = new AgentInvocationContext(Guid.NewGuid());
+        var open = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.OpenToolName, new JsonObject { ["repoUrl"] = origin }),
+            ctx);
+        var repoSlug = JsonNode.Parse(open.Content)!["repoSlug"]!.GetValue<string>();
+
+        var delete = await provider.InvokeAsync(
+            Call(WorkspaceToolProvider.DeleteFileToolName, new JsonObject
+            {
+                ["repoSlug"] = repoSlug,
+                ["path"] = "never-existed.txt",
+            }),
+            ctx);
+
+        delete.IsError.Should().BeTrue();
+        delete.Content.Should().Contain("does not exist");
+    }
 }
