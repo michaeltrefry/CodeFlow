@@ -6,5 +6,8 @@ public interface IToolProvider
 
     IReadOnlyList<ToolSchema> AvailableTools(ToolAccessPolicy policy);
 
-    Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default);
+    Task<ToolResult> InvokeAsync(
+        ToolCall toolCall,
+        AgentInvocationContext context,
+        CancellationToken cancellationToken = default);
 }

@@ -122,6 +122,7 @@ public sealed class ObservabilityTests
     {
         public Task<AgentInvocationResult> InvokeAsync(
             AgentInvocationConfiguration configuration,
+            AgentInvocationContext context,
             string? input,
             ResolvedAgentTools tools,
             CancellationToken cancellationToken = default)

@@ -26,9 +26,13 @@ public sealed class HostToolProvider : IToolProvider
         return GetCatalog().Take(limit).ToArray();
     }
 
-    public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    public Task<ToolResult> InvokeAsync(
+        ToolCall toolCall,
+        AgentInvocationContext context,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
+        ArgumentNullException.ThrowIfNull(context);
 
         var content = toolCall.Name switch
         {

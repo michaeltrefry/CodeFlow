@@ -262,6 +262,7 @@ public sealed class AgentInvocationConsumerTests
 
         public Task<AgentInvocationResult> InvokeAsync(
             AgentInvocationConfiguration configuration,
+            AgentInvocationContext context,
             string? input,
             ResolvedAgentTools tools,
             CancellationToken cancellationToken = default)

@@ -35,9 +35,13 @@ public sealed class McpToolProvider : IToolProvider
             .ToArray();
     }
 
-    public async Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    public async Task<ToolResult> InvokeAsync(
+        ToolCall toolCall,
+        AgentInvocationContext context,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
+        ArgumentNullException.ThrowIfNull(context);
 
         if (!toolsByName.TryGetValue(toolCall.Name, out var tool))
         {

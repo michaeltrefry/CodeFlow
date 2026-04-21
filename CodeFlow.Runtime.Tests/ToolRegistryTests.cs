@@ -46,7 +46,8 @@ public sealed class ToolRegistryTests
         var registry = new ToolRegistry([provider]);
 
         var result = await registry.InvokeAsync(
-            new ToolCall("call_123", "run_command", new JsonObject { ["command"] = "pwd" }));
+            new ToolCall("call_123", "run_command", new JsonObject { ["command"] = "pwd" }),
+            AgentInvocationContext.ForTests());
 
         result.Should().BeEquivalentTo(new ToolResult("call_123", "handled:run_command"));
         provider.InvokedToolNames.Should().ContainSingle().Which.Should().Be("run_command");
@@ -61,9 +62,11 @@ public sealed class ToolRegistryTests
         ]);
 
         var echoResult = await registry.InvokeAsync(
-            new ToolCall("call_echo", "echo", new JsonObject { ["text"] = "hello" }));
+            new ToolCall("call_echo", "echo", new JsonObject { ["text"] = "hello" }),
+            AgentInvocationContext.ForTests());
         var nowResult = await registry.InvokeAsync(
-            new ToolCall("call_now", "now", new JsonObject()));
+            new ToolCall("call_now", "now", new JsonObject()),
+            AgentInvocationContext.ForTests());
 
         echoResult.Should().BeEquivalentTo(new ToolResult("call_echo", "hello"));
         nowResult.Should().BeEquivalentTo(new ToolResult("call_now", "2026-04-20T01:24:25.0000000+00:00"));
@@ -75,7 +78,8 @@ public sealed class ToolRegistryTests
         var registry = new ToolRegistry([new HostToolProvider()]);
 
         var act = async () => await registry.InvokeAsync(
-            new ToolCall("call_missing", "missing_tool", new JsonObject()));
+            new ToolCall("call_missing", "missing_tool", new JsonObject()),
+            AgentInvocationContext.ForTests());
 
         var exception = await act.Should().ThrowAsync<UnknownToolException>();
         exception.Which.ToolName.Should().Be("missing_tool");
@@ -96,7 +100,10 @@ public sealed class ToolRegistryTests
                 .ToArray();
         }
 
-        public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+        public Task<ToolResult> InvokeAsync(
+            ToolCall toolCall,
+            AgentInvocationContext context,
+            CancellationToken cancellationToken = default)
         {
             InvokedToolNames.Add(toolCall.Name);
             return Task.FromResult(new ToolResult(toolCall.Id, $"handled:{toolCall.Name}"));
