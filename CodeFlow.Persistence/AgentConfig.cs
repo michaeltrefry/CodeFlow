@@ -9,4 +9,9 @@ public sealed record AgentConfig(
     AgentInvocationConfiguration Configuration,
     string ConfigJson,
     DateTime CreatedAtUtc,
-    string? CreatedBy);
+    string? CreatedBy,
+    IReadOnlyList<AgentOutputDeclaration>? Outputs = null)
+{
+    public IReadOnlyList<AgentOutputDeclaration> DeclaredOutputs =>
+        Outputs ?? Array.Empty<AgentOutputDeclaration>();
+}

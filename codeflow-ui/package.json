@@ -19,6 +19,7 @@
     "@angular/platform-browser": "^20.0.0",
     "@angular/router": "^20.0.0",
     "angular-oauth2-oidc": "^20.0.0",
+    "monaco-editor": "^0.55.1",
     "rete": "^2.0.6",
     "rete-angular-plugin": "^2.6.0",
     "rete-area-plugin": "^2.1.5",

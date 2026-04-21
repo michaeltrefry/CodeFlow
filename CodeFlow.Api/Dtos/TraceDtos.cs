@@ -28,6 +28,18 @@ public sealed record TraceDecisionDto(
     AgentDecisionKind Decision,
     JsonElement? DecisionPayload,
     Guid RoundId,
+    DateTime RecordedAtUtc,
+    Guid? NodeId,
+    string? OutputPortName);
+
+public sealed record TraceLogicEvaluationDto(
+    Guid NodeId,
+    string? OutputPortName,
+    Guid RoundId,
+    TimeSpan Duration,
+    IReadOnlyList<string> Logs,
+    string? FailureKind,
+    string? FailureMessage,
     DateTime RecordedAtUtc);
 
 public sealed record TraceDetailDto(
@@ -40,6 +52,7 @@ public sealed record TraceDetailDto(
     int RoundCount,
     IReadOnlyDictionary<string, int> PinnedAgentVersions,
     IReadOnlyList<TraceDecisionDto> Decisions,
+    IReadOnlyList<TraceLogicEvaluationDto> LogicEvaluations,
     IReadOnlyList<HitlTaskDto> PendingHitl,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc);

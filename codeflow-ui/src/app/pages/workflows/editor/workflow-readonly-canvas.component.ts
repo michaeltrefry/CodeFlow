@@ -18,10 +18,12 @@ import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20
 import { WorkflowDetail } from '../../../core/models';
 import {
   WorkflowAreaExtra,
+  WorkflowEditorNode,
   WorkflowSchemes
 } from './workflow-node-schemes';
 import { loadIntoEditor, workflowDetailToModel } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
+import { WorkflowNodeComponent } from './workflow-node.component';
 
 @Component({
   selector: 'cf-workflow-readonly-canvas',
@@ -52,20 +54,27 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   @ViewChild('canvasHost', { static: true }) canvasHost!: ElementRef<HTMLDivElement>;
 
   readonly workflow = input<WorkflowDetail | null>(null);
+  /** When non-null, highlights the listed node ids and dims every other node. */
+  readonly highlightedNodeIds = input<string[] | null>(null);
 
   private editor?: NodeEditor<WorkflowSchemes>;
   private area?: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>;
   private initialized = false;
+  private loading = false;
 
   async ngAfterViewInit(): Promise<void> {
     await this.initialize();
     await this.loadCurrent();
+    this.applyHighlight();
   }
 
   async ngOnChanges(changes: SimpleChanges): Promise<void> {
     if (!this.initialized) return;
     if (changes['workflow']) {
       await this.loadCurrent();
+      this.applyHighlight();
+    } else if (changes['highlightedNodeIds']) {
+      this.applyHighlight();
     }
   }
 
@@ -78,12 +87,15 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     const area = new AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>(this.canvasHost.nativeElement);
     const angularRender = new AngularPlugin<WorkflowSchemes, WorkflowAreaExtra>({ injector: this.injector });
 
-    // Selection is still useful for zoom helpers; drag/connection plugins omitted on purpose.
     AreaExtensions.selectableNodes(area, AreaExtensions.selector(), {
       accumulating: AreaExtensions.accumulateOnCtrl()
     });
 
-    angularRender.addPreset(AngularPresets.classic.setup());
+    angularRender.addPreset(AngularPresets.classic.setup({
+      customize: {
+        node: () => WorkflowNodeComponent
+      }
+    }));
 
     editor.use(area);
     area.use(angularRender);
@@ -96,7 +108,6 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
         context.type === 'connectioncreate' ||
         context.type === 'connectionremove'
       ) {
-        // Allow programmatic adds during load by distinguishing between load phase and user phase.
         if (this.loading) {
           return context;
         }
@@ -109,8 +120,6 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     this.area = area;
     this.initialized = true;
   }
-
-  private loading = false;
 
   private async loadCurrent(): Promise<void> {
     if (!this.editor || !this.area) return;
@@ -134,9 +143,29 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
         await tidyLayout(this.editor, this.area);
       }
 
-      AreaExtensions.zoomAt(this.area, this.editor.getNodes());
+      if (this.editor.getNodes().length > 0) {
+        AreaExtensions.zoomAt(this.area, this.editor.getNodes());
+      }
     } finally {
       this.loading = false;
+    }
+  }
+
+  private applyHighlight(): void {
+    if (!this.editor || !this.area) return;
+    const ids = this.highlightedNodeIds();
+    const highlighted = ids ? new Set(ids) : null;
+
+    for (const node of this.editor.getNodes()) {
+      const editorNode = node as WorkflowEditorNode;
+      if (highlighted === null) {
+        editorNode.traceState = null;
+      } else if (highlighted.has(editorNode.nodeId)) {
+        editorNode.traceState = 'active';
+      } else {
+        editorNode.traceState = 'dimmed';
+      }
+      void this.area.update('node', editorNode.id);
     }
   }
 }

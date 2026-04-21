@@ -95,6 +95,7 @@ public static class TracesEndpoints
             .ToListAsync(cancellationToken);
 
         var decisionHistory = saga.GetDecisionHistory();
+        var logicHistory = saga.GetLogicEvaluationHistory();
 
         var detail = new TraceDetailDto(
             TraceId: saga.TraceId,
@@ -112,6 +113,19 @@ public static class TracesEndpoints
                     Decision: (Runtime.AgentDecisionKind)(int)record.Decision,
                     DecisionPayload: record.DecisionPayload,
                     RoundId: record.RoundId,
+                    RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc),
+                    NodeId: record.NodeId,
+                    OutputPortName: record.OutputPortName))
+                .ToArray(),
+            LogicEvaluations: logicHistory
+                .Select(record => new TraceLogicEvaluationDto(
+                    NodeId: record.NodeId,
+                    OutputPortName: record.OutputPortName,
+                    RoundId: record.RoundId,
+                    Duration: record.Duration,
+                    Logs: record.Logs,
+                    FailureKind: record.FailureKind,
+                    FailureMessage: record.FailureMessage,
                     RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc)))
                 .ToArray(),
             PendingHitl: pendingHitl.Select(MapHitl).ToArray(),

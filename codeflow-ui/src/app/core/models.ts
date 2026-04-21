@@ -29,6 +29,12 @@ export interface AgentVersion {
   isRetired: boolean;
 }
 
+export interface AgentOutputDeclaration {
+  kind: string;
+  description?: string | null;
+  payloadExample?: unknown;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -40,6 +46,7 @@ export interface AgentConfig {
   outputTemplate?: string;
   maxTokens?: number;
   temperature?: number;
+  outputs?: AgentOutputDeclaration[];
   [key: string]: unknown;
 }
 
@@ -266,6 +273,19 @@ export interface TraceDecision {
   decisionPayload?: unknown;
   roundId: string;
   recordedAtUtc: string;
+  nodeId?: string | null;
+  outputPortName?: string | null;
+}
+
+export interface TraceLogicEvaluation {
+  nodeId: string;
+  outputPortName?: string | null;
+  roundId: string;
+  duration: string;
+  logs: string[];
+  failureKind?: string | null;
+  failureMessage?: string | null;
+  recordedAtUtc: string;
 }
 
 export interface HitlTask {
@@ -293,6 +313,7 @@ export interface TraceDetail {
   roundCount: number;
   pinnedAgentVersions: Record<string, number>;
   decisions: TraceDecision[];
+  logicEvaluations: TraceLogicEvaluation[];
   pendingHitl: HitlTask[];
   createdAtUtc: string;
   updatedAtUtc: string;
