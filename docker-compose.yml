@@ -1,3 +1,6 @@
+networks:
+  mcp-shared:
+    external: true
 services:
   mariadb:
     image: mariadb:11.4
@@ -93,6 +96,9 @@ services:
       - "5080:8080"
     volumes:
       - codeflow-artifacts:/app/artifacts
+    networks:
+      - default
+      - mcp-shared
 
   codeflow-worker:
     build:
@@ -121,6 +127,9 @@ services:
       Secrets__MasterKey: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
     volumes:
       - codeflow-artifacts:/app/artifacts
+    networks:
+      - default
+      - mcp-shared
 
   codeflow-ui:
     build:
