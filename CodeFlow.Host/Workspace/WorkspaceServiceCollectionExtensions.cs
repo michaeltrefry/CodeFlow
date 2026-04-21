@@ -51,6 +51,7 @@ public static class WorkspaceServiceCollectionExtensions
 
         services.AddSingleton<IRepoUrlHostGuard, RepoUrlHostGuard>();
         services.AddSingleton<IGitHostTokenProvider, GitHostTokenProvider>();
+        services.AddSingleton<IVcsProvider, GitHubVcsProvider>();
         services.AddSingleton<IVcsProviderFactory, VcsProviderFactory>();
 
         services.AddSingleton<IWorkspaceService>(sp =>

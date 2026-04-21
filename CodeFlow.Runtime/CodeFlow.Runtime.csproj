@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol.Core" />
+    <PackageReference Include="NGitLab" />
+    <PackageReference Include="Octokit" />
   </ItemGroup>
 
 </Project>
