@@ -244,7 +244,130 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
-    public async Task RoundCountExceeded_WithEscalationAgent_ShouldEscalate()
+    public async Task RoundCountExceeded_WithEscalationAgent_ShouldDispatchAndStayRunning()
+    {
+        var (traceId, roundId, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        try
+        {
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running),
+                "saga stays running until the escalation agent completes");
+            saga.EscalatedFromAgentKey.Should().Be("looper");
+            saga.CurrentAgentKey.Should().Be("triage");
+            saga.GetPinnedVersion("triage").Should().Be(7);
+
+            var triagePublish = harness.Published.Select<AgentInvokeRequested>()
+                .SingleOrDefault(x => x.Context.Message.AgentKey == "triage");
+            triagePublish.Should().NotBeNull();
+            triagePublish!.Context.Message.AgentVersion.Should().Be(7);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task EscalationAgent_Approved_ShouldRecoverByResumingOverflowedAgent()
+    {
+        var (traceId, roundId, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        try
+        {
+            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
+
+            await harness.Bus.Publish(BuildCompletion(
+                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Approved));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "looper"
+                    && x.Context.Message.RoundId != roundId));
+
+            var recoveryPublishes = harness.Published.Select<AgentInvokeRequested>()
+                .Where(x => x.Context.Message.AgentKey == "looper"
+                    && x.Context.Message.RoundId != roundId)
+                .ToList();
+            recoveryPublishes.Should().ContainSingle("recovery re-invokes the overflowed agent once");
+            recoveryPublishes[0].Context.Message.RoundId.Should().NotBe(escalationRoundId,
+                "recovery starts a fresh round so the cap resets");
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
+            saga.EscalatedFromAgentKey.Should().BeNull("escalation flag is cleared on recovery");
+            saga.CurrentAgentKey.Should().Be("looper");
+            saga.RoundCount.Should().Be(0);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task EscalationAgent_Completed_ShouldTerminateAsCompleted()
+    {
+        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        try
+        {
+            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
+
+            await harness.Bus.Publish(BuildCompletion(
+                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Completed));
+
+            await sagaHarness.Exists(traceId, s => s.Completed);
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.EscalatedFromAgentKey.Should().BeNull();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task EscalationAgent_Rejected_ShouldTerminateAsEscalated()
+    {
+        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        try
+        {
+            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
+
+            await harness.Bus.Publish(BuildCompletion(
+                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Rejected));
+
+            await sagaHarness.Exists(traceId, s => s.Escalated);
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.EscalatedFromAgentKey.Should().BeNull();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task EscalationAgent_Failed_ShouldTerminateAsFailed()
+    {
+        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        try
+        {
+            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
+
+            await harness.Bus.Publish(BuildCompletion(
+                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Failed));
+
+            await sagaHarness.Exists(traceId, s => s.Failed);
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.EscalatedFromAgentKey.Should().BeNull();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    private static async Task<(Guid TraceId, Guid RoundId,
+        ISagaStateMachineTestHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity> SagaHarness,
+        ITestHarness Harness)> RunUntilEscalationDispatchedAsync()
     {
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
@@ -264,40 +387,24 @@ public sealed class WorkflowSagaStateMachineTests
         });
 
         await harness.Start();
-        try
-        {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "looper", 1, new Uri("file:///tmp/in.bin")));
 
-            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
-            await sagaHarness.Exists(traceId, s => s.Running);
+        await harness.Bus.Publish(new AgentInvokeRequested(
+            traceId, roundId, workflow.Key, workflow.Version,
+            "looper", 1, new Uri("file:///tmp/in.bin")));
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-            SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
+        var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+        await sagaHarness.Exists(traceId, s => s.Running);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-            SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
+        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
 
-            await sagaHarness.Exists(traceId, s => s.Escalated);
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Escalated));
-            saga.GetPinnedVersion("triage").Should().Be(7);
+        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.EscalatedFromAgentKey == "looper");
 
-            var triagePublish = harness.Published.Select<AgentInvokeRequested>()
-                .SingleOrDefault(x => x.Context.Message.AgentKey == "triage");
-            triagePublish.Should().NotBeNull("escalation agent invocation was published");
-            triagePublish!.Context.Message.AgentVersion.Should().Be(7);
-        }
-        finally
-        {
-            await harness.Stop();
-        }
+        return (traceId, roundId, sagaHarness, harness);
     }
 
     [Fact]

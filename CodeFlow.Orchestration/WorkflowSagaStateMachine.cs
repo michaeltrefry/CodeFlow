@@ -140,6 +140,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow));
 
+        if (!string.IsNullOrWhiteSpace(saga.EscalatedFromAgentKey))
+        {
+            await HandleEscalationResponseAsync(context, agentConfigRepo, saga, message, runtimeKind);
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "EscalationRecovered");
+            return;
+        }
+
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,
             saga.WorkflowVersion,
@@ -178,7 +186,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     roundCount: saga.RoundCount,
                     retryContext: retryContext);
 
-                saga.PendingTransition = PendingTransitionEscalated;
+                // Stay in Running; route terminally when the escalation agent completes.
+                saga.EscalatedFromAgentKey = message.AgentKey;
+                saga.CurrentAgentKey = workflow.EscalationAgentKey;
             }
             else
             {
@@ -205,6 +215,50 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.UpdatedAtUtc = DateTime.UtcNow;
 
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
+    }
+
+    private static async Task HandleEscalationResponseAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        IAgentConfigRepository agentConfigRepo,
+        WorkflowSagaStateEntity saga,
+        AgentInvocationCompleted message,
+        Runtime.AgentDecisionKind decision)
+    {
+        var resumeAgentKey = saga.EscalatedFromAgentKey!;
+        saga.EscalatedFromAgentKey = null;
+
+        switch (decision)
+        {
+            case Runtime.AgentDecisionKind.Approved:
+            case Runtime.AgentDecisionKind.ApprovedWithActions:
+                var recoveryRoundId = Guid.NewGuid();
+                await PublishHandoffAsync(
+                    context,
+                    agentConfigRepo,
+                    saga,
+                    resumeAgentKey,
+                    inputRef: message.OutputRef,
+                    roundId: recoveryRoundId,
+                    roundCount: 0);
+
+                saga.CurrentAgentKey = resumeAgentKey;
+                saga.CurrentRoundId = recoveryRoundId;
+                saga.RoundCount = 0;
+                return;
+
+            case Runtime.AgentDecisionKind.Completed:
+                saga.PendingTransition = PendingTransitionCompleted;
+                return;
+
+            case Runtime.AgentDecisionKind.Rejected:
+                saga.PendingTransition = PendingTransitionEscalated;
+                return;
+
+            case Runtime.AgentDecisionKind.Failed:
+            default:
+                saga.PendingTransition = PendingTransitionFailed;
+                return;
+        }
     }
 
     private static async Task PublishHandoffAsync(
