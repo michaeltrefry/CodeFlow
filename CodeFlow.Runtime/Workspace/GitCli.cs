@@ -181,6 +181,35 @@ public sealed class GitCli : IGitCli
         await RunAsync(worktreePath, args, cancellationToken);
     }
 
+    public async Task PushWithBearerAsync(
+        string worktreePath,
+        string bearerToken,
+        string? remote = null,
+        string? branch = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(worktreePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(bearerToken);
+
+        var args = new List<string>
+        {
+            "-c",
+            $"http.extraheader=AUTHORIZATION: bearer {bearerToken}",
+            "push",
+        };
+
+        if (!string.IsNullOrWhiteSpace(remote))
+        {
+            args.Add(remote);
+            if (!string.IsNullOrWhiteSpace(branch))
+            {
+                args.Add(branch);
+            }
+        }
+
+        await RunAsync(worktreePath, args, cancellationToken, redactToken: bearerToken);
+    }
+
     public async Task<string> RevParseAsync(
         string worktreePath,
         string rev,
@@ -240,16 +269,22 @@ public sealed class GitCli : IGitCli
     private async Task<GitCommandResult> RunAsync(
         string? workingDirectory,
         IReadOnlyList<string> arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? redactToken = null)
     {
         var result = await RunRawAsync(workingDirectory, arguments, cancellationToken);
         if (result.ExitCode != 0)
         {
+            var safeArgs = redactToken is null
+                ? arguments
+                : arguments.Select(a => a.Contains(redactToken) ? a.Replace(redactToken, "[redacted]") : a).ToArray();
+            var safeStdout = redactToken is null ? result.StandardOutput : result.StandardOutput.Replace(redactToken, "[redacted]");
+            var safeStderr = redactToken is null ? result.StandardError : result.StandardError.Replace(redactToken, "[redacted]");
             throw new GitCommandException(
-                arguments,
+                safeArgs,
                 result.ExitCode,
-                result.StandardOutput,
-                result.StandardError);
+                safeStdout,
+                safeStderr);
         }
 
         return result;
