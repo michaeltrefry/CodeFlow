@@ -225,6 +225,99 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         result.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo" });
     }
 
+    [Fact]
+    public async Task ResolveAsync_returns_granted_skills_sorted_by_name_and_filters_archived()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var roleRepo = new AgentRoleRepository(ctx);
+        var skillRepo = new SkillRepository(ctx);
+
+        var skillA = await skillRepo.CreateAsync(new SkillCreate($"alpha-{Guid.NewGuid():N}", "body-a", null));
+        var skillB = await skillRepo.CreateAsync(new SkillCreate($"bravo-{Guid.NewGuid():N}", "body-b", null));
+        var skillArchived = await skillRepo.CreateAsync(new SkillCreate($"zeta-{Guid.NewGuid():N}", "body-z", null));
+        await skillRepo.ArchiveAsync(skillArchived);
+
+        var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
+        await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillA, skillB, skillArchived });
+        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveAsync(agentKey);
+
+        result.GrantedSkills.Select(s => s.Body).Should().ContainInOrder("body-a", "body-b");
+        result.GrantedSkills.Should().HaveCount(2);
+        result.GrantedSkills.Should().NotContain(s => s.Body == "body-z");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_dedupes_skills_granted_by_multiple_roles()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var roleRepo = new AgentRoleRepository(ctx);
+        var skillRepo = new SkillRepository(ctx);
+
+        var skillId = await skillRepo.CreateAsync(new SkillCreate($"shared-{Guid.NewGuid():N}", "b", null));
+
+        var roleA = await roleRepo.CreateAsync(new AgentRoleCreate($"a-{Guid.NewGuid():N}", "A", null, null));
+        var roleB = await roleRepo.CreateAsync(new AgentRoleCreate($"b-{Guid.NewGuid():N}", "B", null, null));
+        await roleRepo.ReplaceSkillGrantsAsync(roleA, new[] { skillId });
+        await roleRepo.ReplaceSkillGrantsAsync(roleB, new[] { skillId });
+        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveAsync(agentKey);
+
+        result.GrantedSkills.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ignores_skills_granted_only_by_archived_roles()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var roleRepo = new AgentRoleRepository(ctx);
+        var skillRepo = new SkillRepository(ctx);
+
+        var skillId = await skillRepo.CreateAsync(new SkillCreate($"s-{Guid.NewGuid():N}", "body", null));
+        var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
+        await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillId });
+        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ArchiveAsync(roleId);
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveAsync(agentKey);
+
+        result.GrantedSkills.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_returns_skills_even_when_no_tool_grants_exist()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var roleRepo = new AgentRoleRepository(ctx);
+        var skillRepo = new SkillRepository(ctx);
+
+        var skillId = await skillRepo.CreateAsync(new SkillCreate($"s-{Guid.NewGuid():N}", "body", null));
+        var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
+        await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillId });
+        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveAsync(agentKey);
+
+        result.Should().NotBeSameAs(ResolvedAgentTools.Empty);
+        result.EnableHostTools.Should().BeFalse();
+        result.AllowedToolNames.Should().BeEmpty();
+        result.GrantedSkills.Should().ContainSingle();
+    }
+
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();

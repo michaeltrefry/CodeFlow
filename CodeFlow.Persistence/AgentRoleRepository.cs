@@ -201,6 +201,67 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<long>> GetSkillGrantsAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var skillIds = await dbContext.AgentRoleSkillGrants
+            .AsNoTracking()
+            .Where(grant => grant.RoleId == id)
+            .OrderBy(grant => grant.SkillId)
+            .Select(grant => grant.SkillId)
+            .ToListAsync(cancellationToken);
+
+        return skillIds;
+    }
+
+    public async Task ReplaceSkillGrantsAsync(long id, IReadOnlyList<long> skillIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(skillIds);
+
+        var role = await dbContext.AgentRoles
+            .SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new AgentRoleNotFoundException(id);
+
+        var distinctSkillIds = skillIds.Distinct().ToArray();
+
+        if (distinctSkillIds.Length > 0)
+        {
+            var validIds = await dbContext.Skills
+                .Where(skill => distinctSkillIds.Contains(skill.Id))
+                .Select(skill => skill.Id)
+                .ToListAsync(cancellationToken);
+
+            var missing = distinctSkillIds.Except(validIds).ToArray();
+            if (missing.Length > 0)
+            {
+                throw new SkillNotFoundException(missing[0]);
+            }
+        }
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable,
+            cancellationToken);
+
+        var existing = await dbContext.AgentRoleSkillGrants
+            .Where(grant => grant.RoleId == id)
+            .ToListAsync(cancellationToken);
+
+        dbContext.AgentRoleSkillGrants.RemoveRange(existing);
+
+        foreach (var skillId in distinctSkillIds)
+        {
+            dbContext.AgentRoleSkillGrants.Add(new AgentRoleSkillGrantEntity
+            {
+                RoleId = id,
+                SkillId = skillId,
+            });
+        }
+
+        role.UpdatedAtUtc = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     private static AgentRole Map(AgentRoleEntity entity) => new(
         Id: entity.Id,
         Key: entity.Key,

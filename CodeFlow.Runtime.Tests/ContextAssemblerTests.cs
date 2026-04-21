@@ -76,6 +76,90 @@ public sealed class ContextAssemblerTests
     }
 
     [Fact]
+    public void Assemble_ShouldAppendSkillsBlockToSystemMessage_AndRenderSkillVariables()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are a product designer.",
+            PromptTemplate: null,
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["analysis.summary"] = "users confused about onboarding",
+                ["conversationSummary"] = "2 rounds so far",
+            },
+            Skills: new[]
+            {
+                new ResolvedSkill(
+                    "socratic-interview",
+                    """
+                    ## Opening
+                    Ask exactly one question.
+
+                    ## Section: Current Understanding
+                    {{analysis.summary}}
+
+                    ## Section: Conversation So Far
+                    {{conversationSummary}}
+                    """),
+            }));
+
+        messages.Should().ContainSingle();
+        var system = messages[0];
+        system.Role.Should().Be(ChatMessageRole.System);
+        system.Content.Should().StartWith("You are a product designer.");
+        system.Content.Should().Contain("## Skills");
+        system.Content.Should().Contain("### socratic-interview");
+        system.Content.Should().Contain("users confused about onboarding");
+        system.Content.Should().Contain("2 rounds so far");
+        system.Content.Should().NotContain("{{analysis.summary}}");
+        system.Content.Should().NotContain("{{conversationSummary}}");
+    }
+
+    [Fact]
+    public void Assemble_ShouldLeaveUnknownSkillVariablesAsLiteralPlaceholders()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "x",
+            PromptTemplate: null,
+            Input: null,
+            Skills: new[]
+            {
+                new ResolvedSkill("greeter", "Hello {{who}}"),
+            }));
+
+        messages[0].Content.Should().Contain("Hello {{who}}");
+    }
+
+    [Fact]
+    public void Assemble_ShouldNotEmitSkillsBlock_WhenSkillsListIsEmpty()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are helpful.",
+            PromptTemplate: null,
+            Input: null,
+            Skills: Array.Empty<ResolvedSkill>()));
+
+        messages.Should().ContainSingle();
+        messages[0].Content.Should().NotContain("## Skills");
+    }
+
+    [Fact]
+    public void Assemble_ShouldEmitSystemMessageFromSkillsAlone_WhenNoSystemPromptIsConfigured()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: null,
+            Input: null,
+            Skills: new[] { new ResolvedSkill("s", "body") }));
+
+        messages.Should().ContainSingle();
+        messages[0].Role.Should().Be(ChatMessageRole.System);
+        messages[0].Content.Should().StartWith("## Skills");
+        messages[0].Content.Should().Contain("### s");
+        messages[0].Content.Should().Contain("body");
+    }
+
+    [Fact]
     public void Assemble_ShouldCarryForwardHistoryBeforeAppendingNextUserTurn()
     {
         var history = new[]

@@ -85,6 +85,7 @@ public static class HostExtensions
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
         services.AddScoped<IMcpServerRepository, McpServerRepository>();
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
+        services.AddScoped<ISkillRepository, SkillRepository>();
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
         services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>

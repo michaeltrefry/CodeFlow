@@ -1,16 +1,18 @@
-import { Component, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
+import { Component, computed, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
 import { AgentRolesApi } from '../../../core/agent-roles.api';
 import { HostToolsApi } from '../../../core/host-tools.api';
 import { McpServersApi } from '../../../core/mcp-servers.api';
+import { SkillsApi } from '../../../core/skills.api';
 import {
   AgentRole,
   AgentRoleGrant,
   HostTool,
   McpServer,
   McpServerTool,
+  Skill,
 } from '../../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-picker/tool-picker.component';
 
@@ -76,6 +78,50 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
           <p class="muted small">Saving grants…</p>
         }
       </section>
+
+      <section class="grants-section">
+        <header class="section-header">
+          <h2>Granted skills</h2>
+          <span class="muted small">{{ grantedSkillIds().length }} selected</span>
+        </header>
+
+        @if (skillsLoading()) {
+          <p>Loading skills&hellip;</p>
+        } @else if (availableSkills().length === 0 && ghostSkillIds().length === 0) {
+          <p class="muted small">
+            No skills defined yet. <a routerLink="/settings/skills/new">Create one</a> to attach it to this role.
+          </p>
+        } @else {
+          <ul class="skill-list">
+            @for (skill of availableSkills(); track skill.id) {
+              <li class="skill-row">
+                <label>
+                  <input type="checkbox"
+                         [checked]="isSkillGranted(skill.id)"
+                         (change)="toggleSkill(skill.id, $any($event.target).checked)" />
+                  <span class="skill-name">{{ skill.name }}</span>
+                </label>
+              </li>
+            }
+            @for (ghostId of ghostSkillIds(); track ghostId) {
+              <li class="skill-row ghost">
+                <label>
+                  <input type="checkbox"
+                         [checked]="true"
+                         (change)="toggleSkill(ghostId, $any($event.target).checked)" />
+                  <span class="skill-name">
+                    skill #{{ ghostId }} <span class="tag warn">archived</span>
+                  </span>
+                </label>
+              </li>
+            }
+          </ul>
+        }
+
+        @if (skillsSaving()) {
+          <p class="muted small">Saving skills…</p>
+        }
+      </section>
     }
   `,
   styles: [`
@@ -85,12 +131,18 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
     .small { font-size: 0.8rem; }
+    .skill-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+    .skill-row label { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer; }
+    .skill-row label:hover { background: var(--color-surface-alt); }
+    .skill-row.ghost label { color: var(--color-muted); }
+    .skill-row .skill-name { font-family: var(--font-mono, monospace); font-size: 0.9rem; }
   `]
 })
 export class RoleEditorComponent implements OnInit {
   private readonly rolesApi = inject(AgentRolesApi);
   private readonly hostToolsApi = inject(HostToolsApi);
   private readonly mcpApi = inject(McpServersApi);
+  private readonly skillsApi = inject(SkillsApi);
   private readonly router = inject(Router);
 
   readonly id = input<number | undefined, unknown>(undefined, {
@@ -111,6 +163,15 @@ export class RoleEditorComponent implements OnInit {
   readonly hostTools = signal<HostTool[]>([]);
   readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
 
+  readonly skillsLoading = signal(false);
+  readonly skillsSaving = signal(false);
+  readonly availableSkills = signal<Skill[]>([]);
+  readonly grantedSkillIds = signal<number[]>([]);
+  readonly ghostSkillIds = computed(() => {
+    const known = new Set(this.availableSkills().map(s => s.id));
+    return this.grantedSkillIds().filter(id => !known.has(id));
+  });
+
   ngOnInit(): void {
     const existingId = this.id();
     if (existingId) {
@@ -122,7 +183,53 @@ export class RoleEditorComponent implements OnInit {
       });
       this.rolesApi.getGrants(existingId).subscribe(g => this.grants.set(g));
       this.loadCatalogs();
+      this.loadSkills(existingId);
     }
+  }
+
+  private loadSkills(roleId: number): void {
+    this.skillsLoading.set(true);
+    forkJoin({
+      skills: this.skillsApi.list(),
+      grants: this.skillsApi.getRoleGrants(roleId),
+    }).subscribe({
+      next: ({ skills, grants }) => {
+        this.availableSkills.set(skills);
+        this.grantedSkillIds.set(grants.skillIds);
+        this.skillsLoading.set(false);
+      },
+      error: err => {
+        this.error.set(this.formatError(err));
+        this.skillsLoading.set(false);
+      }
+    });
+  }
+
+  isSkillGranted(id: number): boolean {
+    return this.grantedSkillIds().includes(id);
+  }
+
+  toggleSkill(id: number, next: boolean): void {
+    const roleId = this.id();
+    if (!roleId) return;
+    const current = new Set(this.grantedSkillIds());
+    if (next) {
+      current.add(id);
+    } else {
+      current.delete(id);
+    }
+    const nextIds = Array.from(current);
+    this.skillsSaving.set(true);
+    this.skillsApi.replaceRoleGrants(roleId, nextIds).subscribe({
+      next: persisted => {
+        this.grantedSkillIds.set(persisted.skillIds);
+        this.skillsSaving.set(false);
+      },
+      error: err => {
+        this.error.set(this.formatError(err));
+        this.skillsSaving.set(false);
+      }
+    });
   }
 
   private loadCatalogs(): void {

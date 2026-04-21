@@ -60,7 +60,8 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.WorkflowsRead,
                 CodeFlowApiDefaults.Permissions.TracesRead,
                 CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead
+                CodeFlowApiDefaults.Permissions.AgentRolesRead,
+                CodeFlowApiDefaults.Permissions.SkillsRead
             },
             [CodeFlowApiDefaults.Roles.Author] = new List<string>
             {
@@ -72,7 +73,9 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.McpServersRead,
                 CodeFlowApiDefaults.Permissions.McpServersWrite,
                 CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesWrite
+                CodeFlowApiDefaults.Permissions.AgentRolesWrite,
+                CodeFlowApiDefaults.Permissions.SkillsRead,
+                CodeFlowApiDefaults.Permissions.SkillsWrite
             },
             [CodeFlowApiDefaults.Roles.Operator] = new List<string>
             {
@@ -84,7 +87,8 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.OpsRead,
                 CodeFlowApiDefaults.Permissions.OpsWrite,
                 CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead
+                CodeFlowApiDefaults.Permissions.AgentRolesRead,
+                CodeFlowApiDefaults.Permissions.SkillsRead
             },
             [CodeFlowApiDefaults.Roles.Admin] = new List<string>
             {
@@ -101,6 +105,8 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.McpServersWrite,
                 CodeFlowApiDefaults.Permissions.AgentRolesRead,
                 CodeFlowApiDefaults.Permissions.AgentRolesWrite,
+                CodeFlowApiDefaults.Permissions.SkillsRead,
+                CodeFlowApiDefaults.Permissions.SkillsWrite,
                 CodeFlowApiDefaults.Permissions.GitHostRead,
                 CodeFlowApiDefaults.Permissions.GitHostWrite
             }
