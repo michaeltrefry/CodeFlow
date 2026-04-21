@@ -80,7 +80,14 @@ public static class WorkspaceServiceCollectionExtensions
                 sp.GetRequiredService<IGitHostTokenProvider>(),
                 sp.GetService<Microsoft.Extensions.Logging.ILogger<VcsToolProvider>>()));
 
+        services.AddSingleton<WorktreeSweeper>(sp => new WorktreeSweeper(
+            sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
+            sp.GetRequiredService<IGitCli>(),
+            nowProvider: null,
+            sp.GetService<Microsoft.Extensions.Logging.ILogger<WorktreeSweeper>>()));
+
         services.AddHostedService<WorkspaceRootInitializer>();
+        services.AddHostedService<WorktreeSweepHostedService>();
 
         return services;
     }
