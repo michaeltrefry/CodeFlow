@@ -24,7 +24,11 @@ export const routes: Routes = [
   },
   {
     path: 'workflows/new',
-    loadComponent: () => import('./pages/workflows/workflow-editor.component').then(m => m.WorkflowEditorComponent)
+    loadComponent: () => import('./pages/workflows/editor/workflow-canvas.component').then(m => m.WorkflowCanvasComponent)
+  },
+  {
+    path: 'workflows/:key/edit',
+    loadComponent: () => import('./pages/workflows/editor/workflow-canvas.component').then(m => m.WorkflowCanvasComponent)
   },
   {
     path: 'workflows/:key',
