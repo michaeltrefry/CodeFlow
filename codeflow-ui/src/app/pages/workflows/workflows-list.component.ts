@@ -30,10 +30,10 @@ import { WorkflowSummary } from '../../core/models';
             </div>
             <div class="workflow-key muted">{{ wf.key }}</div>
             <div class="workflow-meta">
-              <span class="tag">start: {{ wf.startAgentKey }}</span>
+              <span class="tag">{{ wf.nodeCount }} nodes</span>
               <span class="tag">{{ wf.edgeCount }} edges</span>
-              @if (wf.escalationAgentKey) {
-                <span class="tag warn">escalation: {{ wf.escalationAgentKey }}</span>
+              @if (wf.inputCount > 0) {
+                <span class="tag">{{ wf.inputCount }} inputs</span>
               }
             </div>
             <div class="muted small">created {{ wf.createdAtUtc | date:'medium' }}</div>

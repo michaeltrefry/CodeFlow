@@ -193,22 +193,47 @@ export interface GitHostVerifyResponse {
   error?: string | null;
 }
 
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation';
+
+export type WorkflowInputKind = 'Text' | 'Json';
+
+export interface WorkflowNode {
+  id: string;
+  kind: WorkflowNodeKind;
+  agentKey?: string | null;
+  agentVersion?: number | null;
+  script?: string | null;
+  outputPorts: string[];
+  layoutX: number;
+  layoutY: number;
+}
+
 export interface WorkflowEdge {
-  fromAgentKey: string;
-  decision: AgentDecisionKind;
-  discriminator?: unknown;
-  toAgentKey: string;
+  fromNodeId: string;
+  fromPort: string;
+  toNodeId: string;
+  toPort: string;
   rotatesRound: boolean;
   sortOrder: number;
+}
+
+export interface WorkflowInput {
+  key: string;
+  displayName: string;
+  kind: WorkflowInputKind;
+  required: boolean;
+  defaultValueJson?: string | null;
+  description?: string | null;
+  ordinal: number;
 }
 
 export interface WorkflowSummary {
   key: string;
   latestVersion: number;
   name: string;
-  startAgentKey: string;
-  escalationAgentKey?: string | null;
+  nodeCount: number;
   edgeCount: number;
+  inputCount: number;
   createdAtUtc: string;
 }
 
@@ -216,11 +241,11 @@ export interface WorkflowDetail {
   key: string;
   version: number;
   name: string;
-  startAgentKey: string;
-  escalationAgentKey?: string | null;
   maxRoundsPerRound: number;
-  edges: WorkflowEdge[];
   createdAtUtc: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  inputs: WorkflowInput[];
 }
 
 export interface TraceSummary {
@@ -278,6 +303,7 @@ export interface CreateTraceRequest {
   workflowVersion?: number | null;
   input: string;
   inputFileName?: string;
+  inputs?: Record<string, unknown>;
 }
 
 export interface CreateTraceResponse {

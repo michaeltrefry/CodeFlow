@@ -1,15 +1,31 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import { WorkflowDetail, WorkflowEdge, WorkflowSummary } from './models';
+import { WorkflowDetail, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowSummary } from './models';
 
 export interface WorkflowPayload {
   key?: string;
   name: string;
-  startAgentKey: string;
-  escalationAgentKey?: string | null;
   maxRoundsPerRound: number;
+  nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  inputs: WorkflowInput[];
+}
+
+export interface ValidateScriptRequest {
+  script: string;
+  declaredPorts: string[];
+}
+
+export interface ValidateScriptError {
+  line: number;
+  column: number;
+  message: string;
+}
+
+export interface ValidateScriptResponse {
+  ok: boolean;
+  errors: ValidateScriptError[];
 }
 
 @Injectable({ providedIn: 'root' })
@@ -41,5 +57,9 @@ export class WorkflowsApi {
       `/api/workflows/${encodeURIComponent(key)}`,
       payload
     );
+  }
+
+  validateScript(request: ValidateScriptRequest): Observable<ValidateScriptResponse> {
+    return this.http.post<ValidateScriptResponse>('/api/workflows/validate-script', request);
   }
 }
