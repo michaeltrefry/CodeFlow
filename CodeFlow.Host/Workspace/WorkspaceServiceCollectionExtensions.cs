@@ -2,6 +2,7 @@ using CodeFlow.Runtime.Workspace;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Host.Workspace;
 
@@ -44,6 +45,9 @@ public static class WorkspaceServiceCollectionExtensions
                 opts => opts.GitCommandTimeout > TimeSpan.Zero,
                 "CodeFlow:Workspace:GitCommandTimeout must be greater than zero.")
             .ValidateOnStart();
+
+        services.AddSingleton<IGitCli>(sp =>
+            new GitCli(sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
 
         services.AddHostedService<WorkspaceRootInitializer>();
 
