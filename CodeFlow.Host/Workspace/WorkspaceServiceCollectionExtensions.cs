@@ -50,6 +50,8 @@ public static class WorkspaceServiceCollectionExtensions
             new GitCli(sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
 
         services.AddSingleton<IRepoUrlHostGuard, RepoUrlHostGuard>();
+        services.AddSingleton<IGitHostTokenProvider, GitHostTokenProvider>();
+        services.AddSingleton<IVcsProviderFactory, VcsProviderFactory>();
 
         services.AddSingleton<IWorkspaceService>(sp =>
             new WorkspaceService(
