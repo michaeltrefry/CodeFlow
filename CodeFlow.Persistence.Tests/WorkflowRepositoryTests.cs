@@ -1,7 +1,5 @@
-using CodeFlow.Runtime;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 using Testcontainers.MariaDb;
 
 namespace CodeFlow.Persistence.Tests;
@@ -31,9 +29,17 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetAsync_AndFindNextAsync_ShouldSupportSpecificFallbackAndOrderedWorkflowEdges()
+    public async Task GetAsync_AndFindNextAsync_ShouldRoundTripNodeEdgeModel()
     {
         var workflowKey = $"article-flow-{Guid.NewGuid():N}";
+        var startNode = Guid.NewGuid();
+        var reviewerNode = Guid.NewGuid();
+        var writerNode = Guid.NewGuid();
+        var legalNode = Guid.NewGuid();
+        var publisherNode = Guid.NewGuid();
+        var archivePrimaryNode = Guid.NewGuid();
+        var archiveSecondaryNode = Guid.NewGuid();
+        var escalationNode = Guid.NewGuid();
 
         await using var seedContext = CreateDbContext();
         seedContext.Workflows.Add(new WorkflowEntity
@@ -41,47 +47,35 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
             Key = workflowKey,
             Version = 2,
             Name = "Article flow",
-            StartAgentKey = "writer",
-            EscalationAgentKey = "editor-in-chief",
             MaxRoundsPerRound = 3,
             CreatedAtUtc = DateTime.UtcNow,
+            Nodes =
+            [
+                NodeEntity(startNode, WorkflowNodeKind.Start, "writer"),
+                NodeEntity(reviewerNode, WorkflowNodeKind.Agent, "reviewer"),
+                NodeEntity(writerNode, WorkflowNodeKind.Agent, "writer"),
+                NodeEntity(legalNode, WorkflowNodeKind.Agent, "legal-review"),
+                NodeEntity(publisherNode, WorkflowNodeKind.Agent, "publisher"),
+                NodeEntity(archivePrimaryNode, WorkflowNodeKind.Agent, "archive-primary"),
+                NodeEntity(archiveSecondaryNode, WorkflowNodeKind.Agent, "archive-secondary"),
+                NodeEntity(escalationNode, WorkflowNodeKind.Escalation, "editor-in-chief")
+            ],
             Edges =
             [
-                new WorkflowEdgeEntity
+                EdgeEntity(reviewerNode, "Rejected", legalNode, sortOrder: 0),
+                EdgeEntity(reviewerNode, "Approved", writerNode, rotatesRound: true, sortOrder: 1),
+                EdgeEntity(publisherNode, "Completed", archivePrimaryNode, sortOrder: 0),
+                EdgeEntity(publisherNode, "Completed", archiveSecondaryNode, sortOrder: 1)
+            ],
+            Inputs =
+            [
+                new WorkflowInputEntity
                 {
-                    FromAgentKey = "reviewer",
-                    Decision = AgentDecisionKind.Rejected,
-                    DiscriminatorJson = """{"stage":"legal"}""",
-                    ToAgentKey = "legal-review",
-                    RotatesRound = false,
-                    SortOrder = 0
-                },
-                new WorkflowEdgeEntity
-                {
-                    FromAgentKey = "reviewer",
-                    Decision = AgentDecisionKind.Rejected,
-                    DiscriminatorJson = null,
-                    ToAgentKey = "writer",
-                    RotatesRound = true,
-                    SortOrder = 1
-                },
-                new WorkflowEdgeEntity
-                {
-                    FromAgentKey = "publisher",
-                    Decision = AgentDecisionKind.Completed,
-                    DiscriminatorJson = null,
-                    ToAgentKey = "archive-secondary",
-                    RotatesRound = false,
-                    SortOrder = 1
-                },
-                new WorkflowEdgeEntity
-                {
-                    FromAgentKey = "publisher",
-                    Decision = AgentDecisionKind.Completed,
-                    DiscriminatorJson = null,
-                    ToAgentKey = "archive-primary",
-                    RotatesRound = false,
-                    SortOrder = 0
+                    Key = "topic",
+                    DisplayName = "Article topic",
+                    Kind = WorkflowInputKind.Text,
+                    Required = true,
+                    Ordinal = 0
                 }
             ]
         });
@@ -90,45 +84,103 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         await using var readContext = CreateDbContext();
         var repository = new WorkflowRepository(readContext);
         var workflow = await repository.GetAsync(workflowKey, 2);
-        var legalDiscriminator = JsonDocument.Parse("""{"stage":"legal"}""").RootElement.Clone();
-        var contentDiscriminator = JsonDocument.Parse("""{"stage":"content"}""").RootElement.Clone();
 
         workflow.Name.Should().Be("Article flow");
-        workflow.StartAgentKey.Should().Be("writer");
-        workflow.EscalationAgentKey.Should().Be("editor-in-chief");
-        workflow.Edges.Should().HaveCount(4);
+        workflow.Nodes.Should().HaveCount(8);
+        workflow.StartNode.AgentKey.Should().Be("writer");
+        workflow.EscalationNode.Should().NotBeNull();
+        workflow.EscalationNode!.AgentKey.Should().Be("editor-in-chief");
+        workflow.Inputs.Should().ContainSingle(input => input.Key == "topic");
 
-        var specificEdge = await repository.FindNextAsync(
-            workflowKey,
-            2,
-            "reviewer",
-            new RejectedDecision(["Needs legal signoff"]),
-            legalDiscriminator);
+        var rejectedEdge = await repository.FindNextAsync(workflowKey, 2, reviewerNode, "Rejected");
+        rejectedEdge.Should().NotBeNull();
+        rejectedEdge!.ToNodeId.Should().Be(legalNode);
+        rejectedEdge.RotatesRound.Should().BeFalse();
 
-        var fallbackEdge = await repository.FindNextAsync(
-            workflowKey,
-            2,
-            "reviewer",
-            new RejectedDecision(["Needs substantive edits"]),
-            contentDiscriminator);
+        var approvedEdge = await repository.FindNextAsync(workflowKey, 2, reviewerNode, "Approved");
+        approvedEdge.Should().NotBeNull();
+        approvedEdge!.ToNodeId.Should().Be(writerNode);
+        approvedEdge.RotatesRound.Should().BeTrue();
 
-        var orderedEdge = await repository.FindNextAsync(
-            workflowKey,
-            2,
-            "publisher",
-            new CompletedDecision());
-
-        specificEdge.Should().NotBeNull();
-        specificEdge!.ToAgentKey.Should().Be("legal-review");
-        specificEdge.RotatesRound.Should().BeFalse();
-
-        fallbackEdge.Should().NotBeNull();
-        fallbackEdge!.ToAgentKey.Should().Be("writer");
-        fallbackEdge.RotatesRound.Should().BeTrue();
-
+        var orderedEdge = await repository.FindNextAsync(workflowKey, 2, publisherNode, "Completed");
         orderedEdge.Should().NotBeNull();
-        orderedEdge!.ToAgentKey.Should().Be("archive-primary");
+        orderedEdge!.ToNodeId.Should().Be(archivePrimaryNode);
         orderedEdge.SortOrder.Should().Be(0);
+
+        var missing = await repository.FindNextAsync(workflowKey, 2, reviewerNode, "Completed");
+        missing.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldPersistNodesEdgesAndInputs()
+    {
+        var workflowKey = $"draft-flow-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var finalNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Draft flow",
+            MaxRoundsPerRound: 2,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "writer", 1, null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(finalNodeId, WorkflowNodeKind.Agent, "reviewer", 1, null, new[] { "Completed", "Failed" }, 250, 0)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", finalNodeId, WorkflowEdge.DefaultInputPort, false, 0)
+            ],
+            Inputs:
+            [
+                new WorkflowInputDraft("settings", "Runtime settings", WorkflowInputKind.Json, false, """{"tone":"casual"}""", "Optional tone override", 0)
+            ]);
+
+        await using var writeContext = CreateDbContext();
+        var repository = new WorkflowRepository(writeContext);
+        var version = await repository.CreateNewVersionAsync(draft);
+
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+        reloaded.Nodes.Should().HaveCount(2);
+        reloaded.Edges.Should().ContainSingle()
+            .Which.FromNodeId.Should().Be(startNodeId);
+        reloaded.Inputs.Should().ContainSingle()
+            .Which.Kind.Should().Be(WorkflowInputKind.Json);
+    }
+
+    private static WorkflowNodeEntity NodeEntity(Guid nodeId, WorkflowNodeKind kind, string agentKey)
+    {
+        return new WorkflowNodeEntity
+        {
+            NodeId = nodeId,
+            Kind = kind,
+            AgentKey = agentKey,
+            AgentVersion = 1,
+            OutputPortsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""",
+            LayoutX = 0,
+            LayoutY = 0
+        };
+    }
+
+    private static WorkflowEdgeEntity EdgeEntity(
+        Guid fromNodeId,
+        string fromPort,
+        Guid toNodeId,
+        bool rotatesRound = false,
+        int sortOrder = 0)
+    {
+        return new WorkflowEdgeEntity
+        {
+            FromNodeId = fromNodeId,
+            FromPort = fromPort,
+            ToNodeId = toNodeId,
+            ToPort = WorkflowEdge.DefaultInputPort,
+            RotatesRound = rotatesRound,
+            SortOrder = sortOrder
+        };
     }
 
     private CodeFlowDbContext CreateDbContext()

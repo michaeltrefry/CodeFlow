@@ -9,7 +9,11 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
 
+    public DbSet<WorkflowNodeEntity> WorkflowNodes => Set<WorkflowNodeEntity>();
+
     public DbSet<WorkflowEdgeEntity> WorkflowEdges => Set<WorkflowEdgeEntity>();
+
+    public DbSet<WorkflowInputEntity> WorkflowInputs => Set<WorkflowInputEntity>();
 
     public DbSet<WorkflowSagaStateEntity> WorkflowSagas => Set<WorkflowSagaStateEntity>();
 

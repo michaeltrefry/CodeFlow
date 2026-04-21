@@ -1,30 +1,25 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace CodeFlow.Persistence;
 
 internal static class WorkflowJson
 {
-    public static JsonElement? DeserializeDiscriminator(string? discriminatorJson)
-    {
-        if (string.IsNullOrWhiteSpace(discriminatorJson))
-        {
-            return null;
-        }
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-        using var document = JsonDocument.Parse(discriminatorJson);
-        return document.RootElement.Clone();
+    public static string SerializePorts(IReadOnlyList<string> ports)
+    {
+        ArgumentNullException.ThrowIfNull(ports);
+        return JsonSerializer.Serialize(ports, SerializerOptions);
     }
 
-    public static bool DeepEquals(JsonElement? left, JsonElement? right)
+    public static IReadOnlyList<string> DeserializePorts(string? portsJson)
     {
-        if (left is null || right is null)
+        if (string.IsNullOrWhiteSpace(portsJson))
         {
-            return left is null && right is null;
+            return Array.Empty<string>();
         }
 
-        return JsonNode.DeepEquals(
-            JsonNode.Parse(left.Value.GetRawText()),
-            JsonNode.Parse(right.Value.GetRawText()));
+        var deserialized = JsonSerializer.Deserialize<string[]>(portsJson, SerializerOptions);
+        return deserialized ?? Array.Empty<string>();
     }
 }

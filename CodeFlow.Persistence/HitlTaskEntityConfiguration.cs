@@ -25,6 +25,10 @@ public sealed class HitlTaskEntityConfiguration : IEntityTypeConfiguration<HitlT
             .HasColumnName("round_id")
             .IsRequired();
 
+        builder.Property(entity => entity.NodeId)
+            .HasColumnName("node_id")
+            .IsRequired();
+
         builder.Property(entity => entity.AgentKey)
             .HasColumnName("agent_key")
             .IsRequired()

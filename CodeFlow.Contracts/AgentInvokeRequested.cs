@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace CodeFlow.Contracts;
 
 public sealed record AgentInvokeRequested(
@@ -5,8 +7,10 @@ public sealed record AgentInvokeRequested(
     Guid RoundId,
     string WorkflowKey,
     int WorkflowVersion,
+    Guid NodeId,
     string AgentKey,
     int AgentVersion,
     Uri InputRef,
+    IReadOnlyDictionary<string, JsonElement> ContextInputs,
     IReadOnlyDictionary<string, string>? CorrelationHeaders = null,
     RetryContext? RetryContext = null);

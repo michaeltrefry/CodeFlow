@@ -1,12 +1,12 @@
-using CodeFlow.Runtime;
-using System.Text.Json;
-
 namespace CodeFlow.Persistence;
 
 public sealed record WorkflowEdge(
-    string FromAgentKey,
-    AgentDecisionKind Decision,
-    JsonElement? Discriminator,
-    string ToAgentKey,
+    Guid FromNodeId,
+    string FromPort,
+    Guid ToNodeId,
+    string ToPort,
     bool RotatesRound,
-    int SortOrder);
+    int SortOrder)
+{
+    public const string DefaultInputPort = "in";
+}

@@ -1,63 +1,32 @@
-using CodeFlow.Runtime;
-using System.Text.Json;
-
 namespace CodeFlow.Persistence;
 
 public sealed record Workflow(
     string Key,
     int Version,
     string Name,
-    string StartAgentKey,
-    string? EscalationAgentKey,
     int MaxRoundsPerRound,
     DateTime CreatedAtUtc,
-    IReadOnlyList<WorkflowEdge> Edges)
+    IReadOnlyList<WorkflowNode> Nodes,
+    IReadOnlyList<WorkflowEdge> Edges,
+    IReadOnlyList<WorkflowInput> Inputs)
 {
-    public WorkflowEdge? FindNext(
-        string fromAgentKey,
-        AgentDecision decision,
-        JsonElement? discriminator = null)
+    public WorkflowNode StartNode =>
+        Nodes.Single(node => node.Kind == WorkflowNodeKind.Start);
+
+    public WorkflowNode? EscalationNode =>
+        Nodes.SingleOrDefault(node => node.Kind == WorkflowNodeKind.Escalation);
+
+    public WorkflowNode? FindNode(Guid nodeId) =>
+        Nodes.FirstOrDefault(node => node.Id == nodeId);
+
+    public WorkflowEdge? FindNext(Guid fromNodeId, string outputPortName)
     {
-        ArgumentNullException.ThrowIfNull(decision);
-        return FindNext(fromAgentKey, decision.Kind, discriminator);
-    }
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputPortName);
 
-    public WorkflowEdge? FindNext(
-        string fromAgentKey,
-        AgentDecisionKind decisionKind,
-        JsonElement? discriminator = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(fromAgentKey);
-
-        var normalizedFromAgentKey = fromAgentKey.Trim();
-
-        var candidateEdges = Edges
+        return Edges
             .Where(edge =>
-                string.Equals(edge.FromAgentKey, normalizedFromAgentKey, StringComparison.OrdinalIgnoreCase) &&
-                edge.Decision == decisionKind)
-            .ToList();
-
-        if (candidateEdges.Count == 0)
-        {
-            return null;
-        }
-
-        if (discriminator is not null)
-        {
-            var discriminatorSpecificMatch = candidateEdges
-                .Where(edge => edge.Discriminator is not null &&
-                    WorkflowJson.DeepEquals(edge.Discriminator, discriminator))
-                .OrderBy(edge => edge.SortOrder)
-                .FirstOrDefault();
-
-            if (discriminatorSpecificMatch is not null)
-            {
-                return discriminatorSpecificMatch;
-            }
-        }
-
-        return candidateEdges
-            .Where(edge => edge.Discriminator is null)
+                edge.FromNodeId == fromNodeId &&
+                string.Equals(edge.FromPort, outputPortName, StringComparison.Ordinal))
             .OrderBy(edge => edge.SortOrder)
             .FirstOrDefault();
     }

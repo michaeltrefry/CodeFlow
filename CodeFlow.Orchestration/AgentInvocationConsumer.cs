@@ -99,17 +99,20 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 FileName: $"{message.AgentKey}-output.txt"),
             context.CancellationToken);
 
+        var contractsDecision = MapDecisionKind(invocationResult.Decision.Kind);
         await context.Publish(
             new AgentInvocationCompleted(
-                message.TraceId,
-                message.RoundId,
-                message.AgentKey,
-                message.AgentVersion,
-                outputRef,
-                MapDecisionKind(invocationResult.Decision.Kind),
-                BuildDecisionPayload(invocationResult.Decision, invocationResult),
-                DateTimeOffset.UtcNow - startedAt,
-                MapTokenUsage(invocationResult.TokenUsage)),
+                TraceId: message.TraceId,
+                RoundId: message.RoundId,
+                FromNodeId: message.NodeId,
+                AgentKey: message.AgentKey,
+                AgentVersion: message.AgentVersion,
+                OutputPortName: AgentDecisionPorts.ToPortName(contractsDecision),
+                OutputRef: outputRef,
+                Decision: contractsDecision,
+                DecisionPayload: BuildDecisionPayload(invocationResult.Decision, invocationResult),
+                Duration: DateTimeOffset.UtcNow - startedAt,
+                TokenUsage: MapTokenUsage(invocationResult.TokenUsage)),
             context.CancellationToken);
     }
 
@@ -158,6 +161,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         {
             TraceId = message.TraceId,
             RoundId = message.RoundId,
+            NodeId = message.NodeId,
             AgentKey = message.AgentKey,
             AgentVersion = message.AgentVersion,
             WorkflowKey = message.WorkflowKey,

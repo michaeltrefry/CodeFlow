@@ -10,13 +10,13 @@ public sealed class WorkflowEntity
 
     public string Name { get; set; } = null!;
 
-    public string StartAgentKey { get; set; } = null!;
-
-    public string? EscalationAgentKey { get; set; }
-
     public int MaxRoundsPerRound { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
 
+    public List<WorkflowNodeEntity> Nodes { get; set; } = [];
+
     public List<WorkflowEdgeEntity> Edges { get; set; } = [];
+
+    public List<WorkflowInputEntity> Inputs { get; set; } = [];
 }

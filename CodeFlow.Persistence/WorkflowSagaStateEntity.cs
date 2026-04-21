@@ -1,6 +1,4 @@
-using CodeFlow.Runtime;
 using MassTransit;
-using System.Text.Json;
 
 namespace CodeFlow.Persistence;
 
@@ -12,7 +10,9 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public string CurrentState { get; set; } = null!;
 
-    public string CurrentAgentKey { get; set; } = null!;
+    public Guid CurrentNodeId { get; set; }
+
+    public string CurrentAgentKey { get; set; } = string.Empty;
 
     public Guid CurrentRoundId { get; set; }
 
@@ -26,6 +26,8 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public int WorkflowVersion { get; set; }
 
+    public string InputsJson { get; set; } = "{}";
+
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }
@@ -33,12 +35,12 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public int Version { get; set; }
 
     /// <summary>
-    /// When non-null, the saga has dispatched the workflow's escalation agent and is waiting for
-    /// its completion. Holds the key of the agent whose overflowed edge triggered the escalation,
+    /// When non-null, the saga has dispatched the workflow's escalation node and is waiting for
+    /// its completion. Holds the node id of the source whose overflowed edge triggered escalation,
     /// so the workflow can resume from that point if the escalation agent approves recovery.
-    /// Cleared after the escalation agent's decision is routed.
+    /// Cleared after the escalation decision is routed.
     /// </summary>
-    public string? EscalatedFromAgentKey { get; set; }
+    public Guid? EscalatedFromNodeId { get; set; }
 
     /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
