@@ -100,7 +100,9 @@ public sealed class AuthOptions
                 CodeFlowApiDefaults.Permissions.McpServersRead,
                 CodeFlowApiDefaults.Permissions.McpServersWrite,
                 CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesWrite
+                CodeFlowApiDefaults.Permissions.AgentRolesWrite,
+                CodeFlowApiDefaults.Permissions.GitHostRead,
+                CodeFlowApiDefaults.Permissions.GitHostWrite
             }
         };
     }
