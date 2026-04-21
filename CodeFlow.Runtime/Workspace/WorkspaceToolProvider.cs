@@ -12,6 +12,7 @@ public sealed class WorkspaceToolProvider : IToolProvider
     public const string ReadFileToolName = "workspace.read_file";
     public const string WriteFileToolName = "workspace.write_file";
     public const string DeleteFileToolName = "workspace.delete_file";
+    public const string ExecToolName = "workspace.exec";
 
     private readonly IWorkspaceService workspaceService;
     private readonly WorkspaceOptions options;
@@ -60,6 +61,7 @@ public sealed class WorkspaceToolProvider : IToolProvider
             ReadFileToolName => await ReadFileAsync(toolCall, context, cancellationToken),
             WriteFileToolName => await WriteFileAsync(toolCall, context, cancellationToken),
             DeleteFileToolName => DeleteFile(toolCall, context),
+            ExecToolName => await ExecAsync(toolCall, context, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
     }
@@ -132,6 +134,31 @@ public sealed class WorkspaceToolProvider : IToolProvider
                     ["path"] = new JsonObject { ["type"] = "string" }
                 },
                 ["required"] = new JsonArray("repoSlug", "path")
+            },
+            IsMutating: true),
+        new ToolSchema(
+            ExecToolName,
+            "Run an executable inside the workspace root with a restricted environment. Args are passed as a literal list; no shell interpretation. Output is captured and tail-truncated above the configured cap; the process is killed and reported on timeout. HIGH RISK — grants the agent arbitrary code execution on the host.",
+            new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject
+                {
+                    ["repoSlug"] = new JsonObject { ["type"] = "string" },
+                    ["command"] = new JsonObject { ["type"] = "string", ["description"] = "Executable to run, looked up on PATH." },
+                    ["args"] = new JsonObject
+                    {
+                        ["type"] = "array",
+                        ["items"] = new JsonObject { ["type"] = "string" },
+                        ["description"] = "Literal argument list passed to the executable (no shell parsing)."
+                    },
+                    ["timeoutSeconds"] = new JsonObject
+                    {
+                        ["type"] = "integer",
+                        ["description"] = "Optional per-call timeout override."
+                    }
+                },
+                ["required"] = new JsonArray("repoSlug", "command")
             },
             IsMutating: true),
     ];
@@ -331,6 +358,190 @@ public sealed class WorkspaceToolProvider : IToolProvider
             path);
 
         return new ToolResult(toolCall.Id, new JsonObject { ["path"] = path }.ToJsonString());
+    }
+
+    private async Task<ToolResult> ExecAsync(
+        ToolCall toolCall,
+        AgentInvocationContext context,
+        CancellationToken cancellationToken)
+    {
+        var repoSlug = GetRequiredString(toolCall.Arguments, "repoSlug");
+        var command = GetRequiredString(toolCall.Arguments, "command");
+        var args = GetArgsArray(toolCall.Arguments);
+        var timeoutSeconds = GetOptionalInt(toolCall.Arguments, "timeoutSeconds") ?? options.ExecTimeoutSeconds;
+
+        var workspace = workspaceService.Get(context.CorrelationId, repoSlug);
+        if (workspace is null)
+        {
+            return new ToolResult(toolCall.Id, $"Workspace '{repoSlug}' is not open in this correlation.", IsError: true);
+        }
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = command,
+            WorkingDirectory = workspace.RootPath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        startInfo.Environment.Clear();
+        foreach (var name in options.ExecEnvAllowlist)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrEmpty(value))
+            {
+                startInfo.Environment[name] = value;
+            }
+        }
+
+        var stdoutCapture = new BoundedOutputCapture(options.ExecOutputMaxBytes);
+        var stderrCapture = new BoundedOutputCapture(options.ExecOutputMaxBytes);
+
+        using var process = new System.Diagnostics.Process { StartInfo = startInfo };
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdoutCapture.Append(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrCapture.Append(e.Data); };
+
+        var startedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex)
+        {
+            return new ToolResult(
+                toolCall.Id,
+                $"Failed to start '{command}': {ex.Message}",
+                IsError: true);
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var timedOut = false;
+        try
+        {
+            await process.WaitForExitAsync(linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            timedOut = true;
+            TryKill(process);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(process);
+            throw;
+        }
+
+        await process.WaitForExitAsync(CancellationToken.None);
+        var durationMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
+
+        logger.LogInformation(
+            "workspace.exec {CorrelationId} {RepoSlug} {Command} exit={ExitCode} duration={DurationMs}ms timedOut={TimedOut}",
+            context.CorrelationId,
+            repoSlug,
+            command,
+            timedOut ? -1 : process.ExitCode,
+            durationMs,
+            timedOut);
+
+        var payload = new JsonObject
+        {
+            ["command"] = command,
+            ["exitCode"] = timedOut ? -1 : process.ExitCode,
+            ["stdout"] = stdoutCapture.Render(),
+            ["stderr"] = stderrCapture.Render(),
+            ["durationMs"] = durationMs,
+            ["timedOut"] = timedOut,
+        };
+
+        return new ToolResult(toolCall.Id, payload.ToJsonString());
+    }
+
+    private static void TryKill(System.Diagnostics.Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static IReadOnlyList<string> GetArgsArray(JsonNode? arguments)
+    {
+        if (arguments?["args"] is not JsonArray array || array.Count == 0)
+        {
+            return [];
+        }
+
+        return array
+            .Select(node => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : node?.ToString() ?? string.Empty)
+            .ToArray();
+    }
+
+    private static int? GetOptionalInt(JsonNode? arguments, string name)
+    {
+        if (arguments?[name] is JsonValue value && value.TryGetValue<int>(out var result))
+        {
+            return result;
+        }
+
+        return null;
+    }
+
+    private sealed class BoundedOutputCapture
+    {
+        private readonly long maxBytes;
+        private readonly System.Text.StringBuilder buffer = new();
+        private long droppedBytes;
+
+        public BoundedOutputCapture(long maxBytes) { this.maxBytes = maxBytes; }
+
+        public void Append(string line)
+        {
+            var lineWithNewline = line + "\n";
+            var incoming = System.Text.Encoding.UTF8.GetByteCount(lineWithNewline);
+
+            buffer.Append(lineWithNewline);
+
+            var currentBytes = System.Text.Encoding.UTF8.GetByteCount(buffer.ToString());
+            while (currentBytes > maxBytes && buffer.Length > 0)
+            {
+                var oldLength = buffer.Length;
+                var trimTo = Math.Max(0, buffer.Length / 2);
+                var droppedText = buffer.ToString(0, buffer.Length - trimTo);
+                droppedBytes += System.Text.Encoding.UTF8.GetByteCount(droppedText);
+                buffer.Remove(0, buffer.Length - trimTo);
+                currentBytes = System.Text.Encoding.UTF8.GetByteCount(buffer.ToString());
+                if (buffer.Length == oldLength) break;
+            }
+
+            _ = incoming;
+        }
+
+        public string Render()
+        {
+            if (droppedBytes == 0)
+            {
+                return buffer.ToString();
+            }
+
+            return $"[... truncated {droppedBytes} leading bytes ...]\n" + buffer.ToString();
+        }
     }
 
     private static string GetRequiredContent(JsonNode? arguments, string name)

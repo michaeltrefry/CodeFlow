@@ -20,6 +20,17 @@ public sealed class WorkspaceOptions
 
     public TimeSpan GitCommandTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
+    public IList<string> ExecEnvAllowlist { get; set; } = new List<string>
+    {
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "USER",
+        "TMPDIR",
+        "SHELL",
+    };
+
     public string CachePath => Path.Combine(Root, CacheDirectoryName);
 
     public string WorkPath => Path.Combine(Root, WorkDirectoryName);
