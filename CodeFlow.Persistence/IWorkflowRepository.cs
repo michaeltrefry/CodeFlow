@@ -1,6 +1,3 @@
-using CodeFlow.Runtime;
-using System.Text.Json;
-
 namespace CodeFlow.Persistence;
 
 public interface IWorkflowRepository
@@ -16,9 +13,8 @@ public interface IWorkflowRepository
     Task<WorkflowEdge?> FindNextAsync(
         string key,
         int version,
-        string fromAgentKey,
-        AgentDecision decision,
-        JsonElement? discriminator = null,
+        Guid fromNodeId,
+        string outputPortName,
         CancellationToken cancellationToken = default);
 
     Task<int> CreateNewVersionAsync(
@@ -29,15 +25,34 @@ public interface IWorkflowRepository
 public sealed record WorkflowDraft(
     string Key,
     string Name,
-    string StartAgentKey,
-    string? EscalationAgentKey,
     int MaxRoundsPerRound,
-    IReadOnlyList<WorkflowEdgeDraft> Edges);
+    IReadOnlyList<WorkflowNodeDraft> Nodes,
+    IReadOnlyList<WorkflowEdgeDraft> Edges,
+    IReadOnlyList<WorkflowInputDraft> Inputs);
+
+public sealed record WorkflowNodeDraft(
+    Guid Id,
+    WorkflowNodeKind Kind,
+    string? AgentKey,
+    int? AgentVersion,
+    string? Script,
+    IReadOnlyList<string> OutputPorts,
+    double LayoutX,
+    double LayoutY);
 
 public sealed record WorkflowEdgeDraft(
-    string FromAgentKey,
-    AgentDecisionKind Decision,
-    JsonElement? Discriminator,
-    string ToAgentKey,
+    Guid FromNodeId,
+    string FromPort,
+    Guid ToNodeId,
+    string ToPort,
     bool RotatesRound,
     int SortOrder);
+
+public sealed record WorkflowInputDraft(
+    string Key,
+    string DisplayName,
+    WorkflowInputKind Kind,
+    bool Required,
+    string? DefaultValueJson,
+    string? Description,
+    int Ordinal);

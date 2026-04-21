@@ -1,5 +1,3 @@
-using CodeFlow.Runtime;
-
 namespace CodeFlow.Persistence;
 
 public sealed class WorkflowEdgeEntity
@@ -10,13 +8,13 @@ public sealed class WorkflowEdgeEntity
 
     public WorkflowEntity Workflow { get; set; } = null!;
 
-    public string FromAgentKey { get; set; } = null!;
+    public Guid FromNodeId { get; set; }
 
-    public AgentDecisionKind Decision { get; set; }
+    public string FromPort { get; set; } = null!;
 
-    public string? DiscriminatorJson { get; set; }
+    public Guid ToNodeId { get; set; }
 
-    public string ToAgentKey { get; set; } = null!;
+    public string ToPort { get; set; } = null!;
 
     public bool RotatesRound { get; set; }
 

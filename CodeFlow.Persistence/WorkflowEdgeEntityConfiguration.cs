@@ -19,23 +19,21 @@ public sealed class WorkflowEdgeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("workflow_id")
             .IsRequired();
 
-        builder.Property(edge => edge.FromAgentKey)
-            .HasColumnName("from_agent_key")
+        builder.Property(edge => edge.FromNodeId)
+            .HasColumnName("from_node_id")
+            .IsRequired();
+
+        builder.Property(edge => edge.FromPort)
+            .HasColumnName("from_port")
             .HasMaxLength(128)
             .IsRequired();
 
-        builder.Property(edge => edge.Decision)
-            .HasColumnName("decision")
-            .HasConversion<string>()
-            .HasMaxLength(64)
+        builder.Property(edge => edge.ToNodeId)
+            .HasColumnName("to_node_id")
             .IsRequired();
 
-        builder.Property(edge => edge.DiscriminatorJson)
-            .HasColumnName("discriminator_json")
-            .HasColumnType("longtext");
-
-        builder.Property(edge => edge.ToAgentKey)
-            .HasColumnName("to_agent_key")
+        builder.Property(edge => edge.ToPort)
+            .HasColumnName("to_port")
             .HasMaxLength(128)
             .IsRequired();
 
@@ -55,8 +53,8 @@ public sealed class WorkflowEdgeEntityConfiguration : IEntityTypeConfiguration<W
         builder.HasIndex(edge => new
         {
             edge.WorkflowId,
-            edge.FromAgentKey,
-            edge.Decision,
+            edge.FromNodeId,
+            edge.FromPort,
             edge.SortOrder
         });
     }

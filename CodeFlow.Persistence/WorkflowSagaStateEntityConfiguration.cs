@@ -24,6 +24,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasMaxLength(64)
             .IsRequired();
 
+        builder.Property(saga => saga.CurrentNodeId)
+            .HasColumnName("current_node_id")
+            .IsRequired();
+
         builder.Property(saga => saga.CurrentAgentKey)
             .HasColumnName("current_agent_key")
             .HasMaxLength(128)
@@ -56,6 +60,11 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("workflow_version")
             .IsRequired();
 
+        builder.Property(saga => saga.InputsJson)
+            .HasColumnName("inputs_json")
+            .HasColumnType("longtext")
+            .IsRequired();
+
         builder.Property(saga => saga.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")
@@ -71,9 +80,8 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .IsRequired()
             .IsConcurrencyToken();
 
-        builder.Property(saga => saga.EscalatedFromAgentKey)
-            .HasColumnName("escalated_from_agent_key")
-            .HasMaxLength(128);
+        builder.Property(saga => saga.EscalatedFromNodeId)
+            .HasColumnName("escalated_from_node_id");
 
         builder.Ignore(saga => saga.PendingTransition);
 

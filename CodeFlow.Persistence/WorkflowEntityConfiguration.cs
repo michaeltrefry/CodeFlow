@@ -29,15 +29,6 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
             .HasMaxLength(256)
             .IsRequired();
 
-        builder.Property(workflow => workflow.StartAgentKey)
-            .HasColumnName("start_agent_key")
-            .HasMaxLength(128)
-            .IsRequired();
-
-        builder.Property(workflow => workflow.EscalationAgentKey)
-            .HasColumnName("escalation_agent_key")
-            .HasMaxLength(128);
-
         builder.Property(workflow => workflow.MaxRoundsPerRound)
             .HasColumnName("max_rounds_per_round")
             .IsRequired();

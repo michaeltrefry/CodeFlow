@@ -10,6 +10,8 @@ public sealed class HitlTaskEntity
 
     public Guid RoundId { get; set; }
 
+    public Guid NodeId { get; set; }
+
     public string AgentKey { get; set; } = null!;
 
     public int AgentVersion { get; set; }

@@ -36,9 +36,11 @@ public sealed class ObservabilityTests
             RoundId: Guid.NewGuid(),
             WorkflowKey: "article-flow",
             WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
             AgentKey: "reviewer",
             AgentVersion: 3,
-            InputRef: new Uri("file:///tmp/input.bin"));
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>());
         var agentConfig = new AgentConfig(
             Key: request.AgentKey,
             Version: request.AgentVersion,

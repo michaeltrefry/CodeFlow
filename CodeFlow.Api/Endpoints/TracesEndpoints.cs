@@ -168,7 +168,23 @@ public static class TracesEndpoints
             return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' version {request.WorkflowVersion} not found." });
         }
 
-        var startAgentVersion = await agentRepository.GetLatestVersionAsync(workflow.StartAgentKey, cancellationToken);
+        var startNode = workflow.StartNode;
+        if (string.IsNullOrWhiteSpace(startNode.AgentKey))
+        {
+            return Results.Problem("Workflow start node has no AgentKey configured.", statusCode: 500);
+        }
+
+        var resolvedInputsResult = ResolveContextInputs(workflow, request.Inputs);
+        if (resolvedInputsResult.Error is not null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["inputs"] = new[] { resolvedInputsResult.Error }
+            });
+        }
+
+        var startAgentVersion = startNode.AgentVersion
+            ?? await agentRepository.GetLatestVersionAsync(startNode.AgentKey, cancellationToken);
 
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
@@ -190,9 +206,11 @@ public static class TracesEndpoints
                 RoundId: roundId,
                 WorkflowKey: workflow.Key,
                 WorkflowVersion: workflow.Version,
-                AgentKey: workflow.StartAgentKey,
+                NodeId: startNode.Id,
+                AgentKey: startNode.AgentKey,
                 AgentVersion: startAgentVersion,
                 InputRef: inputRef,
+                ContextInputs: resolvedInputsResult.Values,
                 CorrelationHeaders: new Dictionary<string, string>
                 {
                     ["x-submitted-by"] = currentUser.Id ?? "unknown"
@@ -200,6 +218,51 @@ public static class TracesEndpoints
             cancellationToken);
 
         return Results.Created($"/api/traces/{traceId}", new CreateTraceResponse(traceId));
+    }
+
+    private static (IReadOnlyDictionary<string, JsonElement> Values, string? Error) ResolveContextInputs(
+        Workflow workflow,
+        IReadOnlyDictionary<string, JsonElement>? supplied)
+    {
+        if (workflow.Inputs.Count == 0 && (supplied is null || supplied.Count == 0))
+        {
+            return (new Dictionary<string, JsonElement>(StringComparer.Ordinal), null);
+        }
+
+        var resolved = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var providedKeys = new HashSet<string>(supplied?.Keys ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+
+        foreach (var definition in workflow.Inputs.OrderBy(input => input.Ordinal))
+        {
+            if (supplied is not null && supplied.TryGetValue(definition.Key, out var value))
+            {
+                resolved[definition.Key] = value.Clone();
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(definition.DefaultValueJson))
+            {
+                using var document = JsonDocument.Parse(definition.DefaultValueJson);
+                resolved[definition.Key] = document.RootElement.Clone();
+                continue;
+            }
+
+            if (definition.Required)
+            {
+                return (resolved, $"Required input '{definition.Key}' was not supplied and has no default.");
+            }
+        }
+
+        var undeclared = providedKeys
+            .Where(key => !workflow.Inputs.Any(i => string.Equals(i.Key, key, StringComparison.Ordinal)))
+            .ToArray();
+
+        if (undeclared.Length > 0)
+        {
+            return (resolved, $"Unknown input(s) supplied: {string.Join(", ", undeclared)}.");
+        }
+
+        return (resolved, null);
     }
 
     private static async Task StreamTraceAsync(
@@ -329,8 +392,10 @@ public static class TracesEndpoints
             new AgentInvocationCompleted(
                 TraceId: task.TraceId,
                 RoundId: task.RoundId,
+                FromNodeId: task.NodeId,
                 AgentKey: task.AgentKey,
                 AgentVersion: task.AgentVersion,
+                OutputPortName: AgentDecisionPorts.ToPortName(contractsDecision),
                 OutputRef: outputRef,
                 Decision: contractsDecision,
                 DecisionPayload: decisionPayload,

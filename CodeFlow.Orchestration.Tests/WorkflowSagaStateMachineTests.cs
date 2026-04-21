@@ -1,5 +1,4 @@
 using CodeFlow.Contracts;
-using CodeFlow.Orchestration;
 using CodeFlow.Persistence;
 using FluentAssertions;
 using MassTransit;
@@ -7,7 +6,6 @@ using MassTransit.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using RuntimeDecisionKind = CodeFlow.Runtime.AgentDecisionKind;
-using RuntimeAgentDecision = CodeFlow.Runtime.AgentDecision;
 
 namespace CodeFlow.Orchestration.Tests;
 
@@ -22,27 +20,18 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "happy",
             maxRounds: 5,
+            startAgentKey: "evaluator",
             edges:
             [
-                Edge(from: "evaluator", RuntimeDecisionKind.Completed, to: "reviewer", rotatesRound: false)
+                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: false)
             ]);
 
-        var harness = BuildHarness(workflow, new Dictionary<string, int>
-        {
-            ["reviewer"] = 4
-        });
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 4 });
 
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                TraceId: traceId,
-                RoundId: roundId,
-                WorkflowKey: workflow.Key,
-                WorkflowVersion: workflow.Version,
-                AgentKey: "evaluator",
-                AgentVersion: 1,
-                InputRef: new Uri("file:///tmp/input.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             (await harness.Consumed.Any<AgentInvokeRequested>()).Should().BeTrue();
 
@@ -50,12 +39,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaInstance = await sagaHarness.Exists(traceId, x => x.Running);
             sagaInstance.Should().NotBeNull();
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId,
-                roundId,
-                agentKey: "evaluator",
-                agentVersion: 1,
-                decision: AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
 
             var handoffs = harness.Published.Select<AgentInvokeRequested>()
                 .Where(x => x.Context.Message.AgentKey == "reviewer")
@@ -64,11 +48,13 @@ public sealed class WorkflowSagaStateMachineTests
             handoffs[0].Context.Message.AgentVersion.Should().Be(4);
             handoffs[0].Context.Message.TraceId.Should().Be(traceId);
             handoffs[0].Context.Message.RoundId.Should().Be(roundId, "non-rotating edge keeps same round");
+            handoffs[0].Context.Message.NodeId.Should().Be(NodeIdFor(workflow, "reviewer"));
 
             var saga = sagaHarness.Sagas.Contains(sagaInstance!.Value);
             saga.Should().NotBeNull();
             saga!.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
             saga.CurrentAgentKey.Should().Be("reviewer");
+            saga.CurrentNodeId.Should().Be(NodeIdFor(workflow, "reviewer"));
             saga.RoundCount.Should().Be(1);
             saga.GetPinnedVersion("reviewer").Should().Be(4);
             saga.GetDecisionHistory().Should().ContainSingle()
@@ -88,9 +74,10 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "rotate",
             maxRounds: 5,
+            startAgentKey: "evaluator",
             edges:
             [
-                Edge(from: "evaluator", RuntimeDecisionKind.Completed, to: "reviewer", rotatesRound: true)
+                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: true)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 2 });
@@ -98,16 +85,12 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                AgentKey: "evaluator", AgentVersion: 1,
-                InputRef: new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
 
             var reviewerPublish = harness.Published.Select<AgentInvokeRequested>()
                 .Single(x => x.Context.Message.AgentKey == "reviewer");
@@ -132,6 +115,7 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "count",
             maxRounds: 10,
+            startAgentKey: "evaluator",
             edges:
             [
                 Edge("reviewer", RuntimeDecisionKind.Rejected, "evaluator", rotatesRound: false),
@@ -147,21 +131,17 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "evaluator", 1, new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
 
             await sagaHarness.Exists(traceId, s => s.Running);
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "reviewer", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "reviewer", 1, AgentDecisionKind.Rejected));
 
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
 
@@ -184,6 +164,7 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "unmapped",
             maxRounds: 5,
+            startAgentKey: "evaluator",
             edges: []);
 
         var harness = BuildHarness(workflow, agentVersions: new Dictionary<string, int>());
@@ -191,15 +172,12 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "evaluator", 1, new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "evaluator", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Rejected));
 
             await sagaHarness.Exists(traceId, s => s.Failed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
@@ -217,21 +195,18 @@ public sealed class WorkflowSagaStateMachineTests
     {
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
-        var workflow = BuildWorkflow("done", 5, edges: []);
+        var workflow = BuildWorkflow("done", 5, startAgentKey: "publisher", edges: []);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int>());
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "publisher", 1, new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, s => s.Running);
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, roundId, "publisher", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "publisher", 1, AgentDecisionKind.Completed));
 
             await sagaHarness.Exists(traceId, s => s.Completed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
@@ -246,14 +221,15 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task RoundCountExceeded_WithEscalationAgent_ShouldDispatchAndStayRunning()
     {
-        var (traceId, roundId, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
         try
         {
             var saga = sagaHarness.Sagas.Contains(traceId)!;
             saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running),
                 "saga stays running until the escalation agent completes");
-            saga.EscalatedFromAgentKey.Should().Be("looper");
+            saga.EscalatedFromNodeId.Should().Be(NodeIdFor(workflow, "looper"));
             saga.CurrentAgentKey.Should().Be("triage");
+            saga.CurrentNodeId.Should().Be(NodeIdFor(workflow, "triage"));
             saga.GetPinnedVersion("triage").Should().Be(7);
 
             var triagePublish = harness.Published.Select<AgentInvokeRequested>()
@@ -270,21 +246,18 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task EscalationAgent_Approved_ShouldRecoverByResumingOverflowedAgent()
     {
-        var (traceId, roundId, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        var (traceId, roundId, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
         try
         {
             var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Approved));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Approved));
 
             SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
-                .Any(x => x.Context.Message.AgentKey == "looper"
-                    && x.Context.Message.RoundId != roundId));
+                .Any(x => x.Context.Message.AgentKey == "looper" && x.Context.Message.RoundId != roundId));
 
             var recoveryPublishes = harness.Published.Select<AgentInvokeRequested>()
-                .Where(x => x.Context.Message.AgentKey == "looper"
-                    && x.Context.Message.RoundId != roundId)
+                .Where(x => x.Context.Message.AgentKey == "looper" && x.Context.Message.RoundId != roundId)
                 .ToList();
             recoveryPublishes.Should().ContainSingle("recovery re-invokes the overflowed agent once");
             recoveryPublishes[0].Context.Message.RoundId.Should().NotBe(escalationRoundId,
@@ -292,7 +265,7 @@ public sealed class WorkflowSagaStateMachineTests
 
             var saga = sagaHarness.Sagas.Contains(traceId)!;
             saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
-            saga.EscalatedFromAgentKey.Should().BeNull("escalation flag is cleared on recovery");
+            saga.EscalatedFromNodeId.Should().BeNull("escalation flag is cleared on recovery");
             saga.CurrentAgentKey.Should().Be("looper");
             saga.RoundCount.Should().Be(0);
         }
@@ -305,17 +278,16 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task EscalationAgent_Completed_ShouldTerminateAsCompleted()
     {
-        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
         try
         {
             var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Completed));
 
             await sagaHarness.Exists(traceId, s => s.Completed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromAgentKey.Should().BeNull();
+            saga.EscalatedFromNodeId.Should().BeNull();
         }
         finally
         {
@@ -326,17 +298,16 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task EscalationAgent_Rejected_ShouldTerminateAsEscalated()
     {
-        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
         try
         {
             var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Rejected));
 
             await sagaHarness.Exists(traceId, s => s.Escalated);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromAgentKey.Should().BeNull();
+            saga.EscalatedFromNodeId.Should().BeNull();
         }
         finally
         {
@@ -347,17 +318,16 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task EscalationAgent_Failed_ShouldTerminateAsFailed()
     {
-        var (traceId, _, sagaHarness, harness) = await RunUntilEscalationDispatchedAsync();
+        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
         try
         {
             var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
 
-            await harness.Bus.Publish(BuildCompletion(
-                traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Failed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Failed));
 
             await sagaHarness.Exists(traceId, s => s.Failed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromAgentKey.Should().BeNull();
+            saga.EscalatedFromNodeId.Should().BeNull();
         }
         finally
         {
@@ -367,13 +337,15 @@ public sealed class WorkflowSagaStateMachineTests
 
     private static async Task<(Guid TraceId, Guid RoundId,
         ISagaStateMachineTestHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity> SagaHarness,
-        ITestHarness Harness)> RunUntilEscalationDispatchedAsync()
+        ITestHarness Harness,
+        Workflow Workflow)> RunUntilEscalationDispatchedAsync()
     {
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         var workflow = BuildWorkflow(
             key: "escalate",
             maxRounds: 3,
+            startAgentKey: "looper",
             escalationAgentKey: "triage",
             edges:
             [
@@ -388,23 +360,21 @@ public sealed class WorkflowSagaStateMachineTests
 
         await harness.Start();
 
-        await harness.Bus.Publish(new AgentInvokeRequested(
-            traceId, roundId, workflow.Key, workflow.Version,
-            "looper", 1, new Uri("file:///tmp/in.bin")));
+        await PublishStart(harness, workflow, traceId, roundId);
 
         var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
         await sagaHarness.Exists(traceId, s => s.Running);
 
-        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
         SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
 
-        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
         SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
 
-        await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.EscalatedFromAgentKey == "looper");
+        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.EscalatedFromNodeId == NodeIdFor(workflow, "looper"));
 
-        return (traceId, roundId, sagaHarness, harness);
+        return (traceId, roundId, sagaHarness, harness, workflow);
     }
 
     [Fact]
@@ -415,6 +385,7 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "capfail",
             maxRounds: 3,
+            startAgentKey: "looper",
             edges:
             [
                 Edge("looper", RuntimeDecisionKind.Rejected, "looper", rotatesRound: false)
@@ -424,18 +395,16 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "looper", 1, new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, s => s.Running);
 
-            await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
-            await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
-            await harness.Bus.Publish(BuildCompletion(traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
 
             await sagaHarness.Exists(traceId, s => s.Failed);
         }
@@ -453,6 +422,7 @@ public sealed class WorkflowSagaStateMachineTests
         var workflow = BuildWorkflow(
             key: "retry",
             maxRounds: 5,
+            startAgentKey: "reviewer",
             edges:
             [
                 Edge("reviewer", RuntimeDecisionKind.Failed, "reviewer", rotatesRound: false)
@@ -462,9 +432,7 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            await harness.Bus.Publish(new AgentInvokeRequested(
-                traceId, roundId, workflow.Key, workflow.Version,
-                "reviewer", 2, new Uri("file:///tmp/in.bin")));
+            await PublishStart(harness, workflow, traceId, roundId, agentVersion: 2);
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, s => s.Running);
@@ -484,8 +452,10 @@ public sealed class WorkflowSagaStateMachineTests
             await harness.Bus.Publish(new AgentInvocationCompleted(
                 TraceId: traceId,
                 RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "reviewer"),
                 AgentKey: "reviewer",
                 AgentVersion: 2,
+                OutputPortName: AgentDecisionPorts.ToPortName(AgentDecisionKind.Failed),
                 OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
                 Decision: AgentDecisionKind.Failed,
                 DecisionPayload: failurePayload,
@@ -528,45 +498,129 @@ public sealed class WorkflowSagaStateMachineTests
         return provider.GetRequiredService<ITestHarness>();
     }
 
-    private static Workflow BuildWorkflow(
-        string key,
-        int maxRounds,
-        IReadOnlyList<WorkflowEdge> edges,
-        string? escalationAgentKey = null)
-    {
-        return new Workflow(
-            Key: key,
-            Version: 1,
-            Name: key,
-            StartAgentKey: edges.FirstOrDefault()?.FromAgentKey ?? "start",
-            EscalationAgentKey: escalationAgentKey,
-            MaxRoundsPerRound: maxRounds,
-            CreatedAtUtc: DateTime.UtcNow,
-            Edges: edges);
-    }
+    private sealed record EdgeSpec(
+        string From,
+        RuntimeDecisionKind Decision,
+        string To,
+        bool RotatesRound,
+        int SortOrder);
 
-    private static WorkflowEdge Edge(
+    private static EdgeSpec Edge(
         string from,
         RuntimeDecisionKind decision,
         string to,
         bool rotatesRound,
         int sortOrder = 0)
     {
-        return new WorkflowEdge(from, decision, Discriminator: null, to, rotatesRound, sortOrder);
+        return new EdgeSpec(from, decision, to, rotatesRound, sortOrder);
+    }
+
+    private static Workflow BuildWorkflow(
+        string key,
+        int maxRounds,
+        string startAgentKey,
+        IReadOnlyList<EdgeSpec> edges,
+        string? escalationAgentKey = null)
+    {
+        var agentKeys = new HashSet<string>(StringComparer.Ordinal) { startAgentKey };
+        foreach (var edge in edges)
+        {
+            agentKeys.Add(edge.From);
+            agentKeys.Add(edge.To);
+        }
+
+        if (escalationAgentKey is not null)
+        {
+            agentKeys.Add(escalationAgentKey);
+        }
+
+        var nodes = new List<WorkflowNode>();
+        var nodeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+
+        foreach (var agentKey in agentKeys)
+        {
+            var id = Guid.NewGuid();
+            nodeIds[agentKey] = id;
+
+            WorkflowNodeKind kind;
+            if (string.Equals(agentKey, startAgentKey, StringComparison.Ordinal))
+            {
+                kind = WorkflowNodeKind.Start;
+            }
+            else if (string.Equals(agentKey, escalationAgentKey, StringComparison.Ordinal))
+            {
+                kind = WorkflowNodeKind.Escalation;
+            }
+            else
+            {
+                kind = WorkflowNodeKind.Agent;
+            }
+
+            nodes.Add(new WorkflowNode(id, kind, agentKey, AgentVersion: null, Script: null,
+                OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0));
+        }
+
+        var workflowEdges = edges
+            .Select((edge, index) => new WorkflowEdge(
+                FromNodeId: nodeIds[edge.From],
+                FromPort: edge.Decision.ToString(),
+                ToNodeId: nodeIds[edge.To],
+                ToPort: WorkflowEdge.DefaultInputPort,
+                RotatesRound: edge.RotatesRound,
+                SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder))
+            .ToArray();
+
+        return new Workflow(
+            Key: key,
+            Version: 1,
+            Name: key,
+            MaxRoundsPerRound: maxRounds,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: workflowEdges,
+            Inputs: Array.Empty<WorkflowInput>());
+    }
+
+    private static readonly IReadOnlyList<string> AllDecisionPorts =
+        Enum.GetNames<AgentDecisionKind>();
+
+    private static Guid NodeIdFor(Workflow workflow, string agentKey) =>
+        workflow.Nodes.Single(n => string.Equals(n.AgentKey, agentKey, StringComparison.Ordinal)).Id;
+
+    private static Task PublishStart(
+        ITestHarness harness,
+        Workflow workflow,
+        Guid traceId,
+        Guid roundId,
+        int agentVersion = 1)
+    {
+        return harness.Bus.Publish(new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: roundId,
+            WorkflowKey: workflow.Key,
+            WorkflowVersion: workflow.Version,
+            NodeId: workflow.StartNode.Id,
+            AgentKey: workflow.StartNode.AgentKey!,
+            AgentVersion: agentVersion,
+            InputRef: new Uri("file:///tmp/in.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>()));
     }
 
     private static AgentInvocationCompleted BuildCompletion(
+        Workflow workflow,
         Guid traceId,
         Guid roundId,
         string agentKey,
         int agentVersion,
-        Contracts.AgentDecisionKind decision)
+        AgentDecisionKind decision)
     {
         return new AgentInvocationCompleted(
             TraceId: traceId,
             RoundId: roundId,
+            FromNodeId: NodeIdFor(workflow, agentKey),
             AgentKey: agentKey,
             AgentVersion: agentVersion,
+            OutputPortName: AgentDecisionPorts.ToPortName(decision),
             OutputRef: new Uri($"file:///tmp/{agentKey}-out.bin"),
             Decision: decision,
             DecisionPayload: JsonDocument.Parse($"{{\"kind\":\"{decision}\"}}").RootElement,
@@ -592,69 +646,45 @@ public sealed class WorkflowSagaStateMachineTests
 
     private sealed class FakeWorkflowRepository(Workflow workflow) : IWorkflowRepository
     {
-        public Task<Workflow> GetAsync(string key, int version, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(workflow);
-        }
+        public Task<Workflow> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
+            Task.FromResult(workflow);
 
-        public Task<Workflow?> GetLatestAsync(string key, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<Workflow?>(workflow);
-        }
+        public Task<Workflow?> GetLatestAsync(string key, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Workflow?>(workflow);
 
-        public Task<IReadOnlyList<Workflow>> ListLatestAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
-        }
+        public Task<IReadOnlyList<Workflow>> ListLatestAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
 
-        public Task<IReadOnlyList<Workflow>> ListVersionsAsync(string key, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
-        }
+        public Task<IReadOnlyList<Workflow>> ListVersionsAsync(string key, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Workflow>>(new[] { workflow });
 
         public Task<WorkflowEdge?> FindNextAsync(
             string key,
             int version,
-            string fromAgentKey,
-            RuntimeAgentDecision decision,
-            JsonElement? discriminator = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(workflow.FindNext(fromAgentKey, decision, discriminator));
-        }
+            Guid fromNodeId,
+            string outputPortName,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(workflow.FindNext(fromNodeId, outputPortName));
 
-        public Task<int> CreateNewVersionAsync(WorkflowDraft draft, CancellationToken cancellationToken = default)
-        {
+        public Task<int> CreateNewVersionAsync(WorkflowDraft draft, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        }
     }
 
     private sealed class FakeAgentConfigRepository(IReadOnlyDictionary<string, int> versions)
         : IAgentConfigRepository
     {
-        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)
-        {
+        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        }
 
-        public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default)
-        {
+        public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        }
 
-        public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default)
-        {
-            if (versions.TryGetValue(key, out var version))
-            {
-                return Task.FromResult(version);
-            }
+        public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default) =>
+            versions.TryGetValue(key, out var version)
+                ? Task.FromResult(version)
+                : throw new AgentConfigNotFoundException(key, 0);
 
-            throw new AgentConfigNotFoundException(key, 0);
-        }
-
-        public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
-        {
+        public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        }
     }
 }

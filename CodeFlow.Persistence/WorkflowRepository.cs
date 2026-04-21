@@ -1,8 +1,6 @@
-using CodeFlow.Runtime;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
 using System.Data;
-using System.Text.Json;
 
 namespace CodeFlow.Persistence;
 
@@ -23,9 +21,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             return cachedWorkflow;
         }
 
-        var entity = await dbContext.Workflows
-            .AsNoTracking()
-            .Include(workflow => workflow.Edges)
+        var entity = await LoadWorkflowsQuery()
             .SingleOrDefaultAsync(
                 workflow => workflow.Key == normalizedKey && workflow.Version == version,
                 cancellationToken);
@@ -42,9 +38,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
     {
         var normalizedKey = NormalizeKey(key);
 
-        var entity = await dbContext.Workflows
-            .AsNoTracking()
-            .Include(workflow => workflow.Edges)
+        var entity = await LoadWorkflowsQuery()
             .Where(workflow => workflow.Key == normalizedKey)
             .OrderByDescending(workflow => workflow.Version)
             .FirstOrDefaultAsync(cancellationToken);
@@ -59,9 +53,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
 
     public async Task<IReadOnlyList<Workflow>> ListLatestAsync(CancellationToken cancellationToken = default)
     {
-        var entities = await dbContext.Workflows
-            .AsNoTracking()
-            .Include(workflow => workflow.Edges)
+        var entities = await LoadWorkflowsQuery()
             .GroupBy(workflow => workflow.Key)
             .Select(group => group
                 .OrderByDescending(workflow => workflow.Version)
@@ -77,9 +69,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
     public async Task<IReadOnlyList<Workflow>> ListVersionsAsync(string key, CancellationToken cancellationToken = default)
     {
         var normalizedKey = NormalizeKey(key);
-        var entities = await dbContext.Workflows
-            .AsNoTracking()
-            .Include(workflow => workflow.Edges)
+        var entities = await LoadWorkflowsQuery()
             .Where(workflow => workflow.Key == normalizedKey)
             .OrderByDescending(workflow => workflow.Version)
             .ToListAsync(cancellationToken);
@@ -90,13 +80,12 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
     public async Task<WorkflowEdge?> FindNextAsync(
         string key,
         int version,
-        string fromAgentKey,
-        AgentDecision decision,
-        JsonElement? discriminator = null,
+        Guid fromNodeId,
+        string outputPortName,
         CancellationToken cancellationToken = default)
     {
         var workflow = await GetAsync(key, version, cancellationToken);
-        return workflow.FindNext(fromAgentKey, decision, discriminator);
+        return workflow.FindNext(fromNodeId, outputPortName);
     }
 
     public async Task<int> CreateNewVersionAsync(
@@ -123,19 +112,42 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             Key = normalizedKey,
             Version = nextVersion,
             Name = draft.Name.Trim(),
-            StartAgentKey = draft.StartAgentKey.Trim(),
-            EscalationAgentKey = string.IsNullOrWhiteSpace(draft.EscalationAgentKey) ? null : draft.EscalationAgentKey.Trim(),
             MaxRoundsPerRound = draft.MaxRoundsPerRound,
             CreatedAtUtc = DateTime.UtcNow,
+            Nodes = draft.Nodes
+                .Select(node => new WorkflowNodeEntity
+                {
+                    NodeId = node.Id,
+                    Kind = node.Kind,
+                    AgentKey = NormalizeOptionalString(node.AgentKey),
+                    AgentVersion = node.AgentVersion,
+                    Script = node.Script,
+                    OutputPortsJson = WorkflowJson.SerializePorts(node.OutputPorts),
+                    LayoutX = node.LayoutX,
+                    LayoutY = node.LayoutY
+                })
+                .ToList(),
             Edges = draft.Edges
                 .Select((edge, index) => new WorkflowEdgeEntity
                 {
-                    FromAgentKey = edge.FromAgentKey.Trim(),
-                    Decision = edge.Decision,
-                    DiscriminatorJson = edge.Discriminator is null ? null : JsonSerializer.Serialize(edge.Discriminator),
-                    ToAgentKey = edge.ToAgentKey.Trim(),
+                    FromNodeId = edge.FromNodeId,
+                    FromPort = edge.FromPort,
+                    ToNodeId = edge.ToNodeId,
+                    ToPort = string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                     RotatesRound = edge.RotatesRound,
                     SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder
+                })
+                .ToList(),
+            Inputs = draft.Inputs
+                .Select(input => new WorkflowInputEntity
+                {
+                    Key = input.Key.Trim(),
+                    DisplayName = input.DisplayName.Trim(),
+                    Kind = input.Kind,
+                    Required = input.Required,
+                    DefaultValueJson = input.DefaultValueJson,
+                    Description = input.Description,
+                    Ordinal = input.Ordinal
                 })
                 .ToList()
         };
@@ -150,31 +162,71 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         return nextVersion;
     }
 
+    private IQueryable<WorkflowEntity> LoadWorkflowsQuery()
+    {
+        return dbContext.Workflows
+            .AsNoTracking()
+            .AsSplitQuery()
+            .Include(workflow => workflow.Nodes)
+            .Include(workflow => workflow.Edges)
+            .Include(workflow => workflow.Inputs);
+    }
+
     private static Workflow Map(WorkflowEntity entity)
     {
         return new Workflow(
             entity.Key,
             entity.Version,
             entity.Name,
-            entity.StartAgentKey,
-            entity.EscalationAgentKey,
             entity.MaxRoundsPerRound,
             DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
+            entity.Nodes
+                .Select(Map)
+                .ToArray(),
             entity.Edges
                 .OrderBy(edge => edge.SortOrder)
                 .Select(Map)
+                .ToArray(),
+            entity.Inputs
+                .OrderBy(input => input.Ordinal)
+                .Select(Map)
                 .ToArray());
+    }
+
+    private static WorkflowNode Map(WorkflowNodeEntity entity)
+    {
+        return new WorkflowNode(
+            entity.NodeId,
+            entity.Kind,
+            entity.AgentKey,
+            entity.AgentVersion,
+            entity.Script,
+            WorkflowJson.DeserializePorts(entity.OutputPortsJson),
+            entity.LayoutX,
+            entity.LayoutY);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)
     {
         return new WorkflowEdge(
-            entity.FromAgentKey,
-            entity.Decision,
-            WorkflowJson.DeserializeDiscriminator(entity.DiscriminatorJson),
-            entity.ToAgentKey,
+            entity.FromNodeId,
+            entity.FromPort,
+            entity.ToNodeId,
+            string.IsNullOrWhiteSpace(entity.ToPort) ? WorkflowEdge.DefaultInputPort : entity.ToPort,
             entity.RotatesRound,
             entity.SortOrder);
+    }
+
+    private static WorkflowInput Map(WorkflowInputEntity entity)
+    {
+        return new WorkflowInput(
+            entity.Key,
+            entity.DisplayName,
+            entity.Kind,
+            entity.Required,
+            entity.DefaultValueJson,
+            entity.Description,
+            entity.Ordinal);
     }
 
     private static string NormalizeKey(string key)
@@ -182,5 +234,15 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
         return key.Trim();
+    }
+
+    private static string? NormalizeOptionalString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Trim();
     }
 }

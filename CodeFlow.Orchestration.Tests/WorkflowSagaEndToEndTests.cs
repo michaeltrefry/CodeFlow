@@ -101,14 +101,17 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
             var inputRef = await WriteInputArtifactAsync(host.Services, "seed-input");
 
             var bus = host.Services.GetRequiredService<IBus>();
+            var startNodeId = await GetStartNodeIdAsync(host.Services, workflowKey, 1);
             await bus.Publish(new AgentInvokeRequested(
                 TraceId: traceId,
                 RoundId: initialRoundId,
                 WorkflowKey: workflowKey,
                 WorkflowVersion: 1,
+                NodeId: startNodeId,
                 AgentKey: "evaluator",
                 AgentVersion: 1,
-                InputRef: inputRef));
+                InputRef: inputRef,
+                ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>()));
 
             var saga = await WaitForTerminalStateAsync(
                 host.Services,
@@ -169,38 +172,71 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
         await using var scope = services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
 
+        var evaluator = Guid.NewGuid();
+        var reviewer = Guid.NewGuid();
+        var publisher = Guid.NewGuid();
+        const string portsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""";
+
         var workflow = new WorkflowEntity
         {
             Key = "article-flow",
             Version = 1,
             Name = "Evaluator-Reviewer-Publisher",
-            StartAgentKey = "evaluator",
-            EscalationAgentKey = null,
             MaxRoundsPerRound = 10,
             CreatedAtUtc = DateTime.UtcNow,
+            Nodes =
+            [
+                new WorkflowNodeEntity
+                {
+                    NodeId = evaluator,
+                    Kind = WorkflowNodeKind.Start,
+                    AgentKey = "evaluator",
+                    AgentVersion = 1,
+                    OutputPortsJson = portsJson
+                },
+                new WorkflowNodeEntity
+                {
+                    NodeId = reviewer,
+                    Kind = WorkflowNodeKind.Agent,
+                    AgentKey = "reviewer",
+                    AgentVersion = 1,
+                    OutputPortsJson = portsJson
+                },
+                new WorkflowNodeEntity
+                {
+                    NodeId = publisher,
+                    Kind = WorkflowNodeKind.Agent,
+                    AgentKey = "publisher",
+                    AgentVersion = 1,
+                    OutputPortsJson = portsJson
+                }
+            ],
             Edges =
             [
                 new WorkflowEdgeEntity
                 {
-                    FromAgentKey = "evaluator",
-                    Decision = RuntimeDecisionKind.Completed,
-                    ToAgentKey = "reviewer",
+                    FromNodeId = evaluator,
+                    FromPort = "Completed",
+                    ToNodeId = reviewer,
+                    ToPort = WorkflowEdge.DefaultInputPort,
                     RotatesRound = false,
                     SortOrder = 0
                 },
                 new WorkflowEdgeEntity
                 {
-                    FromAgentKey = "reviewer",
-                    Decision = RuntimeDecisionKind.Approved,
-                    ToAgentKey = "publisher",
+                    FromNodeId = reviewer,
+                    FromPort = "Approved",
+                    ToNodeId = publisher,
+                    ToPort = WorkflowEdge.DefaultInputPort,
                     RotatesRound = false,
                     SortOrder = 1
                 },
                 new WorkflowEdgeEntity
                 {
-                    FromAgentKey = "reviewer",
-                    Decision = RuntimeDecisionKind.Rejected,
-                    ToAgentKey = "evaluator",
+                    FromNodeId = reviewer,
+                    FromPort = "Rejected",
+                    ToNodeId = evaluator,
+                    ToPort = WorkflowEdge.DefaultInputPort,
                     RotatesRound = false,
                     SortOrder = 2
                 }
@@ -210,6 +246,18 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
         dbContext.Workflows.Add(workflow);
         await dbContext.SaveChangesAsync();
         return workflow.Key;
+    }
+
+    private static async Task<Guid> GetStartNodeIdAsync(IServiceProvider services, string workflowKey, int version)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var workflow = await dbContext.Workflows
+            .Include(w => w.Nodes)
+            .AsNoTracking()
+            .SingleAsync(w => w.Key == workflowKey && w.Version == version);
+
+        return workflow.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start).NodeId;
     }
 
     private async Task<Uri> WriteInputArtifactAsync(IServiceProvider services, string content)

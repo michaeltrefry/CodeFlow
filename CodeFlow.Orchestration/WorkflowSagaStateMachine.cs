@@ -3,7 +3,6 @@ using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
-using System.Diagnostics;
 using System.Text.Json;
 
 namespace CodeFlow.Orchestration;
@@ -73,34 +72,16 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                                         .TransitionTo(Escalated)))));
     }
 
-    private static WorkflowSagaStateEntity InitializeSagaInstance(AgentInvokeRequested message)
-    {
-        var instance = new WorkflowSagaStateEntity
-        {
-            CorrelationId = message.TraceId,
-            TraceId = message.TraceId,
-            CurrentState = "Initial",
-            WorkflowKey = message.WorkflowKey,
-            WorkflowVersion = message.WorkflowVersion,
-            CurrentAgentKey = message.AgentKey,
-            CurrentRoundId = message.RoundId,
-            RoundCount = 0,
-            CreatedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow
-        };
-
-        instance.PinAgentVersion(message.AgentKey, message.AgentVersion);
-        return instance;
-    }
-
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)
     {
         saga.TraceId = message.TraceId;
         saga.WorkflowKey = message.WorkflowKey;
         saga.WorkflowVersion = message.WorkflowVersion;
+        saga.CurrentNodeId = message.NodeId;
         saga.CurrentAgentKey = message.AgentKey;
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
+        saga.InputsJson = SerializeContextInputs(message.ContextInputs);
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
         saga.UpdatedAtUtc = DateTime.UtcNow;
     }
@@ -130,7 +111,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
 
         var runtimeKind = MapDecisionKind(message.Decision);
-        var discriminator = ExtractDiscriminator(message.DecisionPayload);
 
         saga.AppendDecision(new DecisionRecord(
             AgentKey: message.AgentKey,
@@ -140,33 +120,41 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow));
 
-        if (!string.IsNullOrWhiteSpace(saga.EscalatedFromAgentKey))
-        {
-            await HandleEscalationResponseAsync(context, agentConfigRepo, saga, message, runtimeKind);
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "EscalationRecovered");
-            return;
-        }
-
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,
             saga.WorkflowVersion,
             context.CancellationToken);
 
-        var edge = workflow.FindNext(message.AgentKey, runtimeKind, discriminator);
+        if (saga.EscalatedFromNodeId is Guid escalatedFromNodeId)
+        {
+            await HandleEscalationResponseAsync(
+                context,
+                agentConfigRepo,
+                workflow,
+                saga,
+                message,
+                escalatedFromNodeId,
+                runtimeKind);
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "EscalationRecovered");
+            return;
+        }
+
+        var edge = workflow.FindNext(message.FromNodeId, message.OutputPortName);
 
         if (edge is null)
         {
-            saga.PendingTransition = message.Decision switch
-            {
-                AgentDecisionKind.Completed => PendingTransitionCompleted,
-                AgentDecisionKind.Failed => PendingTransitionFailed,
-                _ => PendingTransitionFailed
-            };
+            saga.PendingTransition = message.Decision == AgentDecisionKind.Completed
+                ? PendingTransitionCompleted
+                : PendingTransitionFailed;
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
+
+        var targetNode = workflow.FindNode(edge.ToNodeId)
+            ?? throw new InvalidOperationException(
+                $"Edge {edge.FromNodeId}:{edge.FromPort} → {edge.ToNodeId} references a missing node.");
 
         var targetRoundId = edge.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = edge.RotatesRound ? 0 : saga.RoundCount + 1;
@@ -174,21 +162,22 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (!edge.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
-            if (!string.IsNullOrWhiteSpace(workflow.EscalationAgentKey))
+            var escalationNode = workflow.EscalationNode;
+            if (escalationNode is not null)
             {
                 await PublishHandoffAsync(
                     context,
                     agentConfigRepo,
                     saga,
-                    workflow.EscalationAgentKey,
+                    workflow,
+                    escalationNode,
                     inputRef: message.OutputRef,
                     roundId: saga.CurrentRoundId,
-                    roundCount: saga.RoundCount,
                     retryContext: retryContext);
 
-                // Stay in Running; route terminally when the escalation agent completes.
-                saga.EscalatedFromAgentKey = message.AgentKey;
-                saga.CurrentAgentKey = workflow.EscalationAgentKey;
+                saga.EscalatedFromNodeId = message.FromNodeId;
+                saga.CurrentNodeId = escalationNode.Id;
+                saga.CurrentAgentKey = escalationNode.AgentKey ?? string.Empty;
             }
             else
             {
@@ -199,17 +188,18 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        await PublishHandoffAsync(
+        await DispatchToNodeAsync(
             context,
             agentConfigRepo,
             saga,
-            edge.ToAgentKey,
+            workflow,
+            targetNode,
             inputRef: message.OutputRef,
             roundId: targetRoundId,
-            roundCount: targetRoundCount,
             retryContext: retryContext);
 
-        saga.CurrentAgentKey = edge.ToAgentKey;
+        saga.CurrentNodeId = targetNode.Id;
+        saga.CurrentAgentKey = targetNode.AgentKey ?? string.Empty;
         saga.CurrentRoundId = targetRoundId;
         saga.RoundCount = targetRoundCount;
         saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -220,28 +210,35 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     private static async Task HandleEscalationResponseAsync(
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         IAgentConfigRepository agentConfigRepo,
+        Workflow workflow,
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message,
+        Guid resumeFromNodeId,
         Runtime.AgentDecisionKind decision)
     {
-        var resumeAgentKey = saga.EscalatedFromAgentKey!;
-        saga.EscalatedFromAgentKey = null;
+        saga.EscalatedFromNodeId = null;
 
         switch (decision)
         {
             case Runtime.AgentDecisionKind.Approved:
             case Runtime.AgentDecisionKind.ApprovedWithActions:
+                var resumeNode = workflow.FindNode(resumeFromNodeId)
+                    ?? throw new InvalidOperationException(
+                        $"Escalation recovery target node {resumeFromNodeId} is missing from workflow {workflow.Key} v{workflow.Version}.");
+
                 var recoveryRoundId = Guid.NewGuid();
-                await PublishHandoffAsync(
+                await DispatchToNodeAsync(
                     context,
                     agentConfigRepo,
                     saga,
-                    resumeAgentKey,
+                    workflow,
+                    resumeNode,
                     inputRef: message.OutputRef,
                     roundId: recoveryRoundId,
-                    roundCount: 0);
+                    retryContext: null);
 
-                saga.CurrentAgentKey = resumeAgentKey;
+                saga.CurrentNodeId = resumeNode.Id;
+                saga.CurrentAgentKey = resumeNode.AgentKey ?? string.Empty;
                 saga.CurrentRoundId = recoveryRoundId;
                 saga.RoundCount = 0;
                 return;
@@ -261,23 +258,53 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
     }
 
+    private static Task DispatchToNodeAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        IAgentConfigRepository agentConfigRepo,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode node,
+        Uri inputRef,
+        Guid roundId,
+        CodeFlow.Contracts.RetryContext? retryContext)
+    {
+        return node.Kind switch
+        {
+            WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation or WorkflowNodeKind.Start =>
+                PublishHandoffAsync(context, agentConfigRepo, saga, workflow, node, inputRef, roundId, retryContext),
+            WorkflowNodeKind.Logic =>
+                throw new NotSupportedException(
+                    "Logic nodes are not yet executed by the saga. Wire up LogicNodeScriptHost (Phase 2)."),
+            _ =>
+                throw new InvalidOperationException($"Unknown workflow node kind: {node.Kind}.")
+        };
+    }
+
     private static async Task PublishHandoffAsync(
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         IAgentConfigRepository agentConfigRepo,
         WorkflowSagaStateEntity saga,
-        string targetAgentKey,
+        Workflow workflow,
+        WorkflowNode targetNode,
         Uri inputRef,
         Guid roundId,
-        int roundCount,
-        CodeFlow.Contracts.RetryContext? retryContext = null)
+        CodeFlow.Contracts.RetryContext? retryContext)
     {
+        if (string.IsNullOrWhiteSpace(targetNode.AgentKey))
+        {
+            throw new InvalidOperationException(
+                $"Node {targetNode.Id} of kind {targetNode.Kind} in workflow {workflow.Key} v{workflow.Version} has no AgentKey.");
+        }
+
+        var targetAgentKey = targetNode.AgentKey;
         var pinnedVersion = saga.GetPinnedVersion(targetAgentKey);
 
         if (pinnedVersion is null)
         {
-            pinnedVersion = await agentConfigRepo.GetLatestVersionAsync(
-                targetAgentKey,
-                context.CancellationToken);
+            pinnedVersion = targetNode.AgentVersion
+                ?? await agentConfigRepo.GetLatestVersionAsync(
+                    targetAgentKey,
+                    context.CancellationToken);
 
             saga.PinAgentVersion(targetAgentKey, pinnedVersion.Value);
         }
@@ -287,12 +314,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RoundId: roundId,
             WorkflowKey: saga.WorkflowKey,
             WorkflowVersion: saga.WorkflowVersion,
+            NodeId: targetNode.Id,
             AgentKey: targetAgentKey,
             AgentVersion: pinnedVersion.Value,
             InputRef: inputRef,
+            ContextInputs: DeserializeContextInputs(saga.InputsJson),
             RetryContext: retryContext));
-
-        _ = roundCount;
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
@@ -304,7 +331,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return null;
         }
 
-        var attemptNumber = CountPriorFailedAttempts(saga, message.AgentKey) + 1;
+        var attemptNumber = CountPriorFailedAttempts(saga) + 1;
         var (reason, summary) = ExtractFailureContext(message.DecisionPayload);
 
         return new CodeFlow.Contracts.RetryContext(
@@ -313,9 +340,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             PriorAttemptSummary: summary);
     }
 
-    private static int CountPriorFailedAttempts(
-        WorkflowSagaStateEntity saga,
-        string agentKey)
+    private static int CountPriorFailedAttempts(WorkflowSagaStateEntity saga)
     {
         var history = saga.GetDecisionHistory();
         return history.Count(record =>
@@ -391,28 +416,55 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         };
     }
 
-    private static JsonElement? ExtractDiscriminator(JsonElement? payload)
-    {
-        if (payload is null)
-        {
-            return null;
-        }
-
-        if (payload.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (payload.Value.TryGetProperty("payload", out var discriminator))
-        {
-            return discriminator.Clone();
-        }
-
-        return null;
-    }
-
     private static JsonElement? CloneDecisionPayload(JsonElement? payload)
     {
         return payload?.Clone();
     }
+
+    private static string SerializeContextInputs(IReadOnlyDictionary<string, JsonElement> inputs)
+    {
+        if (inputs.Count == 0)
+        {
+            return "{}";
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var (key, value) in inputs)
+            {
+                writer.WritePropertyName(key);
+                value.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)
+    {
+        if (string.IsNullOrWhiteSpace(inputsJson))
+        {
+            return EmptyInputs;
+        }
+
+        using var document = JsonDocument.Parse(inputsJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return EmptyInputs;
+        }
+
+        var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            result[property.Name] = property.Value.Clone();
+        }
+
+        return result;
+    }
+
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyInputs =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 }

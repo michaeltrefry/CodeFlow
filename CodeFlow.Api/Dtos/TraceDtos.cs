@@ -7,7 +7,8 @@ public sealed record CreateTraceRequest(
     string? WorkflowKey,
     int? WorkflowVersion,
     string? Input,
-    string? InputFileName);
+    string? InputFileName,
+    IReadOnlyDictionary<string, JsonElement>? Inputs);
 
 public sealed record CreateTraceResponse(Guid TraceId);
 

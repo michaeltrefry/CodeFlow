@@ -18,14 +18,17 @@ public sealed class AgentInvocationConsumerTests
     [Fact]
     public async Task Consumer_ShouldResolveInputInvokeAgentWriteOutputAndPublishCompletion()
     {
+        var nodeId = Guid.NewGuid();
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
             RoundId: Guid.NewGuid(),
             WorkflowKey: "article-flow",
             WorkflowVersion: 1,
+            NodeId: nodeId,
             AgentKey: "reviewer",
             AgentVersion: 3,
-            InputRef: new Uri("file:///tmp/input.bin"));
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
         var agentConfig = new AgentConfig(
             Key: request.AgentKey,
             Version: request.AgentVersion,
@@ -82,6 +85,8 @@ public sealed class AgentInvocationConsumerTests
             completion.RoundId.Should().Be(request.RoundId);
             completion.AgentKey.Should().Be(request.AgentKey);
             completion.AgentVersion.Should().Be(request.AgentVersion);
+            completion.FromNodeId.Should().Be(nodeId);
+            completion.OutputPortName.Should().Be("Rejected");
             completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Rejected);
             completion.TokenUsage.Should().BeEquivalentTo(new CodeFlow.Contracts.TokenUsage(120, 45, 165));
             completion.OutputRef.Should().Be(artifactStore.Writes[0].Uri);
@@ -108,9 +113,11 @@ public sealed class AgentInvocationConsumerTests
             RoundId: Guid.NewGuid(),
             WorkflowKey: "retry-flow",
             WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
             AgentKey: "reviewer",
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
             CorrelationHeaders: null,
             RetryContext: retryContext);
 
@@ -169,9 +176,11 @@ public sealed class AgentInvocationConsumerTests
             RoundId: Guid.NewGuid(),
             WorkflowKey: "failure-flow",
             WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
             AgentKey: "reviewer",
             AgentVersion: 1,
-            InputRef: new Uri("file:///tmp/input.bin"));
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
 
         var agentConfig = new AgentConfig(
             Key: request.AgentKey,

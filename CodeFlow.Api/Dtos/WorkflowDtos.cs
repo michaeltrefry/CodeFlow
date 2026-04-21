@@ -1,5 +1,4 @@
-using CodeFlow.Runtime;
-using System.Text.Json;
+using CodeFlow.Persistence;
 
 namespace CodeFlow.Api.Dtos;
 
@@ -7,40 +6,59 @@ public sealed record WorkflowSummaryDto(
     string Key,
     int LatestVersion,
     string Name,
-    string StartAgentKey,
-    string? EscalationAgentKey,
+    int NodeCount,
     int EdgeCount,
+    int InputCount,
     DateTime CreatedAtUtc);
 
+public sealed record WorkflowNodeDto(
+    Guid Id,
+    WorkflowNodeKind Kind,
+    string? AgentKey,
+    int? AgentVersion,
+    string? Script,
+    IReadOnlyList<string> OutputPorts,
+    double LayoutX,
+    double LayoutY);
+
 public sealed record WorkflowEdgeDto(
-    string FromAgentKey,
-    AgentDecisionKind Decision,
-    JsonElement? Discriminator,
-    string ToAgentKey,
+    Guid FromNodeId,
+    string FromPort,
+    Guid ToNodeId,
+    string ToPort,
     bool RotatesRound,
     int SortOrder);
+
+public sealed record WorkflowInputDto(
+    string Key,
+    string DisplayName,
+    WorkflowInputKind Kind,
+    bool Required,
+    string? DefaultValueJson,
+    string? Description,
+    int Ordinal);
 
 public sealed record WorkflowDetailDto(
     string Key,
     int Version,
     string Name,
-    string StartAgentKey,
-    string? EscalationAgentKey,
     int MaxRoundsPerRound,
     DateTime CreatedAtUtc,
-    IReadOnlyList<WorkflowEdgeDto> Edges);
+    IReadOnlyList<WorkflowNodeDto> Nodes,
+    IReadOnlyList<WorkflowEdgeDto> Edges,
+    IReadOnlyList<WorkflowInputDto> Inputs);
 
 public sealed record CreateWorkflowRequest(
     string? Key,
     string? Name,
-    string? StartAgentKey,
-    string? EscalationAgentKey,
     int? MaxRoundsPerRound,
-    IReadOnlyList<WorkflowEdgeDto>? Edges);
+    IReadOnlyList<WorkflowNodeDto>? Nodes,
+    IReadOnlyList<WorkflowEdgeDto>? Edges,
+    IReadOnlyList<WorkflowInputDto>? Inputs);
 
 public sealed record UpdateWorkflowRequest(
     string? Name,
-    string? StartAgentKey,
-    string? EscalationAgentKey,
     int? MaxRoundsPerRound,
-    IReadOnlyList<WorkflowEdgeDto>? Edges);
+    IReadOnlyList<WorkflowNodeDto>? Nodes,
+    IReadOnlyList<WorkflowEdgeDto>? Edges,
+    IReadOnlyList<WorkflowInputDto>? Inputs);

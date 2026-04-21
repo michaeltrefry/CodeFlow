@@ -111,14 +111,17 @@ public sealed class BusIntegrationTests : IAsyncLifetime
 
             var inputRef = await WriteInputArtifactAsync(host.Services, "integration-test-input");
             var messageId = Guid.NewGuid();
+            var startNodeId = await GetStartNodeIdAsync(host.Services, "article-flow", 1);
             var request = new AgentInvokeRequested(
                 TraceId: Guid.NewGuid(),
                 RoundId: Guid.NewGuid(),
                 WorkflowKey: "article-flow",
                 WorkflowVersion: 1,
+                NodeId: startNodeId,
                 AgentKey: "echo-agent",
                 AgentVersion: 1,
                 InputRef: inputRef,
+                ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>(),
                 CorrelationHeaders: new Dictionary<string, string> { ["x-test"] = "phase-3" });
 
             var bus = host.Services.GetRequiredService<IBus>();
@@ -205,11 +208,35 @@ public sealed class BusIntegrationTests : IAsyncLifetime
             Key = "article-flow",
             Version = 1,
             Name = "bus-integration-test",
-            StartAgentKey = "echo-agent",
             MaxRoundsPerRound = 5,
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAtUtc = DateTime.UtcNow,
+            Nodes =
+            [
+                new WorkflowNodeEntity
+                {
+                    NodeId = Guid.NewGuid(),
+                    Kind = WorkflowNodeKind.Start,
+                    AgentKey = "echo-agent",
+                    AgentVersion = 1,
+                    OutputPortsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""",
+                    LayoutX = 0,
+                    LayoutY = 0
+                }
+            ]
         });
         await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task<Guid> GetStartNodeIdAsync(IServiceProvider services, string workflowKey, int version)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var workflow = await dbContext.Workflows
+            .Include(w => w.Nodes)
+            .AsNoTracking()
+            .SingleAsync(w => w.Key == workflowKey && w.Version == version);
+
+        return workflow.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start).NodeId;
     }
 
     private async Task<Uri> WriteInputArtifactAsync(IServiceProvider services, string content)

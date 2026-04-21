@@ -95,10 +95,10 @@ public static class WorkflowsEndpoints
         var validation = await WorkflowValidator.ValidateAsync(
             request.Key ?? string.Empty,
             request.Name,
-            request.StartAgentKey,
-            request.EscalationAgentKey,
             request.MaxRoundsPerRound,
+            request.Nodes,
             request.Edges,
+            request.Inputs,
             dbContext,
             cancellationToken);
 
@@ -120,7 +120,7 @@ public static class WorkflowsEndpoints
             return Results.Conflict(new { error = $"Workflow '{normalizedKey}' already exists. Use PUT to add a version." });
         }
 
-        var draft = ToDraft(normalizedKey, request.Name!, request.StartAgentKey!, request.EscalationAgentKey, request.MaxRoundsPerRound, request.Edges!);
+        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, request.Nodes!, request.Edges!, request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -136,10 +136,10 @@ public static class WorkflowsEndpoints
         var validation = await WorkflowValidator.ValidateAsync(
             key,
             request.Name,
-            request.StartAgentKey,
-            request.EscalationAgentKey,
             request.MaxRoundsPerRound,
+            request.Nodes,
             request.Edges,
+            request.Inputs,
             dbContext,
             cancellationToken);
 
@@ -161,7 +161,7 @@ public static class WorkflowsEndpoints
             return Results.NotFound(new { error = $"Workflow '{normalizedKey}' does not exist. Use POST to create." });
         }
 
-        var draft = ToDraft(normalizedKey, request.Name!, request.StartAgentKey!, request.EscalationAgentKey, request.MaxRoundsPerRound, request.Edges!);
+        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, request.Nodes!, request.Edges!, request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
@@ -170,52 +170,92 @@ public static class WorkflowsEndpoints
     private static WorkflowDraft ToDraft(
         string key,
         string name,
-        string startAgentKey,
-        string? escalationAgentKey,
         int? maxRoundsPerRound,
-        IReadOnlyList<WorkflowEdgeDto> edges)
+        IReadOnlyList<WorkflowNodeDto> nodes,
+        IReadOnlyList<WorkflowEdgeDto> edges,
+        IReadOnlyList<WorkflowInputDto>? inputs)
     {
         return new WorkflowDraft(
             Key: key,
             Name: name,
-            StartAgentKey: startAgentKey,
-            EscalationAgentKey: escalationAgentKey,
             MaxRoundsPerRound: maxRoundsPerRound ?? 3,
+            Nodes: nodes
+                .Select(node => new WorkflowNodeDraft(
+                    Id: node.Id,
+                    Kind: node.Kind,
+                    AgentKey: node.AgentKey,
+                    AgentVersion: node.AgentVersion,
+                    Script: node.Script,
+                    OutputPorts: node.OutputPorts ?? Array.Empty<string>(),
+                    LayoutX: node.LayoutX,
+                    LayoutY: node.LayoutY))
+                .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
-                    FromAgentKey: edge.FromAgentKey,
-                    Decision: edge.Decision,
-                    Discriminator: edge.Discriminator,
-                    ToAgentKey: edge.ToAgentKey,
+                    FromNodeId: edge.FromNodeId,
+                    FromPort: edge.FromPort,
+                    ToNodeId: edge.ToNodeId,
+                    ToPort: string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                     RotatesRound: edge.RotatesRound,
                     SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder))
-                .ToArray());
+                .ToArray(),
+            Inputs: inputs is null
+                ? Array.Empty<WorkflowInputDraft>()
+                : inputs
+                    .Select((input, index) => new WorkflowInputDraft(
+                        Key: input.Key,
+                        DisplayName: input.DisplayName,
+                        Kind: input.Kind,
+                        Required: input.Required,
+                        DefaultValueJson: input.DefaultValueJson,
+                        Description: input.Description,
+                        Ordinal: input.Ordinal == 0 ? index : input.Ordinal))
+                    .ToArray());
     }
 
     private static WorkflowSummaryDto MapSummary(Workflow workflow) => new(
         Key: workflow.Key,
         LatestVersion: workflow.Version,
         Name: workflow.Name,
-        StartAgentKey: workflow.StartAgentKey,
-        EscalationAgentKey: workflow.EscalationAgentKey,
+        NodeCount: workflow.Nodes.Count,
         EdgeCount: workflow.Edges.Count,
+        InputCount: workflow.Inputs.Count,
         CreatedAtUtc: workflow.CreatedAtUtc);
 
     private static WorkflowDetailDto MapDetail(Workflow workflow) => new(
         Key: workflow.Key,
         Version: workflow.Version,
         Name: workflow.Name,
-        StartAgentKey: workflow.StartAgentKey,
-        EscalationAgentKey: workflow.EscalationAgentKey,
         MaxRoundsPerRound: workflow.MaxRoundsPerRound,
         CreatedAtUtc: workflow.CreatedAtUtc,
+        Nodes: workflow.Nodes
+            .Select(node => new WorkflowNodeDto(
+                Id: node.Id,
+                Kind: node.Kind,
+                AgentKey: node.AgentKey,
+                AgentVersion: node.AgentVersion,
+                Script: node.Script,
+                OutputPorts: node.OutputPorts,
+                LayoutX: node.LayoutX,
+                LayoutY: node.LayoutY))
+            .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(
-                FromAgentKey: edge.FromAgentKey,
-                Decision: edge.Decision,
-                Discriminator: edge.Discriminator,
-                ToAgentKey: edge.ToAgentKey,
+                FromNodeId: edge.FromNodeId,
+                FromPort: edge.FromPort,
+                ToNodeId: edge.ToNodeId,
+                ToPort: edge.ToPort,
                 RotatesRound: edge.RotatesRound,
                 SortOrder: edge.SortOrder))
+            .ToArray(),
+        Inputs: workflow.Inputs
+            .Select(input => new WorkflowInputDto(
+                Key: input.Key,
+                DisplayName: input.DisplayName,
+                Kind: input.Kind,
+                Required: input.Required,
+                DefaultValueJson: input.DefaultValueJson,
+                Description: input.Description,
+                Ordinal: input.Ordinal))
             .ToArray());
 }
