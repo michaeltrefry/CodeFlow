@@ -70,5 +70,9 @@ export const routes: Routes = [
     path: 'settings/roles/:id',
     loadComponent: () => import('./pages/settings/roles/role-editor.component').then(m => m.RoleEditorComponent)
   },
+  {
+    path: 'settings/git-host',
+    loadComponent: () => import('./pages/settings/git-host/git-host-settings.component').then(m => m.GitHostSettingsComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];
