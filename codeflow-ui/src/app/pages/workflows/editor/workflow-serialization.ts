@@ -10,7 +10,13 @@ import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
 import { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
-export const DEFAULT_AGENT_OUTPUT_PORTS = ['Completed', 'Approved', 'ApprovedWithActions', 'Rejected', 'Failed'];
+/**
+ * Default output ports when the agent has not published a richer output schema.
+ * Every agent emits at least `Completed` (success) or `Failed` (error); workflow
+ * authors can add more ports on a specific node if their agent emits other
+ * decision kinds.
+ */
+export const DEFAULT_AGENT_OUTPUT_PORTS = ['Completed', 'Failed'];
 
 export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
   switch (kind) {
