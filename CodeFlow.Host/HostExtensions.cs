@@ -1,3 +1,4 @@
+using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -95,6 +96,8 @@ public static class HostExtensions
         services.TryAddSingleton<IMcpConnectionInfoProvider, NullMcpConnectionInfoProvider>();
         services.AddSingleton<IMcpClient, DefaultMcpClient>();
         services.AddSingleton<McpToolDiscovery>();
+
+        services.AddCodeFlowWorkspace(configuration);
 
         return services;
     }
