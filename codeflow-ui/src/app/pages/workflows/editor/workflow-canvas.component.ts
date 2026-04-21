@@ -35,6 +35,7 @@ import {
   serializeEditor,
   workflowDetailToModel
 } from './workflow-serialization';
+import { tidyLayout } from './auto-layout';
 
 interface SelectedNode {
   editor: WorkflowEditorNode;
@@ -73,6 +74,7 @@ interface SelectedNode {
             </label>
           </div>
           <div class="toolbar-right">
+            <button type="button" class="secondary" (click)="tidy()">Tidy up</button>
             <a routerLink="/workflows" class="secondary">Cancel</a>
             <button type="button" (click)="save()" [disabled]="saving()">
               {{ saving() ? 'Saving…' : 'Save version' }}
@@ -417,6 +419,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.area?.destroy();
+  }
+
+  async tidy(): Promise<void> {
+    if (!this.editor || !this.area) return;
+    await tidyLayout(this.editor, this.area);
+    AreaExtensions.zoomAt(this.area, this.editor.getNodes());
   }
 
   async addPaletteNode(kind: WorkflowNodeKind): Promise<void> {
