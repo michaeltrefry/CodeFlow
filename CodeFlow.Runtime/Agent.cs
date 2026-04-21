@@ -25,10 +25,18 @@ public sealed class Agent : IAgentInvoker
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
+    public Task<AgentInvocationResult> InvokeAsync(
+        AgentInvocationConfiguration configuration,
+        string? input,
+        ResolvedAgentTools tools,
+        CancellationToken cancellationToken = default)
+        => InvokeAsync(configuration, input, tools, observer: null, cancellationToken);
+
     public async Task<AgentInvocationResult> InvokeAsync(
         AgentInvocationConfiguration configuration,
         string? input,
         ResolvedAgentTools tools,
+        IInvocationObserver? observer,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -64,6 +72,7 @@ public sealed class Agent : IAgentInvoker
                 configuration.Budget,
                 configuration.MaxTokens,
                 configuration.Temperature),
+            observer,
             cancellationToken);
 
         activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, loopResult.Decision.Kind.ToString());

@@ -11,6 +11,7 @@ public static class CodeFlowEndpoints
 
         routes.MapMeEndpoints();
         routes.MapAgentsEndpoints();
+        routes.MapAgentTestEndpoints();
         routes.MapWorkflowsEndpoints();
         routes.MapTracesEndpoints();
         routes.MapOpsEndpoints();
