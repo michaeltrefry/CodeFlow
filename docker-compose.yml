@@ -91,7 +91,9 @@ services:
       DeadLetter__VirtualHost: codeflow
       DeadLetter__Username: codeflow
       DeadLetter__Password: codeflow_dev
-      Secrets__MasterKey: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      Secrets__MasterKey: ${Secrets__MasterKey:-}
+      OpenAI__ApiKey: ${OpenAI__ApiKey:-}
+      Anthropic__ApiKey: ${Anthropic__ApiKey:-}
     ports:
       - "5080:8080"
     volumes:
@@ -124,7 +126,9 @@ services:
       Observability__OtlpEndpoint: http://jaeger:4317
       Observability__EnableConsoleExporter: "false"
       Artifacts__RootDirectory: /app/artifacts
-      Secrets__MasterKey: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      Secrets__MasterKey: ${Secrets__MasterKey:-}
+      OpenAI__ApiKey: ${OpenAI__ApiKey:-}
+      Anthropic__ApiKey: ${Anthropic__ApiKey:-}
     volumes:
       - codeflow-artifacts:/app/artifacts
     networks:
