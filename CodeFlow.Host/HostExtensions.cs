@@ -1,3 +1,4 @@
+using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -5,6 +6,7 @@ using CodeFlow.Runtime.Anthropic;
 using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Mcp;
 using CodeFlow.Runtime.OpenAI;
+using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -84,6 +86,11 @@ public static class HostExtensions
         services.AddScoped<IMcpServerRepository, McpServerRepository>();
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
+        services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
+        services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<ContextAssembler>();
@@ -95,6 +102,8 @@ public static class HostExtensions
         services.TryAddSingleton<IMcpConnectionInfoProvider, NullMcpConnectionInfoProvider>();
         services.AddSingleton<IMcpClient, DefaultMcpClient>();
         services.AddSingleton<McpToolDiscovery>();
+
+        services.AddCodeFlowWorkspace(configuration);
 
         return services;
     }

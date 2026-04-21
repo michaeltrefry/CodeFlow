@@ -22,6 +22,7 @@ import { AuthService } from './auth/auth.service';
           <div class="nav-section-label">Settings</div>
           <a routerLink="/settings/mcp-servers" routerLinkActive="active">MCP Servers</a>
           <a routerLink="/settings/roles" routerLinkActive="active">Roles</a>
+          <a routerLink="/settings/git-host" routerLinkActive="active">Git Host</a>
         </nav>
         <footer class="nav-user">
           @if (auth.currentUser(); as user) {
