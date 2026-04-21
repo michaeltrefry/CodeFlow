@@ -6,6 +6,7 @@ using CodeFlow.Runtime.Anthropic;
 using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Mcp;
 using CodeFlow.Runtime.OpenAI;
+using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -86,6 +87,10 @@ public static class HostExtensions
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
         services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
+        services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<ContextAssembler>();
