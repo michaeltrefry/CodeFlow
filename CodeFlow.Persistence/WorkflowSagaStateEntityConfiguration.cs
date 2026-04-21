@@ -71,6 +71,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .IsRequired()
             .IsConcurrencyToken();
 
+        builder.Property(saga => saga.EscalatedFromAgentKey)
+            .HasColumnName("escalated_from_agent_key")
+            .HasMaxLength(128);
+
         builder.Ignore(saga => saga.PendingTransition);
 
         builder.HasIndex(saga => new { saga.WorkflowKey, saga.WorkflowVersion });
