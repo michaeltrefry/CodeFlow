@@ -1,9 +1,12 @@
 using CodeFlow.Contracts;
+using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using FluentAssertions;
 using MassTransit;
 using MassTransit.Testing;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text;
 using System.Text.Json;
 using RuntimeDecisionKind = CodeFlow.Runtime.AgentDecisionKind;
 
@@ -415,6 +418,199 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task LogicNode_RoutesOnScriptChosenPort()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var logicNodeId = Guid.NewGuid();
+        const string script = """
+            if (input.kind === 'NewProject') { setNodePath('NewProjectFlow'); }
+            else if (input.kind === 'feature') { setNodePath('FeatureFlow'); }
+            else { setNodePath('BugFixFlow'); }
+            """;
+
+        var workflow = BuildWorkflowWithLogic(
+            key: "logic",
+            startAgentKey: "classifier",
+            logicNodeId: logicNodeId,
+            logicScript: script,
+            logicOutputPorts: new[] { "NewProjectFlow", "FeatureFlow", "BugFixFlow" },
+            downstreamAgents: new[] { "newProjectFlow", "featureFlow", "bugFixFlow" },
+            classifierToLogicPort: "Completed",
+            logicPortToAgent: new Dictionary<string, string>
+            {
+                ["NewProjectFlow"] = "newProjectFlow",
+                ["FeatureFlow"] = "featureFlow",
+                ["BugFixFlow"] = "bugFixFlow"
+            });
+
+        var outputRef = new Uri("file:///tmp/classifier-out.bin");
+        var artifactStore = new StubArtifactStore(defaultJson: """{"kind":"feature","summary":"add toggle"}""");
+        var harness = BuildHarness(workflow, new Dictionary<string, int>
+        {
+            ["newProjectFlow"] = 1,
+            ["featureFlow"] = 1,
+            ["bugFixFlow"] = 1
+        }, artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "classifier"),
+                AgentKey: "classifier",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: outputRef,
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "featureFlow"));
+
+            var dispatches = harness.Published.Select<AgentInvokeRequested>()
+                .Where(x => x.Context.Message.AgentKey != "classifier")
+                .ToList();
+
+            dispatches.Should().ContainSingle()
+                .Which.Context.Message.AgentKey.Should().Be("featureFlow",
+                    "the logic script routed on input.kind === 'feature'");
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("featureFlow");
+            saga.CurrentNodeId.Should().Be(NodeIdFor(workflow, "featureFlow"));
+
+            var logicHistory = saga.GetLogicEvaluationHistory();
+            logicHistory.Should().ContainSingle()
+                .Which.OutputPortName.Should().Be("FeatureFlow");
+            logicHistory[0].FailureKind.Should().BeNull();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task LogicNode_ScriptFailure_RoutesViaFailedPort()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var logicNodeId = Guid.NewGuid();
+        const string script = "throw new Error('script exploded');";
+
+        var workflow = BuildWorkflowWithLogic(
+            key: "logic-failed",
+            startAgentKey: "classifier",
+            logicNodeId: logicNodeId,
+            logicScript: script,
+            logicOutputPorts: new[] { AgentDecisionPorts.FailedPort },
+            downstreamAgents: new[] { "fallback" },
+            classifierToLogicPort: "Completed",
+            logicPortToAgent: new Dictionary<string, string>
+            {
+                [AgentDecisionPorts.FailedPort] = "fallback"
+            });
+
+        var artifactStore = new StubArtifactStore(defaultJson: "{}");
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["fallback"] = 1 }, artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "classifier"),
+                AgentKey: "classifier",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/out.bin"),
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "fallback"));
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("fallback");
+
+            var logicHistory = saga.GetLogicEvaluationHistory();
+            logicHistory.Should().ContainSingle();
+            logicHistory[0].FailureKind.Should().Be("ScriptError");
+            logicHistory[0].FailureMessage.Should().Contain("script exploded");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    private static Workflow BuildWorkflowWithLogic(
+        string key,
+        string startAgentKey,
+        Guid logicNodeId,
+        string logicScript,
+        IReadOnlyList<string> logicOutputPorts,
+        IReadOnlyList<string> downstreamAgents,
+        string classifierToLogicPort,
+        IReadOnlyDictionary<string, string> logicPortToAgent)
+    {
+        var nodes = new List<WorkflowNode>();
+        var nodeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+
+        var startId = Guid.NewGuid();
+        nodeIds[startAgentKey] = startId;
+        nodes.Add(new WorkflowNode(startId, WorkflowNodeKind.Start, startAgentKey, 1, null, AllDecisionPorts, 0, 0));
+
+        nodes.Add(new WorkflowNode(logicNodeId, WorkflowNodeKind.Logic, null, null, logicScript, logicOutputPorts, 250, 0));
+
+        foreach (var agentKey in downstreamAgents)
+        {
+            var id = Guid.NewGuid();
+            nodeIds[agentKey] = id;
+            nodes.Add(new WorkflowNode(id, WorkflowNodeKind.Agent, agentKey, 1, null, AllDecisionPorts, 500, 0));
+        }
+
+        var edges = new List<WorkflowEdge>
+        {
+            new(startId, classifierToLogicPort, logicNodeId, WorkflowEdge.DefaultInputPort, false, 0)
+        };
+
+        var sortOrder = 1;
+        foreach (var (port, agent) in logicPortToAgent)
+        {
+            edges.Add(new WorkflowEdge(logicNodeId, port, nodeIds[agent], WorkflowEdge.DefaultInputPort, false, sortOrder++));
+        }
+
+        return new Workflow(
+            Key: key,
+            Version: 1,
+            Name: key,
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: edges,
+            Inputs: Array.Empty<WorkflowInput>());
+    }
+
+    [Fact]
     public async Task FailedDecisionWithRetryEdge_ShouldIncludeRetryContextOnHandoff()
     {
         var traceId = Guid.NewGuid();
@@ -484,11 +680,15 @@ public sealed class WorkflowSagaStateMachineTests
 
     private static ITestHarness BuildHarness(
         Workflow workflow,
-        IReadOnlyDictionary<string, int> agentVersions)
+        IReadOnlyDictionary<string, int> agentVersions,
+        IArtifactStore? artifactStore = null)
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkflowRepository>(new FakeWorkflowRepository(workflow))
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentVersions))
+            .AddSingleton<IArtifactStore>(artifactStore ?? new StubArtifactStore(defaultJson: "{}"))
+            .AddSingleton<IMemoryCache>(_ => new MemoryCache(new MemoryCacheOptions()))
+            .AddSingleton<LogicNodeScriptHost>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
@@ -496,6 +696,30 @@ public sealed class WorkflowSagaStateMachineTests
             .BuildServiceProvider(true);
 
         return provider.GetRequiredService<ITestHarness>();
+    }
+
+    private sealed class StubArtifactStore : IArtifactStore
+    {
+        private readonly Func<Uri, string> payloadSelector;
+
+        public StubArtifactStore(string defaultJson)
+        {
+            payloadSelector = _ => defaultJson;
+        }
+
+        public StubArtifactStore(Func<Uri, string> payloadSelector)
+        {
+            this.payloadSelector = payloadSelector;
+        }
+
+        public Task<ArtifactMetadata> GetMetadataAsync(Uri uri, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Stream> ReadAsync(Uri uri, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(payloadSelector(uri))));
+
+        public Task<Uri> WriteAsync(Stream content, ArtifactMetadata metadata, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed record EdgeSpec(

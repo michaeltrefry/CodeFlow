@@ -51,6 +51,11 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnType("longtext")
             .IsRequired();
 
+        builder.Property(saga => saga.LogicEvaluationHistoryJson)
+            .HasColumnName("logic_evaluation_history_json")
+            .HasColumnType("longtext")
+            .IsRequired();
+
         builder.Property(saga => saga.WorkflowKey)
             .HasColumnName("workflow_key")
             .HasMaxLength(128)

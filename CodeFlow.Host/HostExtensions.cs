@@ -1,5 +1,6 @@
 using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
+using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Anthropic;
@@ -81,6 +82,8 @@ public static class HostExtensions
         });
 
         services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
+        services.AddMemoryCache();
+        services.AddSingleton<LogicNodeScriptHost>();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
         services.AddScoped<IMcpServerRepository, McpServerRepository>();

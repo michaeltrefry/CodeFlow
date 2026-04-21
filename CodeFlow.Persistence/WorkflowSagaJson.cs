@@ -46,4 +46,19 @@ public static class WorkflowSagaJson
     {
         return JsonSerializer.Serialize(history, Options);
     }
+
+    public static IReadOnlyList<LogicEvaluationRecord> DeserializeLogicEvaluationHistory(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        return JsonSerializer.Deserialize<List<LogicEvaluationRecord>>(json, Options) ?? [];
+    }
+
+    public static string SerializeLogicEvaluationHistory(IReadOnlyList<LogicEvaluationRecord> history)
+    {
+        return JsonSerializer.Serialize(history, Options);
+    }
 }

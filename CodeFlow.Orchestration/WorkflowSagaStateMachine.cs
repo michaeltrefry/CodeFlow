@@ -1,8 +1,10 @@
 using CodeFlow.Contracts;
+using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text;
 using System.Text.Json;
 
 namespace CodeFlow.Orchestration;
@@ -12,6 +14,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     public const string PendingTransitionCompleted = "Completed";
     public const string PendingTransitionFailed = "Failed";
     public const string PendingTransitionEscalated = "Escalated";
+
+    private const int MaxLogicChainHops = 32;
 
     public State Running { get; } = null!;
 
@@ -109,6 +113,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var services = context.GetPayload<IServiceProvider>();
         var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
         var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
+        var artifactStore = services.GetRequiredService<IArtifactStore>();
+        var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
 
         var runtimeKind = MapDecisionKind(message.Decision);
 
@@ -152,15 +158,33 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        var targetNode = workflow.FindNode(edge.ToNodeId)
-            ?? throw new InvalidOperationException(
-                $"Edge {edge.FromNodeId}:{edge.FromPort} → {edge.ToNodeId} references a missing node.");
+        var resolution = await ResolveTargetThroughLogicChainAsync(
+            context,
+            workflow,
+            saga,
+            scriptHost,
+            artifactStore,
+            edge,
+            upstreamOutputRef: message.OutputRef);
 
-        var targetRoundId = edge.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
-        var targetRoundCount = edge.RotatesRound ? 0 : saga.RoundCount + 1;
+        if (resolution is { FailureTerminal: true })
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (resolution is null)
+        {
+            throw new InvalidOperationException("Logic chain resolver returned no outcome.");
+        }
+
+        var targetNode = resolution.TerminalNode!;
+        var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
+        var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
         var retryContext = BuildRetryContextForHandoff(saga, message);
 
-        if (!edge.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
+        if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
             var escalationNode = workflow.EscalationNode;
             if (escalationNode is not null)
@@ -205,6 +229,151 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.UpdatedAtUtc = DateTime.UtcNow;
 
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
+    }
+
+    private static async Task<LogicChainResolution?> ResolveTargetThroughLogicChainAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        Workflow workflow,
+        WorkflowSagaStateEntity saga,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
+        WorkflowEdge initialEdge,
+        Uri upstreamOutputRef)
+    {
+        var rotates = initialEdge.RotatesRound;
+        var currentNode = workflow.FindNode(initialEdge.ToNodeId)
+            ?? throw new InvalidOperationException(
+                $"Edge {initialEdge.FromNodeId}:{initialEdge.FromPort} → {initialEdge.ToNodeId} references a missing node.");
+
+        if (currentNode.Kind != WorkflowNodeKind.Logic)
+        {
+            return new LogicChainResolution(currentNode, rotates, FailureTerminal: false);
+        }
+
+        JsonElement inputJson = default;
+        var inputLoaded = false;
+        var contextInputs = DeserializeContextInputs(saga.InputsJson);
+
+        for (var hops = 0; hops < MaxLogicChainHops; hops++)
+        {
+            if (!inputLoaded)
+            {
+                inputJson = await ReadArtifactAsJsonAsync(artifactStore, upstreamOutputRef, context.CancellationToken);
+                inputLoaded = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentNode.Script))
+            {
+                saga.AppendLogicEvaluation(LogicEvaluationRecordFailure(
+                    currentNode.Id,
+                    saga.CurrentRoundId,
+                    TimeSpan.Zero,
+                    Array.Empty<string>(),
+                    kind: "ConfigurationError",
+                    message: $"Logic node {currentNode.Id} has no script."));
+                return new LogicChainResolution(null, rotates, FailureTerminal: true);
+            }
+
+            var eval = scriptHost.Evaluate(
+                workflowKey: workflow.Key,
+                workflowVersion: workflow.Version,
+                nodeId: currentNode.Id,
+                script: currentNode.Script,
+                declaredPorts: currentNode.OutputPorts,
+                input: inputJson,
+                context: contextInputs,
+                cancellationToken: context.CancellationToken);
+
+            saga.AppendLogicEvaluation(new LogicEvaluationRecord(
+                NodeId: currentNode.Id,
+                OutputPortName: eval.OutputPortName,
+                RoundId: saga.CurrentRoundId,
+                Duration: eval.Duration,
+                Logs: eval.LogEntries,
+                FailureKind: eval.Failure?.ToString(),
+                FailureMessage: eval.FailureMessage,
+                RecordedAtUtc: DateTime.UtcNow));
+
+            var chosenPort = eval.IsSuccess
+                ? eval.OutputPortName!
+                : AgentDecisionPorts.FailedPort;
+
+            var nextEdge = workflow.FindNext(currentNode.Id, chosenPort);
+            if (nextEdge is null)
+            {
+                return new LogicChainResolution(null, rotates, FailureTerminal: true);
+            }
+
+            if (nextEdge.RotatesRound)
+            {
+                rotates = true;
+            }
+
+            currentNode = workflow.FindNode(nextEdge.ToNodeId)
+                ?? throw new InvalidOperationException(
+                    $"Edge {nextEdge.FromNodeId}:{nextEdge.FromPort} → {nextEdge.ToNodeId} references a missing node.");
+
+            if (currentNode.Kind != WorkflowNodeKind.Logic)
+            {
+                return new LogicChainResolution(currentNode, rotates, FailureTerminal: false);
+            }
+        }
+
+        saga.AppendLogicEvaluation(LogicEvaluationRecordFailure(
+            currentNode.Id,
+            saga.CurrentRoundId,
+            TimeSpan.Zero,
+            Array.Empty<string>(),
+            kind: "LogicChainTooLong",
+            message: $"Logic chain exceeded {MaxLogicChainHops} hops."));
+        return new LogicChainResolution(null, rotates, FailureTerminal: true);
+    }
+
+    private static LogicEvaluationRecord LogicEvaluationRecordFailure(
+        Guid nodeId,
+        Guid roundId,
+        TimeSpan duration,
+        IReadOnlyList<string> logs,
+        string kind,
+        string message) => new(
+            NodeId: nodeId,
+            OutputPortName: null,
+            RoundId: roundId,
+            Duration: duration,
+            Logs: logs,
+            FailureKind: kind,
+            FailureMessage: message,
+            RecordedAtUtc: DateTime.UtcNow);
+
+    private sealed record LogicChainResolution(
+        WorkflowNode? TerminalNode,
+        bool RotatesRound,
+        bool FailureTerminal);
+
+    private static async Task<JsonElement> ReadArtifactAsJsonAsync(
+        IArtifactStore artifactStore,
+        Uri outputRef,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await artifactStore.ReadAsync(outputRef, cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+        var text = await reader.ReadToEndAsync(cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can still read it.
+            var doc = new { text };
+            return JsonSerializer.SerializeToElement(doc);
+        }
     }
 
     private static async Task HandleEscalationResponseAsync(
@@ -273,8 +442,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation or WorkflowNodeKind.Start =>
                 PublishHandoffAsync(context, agentConfigRepo, saga, workflow, node, inputRef, roundId, retryContext),
             WorkflowNodeKind.Logic =>
-                throw new NotSupportedException(
-                    "Logic nodes are not yet executed by the saga. Wire up LogicNodeScriptHost (Phase 2)."),
+                throw new InvalidOperationException(
+                    "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),
             _ =>
                 throw new InvalidOperationException($"Unknown workflow node kind: {node.Kind}.")
         };
@@ -440,7 +609,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             writer.WriteEndObject();
         }
 
-        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+        return Encoding.UTF8.GetString(stream.ToArray());
     }
 
     private static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)

@@ -2,6 +2,7 @@ using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
 using CodeFlow.Persistence;
+using Jint;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -35,7 +36,32 @@ public static class WorkflowsEndpoints
         group.MapPut("/{key}", CreateVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
+        group.MapPost("/validate-script", ValidateScript)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
         return routes;
+    }
+
+    private static IResult ValidateScript(ValidateScriptRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Script))
+        {
+            return Results.Ok(new ValidateScriptResponse(
+                Ok: false,
+                Errors: new[] { new ValidateScriptError(0, 0, "Script must not be empty.") }));
+        }
+
+        try
+        {
+            Engine.PrepareScript(request.Script);
+            return Results.Ok(new ValidateScriptResponse(Ok: true, Errors: Array.Empty<ValidateScriptError>()));
+        }
+        catch (Exception ex)
+        {
+            return Results.Ok(new ValidateScriptResponse(
+                Ok: false,
+                Errors: new[] { new ValidateScriptError(0, 0, ex.Message) }));
+        }
     }
 
     private static async Task<IResult> ListWorkflowsAsync(
