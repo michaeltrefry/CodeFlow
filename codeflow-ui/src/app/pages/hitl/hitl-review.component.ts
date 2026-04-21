@@ -1,7 +1,16 @@
-import { Component, inject, input, output, signal } from '@angular/core';
+import { Component, computed, inject, input, output, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { AgentsApi } from '../../core/agents.api';
 import { TracesApi } from '../../core/traces.api';
 import { AgentDecisionKind, HitlTask } from '../../core/models';
+import {
+  ALL_DECISION_KINDS,
+  HitlPlaceholder,
+  getDecisionOptions,
+  getDecisionPlaceholder,
+  parseHitlTemplate,
+  renderHitlTemplate
+} from '../../core/hitl-template';
 
 @Component({
   selector: 'cf-hitl-review',
@@ -23,42 +32,83 @@ import { AgentDecisionKind, HitlTask } from '../../core/models';
         <p class="muted small">(no preview — see artifact {{ task().inputRef }})</p>
       }
 
-      <div class="form-field">
-        <label>Decision</label>
-        <select [(ngModel)]="decision" name="decision-{{ task().id }}">
-          <option value="Approved">Approve</option>
-          <option value="ApprovedWithActions">Approve with actions</option>
-          <option value="Rejected">Reject</option>
-          <option value="Completed">Mark completed</option>
-          <option value="Failed">Mark failed</option>
-        </select>
-      </div>
+      @if (configLoading()) {
+        <p class="muted small">Loading agent template…</p>
+      } @else if (hasTemplate()) {
+        <p class="muted small">Fill in each field. The output below will be sent to the next agent — change a value to see it update.</p>
 
-      @if (decision() === 'Rejected') {
+        @for (ph of placeholders(); track ph.name) {
+          <div class="form-field">
+            <label>
+              <code class="placeholder">{{ formatVar(ph.name) }}</code>
+              @if (ph.kind === 'decision') {
+                <span class="muted small"> — sets decision kind</span>
+              }
+            </label>
+            @if (ph.kind === 'decision') {
+              <select [ngModel]="fieldValues()[ph.name]" (ngModelChange)="setField(ph.name, $event)" [name]="'field-' + task().id + '-' + ph.name">
+                @for (opt of decisionOptions(); track opt) {
+                  <option [value]="opt">{{ opt }}</option>
+                }
+              </select>
+            } @else if (ph.kind === 'select') {
+              <select [ngModel]="fieldValues()[ph.name]" (ngModelChange)="setField(ph.name, $event)" [name]="'field-' + task().id + '-' + ph.name">
+                @for (opt of ph.options ?? []; track opt) {
+                  <option [value]="opt">{{ opt }}</option>
+                }
+              </select>
+            } @else {
+              <textarea
+                [ngModel]="fieldValues()[ph.name]"
+                (ngModelChange)="setField(ph.name, $event)"
+                [name]="'field-' + task().id + '-' + ph.name"
+                rows="3"></textarea>
+            }
+          </div>
+        }
+
         <div class="form-field">
-          <label>Reasons (one per line)</label>
-          <textarea [(ngModel)]="reasonText" name="reasons-{{ task().id }}" rows="3"></textarea>
+          <label>Output preview</label>
+          <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
+        </div>
+      } @else {
+        <div class="form-field">
+          <label>Decision</label>
+          <select [(ngModel)]="decision" name="decision-{{ task().id }}">
+            <option value="Approved">Approve</option>
+            <option value="ApprovedWithActions">Approve with actions</option>
+            <option value="Rejected">Reject</option>
+            <option value="Completed">Mark completed</option>
+            <option value="Failed">Mark failed</option>
+          </select>
+        </div>
+
+        @if (decision() === 'Rejected') {
+          <div class="form-field">
+            <label>Reasons (one per line)</label>
+            <textarea [(ngModel)]="reasonText" name="reasons-{{ task().id }}" rows="3"></textarea>
+          </div>
+        }
+
+        @if (decision() === 'ApprovedWithActions') {
+          <div class="form-field">
+            <label>Actions (one per line)</label>
+            <textarea [(ngModel)]="reasonText" name="actions-{{ task().id }}" rows="3"></textarea>
+          </div>
+        }
+
+        <div class="form-field">
+          <label>Output text (optional)</label>
+          <textarea [(ngModel)]="outputText" name="output-{{ task().id }}" rows="4" placeholder="Explain the decision or paste updated content…"></textarea>
         </div>
       }
-
-      @if (decision() === 'ApprovedWithActions') {
-        <div class="form-field">
-          <label>Actions (one per line)</label>
-          <textarea [(ngModel)]="reasonText" name="actions-{{ task().id }}" rows="3"></textarea>
-        </div>
-      }
-
-      <div class="form-field">
-        <label>Output text (optional)</label>
-        <textarea [(ngModel)]="outputText" name="output-{{ task().id }}" rows="4" placeholder="Explain the decision or paste updated content…"></textarea>
-      </div>
 
       @if (error()) {
         <div class="tag error">{{ error() }}</div>
       }
 
       <div class="row">
-        <button (click)="submit()" [disabled]="submitting()">
+        <button (click)="submit()" [disabled]="submitting() || configLoading()">
           {{ submitting() ? 'Submitting…' : 'Submit decision' }}
         </button>
       </div>
@@ -79,26 +129,131 @@ import { AgentDecisionKind, HitlTask } from '../../core/models';
       max-height: 240px;
       overflow: auto;
     }
+    .preview-output {
+      border-left: 3px solid var(--color-accent);
+    }
+    .placeholder {
+      font-size: 0.8rem;
+      background: var(--color-surface-alt);
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      color: var(--color-accent);
+    }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
   `]
 })
-export class HitlReviewComponent {
+export class HitlReviewComponent implements OnInit {
   private readonly api = inject(TracesApi);
+  private readonly agentsApi = inject(AgentsApi);
 
   readonly task = input.required<HitlTask>();
   readonly decided = output<void>();
 
+  // Template-driven state
+  readonly configLoading = signal(true);
+  readonly template = signal<string | null>(null);
+  readonly fieldValues = signal<Record<string, string>>({});
+
+  readonly parsedTemplate = computed(() => parseHitlTemplate(this.template()));
+  readonly placeholders = computed<HitlPlaceholder[]>(() => this.parsedTemplate().placeholders);
+  readonly hasTemplate = computed(() => this.placeholders().length > 0);
+  readonly decisionOptions = computed<AgentDecisionKind[]>(() =>
+    getDecisionOptions(getDecisionPlaceholder(this.parsedTemplate()))
+  );
+  readonly renderedOutput = computed(() => {
+    const tpl = this.template();
+    if (!tpl) { return ''; }
+    return renderHitlTemplate(tpl, this.fieldValues());
+  });
+
+  // Legacy (no-template) state
   readonly decision = signal<AgentDecisionKind>('Approved');
   readonly reasonText = signal('');
   readonly outputText = signal('');
+
   readonly submitting = signal(false);
   readonly error = signal<string | null>(null);
+
+  ngOnInit(): void {
+    const task = this.task();
+    this.agentsApi.getVersion(task.agentKey, task.agentVersion).subscribe({
+      next: version => {
+        const tpl = version.config?.['outputTemplate'] as string | undefined;
+        this.template.set(tpl?.length ? tpl : null);
+        this.seedDefaults();
+        this.configLoading.set(false);
+      },
+      error: () => {
+        // Fall back to legacy form on config-load failure.
+        this.configLoading.set(false);
+      }
+    });
+  }
+
+  formatVar(name: string): string {
+    return `{{${name}}}`;
+  }
+
+  setField(name: string, value: string): void {
+    this.fieldValues.set({ ...this.fieldValues(), [name]: value });
+  }
+
+  private seedDefaults(): void {
+    const next: Record<string, string> = {};
+    for (const ph of this.placeholders()) {
+      if (ph.kind === 'decision') {
+        next[ph.name] = this.decisionOptions()[0] ?? 'Approved';
+      } else if (ph.kind === 'select') {
+        next[ph.name] = ph.options?.[0] ?? '';
+      } else {
+        next[ph.name] = '';
+      }
+    }
+    this.fieldValues.set(next);
+  }
 
   submit(): void {
     this.submitting.set(true);
     this.error.set(null);
 
+    if (this.hasTemplate()) {
+      this.submitTemplated();
+    } else {
+      this.submitLegacy();
+    }
+  }
+
+  private submitTemplated(): void {
+    const parsed = this.parsedTemplate();
+    const decisionPh = getDecisionPlaceholder(parsed);
+    const values = this.fieldValues();
+    const rendered = this.renderedOutput();
+
+    let decision: AgentDecisionKind = 'Completed';
+    if (decisionPh) {
+      const raw = values[decisionPh.name];
+      if (raw && (ALL_DECISION_KINDS as string[]).includes(raw)) {
+        decision = raw as AgentDecisionKind;
+      }
+    }
+
+    this.api.submitHitlDecision(this.task().traceId, {
+      decision,
+      outputText: rendered
+    }).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.decided.emit();
+      },
+      error: err => {
+        this.submitting.set(false);
+        this.error.set(err?.message ?? 'Failed to submit');
+      }
+    });
+  }
+
+  private submitLegacy(): void {
     const lines = this.reasonText()
       .split('\n')
       .map(line => line.trim())

@@ -44,6 +44,18 @@ import { AgentConfig } from '../../core/models';
         <textarea [(ngModel)]="description" name="description" rows="2"></textarea>
       </div>
 
+      @if (type() === 'hitl') {
+        <div class="form-field">
+          <label>Output template</label>
+          <textarea [(ngModel)]="outputTemplate" name="outputTemplate" rows="6" placeholder="HITL decision: {{ '{{decision:Approved|Rejected}}' }}&#10;{{ '{{feedback}}' }}"></textarea>
+          <div class="muted small">
+            Defines exactly how reviewers enter their response.
+            Use <code>{{ '{{name}}' }}</code> for free text or <code>{{ '{{name:Opt1|Opt2}}' }}</code> for a dropdown.
+            <code>{{ '{{decision}}' }}</code> is special — its value becomes the decision kind sent to the workflow.
+          </div>
+        </div>
+      }
+
       @if (type() === 'agent') {
         <div class="grid-two">
           <div class="form-field">
@@ -113,6 +125,7 @@ export class AgentEditorComponent implements OnInit {
   readonly model = signal('gpt-5');
   readonly systemPrompt = signal('');
   readonly promptTemplate = signal('');
+  readonly outputTemplate = signal('');
   readonly maxTokens = signal<number | undefined>(undefined);
   readonly temperature = signal<number | undefined>(undefined);
 
@@ -133,6 +146,7 @@ export class AgentEditorComponent implements OnInit {
           this.model.set((config['model'] as string) ?? 'gpt-5');
           this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
           this.promptTemplate.set((config['promptTemplate'] as string) ?? '');
+          this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
           this.maxTokens.set(config['maxTokens'] as number | undefined);
           this.temperature.set(config['temperature'] as number | undefined);
         }
@@ -158,6 +172,10 @@ export class AgentEditorComponent implements OnInit {
       config.promptTemplate = this.promptTemplate() || undefined;
       if (this.maxTokens() !== undefined) config.maxTokens = this.maxTokens();
       if (this.temperature() !== undefined) config.temperature = this.temperature();
+    }
+
+    if (this.type() === 'hitl') {
+      config.outputTemplate = this.outputTemplate() || undefined;
     }
 
     const existingKey = this.existingKey();
