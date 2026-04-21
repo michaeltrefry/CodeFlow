@@ -17,6 +17,7 @@ public static class CodeFlowEndpoints
         routes.MapMcpServersEndpoints();
         routes.MapHostToolsEndpoints();
         routes.MapAgentRolesEndpoints();
+        routes.MapGitHostEndpoints();
 
         return routes;
     }

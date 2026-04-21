@@ -6,17 +6,19 @@ public sealed class WorkspaceService : IWorkspaceService
 {
     private readonly WorkspaceOptions options;
     private readonly IGitCli git;
+    private readonly IRepoUrlHostGuard hostGuard;
     private readonly ConcurrentDictionary<(Guid CorrelationId, string RepoSlug), Workspace> workspaces = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> mirrorLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<(Guid, string), SemaphoreSlim> openLocks = new();
 
-    public WorkspaceService(WorkspaceOptions options, IGitCli git)
+    public WorkspaceService(WorkspaceOptions options, IGitCli git, IRepoUrlHostGuard? hostGuard = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(git);
 
         this.options = options;
         this.git = git;
+        this.hostGuard = hostGuard ?? new PermissiveRepoUrlHostGuard();
     }
 
     public async Task<Workspace> OpenAsync(
@@ -32,6 +34,7 @@ public sealed class WorkspaceService : IWorkspaceService
         }
 
         var repo = RepoReference.Parse(repoUrl);
+        await hostGuard.AssertAllowedAsync(repo, cancellationToken);
         var key = (correlationId, repo.Slug);
 
         var openLock = openLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));

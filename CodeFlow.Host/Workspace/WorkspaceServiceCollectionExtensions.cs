@@ -49,10 +49,13 @@ public static class WorkspaceServiceCollectionExtensions
         services.AddSingleton<IGitCli>(sp =>
             new GitCli(sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
 
+        services.AddSingleton<IRepoUrlHostGuard, RepoUrlHostGuard>();
+
         services.AddSingleton<IWorkspaceService>(sp =>
             new WorkspaceService(
                 sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
-                sp.GetRequiredService<IGitCli>()));
+                sp.GetRequiredService<IGitCli>(),
+                sp.GetRequiredService<IRepoUrlHostGuard>()));
 
         services.AddHostedService<WorkspaceRootInitializer>();
 

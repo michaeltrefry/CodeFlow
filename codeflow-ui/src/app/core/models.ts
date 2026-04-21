@@ -144,6 +144,29 @@ export interface HostTool {
   isMutating: boolean;
 }
 
+export type GitHostMode = 'GitHub' | 'GitLab';
+
+export interface GitHostSettingsResponse {
+  mode: GitHostMode;
+  baseUrl?: string | null;
+  hasToken: boolean;
+  lastVerifiedAtUtc?: string | null;
+  updatedBy?: string | null;
+  updatedAtUtc?: string | null;
+}
+
+export interface GitHostSettingsRequest {
+  mode: GitHostMode;
+  baseUrl?: string | null;
+  token: string;
+}
+
+export interface GitHostVerifyResponse {
+  success: boolean;
+  lastVerifiedAtUtc?: string | null;
+  error?: string | null;
+}
+
 export interface WorkflowEdge {
   fromAgentKey: string;
   decision: AgentDecisionKind;
