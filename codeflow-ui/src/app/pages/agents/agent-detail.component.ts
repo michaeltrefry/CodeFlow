@@ -53,112 +53,133 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
       <p class="tag error">{{ retireError() }}</p>
     }
 
-    <section class="roles-section">
-      <header class="section-header">
-        <h2>Roles</h2>
-        <span class="muted small">Tool access = union of assigned roles' grants</span>
-      </header>
-
-      @if (rolesLoading()) {
-        <p>Loading roles&hellip;</p>
-      } @else if (allRoles().length === 0) {
-        <p class="muted">
-          No roles defined yet.
-          <a routerLink="/settings/roles/new">Create one</a> and come back to assign it.
-        </p>
-      } @else {
-        <div class="role-grid">
-          @for (role of allRoles(); track role.id) {
-            <label class="role-option card" [class.selected]="isAssigned(role.id)">
-              <input type="checkbox" [checked]="isAssigned(role.id)" (change)="toggleRole(role, $event)" [disabled]="assignmentsSaving()" />
-              <div>
-                <div class="role-key">{{ role.key }}</div>
-                <div class="role-name muted small">{{ role.displayName }}</div>
-              </div>
-            </label>
+    <div class="detail-grid">
+      <section class="detail-column">
+        <header class="section-header">
+          <h2>Versions</h2>
+        </header>
+        <select
+          class="version-select"
+          [value]="viewing()?.version ?? ''"
+          (change)="selectFromEvent($event)">
+          @for (v of versions(); track v.version) {
+            <option [value]="v.version">
+              v{{ v.version }} · {{ v.createdAtUtc | date:'mediumDate' }}
+            </option>
           }
-        </div>
+        </select>
 
-        @if (assignmentsSaving()) {
-          <p class="muted small">Saving assignments…</p>
+        <header class="section-header section-header-spaced">
+          <h2>Configuration</h2>
+        </header>
+        @if (viewing(); as version) {
+          <pre class="card monospace json">{{ version.config | json }}</pre>
         }
-        @if (assignError()) {
-          <p class="tag error">{{ assignError() }}</p>
-        }
-      }
+      </section>
 
-      @if (assignedRoles().length > 0) {
-        <div class="effective">
-          <h3>Effective tools</h3>
-          <p class="muted small">Derived from the selected roles. This is what the agent can call at runtime.</p>
+      <section class="detail-column">
+        <header class="section-header">
+          <h2>Roles</h2>
+          <span class="muted small">Tool access = union of grants</span>
+        </header>
+
+        @if (rolesLoading()) {
+          <p>Loading roles&hellip;</p>
+        } @else if (allRoles().length === 0) {
+          <p class="muted">
+            No roles defined yet.
+            <a routerLink="/settings/roles/new">Create one</a> and come back to assign it.
+          </p>
+        } @else {
+          <div class="role-list">
+            @for (role of allRoles(); track role.id) {
+              <label class="role-option" [class.selected]="isAssigned(role.id)">
+                <input type="checkbox" [checked]="isAssigned(role.id)" (change)="toggleRole(role, $event)" [disabled]="assignmentsSaving()" />
+                <div>
+                  <div class="role-key">{{ role.key }}</div>
+                  <div class="role-name muted small">{{ role.displayName }}</div>
+                </div>
+              </label>
+            }
+          </div>
+
+          @if (assignmentsSaving()) {
+            <p class="muted small">Saving assignments…</p>
+          }
+          @if (assignError()) {
+            <p class="tag error">{{ assignError() }}</p>
+          }
+        }
+
+        <header class="section-header section-header-spaced">
+          <h2>Effective Tools</h2>
+        </header>
+        @if (assignedRoles().length === 0) {
+          <p class="muted small">No roles assigned. This agent runs with no tools.</p>
+        } @else if (effectiveGrants().length === 0) {
+          <p class="muted small">The assigned roles grant no tools.</p>
+        } @else {
           <cf-tool-picker
             [hostTools]="grantedHostTools()"
             [mcpServers]="grantedMcpCatalogs()"
             [value]="effectiveGrants()"
             [readOnly]="true" />
-        </div>
-      }
-    </section>
-
-    <div class="grid-two">
-      <div>
-        <h3>Versions</h3>
-        <div class="stack">
-          @for (v of versions(); track v.version) {
-            <button
-              class="version-btn"
-              [class.active]="v.version === viewing()?.version"
-              (click)="select(v.version)">
-              v{{ v.version }}
-              <span class="small muted">{{ v.createdAtUtc | date:'mediumDate' }}</span>
-            </button>
-          }
-        </div>
-      </div>
-
-      <div>
-        @if (viewing(); as version) {
-          <h3>Configuration</h3>
-          <pre class="card monospace json">{{ version.config | json }}</pre>
         }
-      </div>
+      </section>
     </div>
   `,
   styles: [`
-    .version-btn {
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
-      color: var(--color-text);
-      padding: 0.5rem 0.75rem;
-      text-align: left;
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-radius: 4px;
-    }
-    .version-btn.active {
-      border-color: var(--color-accent);
-      background: rgba(56,189,248,0.08);
-    }
     .small { font-size: 0.8rem; }
+    .muted { color: var(--color-muted); }
     pre.json {
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 480px;
       overflow: auto;
     }
-    .roles-section { margin: 1.5rem 0; }
-    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 2rem;
+      align-items: start;
+    }
+    .detail-column { display: flex; flex-direction: column; }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .section-header.section-header-spaced { margin-top: 1.5rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
-    .role-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.5rem; }
-    .role-option { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.75rem; cursor: pointer; }
-    .role-option.selected { border-color: var(--color-accent); background: rgba(56,189,248,0.05); }
+    .version-select {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      border: 1px solid var(--color-border);
+      background: var(--color-surface);
+      color: var(--color-text);
+    }
+    .role-list { display: flex; flex-direction: column; gap: 0.35rem; }
+    .role-option {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      cursor: pointer;
+      background: var(--color-surface);
+    }
+    .role-option.selected {
+      border-color: var(--color-accent);
+      background: rgba(56,189,248,0.05);
+    }
     .role-key { font-family: var(--font-mono, monospace); font-weight: 600; }
     .role-name { margin-top: 0.15rem; }
-    .effective { margin-top: 1.5rem; }
-    .effective h3 { margin: 0 0 0.25rem; font-size: 1rem; }
-    .muted { color: var(--color-muted); }
+    @media (max-width: 900px) {
+      .detail-grid { grid-template-columns: minmax(0, 1fr); }
+    }
   `]
 })
 export class AgentDetailComponent implements OnInit {
@@ -328,6 +349,14 @@ export class AgentDetailComponent implements OnInit {
         this.retired.set(v.isRetired);
       }
     });
+  }
+
+  selectFromEvent(event: Event): void {
+    const value = (event.target as HTMLSelectElement).value;
+    const version = Number.parseInt(value, 10);
+    if (Number.isFinite(version)) {
+      this.select(version);
+    }
   }
 
   retire(): void {
