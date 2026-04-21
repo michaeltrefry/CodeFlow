@@ -66,6 +66,11 @@ public static class WorkspaceServiceCollectionExtensions
                 sp.GetRequiredService<IGitCli>(),
                 sp.GetRequiredService<IRepoUrlHostGuard>()));
 
+        services.AddSingleton<WorkspaceToolProvider>(sp =>
+            new WorkspaceToolProvider(
+                sp.GetRequiredService<IWorkspaceService>(),
+                sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
+
         services.AddHostedService<WorkspaceRootInitializer>();
 
         return services;

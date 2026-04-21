@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CodeFlow.Runtime.Observability;
+using CodeFlow.Runtime.Workspace;
 
 namespace CodeFlow.Runtime;
 
@@ -8,6 +9,7 @@ public sealed class Agent : IAgentInvoker
     private readonly ContextAssembler contextAssembler;
     private readonly ModelClientRegistry modelClients;
     private readonly HostToolProvider hostToolProvider;
+    private readonly WorkspaceToolProvider? workspaceToolProvider;
     private readonly IMcpClient? mcpClient;
     private readonly Func<DateTimeOffset> nowProvider;
 
@@ -15,12 +17,14 @@ public sealed class Agent : IAgentInvoker
         ModelClientRegistry modelClients,
         ContextAssembler? contextAssembler = null,
         HostToolProvider? hostToolProvider = null,
+        WorkspaceToolProvider? workspaceToolProvider = null,
         IMcpClient? mcpClient = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
         this.modelClients = modelClients ?? throw new ArgumentNullException(nameof(modelClients));
         this.contextAssembler = contextAssembler ?? new ContextAssembler();
         this.hostToolProvider = hostToolProvider ?? new HostToolProvider();
+        this.workspaceToolProvider = workspaceToolProvider;
         this.mcpClient = mcpClient;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
@@ -101,6 +105,12 @@ public sealed class Agent : IAgentInvoker
         if (tools.EnableHostTools)
         {
             yield return hostToolProvider;
+        }
+
+        if (workspaceToolProvider is not null
+            && tools.AllowedToolNames.Any(name => name.StartsWith("workspace.", StringComparison.OrdinalIgnoreCase)))
+        {
+            yield return workspaceToolProvider;
         }
 
         // Sub-agents inherit the parent's resolved tool set (v1 semantics — no independent
