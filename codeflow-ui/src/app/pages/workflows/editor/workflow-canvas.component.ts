@@ -3,6 +3,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  HostListener,
   Injector,
   OnDestroy,
   ViewChild,
@@ -27,7 +28,6 @@ import {
   WorkflowSchemes
 } from './workflow-node-schemes';
 import {
-  DEFAULT_AGENT_OUTPUT_PORTS,
   defaultOutputPortsFor,
   emptyModel,
   labelFor,
@@ -41,6 +41,20 @@ interface SelectedNode {
   editor: WorkflowEditorNode;
 }
 
+const DEFAULT_INPUT_KEY = 'input';
+
+function defaultStartInput(): WorkflowInput {
+  return {
+    key: DEFAULT_INPUT_KEY,
+    displayName: 'Input',
+    kind: 'Text',
+    required: true,
+    defaultValueJson: null,
+    description: 'The text payload delivered to the Start agent as its input artifact.',
+    ordinal: 0
+  };
+}
+
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
@@ -48,15 +62,6 @@ interface SelectedNode {
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
-      <aside class="palette">
-        <div class="panel-title">Add node</div>
-        <button type="button" class="palette-item start" (click)="addPaletteNode('Start')">Start</button>
-        <button type="button" class="palette-item agent" (click)="addPaletteNode('Agent')">Agent</button>
-        <button type="button" class="palette-item logic" (click)="addPaletteNode('Logic')">Logic</button>
-        <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
-        <button type="button" class="palette-item escalation" (click)="addPaletteNode('Escalation')">Escalation</button>
-      </aside>
-
       <main class="canvas-wrapper">
         <div class="toolbar">
           <div class="toolbar-left">
@@ -90,81 +95,158 @@ interface SelectedNode {
         <div #canvasHost class="canvas"></div>
       </main>
 
-      <aside class="inspector">
-        <div class="panel-title">Inspector</div>
-        @if (selectedNode(); as sel) {
-          <div class="inspector-section">
-            <div class="muted small">Node</div>
-            <div class="inspector-kind {{ sel.editor.kind | lowercase }}">{{ sel.editor.kind }}</div>
-            <div class="muted small">ID</div>
-            <code class="mono">{{ sel.editor.nodeId }}</code>
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="panel-title">Add node</div>
+          <div class="palette">
+            <button type="button" class="palette-item start" (click)="addPaletteNode('Start')">Start</button>
+            <button type="button" class="palette-item agent" (click)="addPaletteNode('Agent')">Agent</button>
+            <button type="button" class="palette-item logic" (click)="addPaletteNode('Logic')">Logic</button>
+            <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
+            <button type="button" class="palette-item escalation" (click)="addPaletteNode('Escalation')">Escalation</button>
           </div>
+        </div>
 
-          @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start' || sel.editor.kind === 'Escalation') {
+        <div class="sidebar-section inspector">
+          <div class="panel-title">Inspector</div>
+          @if (selectedNode(); as sel) {
             <div class="inspector-section">
-              <label>
-                Agent
-                <select [ngModel]="sel.editor.agentKey ?? ''" (ngModelChange)="onAgentChanged(sel.editor, $event)">
-                  <option value="">(pick agent)</option>
-                  @for (agent of agents(); track agent.key) {
-                    <option [value]="agent.key">{{ agent.key }}</option>
-                  }
-                </select>
-              </label>
-              <label>
-                Pin version
-                <input type="number" [ngModel]="sel.editor.agentVersion ?? null"
-                       (ngModelChange)="sel.editor.agentVersion = $event" min="1" />
-              </label>
+              <div class="row-spread">
+                <div class="inspector-kind {{ sel.editor.kind | lowercase }}">{{ sel.editor.kind }}</div>
+                <button type="button" class="danger small" (click)="removeSelectedNode()">Delete node</button>
+              </div>
+              <div class="muted xsmall">ID <code class="mono">{{ sel.editor.nodeId }}</code></div>
             </div>
-          }
 
-          @if (sel.editor.kind === 'Logic') {
-            <div class="inspector-section">
-              <label>
-                Script (JavaScript)
-                <textarea rows="12" class="mono"
-                          [ngModel]="sel.editor.script ?? ''"
-                          (ngModelChange)="sel.editor.script = $event"
-                          placeholder="if (input.kind === 'X') setNodePath('A'); else setNodePath('B');"></textarea>
-              </label>
-              <button type="button" (click)="validateLogicScript(sel.editor)">Validate</button>
-              @if (scriptValidationError()) {
-                <div class="tag error">{{ scriptValidationError() }}</div>
-              } @else if (scriptValidationOk()) {
-                <div class="tag success">Script parses OK</div>
-              }
-
-              <div class="muted small">Output ports (one per line)</div>
-              <textarea rows="4"
-                        [ngModel]="logicPortsText()"
-                        (ngModelChange)="onLogicPortsChanged(sel.editor, $event)"></textarea>
-            </div>
-          }
-        } @else {
-          <div class="inspector-section">
-            <p class="muted small">Select a node to edit. Drag from the palette to add nodes. Click and drag between port handles to connect.</p>
-            <div class="inspector-section">
-              <div class="panel-title">Workflow inputs</div>
-              @for (input of inputs(); track input.key) {
-                <div class="input-row">
-                  <input type="text" [ngModel]="input.key" (ngModelChange)="updateInput(input, { key: $event })" placeholder="key" />
-                  <input type="text" [ngModel]="input.displayName" (ngModelChange)="updateInput(input, { displayName: $event })" placeholder="Display name" />
-                  <select [ngModel]="input.kind" (ngModelChange)="updateInput(input, { kind: $event })">
-                    <option value="Text">Text</option>
-                    <option value="Json">Json</option>
+            @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start' || sel.editor.kind === 'Escalation') {
+              <div class="inspector-section">
+                <label class="field">
+                  <span>Agent</span>
+                  <select [ngModel]="sel.editor.agentKey ?? ''" (ngModelChange)="onAgentChanged(sel.editor, $event)">
+                    <option value="">(pick agent)</option>
+                    @for (agent of agents(); track agent.key) {
+                      <option [value]="agent.key">{{ agent.key }}</option>
+                    }
                   </select>
-                  <label class="checkbox">
-                    <input type="checkbox" [ngModel]="input.required" (ngModelChange)="updateInput(input, { required: $event })" />
-                    required
-                  </label>
-                  <button type="button" class="icon-button" (click)="removeInput(input)">×</button>
+                </label>
+                <label class="field">
+                  <span>Pin version <span class="muted xsmall">(blank = latest)</span></span>
+                  <input type="number" [ngModel]="sel.editor.agentVersion ?? null"
+                         (ngModelChange)="sel.editor.agentVersion = $event" min="1" />
+                </label>
+                <label class="field">
+                  <span>Output ports <span class="muted xsmall">(one per line)</span></span>
+                  <textarea rows="3" class="mono"
+                            [ngModel]="outputPortsText()"
+                            (ngModelChange)="onOutputPortsChanged(sel.editor, $event)"></textarea>
+                  <span class="muted xsmall">
+                    Ports should match the decision kinds this agent returns. Baseline agents emit <code>Completed</code> or <code>Failed</code>.
+                  </span>
+                </label>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'Logic') {
+              <div class="inspector-section">
+                <label class="field">
+                  <span>Script (JavaScript)</span>
+                  <textarea rows="12" class="mono"
+                            [ngModel]="sel.editor.script ?? ''"
+                            (ngModelChange)="sel.editor.script = $event"
+                            placeholder="if (input.kind === 'X') setNodePath('A'); else setNodePath('B');"></textarea>
+                </label>
+                <div class="row">
+                  <button type="button" (click)="validateLogicScript(sel.editor)">Validate</button>
+                  @if (scriptValidationError()) {
+                    <span class="tag error">{{ scriptValidationError() }}</span>
+                  } @else if (scriptValidationOk()) {
+                    <span class="tag success">Script parses OK</span>
+                  }
                 </div>
-              }
-              <button type="button" (click)="addInput()">+ Add input</button>
+
+                <label class="field">
+                  <span>Output ports <span class="muted xsmall">(one per line)</span></span>
+                  <textarea rows="4" class="mono"
+                            [ngModel]="outputPortsText()"
+                            (ngModelChange)="onOutputPortsChanged(sel.editor, $event)"></textarea>
+                </label>
+              </div>
+            }
+          } @else {
+            <div class="inspector-section">
+              <p class="muted xsmall">
+                Select a node to edit its settings. Drag between port handles to wire nodes. Press Delete or use the Delete button to remove a node.
+              </p>
             </div>
-          </div>
-        }
+
+            <div class="inspector-section">
+              <div class="panel-title-inline">Workflow inputs</div>
+              <p class="muted xsmall">
+                Declare the <em>names</em> of inputs the workflow needs. At runtime (API call or the web UI launch form)
+                the caller supplies concrete values. The first Text input is always <code>input</code> — its value is
+                handed to the Start agent.
+              </p>
+              <div class="inputs-list">
+                @for (input of inputs(); track input.key; let i = $index) {
+                  <div class="input-card">
+                    <div class="row-spread">
+                      <strong class="mono">{{ input.key }}</strong>
+                      @if (isDefaultInput(input)) {
+                        <span class="tag small">required · start</span>
+                      } @else {
+                        <button type="button" class="icon-button" (click)="removeInput(input)" title="Remove input">×</button>
+                      }
+                    </div>
+                    <label class="field">
+                      <span>Key</span>
+                      <input type="text"
+                             [disabled]="isDefaultInput(input)"
+                             [ngModel]="input.key"
+                             (ngModelChange)="updateInput(input, { key: $event })" />
+                    </label>
+                    <label class="field">
+                      <span>Display name</span>
+                      <input type="text"
+                             [ngModel]="input.displayName"
+                             (ngModelChange)="updateInput(input, { displayName: $event })" />
+                    </label>
+                    <label class="field">
+                      <span>Kind</span>
+                      <select [disabled]="isDefaultInput(input)"
+                              [ngModel]="input.kind"
+                              (ngModelChange)="updateInput(input, { kind: $event })">
+                        <option value="Text">Text</option>
+                        <option value="Json">Json</option>
+                      </select>
+                    </label>
+                    <label class="field row-inline">
+                      <input type="checkbox"
+                             [disabled]="isDefaultInput(input)"
+                             [ngModel]="input.required"
+                             (ngModelChange)="updateInput(input, { required: $event })" />
+                      <span>Required at launch</span>
+                    </label>
+                    <label class="field">
+                      <span>Description <span class="muted xsmall">(optional)</span></span>
+                      <textarea rows="2"
+                                [ngModel]="input.description ?? ''"
+                                (ngModelChange)="updateInput(input, { description: $event })"
+                                placeholder="What should the caller provide here?"></textarea>
+                    </label>
+                    <label class="field">
+                      <span>Default value <span class="muted xsmall">(JSON; optional)</span></span>
+                      <textarea rows="2" class="mono"
+                                [ngModel]="input.defaultValueJson ?? ''"
+                                (ngModelChange)="updateInput(input, { defaultValueJson: $event || null })"
+                                [placeholder]="input.kind === 'Text' ? '&quot;example text&quot;' : '{&quot;example&quot;: true}'"></textarea>
+                    </label>
+                  </div>
+                }
+              </div>
+              <button type="button" class="secondary" (click)="addInput()">+ Add input</button>
+            </div>
+          }
+        </div>
       </aside>
     </div>
   `,
@@ -172,18 +254,23 @@ interface SelectedNode {
     :host { display: block; height: 100%; }
     .editor-layout {
       display: grid;
-      grid-template-columns: 180px 1fr 320px;
+      grid-template-columns: 1fr 360px;
       grid-template-rows: 100%;
       gap: 0;
       height: calc(100vh - var(--header-height, 64px));
     }
-    .palette, .inspector {
+    .sidebar {
       background: var(--color-surface);
-      border-right: 1px solid var(--color-border);
-      padding: 1rem;
+      border-left: 1px solid var(--color-border);
       overflow-y: auto;
+      display: flex;
+      flex-direction: column;
     }
-    .inspector { border-right: none; border-left: 1px solid var(--color-border); }
+    .sidebar-section {
+      padding: 1rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .sidebar-section:last-child { border-bottom: none; flex: 1; }
     .canvas-wrapper { display: flex; flex-direction: column; min-width: 0; }
     .canvas {
       flex: 1;
@@ -217,98 +304,117 @@ interface SelectedNode {
       background: var(--color-surface);
       color: inherit;
     }
+    .palette {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+    }
     .palette-item {
       display: block;
-      width: 100%;
-      padding: 0.5rem 0.75rem;
-      margin-bottom: 0.5rem;
+      padding: 0.5rem 0.6rem;
       border-radius: 4px;
       border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--color-text, #c9d1d9);
       text-align: left;
+      font-weight: 500;
       cursor: grab;
     }
-    .palette-item:hover { border-color: var(--color-accent); }
+    .palette-item:hover { border-color: var(--color-accent); background: rgba(255, 255, 255, 0.06); }
     .palette-item.start { border-left: 4px solid #3fb950; }
     .palette-item.agent { border-left: 4px solid #58a6ff; }
     .palette-item.logic { border-left: 4px solid #d29922; }
     .palette-item.hitl { border-left: 4px solid #bc8cff; }
     .palette-item.escalation { border-left: 4px solid #f85149; }
     .panel-title {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--color-muted);
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .panel-title-inline {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
     }
     .inspector-section {
       border-top: 1px solid var(--color-border);
       padding: 0.75rem 0;
     }
     .inspector-section:first-of-type { border-top: none; padding-top: 0; }
-    .inspector-section label {
+    .field {
       display: block;
-      font-size: 0.8rem;
-      color: var(--color-muted);
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.75rem;
     }
-    .inspector-section input, .inspector-section select, .inspector-section textarea {
+    .field > span {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--color-muted);
+      margin-bottom: 0.25rem;
+    }
+    .field.row-inline {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.85rem;
+    }
+    .field.row-inline > span { display: inline; margin: 0; color: inherit; }
+    .field input[type='text'], .field input[type='number'], .field select, .field textarea {
       width: 100%;
-      padding: 0.3rem 0.5rem;
+      padding: 0.35rem 0.5rem;
       border-radius: 4px;
       border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      background: var(--color-surface-2, #0d1117);
       color: inherit;
       font-family: inherit;
     }
-    .inspector-section textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .field textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+    .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .input-card {
+      padding: 0.75rem;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.02);
+    }
     .inspector-kind {
       font-weight: 600;
-      padding: 0.2rem 0.4rem;
+      padding: 0.2rem 0.5rem;
       border-radius: 3px;
       display: inline-block;
-      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
     }
     .inspector-kind.start { background: rgba(63, 185, 80, 0.2); color: #3fb950; }
     .inspector-kind.agent { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
     .inspector-kind.logic { background: rgba(210, 153, 34, 0.2); color: #d29922; }
     .inspector-kind.hitl { background: rgba(188, 140, 255, 0.2); color: #bc8cff; }
     .inspector-kind.escalation { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+    .row-spread { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+    .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
     .muted { color: var(--color-muted); }
-    .small { font-size: 0.75rem; }
-    .banner {
-      padding: 0.5rem 1rem;
-      font-size: 0.85rem;
-    }
+    .xsmall { font-size: 0.72rem; }
+    .small { font-size: 0.8rem; }
+    button.small { padding: 0.2rem 0.5rem; font-size: 0.75rem; }
+    button.danger { background: transparent; border: 1px solid #f85149; color: #f85149; }
+    button.danger:hover { background: rgba(248, 81, 73, 0.15); }
+    .banner { padding: 0.5rem 1rem; font-size: 0.85rem; }
     .banner.error { background: rgba(248, 81, 73, 0.15); color: #f85149; }
     .banner.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
-    .input-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr 80px auto auto;
-      gap: 0.25rem;
-      margin-bottom: 0.4rem;
-      align-items: center;
-    }
-    .input-row input, .input-row select { padding: 0.2rem 0.35rem; font-size: 0.8rem; }
-    .checkbox {
-      display: flex !important;
-      align-items: center;
-      gap: 0.2rem;
-      font-size: 0.75rem;
-      white-space: nowrap;
-    }
     .icon-button {
-      width: 24px;
-      height: 24px;
+      width: 22px;
+      height: 22px;
       padding: 0;
       border-radius: 50%;
       border: 1px solid var(--color-border);
       background: var(--color-surface);
       cursor: pointer;
+      color: inherit;
     }
-    .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.25rem 0.5rem; border-radius: 3px; display: inline-block; margin-top: 0.5rem; }
-    .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.25rem 0.5rem; border-radius: 3px; display: inline-block; margin-top: 0.5rem; }
+    .icon-button:hover { border-color: #f85149; color: #f85149; }
+    .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
+    .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
+    .tag.small { font-size: 0.7rem; }
   `]
 })
 export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
@@ -323,12 +429,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private editor?: NodeEditor<WorkflowSchemes>;
   private area?: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>;
   private readonly selectedNodeId = signal<string | null>(null);
+  private readonly portsRevision = signal(0);
 
   readonly agents = signal<AgentSummary[]>([]);
   readonly workflowKey = signal<string>('');
   readonly workflowName = signal<string>('');
   readonly maxRoundsPerRound = signal<number>(3);
-  readonly inputs = signal<WorkflowInput[]>([]);
+  readonly inputs = signal<WorkflowInput[]>([defaultStartInput()]);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly statusMessage = signal<string | null>(null);
@@ -343,7 +450,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return node ? { editor: node } : null;
   });
 
-  readonly logicPortsText = computed(() => {
+  readonly outputPortsText = computed(() => {
+    // Read portsRevision so the computed recomputes when ports mutate.
+    this.portsRevision();
     const sel = this.selectedNode();
     if (!sel) return '';
     return sel.editor.outputPortNames.join('\n');
@@ -383,12 +492,16 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     editor.addPipe(context => {
       if (context.type === 'connectioncreate') {
         const { data } = context;
-        // enforce at-most-one outgoing edge per output port
         const existing = editor
           .getConnections()
           .find(c => c.source === data.source && c.sourceOutput === data.sourceOutput);
         if (existing) {
           return undefined;
+        }
+      }
+      if (context.type === 'noderemoved') {
+        if (this.selectedNodeId() === context.data.id) {
+          this.selectedNodeId.set(null);
         }
       }
       return context;
@@ -405,9 +518,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         next: async detail => {
           this.workflowName.set(detail.name);
           this.maxRoundsPerRound.set(detail.maxRoundsPerRound);
-          this.inputs.set(detail.inputs.slice().sort((a, b) => a.ordinal - b.ordinal));
+          const loadedInputs = detail.inputs.slice().sort((a, b) => a.ordinal - b.ordinal);
+          this.inputs.set(loadedInputs.length === 0 ? [defaultStartInput()] : loadedInputs);
           await loadIntoEditor(workflowDetailToModel(detail), editor, area);
-          AreaExtensions.zoomAt(area, editor.getNodes());
+          if (editor.getNodes().length > 0) {
+            AreaExtensions.zoomAt(area, editor.getNodes());
+          }
         },
         error: err => this.error.set(`Failed to load workflow: ${err.message ?? err}`)
       });
@@ -421,10 +537,27 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.area?.destroy();
   }
 
+  @HostListener('document:keydown', ['$event'])
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    const target = event.target as HTMLElement | null;
+    if (target) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
+        return;
+      }
+    }
+    if (!this.selectedNodeId()) return;
+    event.preventDefault();
+    void this.removeSelectedNode();
+  }
+
   async tidy(): Promise<void> {
     if (!this.editor || !this.area) return;
     await tidyLayout(this.editor, this.area);
-    AreaExtensions.zoomAt(this.area, this.editor.getNodes());
+    if (this.editor.getNodes().length > 0) {
+      AreaExtensions.zoomAt(this.area, this.editor.getNodes());
+    }
   }
 
   async addPaletteNode(kind: WorkflowNodeKind): Promise<void> {
@@ -448,32 +581,44 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     await this.editor.addNode(node);
 
-    // Place near origin with a small offset per-node so they don't stack.
     const existingCount = this.editor.getNodes().length - 1;
     await this.area.translate(node.id, { x: 80 + (existingCount % 4) * 40, y: 80 + existingCount * 20 });
 
     this.error.set(null);
   }
 
+  async removeSelectedNode(): Promise<void> {
+    if (!this.editor) return;
+    const id = this.selectedNodeId();
+    if (!id) return;
+
+    // Remove any connections referencing this node first.
+    const touching = this.editor.getConnections()
+      .filter(c => c.source === id || c.target === id);
+    for (const conn of touching) {
+      await this.editor.removeConnection(conn.id);
+    }
+    await this.editor.removeNode(id);
+    this.selectedNodeId.set(null);
+  }
+
   onAgentChanged(node: WorkflowEditorNode, value: string): void {
     node.agentKey = value || null;
     node.label = labelFor(node);
-    this.selectedNodeId.set(this.selectedNodeId()); // re-trigger selected signal
+    this.selectedNodeId.set(this.selectedNodeId());
   }
 
-  onLogicPortsChanged(node: WorkflowEditorNode, value: string): void {
+  onOutputPortsChanged(node: WorkflowEditorNode, value: string): void {
     const next = value
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(line => line.length > 0);
 
-    // Remove ports not in new list; add ports that are new.
     const current = new Set(node.outputPortNames);
     const desired = new Set(next);
 
     for (const port of current) {
       if (!desired.has(port)) {
-        // Remove any connections on this port.
         this.editor?.getConnections()
           .filter(c => c.source === node.id && c.sourceOutput === port)
           .forEach(c => this.editor?.removeConnection(c.id));
@@ -488,16 +633,22 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
 
     this.area?.update('node', node.id);
+    this.portsRevision.update(v => v + 1);
   }
 
   addInput(): void {
     const existing = this.inputs();
-    const nextKey = `input${existing.length + 1}`;
+    let index = existing.length + 1;
+    let key = `extra${index}`;
+    while (existing.some(i => i.key === key)) {
+      index += 1;
+      key = `extra${index}`;
+    }
     this.inputs.set([
       ...existing,
       {
-        key: nextKey,
-        displayName: nextKey,
+        key,
+        displayName: '',
         kind: 'Text',
         required: false,
         defaultValueJson: null,
@@ -508,11 +659,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   removeInput(input: WorkflowInput): void {
+    if (this.isDefaultInput(input)) return;
     this.inputs.set(this.inputs().filter(i => i !== input));
   }
 
   updateInput(input: WorkflowInput, patch: Partial<WorkflowInput>): void {
+    if (this.isDefaultInput(input)) {
+      // Protect the key/kind/required flag on the baked-in `input` input.
+      const { key: _, kind: __, required: ___, ...safe } = patch;
+      patch = safe;
+    }
     this.inputs.set(this.inputs().map(i => (i === input ? { ...i, ...patch } : i)));
+  }
+
+  isDefaultInput(input: WorkflowInput): boolean {
+    return input.key === DEFAULT_INPUT_KEY;
   }
 
   validateLogicScript(node: WorkflowEditorNode): void {

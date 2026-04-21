@@ -1,4 +1,4 @@
-import { Component, OnInit, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
@@ -40,52 +40,53 @@ interface InputFieldState {
         </div>
       </div>
 
-      <div class="form-field">
-        <label>Input text</label>
-        <textarea [(ngModel)]="input" name="input" rows="6" placeholder="Content passed to the Start agent…" required></textarea>
-      </div>
-
-      <div class="form-field">
-        <label>Input file (optional)</label>
-        <input type="file" (change)="readFile($event)" />
-      </div>
-
-      <div class="form-field">
-        <label>Filename (optional)</label>
-        <input [(ngModel)]="fileName" name="fileName" placeholder="draft.md" />
-      </div>
-
-      @if (inputFields().length > 0) {
-        <section class="card">
-          <h3>Workflow inputs</h3>
-          @for (field of inputFields(); track field.key) {
-            <div class="form-field">
-              <label>
-                {{ field.definition.displayName }}
-                @if (field.definition.required) { <span class="required">*</span> }
-                <span class="tag small">{{ field.definition.kind }}</span>
-              </label>
-              @if (field.definition.description) {
-                <p class="muted small">{{ field.definition.description }}</p>
-              }
-              @if (field.definition.kind === 'Text') {
-                <input type="text" [ngModel]="field.value"
-                       (ngModelChange)="updateInputValue(field.key, $event)"
-                       [name]="'input_' + field.key"
-                       [placeholder]="field.definition.defaultValueJson ?? ''" />
-              } @else {
-                <textarea rows="5" class="mono"
-                          [ngModel]="field.value"
-                          (ngModelChange)="updateInputValue(field.key, $event)"
-                          [name]="'input_' + field.key"
-                          placeholder='{"key":"value"}'></textarea>
-              }
-              @if (field.error) {
-                <span class="tag error">{{ field.error }}</span>
-              }
-            </div>
-          }
-        </section>
+      @if (workflowDetail(); as wf) {
+        @if (inputFields().length > 0) {
+          <section class="card">
+            <h3>Workflow inputs</h3>
+            <p class="muted small">
+              These values are handed to the run. The <code>input</code> field becomes the Start agent's input artifact;
+              the rest are available to agents as <code>ContextInputs</code> and to Logic nodes as <code>context.&lt;key&gt;</code>.
+            </p>
+            @for (field of inputFields(); track field.key) {
+              <div class="form-field">
+                <label>
+                  {{ field.definition.displayName || field.definition.key }}
+                  @if (field.definition.required) { <span class="required">*</span> }
+                  <span class="tag small">{{ field.definition.kind }}</span>
+                </label>
+                @if (field.definition.description) {
+                  <p class="muted small">{{ field.definition.description }}</p>
+                }
+                @if (field.definition.kind === 'Text') {
+                  @if (field.definition.key === 'input') {
+                    <textarea rows="8"
+                              [ngModel]="field.value"
+                              (ngModelChange)="updateInputValue(field.key, $event)"
+                              [name]="'input_' + field.key"
+                              placeholder="Content passed to the Start agent…"></textarea>
+                  } @else {
+                    <input type="text" [ngModel]="field.value"
+                           (ngModelChange)="updateInputValue(field.key, $event)"
+                           [name]="'input_' + field.key"
+                           [placeholder]="field.definition.defaultValueJson ?? ''" />
+                  }
+                } @else {
+                  <textarea rows="5" class="mono"
+                            [ngModel]="field.value"
+                            (ngModelChange)="updateInputValue(field.key, $event)"
+                            [name]="'input_' + field.key"
+                            placeholder='{"key":"value"}'></textarea>
+                }
+                @if (field.error) {
+                  <span class="tag error">{{ field.error }}</span>
+                }
+              </div>
+            }
+          </section>
+        } @else {
+          <p class="muted small">This workflow declares no inputs.</p>
+        }
       }
 
       @if (error()) {
@@ -93,7 +94,7 @@ interface InputFieldState {
       }
 
       <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="submitting() || !workflowKey()">
+        <button type="submit" [disabled]="submitting() || !workflowKey() || !workflowDetail()">
           {{ submitting() ? 'Submitting…' : 'Submit run' }}
         </button>
       </div>
@@ -101,11 +102,12 @@ interface InputFieldState {
   `,
   styles: [`
     .required { color: #f85149; margin-left: 0.25rem; }
-    .tag.small { margin-left: 0.5rem; }
+    .tag.small { margin-left: 0.5rem; font-size: 0.7rem; }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.25rem 0.5rem; border-radius: 3px; display: inline-block; margin-top: 0.25rem; }
+    .form-field { margin-bottom: 1rem; }
   `]
 })
 export class TraceSubmitComponent implements OnInit {
@@ -119,8 +121,6 @@ export class TraceSubmitComponent implements OnInit {
   readonly workflowKey = signal<string | null>(null);
   readonly workflowVersion = signal<number | null>(null);
   readonly workflowDetail = signal<WorkflowDetail | null>(null);
-  readonly input = signal('');
-  readonly fileName = signal('');
   readonly submitting = signal(false);
   readonly error = signal<string | null>(null);
   readonly inputValues = signal<Record<string, string>>({});
@@ -133,11 +133,16 @@ export class TraceSubmitComponent implements OnInit {
     const errors = this.inputErrors();
     return detail.inputs
       .slice()
-      .sort((a, b) => a.ordinal - b.ordinal)
+      .sort((a, b) => {
+        // Always surface the baked-in `input` first.
+        if (a.key === 'input' && b.key !== 'input') return -1;
+        if (b.key === 'input' && a.key !== 'input') return 1;
+        return a.ordinal - b.ordinal;
+      })
       .map(definition => ({
         key: definition.key,
         definition,
-        value: values[definition.key] ?? definition.defaultValueJson ?? '',
+        value: values[definition.key] ?? defaultValueFor(definition),
         error: errors[definition.key] ?? null
       }));
   });
@@ -175,34 +180,38 @@ export class TraceSubmitComponent implements OnInit {
     }
   }
 
-  readFile(event: Event): void {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) { return; }
-    this.fileName.set(file.name);
-    const reader = new FileReader();
-    reader.onload = () => this.input.set(reader.result?.toString() ?? '');
-    reader.readAsText(file);
-  }
-
   submit(event: Event): void {
     event.preventDefault();
     if (!this.workflowKey()) { return; }
 
     const inputs: Record<string, unknown> = {};
     const errors: Record<string, string> = {};
+    let startInput = '';
+
     for (const field of this.inputFields()) {
-      const raw = field.value?.trim() ?? '';
-      if (!raw) {
-        if (field.definition.required && !field.definition.defaultValueJson) {
-          errors[field.key] = 'Required.';
-        }
-        continue;
-      }
+      const raw = field.value ?? '';
+      const trimmed = raw.trim();
+
       if (field.definition.kind === 'Text') {
-        inputs[field.key] = raw;
+        if (!trimmed && field.definition.required && !field.definition.defaultValueJson) {
+          errors[field.key] = 'Required.';
+          continue;
+        }
+        if (trimmed) {
+          inputs[field.key] = raw;
+          if (field.key === 'input') {
+            startInput = raw;
+          }
+        }
       } else {
+        if (!trimmed) {
+          if (field.definition.required && !field.definition.defaultValueJson) {
+            errors[field.key] = 'Required.';
+          }
+          continue;
+        }
         try {
-          inputs[field.key] = JSON.parse(raw);
+          inputs[field.key] = JSON.parse(trimmed);
         } catch {
           errors[field.key] = 'Invalid JSON.';
         }
@@ -220,8 +229,7 @@ export class TraceSubmitComponent implements OnInit {
     this.tracesApi.create({
       workflowKey: this.workflowKey()!,
       workflowVersion: this.workflowVersion() ?? null,
-      input: this.input(),
-      inputFileName: this.fileName() || undefined,
+      input: startInput,
       inputs: Object.keys(inputs).length > 0 ? inputs : undefined
     }).subscribe({
       next: response => {
@@ -234,4 +242,17 @@ export class TraceSubmitComponent implements OnInit {
       }
     });
   }
+}
+
+function defaultValueFor(definition: WorkflowInput): string {
+  if (!definition.defaultValueJson) return '';
+  if (definition.kind === 'Text') {
+    try {
+      const parsed = JSON.parse(definition.defaultValueJson);
+      return typeof parsed === 'string' ? parsed : definition.defaultValueJson;
+    } catch {
+      return definition.defaultValueJson;
+    }
+  }
+  return definition.defaultValueJson;
 }
