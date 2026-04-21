@@ -137,6 +137,31 @@ export interface AgentRoleUpdateRequest {
   description?: string | null;
 }
 
+export interface Skill {
+  id: number;
+  name: string;
+  body: string;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+  isArchived: boolean;
+}
+
+export interface SkillCreateRequest {
+  name: string;
+  body: string;
+}
+
+export interface SkillUpdateRequest {
+  name: string;
+  body: string;
+}
+
+export interface AgentRoleSkillGrants {
+  skillIds: number[];
+}
+
 export interface HostTool {
   name: string;
   description: string;

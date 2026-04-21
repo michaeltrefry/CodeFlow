@@ -16,9 +16,12 @@ public sealed class ContextAssembler
         var messages = new List<ChatMessage>();
 
         var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input);
-        if (!string.IsNullOrWhiteSpace(renderedSystemPrompt))
+        var skillsBlock = BuildSkillsBlock(request.Skills, request.Variables, request.Input);
+
+        var systemContent = Combine(renderedSystemPrompt, skillsBlock);
+        if (!string.IsNullOrWhiteSpace(systemContent))
         {
-            messages.Add(new ChatMessage(ChatMessageRole.System, renderedSystemPrompt));
+            messages.Add(new ChatMessage(ChatMessageRole.System, systemContent));
         }
 
         var retryNote = BuildRetryNote(request.RetryContext);
@@ -69,6 +72,16 @@ public sealed class ContextAssembler
             return null;
         }
 
+        var rendered = ApplyVariables(template, variables, input);
+        var trimmed = rendered.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    }
+
+    private static string ApplyVariables(
+        string template,
+        IReadOnlyDictionary<string, string?>? variables,
+        string? input)
+    {
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
         if (variables is not null)
@@ -81,7 +94,7 @@ public sealed class ContextAssembler
 
         values["input"] = input;
 
-        var rendered = VariablePattern.Replace(
+        return VariablePattern.Replace(
             template,
             match =>
             {
@@ -91,9 +104,49 @@ public sealed class ContextAssembler
                     ? value
                     : match.Value;
             });
+    }
 
-        var trimmed = rendered.Trim();
-        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    private static string? BuildSkillsBlock(
+        IReadOnlyList<ResolvedSkill>? skills,
+        IReadOnlyDictionary<string, string?>? variables,
+        string? input)
+    {
+        if (skills is null || skills.Count == 0)
+        {
+            return null;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append("## Skills").Append(Environment.NewLine);
+        builder.Append("You have access to the following skills. Use them when relevant.");
+
+        foreach (var skill in skills)
+        {
+            builder.Append(Environment.NewLine).Append(Environment.NewLine);
+            builder.Append("### ").Append(skill.Name);
+            var renderedBody = ApplyVariables(skill.Body ?? string.Empty, variables, input).TrimEnd();
+            if (!string.IsNullOrWhiteSpace(renderedBody))
+            {
+                builder.Append(Environment.NewLine).Append(renderedBody);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? Combine(string? systemPrompt, string? skillsBlock)
+    {
+        if (string.IsNullOrWhiteSpace(systemPrompt))
+        {
+            return skillsBlock;
+        }
+
+        if (string.IsNullOrWhiteSpace(skillsBlock))
+        {
+            return systemPrompt;
+        }
+
+        return $"{systemPrompt}{Environment.NewLine}{Environment.NewLine}{skillsBlock}";
     }
 
     private static string? BuildRetryNote(RetryContext? retryContext)

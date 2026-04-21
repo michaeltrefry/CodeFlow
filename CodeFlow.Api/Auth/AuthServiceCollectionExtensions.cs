@@ -117,7 +117,13 @@ public static class AuthServiceCollectionExtensions
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.AgentRolesRead)))
             .AddPolicy(CodeFlowApiDefaults.Policies.AgentRolesWrite, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.AgentRolesWrite)));
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.AgentRolesWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.SkillsRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.SkillsRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.SkillsWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.SkillsWrite)));
 
         return services;
     }

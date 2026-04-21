@@ -25,6 +25,10 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<AgentRoleAssignmentEntity> AgentRoleAssignments => Set<AgentRoleAssignmentEntity>();
 
+    public DbSet<SkillEntity> Skills => Set<SkillEntity>();
+
+    public DbSet<AgentRoleSkillGrantEntity> AgentRoleSkillGrants => Set<AgentRoleSkillGrantEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

@@ -36,7 +36,9 @@ public sealed class RoleResolutionService : IRoleResolutionService
             select new GrantView(assignment.Role.Key, grant.Category, grant.ToolIdentifier))
             .ToListAsync(cancellationToken);
 
-        if (grants.Count == 0)
+        var skills = await ResolveSkillsAsync(normalized, cancellationToken);
+
+        if (grants.Count == 0 && skills.Count == 0)
         {
             return ResolvedAgentTools.Empty;
         }
@@ -141,7 +143,32 @@ public sealed class RoleResolutionService : IRoleResolutionService
             mcpTools = resolvedTools;
         }
 
-        return new ResolvedAgentTools(allowedNames, mcpTools, enableHostTools);
+        return new ResolvedAgentTools(allowedNames, mcpTools, enableHostTools, skills);
+    }
+
+    private async Task<IReadOnlyList<ResolvedSkill>> ResolveSkillsAsync(string normalizedAgentKey, CancellationToken cancellationToken)
+    {
+        var skills = await (
+            from assignment in dbContext.AgentRoleAssignments.AsNoTracking()
+            join grant in dbContext.AgentRoleSkillGrants.AsNoTracking()
+                on assignment.RoleId equals grant.RoleId
+            where assignment.AgentKey == normalizedAgentKey
+                && !assignment.Role.IsArchived
+                && !grant.Skill.IsArchived
+            select new { grant.Skill.Id, grant.Skill.Name, grant.Skill.Body })
+            .ToListAsync(cancellationToken);
+
+        if (skills.Count == 0)
+        {
+            return Array.Empty<ResolvedSkill>();
+        }
+
+        return skills
+            .GroupBy(s => s.Id)
+            .Select(g => g.First())
+            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(s => new ResolvedSkill(s.Name, s.Body))
+            .ToArray();
     }
 
     private async Task<(IReadOnlyDictionary<string, McpServerLookup> Servers,

@@ -70,5 +70,17 @@ export const routes: Routes = [
     path: 'settings/roles/:id',
     loadComponent: () => import('./pages/settings/roles/role-editor.component').then(m => m.RoleEditorComponent)
   },
+  {
+    path: 'settings/skills',
+    loadComponent: () => import('./pages/settings/skills/skills-list.component').then(m => m.SkillsListComponent)
+  },
+  {
+    path: 'settings/skills/new',
+    loadComponent: () => import('./pages/settings/skills/skill-editor.component').then(m => m.SkillEditorComponent)
+  },
+  {
+    path: 'settings/skills/:id',
+    loadComponent: () => import('./pages/settings/skills/skill-editor.component').then(m => m.SkillEditorComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];
