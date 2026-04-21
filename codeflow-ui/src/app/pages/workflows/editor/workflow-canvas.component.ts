@@ -37,6 +37,7 @@ import {
 } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
 import { WorkflowNodeComponent } from './workflow-node.component';
+import { MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
 
 interface SelectedNode {
   editor: WorkflowEditorNode;
@@ -59,7 +60,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, MonacoScriptEditorComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -149,13 +150,14 @@ function defaultStartInput(): WorkflowInput {
 
             @if (sel.editor.kind === 'Logic') {
               <div class="inspector-section">
-                <label class="field">
-                  <span>Script (JavaScript)</span>
-                  <textarea rows="12" class="mono"
-                            [ngModel]="sel.editor.script ?? ''"
-                            (ngModelChange)="sel.editor.script = $event"
-                            placeholder="if (input.kind === 'X') setNodePath('A'); else setNodePath('B');"></textarea>
-                </label>
+                <div class="field">
+                  <span class="field-label">Script (JavaScript)</span>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.script ?? ''"
+                    [markers]="scriptMarkers()"
+                    (valueChange)="onLogicScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                </div>
                 <div class="row">
                   <button type="button" (click)="validateLogicScript(sel.editor)">Validate</button>
                   @if (scriptValidationError()) {
@@ -371,6 +373,19 @@ function defaultStartInput(): WorkflowInput {
       font-family: inherit;
     }
     .field textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+    .field-label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--color-muted);
+      margin-bottom: 0.25rem;
+    }
+    .script-editor {
+      display: block;
+      min-height: 320px;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {
       padding: 0.75rem;
@@ -443,6 +458,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly hasExistingKey = signal(false);
   readonly scriptValidationError = signal<string | null>(null);
   readonly scriptValidationOk = signal(false);
+  readonly scriptMarkers = signal<MonacoMarker[]>([]);
 
   readonly selectedNode = computed<SelectedNode | null>(() => {
     const id = this.selectedNodeId();
@@ -490,6 +506,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.selectedNodeId.set(context.data.id);
         this.scriptValidationError.set(null);
         this.scriptValidationOk.set(false);
+        this.scriptMarkers.set([]);
       }
       return context;
     });
@@ -697,10 +714,19 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return input.key === DEFAULT_INPUT_KEY;
   }
 
+  onLogicScriptChanged(node: WorkflowEditorNode, value: string): void {
+    node.script = value;
+    // Clear stale markers/status while the user is typing.
+    if (this.scriptMarkers().length > 0) this.scriptMarkers.set([]);
+    if (this.scriptValidationError()) this.scriptValidationError.set(null);
+    if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
+  }
+
   validateLogicScript(node: WorkflowEditorNode): void {
     if (!node.script) {
       this.scriptValidationError.set('Script is empty.');
       this.scriptValidationOk.set(false);
+      this.scriptMarkers.set([]);
       return;
     }
 
@@ -709,14 +735,24 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         if (result.ok) {
           this.scriptValidationError.set(null);
           this.scriptValidationOk.set(true);
+          this.scriptMarkers.set([]);
         } else {
           this.scriptValidationError.set(result.errors.map(e => e.message).join('; '));
           this.scriptValidationOk.set(false);
+          this.scriptMarkers.set(result.errors.map(e => ({
+            startLineNumber: Math.max(1, e.line || 1),
+            startColumn: Math.max(1, e.column || 1),
+            endLineNumber: Math.max(1, e.line || 1),
+            endColumn: Math.max(1, (e.column || 1) + 1),
+            message: e.message,
+            severity: 'error' as const
+          })));
         }
       },
       error: err => {
         this.scriptValidationError.set(`Validation failed: ${err.message ?? err}`);
         this.scriptValidationOk.set(false);
+        this.scriptMarkers.set([]);
       }
     });
   }
