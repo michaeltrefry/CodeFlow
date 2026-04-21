@@ -54,8 +54,14 @@ public sealed class InvocationLoop
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
+    public Task<InvocationLoopResult> RunAsync(
+        InvocationLoopRequest request,
+        CancellationToken cancellationToken = default)
+        => RunAsync(request, observer: null, cancellationToken);
+
     public async Task<InvocationLoopResult> RunAsync(
         InvocationLoopRequest request,
+        IInvocationObserver? observer,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -73,6 +79,7 @@ public sealed class InvocationLoop
 
         var totalToolCalls = 0;
         var consecutiveNonMutatingCalls = 0;
+        var roundNumber = 0;
         TokenUsage? aggregateTokenUsage = null;
         string lastAssistantOutput = string.Empty;
 
@@ -88,6 +95,12 @@ public sealed class InvocationLoop
                     totalToolCalls);
             }
 
+            roundNumber++;
+            if (observer is not null)
+            {
+                await observer.OnModelCallStartedAsync(roundNumber, cancellationToken);
+            }
+
             var response = await modelClient.InvokeAsync(
                 new InvocationRequest(
                     transcript,
@@ -100,6 +113,16 @@ public sealed class InvocationLoop
             aggregateTokenUsage = SumTokenUsage(aggregateTokenUsage, response.TokenUsage);
             transcript.Add(response.Message);
             lastAssistantOutput = response.Message.Content;
+
+            if (observer is not null)
+            {
+                await observer.OnModelCallCompletedAsync(
+                    roundNumber,
+                    response.Message,
+                    response.TokenUsage,
+                    aggregateTokenUsage,
+                    cancellationToken);
+            }
 
             if (response.Message.ToolCalls is not { Count: > 0 })
             {
@@ -135,10 +158,23 @@ public sealed class InvocationLoop
                         totalToolCalls);
                 }
 
+                if (observer is not null)
+                {
+                    await observer.OnToolCallStartedAsync(toolCall, cancellationToken);
+                }
+
                 if (TryHandleTerminalTool(toolCall, out var terminalResult, out var terminalError))
                 {
                     if (terminalResult is not null)
                     {
+                        if (observer is not null)
+                        {
+                            await observer.OnToolCallCompletedAsync(
+                                toolCall,
+                                new ToolResult(toolCall.Id, $"[{toolCall.Name}]"),
+                                cancellationToken);
+                        }
+
                         return new InvocationLoopResult(
                             lastAssistantOutput,
                             terminalResult,
@@ -154,6 +190,12 @@ public sealed class InvocationLoop
                             terminalError.Content,
                             ToolCallId: terminalError.CallId,
                             IsError: terminalError.IsError));
+
+                        if (observer is not null)
+                        {
+                            await observer.OnToolCallCompletedAsync(toolCall, terminalError, cancellationToken);
+                        }
+
                         consecutiveNonMutatingCalls++;
 
                         if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
@@ -176,6 +218,11 @@ public sealed class InvocationLoop
                     toolResult.Content,
                     ToolCallId: toolResult.CallId,
                     IsError: toolResult.IsError));
+
+                if (observer is not null)
+                {
+                    await observer.OnToolCallCompletedAsync(toolCall, toolResult, cancellationToken);
+                }
 
                 var isMutating = toolsByName.TryGetValue(toolCall.Name, out var toolSchema) && toolSchema.IsMutating;
                 consecutiveNonMutatingCalls = isMutating
