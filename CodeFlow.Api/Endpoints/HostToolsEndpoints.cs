@@ -22,7 +22,8 @@ public static class HostToolsEndpoints
     private static IResult ListAsync()
     {
         var catalog = HostToolProvider.GetCatalog()
-            .Concat(WorkspaceToolProvider.GetCatalog());
+            .Concat(WorkspaceToolProvider.GetCatalog())
+            .Concat(VcsToolProvider.GetCatalog());
         var response = catalog
             .Select(tool => new HostToolResponse(
                 Name: tool.Name,

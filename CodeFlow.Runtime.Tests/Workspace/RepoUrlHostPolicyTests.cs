@@ -153,6 +153,7 @@ public sealed class RepoUrlHostPolicyTests
         public Task AddAsync(string worktreePath, IReadOnlyList<string>? paths = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<bool> CommitAsync(string worktreePath, string message, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task PushAsync(string worktreePath, string? remote = null, string? branch = null, CancellationToken cancellationToken = default) => throw NotCalled();
+        public Task PushWithBearerAsync(string worktreePath, string bearerToken, string? remote = null, string? branch = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<string> GetSymbolicHeadAsync(string gitDirectory, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<IReadOnlyList<string>> LsFilesAsync(string worktreePath, CancellationToken cancellationToken = default) => throw NotCalled();

@@ -1,4 +1,4 @@
-import { Component, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
+import { Component, computed, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
@@ -62,6 +62,15 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
           <span class="muted small">{{ grants().length }} selected</span>
         </header>
 
+        @if (hasHighRiskGrant()) {
+          <div class="risk-banner">
+            <strong>⚠ This role grants <code>workspace.exec</code>.</strong>
+            It allows arbitrary code execution on the CodeFlow host with no sandbox.
+            Do not enable on instances that serve untrusted agent authors. See
+            <code>SECURITY.md</code> for the full threat model.
+          </div>
+        }
+
         @if (catalogsLoading()) {
           <p>Loading catalog&hellip;</p>
         } @else {
@@ -85,6 +94,17 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
     .small { font-size: 0.8rem; }
+    .risk-banner {
+      background: rgba(217, 83, 79, 0.1);
+      border: 1px solid var(--color-danger, #d9534f);
+      color: var(--color-danger, #d9534f);
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+    .risk-banner code { background: rgba(0,0,0,0.08); padding: 0 0.25rem; border-radius: 3px; }
   `]
 })
 export class RoleEditorComponent implements OnInit {
@@ -106,6 +126,9 @@ export class RoleEditorComponent implements OnInit {
 
   readonly grants = signal<AgentRoleGrant[]>([]);
   readonly grantsSaving = signal(false);
+
+  readonly hasHighRiskGrant = computed(() =>
+    this.grants().some(g => g.toolIdentifier === 'workspace.exec'));
 
   readonly catalogsLoading = signal(false);
   readonly hostTools = signal<HostTool[]>([]);

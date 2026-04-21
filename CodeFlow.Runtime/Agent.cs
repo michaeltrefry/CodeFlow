@@ -10,6 +10,7 @@ public sealed class Agent : IAgentInvoker
     private readonly ModelClientRegistry modelClients;
     private readonly HostToolProvider hostToolProvider;
     private readonly WorkspaceToolProvider? workspaceToolProvider;
+    private readonly VcsToolProvider? vcsToolProvider;
     private readonly IMcpClient? mcpClient;
     private readonly Func<DateTimeOffset> nowProvider;
 
@@ -18,6 +19,7 @@ public sealed class Agent : IAgentInvoker
         ContextAssembler? contextAssembler = null,
         HostToolProvider? hostToolProvider = null,
         WorkspaceToolProvider? workspaceToolProvider = null,
+        VcsToolProvider? vcsToolProvider = null,
         IMcpClient? mcpClient = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
@@ -25,6 +27,7 @@ public sealed class Agent : IAgentInvoker
         this.contextAssembler = contextAssembler ?? new ContextAssembler();
         this.hostToolProvider = hostToolProvider ?? new HostToolProvider();
         this.workspaceToolProvider = workspaceToolProvider;
+        this.vcsToolProvider = vcsToolProvider;
         this.mcpClient = mcpClient;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
@@ -111,6 +114,12 @@ public sealed class Agent : IAgentInvoker
             && tools.AllowedToolNames.Any(name => name.StartsWith("workspace.", StringComparison.OrdinalIgnoreCase)))
         {
             yield return workspaceToolProvider;
+        }
+
+        if (vcsToolProvider is not null
+            && tools.AllowedToolNames.Any(name => name.StartsWith("vcs.", StringComparison.OrdinalIgnoreCase)))
+        {
+            yield return vcsToolProvider;
         }
 
         // Sub-agents inherit the parent's resolved tool set (v1 semantics — no independent
