@@ -111,15 +111,16 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             activity?.SetTag(CodeFlowActivity.TagNames.FailureReason, ex.Message);
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
 
+            var httpDiagnosticsRef = await TryWriteHttpDiagnosticsArtifactAsync(
+                message,
+                ex,
+                context.CancellationToken);
+
             var failureResult = new AgentInvocationResult(
-                Output: BuildInvocationFailureOutput(ex),
+                Output: BuildInvocationFailureOutput(ex, httpDiagnosticsRef),
                 Decision: new FailedDecision(
-                    AgentInvocationFailedReason,
-                    new JsonObject
-                    {
-                        ["exception_type"] = ex.GetType().FullName,
-                        ["message"] = ex.Message
-                    }),
+                    BuildFailureReason(ex),
+                    BuildFailureDecisionPayload(ex, httpDiagnosticsRef)),
                 Transcript: [],
                 TokenUsage: null,
                 ToolCallsExecuted: 0);
@@ -130,6 +131,35 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 failureResult,
                 $"{message.AgentKey}-error.txt",
                 DateTimeOffset.UtcNow - startedAt);
+        }
+    }
+
+    private async Task<Uri?> TryWriteHttpDiagnosticsArtifactAsync(
+        AgentInvokeRequested message,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        if (exception is not ModelClientHttpException httpException)
+        {
+            return null;
+        }
+
+        try
+        {
+            await using var diagnosticsStream = new MemoryStream(Encoding.UTF8.GetBytes(httpException.BuildDiagnosticsText()));
+            return await artifactStore.WriteAsync(
+                diagnosticsStream,
+                new ArtifactMetadata(
+                    message.TraceId,
+                    message.RoundId,
+                    Guid.NewGuid(),
+                    ContentType: "text/plain",
+                    FileName: $"{message.AgentKey}-http-diagnostics.txt"),
+                cancellationToken);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -168,13 +198,61 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             context.CancellationToken);
     }
 
-    private static string BuildInvocationFailureOutput(Exception ex)
+    private static string BuildInvocationFailureOutput(Exception ex, Uri? httpDiagnosticsRef)
     {
         var builder = new StringBuilder();
         builder.AppendLine("Agent invocation failed.");
         builder.Append("Exception: ").AppendLine(ex.GetType().FullName ?? ex.GetType().Name);
-        builder.Append("Message: ").AppendLine(ex.Message);
+        builder.Append("Message: ").AppendLine(BuildFailureSummary(ex));
+        if (httpDiagnosticsRef is not null)
+        {
+            builder.AppendLine("HTTP diagnostics: available from the trace UI download link.");
+        }
         return builder.ToString();
+    }
+
+    private static string BuildFailureSummary(Exception ex)
+    {
+        if (ex is not ModelClientHttpException httpException)
+        {
+            return ex.Message;
+        }
+
+        if (!string.IsNullOrWhiteSpace(httpException.ProviderErrorMessage))
+        {
+            return httpException.ProviderErrorMessage!;
+        }
+
+        return httpException.StatusCode is { } statusCode
+            ? $"Response status code does not indicate success: {(int)statusCode} ({httpException.ResponseReasonPhrase ?? statusCode.ToString()})."
+            : ex.Message;
+    }
+
+    private static string BuildFailureReason(Exception ex)
+    {
+        return BuildFailureSummary(ex);
+    }
+
+    private static JsonObject BuildFailureDecisionPayload(Exception ex, Uri? httpDiagnosticsRef)
+    {
+        var payload = new JsonObject
+        {
+            ["failure_code"] = AgentInvocationFailedReason,
+            ["exception_type"] = ex.GetType().FullName,
+            ["message"] = BuildFailureSummary(ex)
+        };
+
+        if (httpDiagnosticsRef is not null)
+        {
+            payload["http_diagnostics_ref"] = httpDiagnosticsRef.ToString();
+        }
+
+        if (ex is ModelClientHttpException httpException && !string.IsNullOrWhiteSpace(httpException.ProviderErrorMessage))
+        {
+            payload["provider_error_message"] = httpException.ProviderErrorMessage;
+        }
+
+        return payload;
     }
 
     private static IReadOnlyDictionary<string, string?>? MergeVariables(

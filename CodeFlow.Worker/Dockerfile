@@ -29,14 +29,13 @@ RUN dotnet publish CodeFlow.Worker/CodeFlow.Worker.csproj \
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
-# Run as a non-root user so post-exploitation runs with uid 1000 instead of root. The
-# artifacts mount point is pre-created with the right ownership so docker-compose's volume
-# mount inherits it.
-RUN adduser --disabled-password --gecos "" --uid 1000 codeflow && \
-    mkdir -p /app/artifacts && \
-    chown -R codeflow:codeflow /app
+# Run as a non-root uid so post-exploitation does not execute as root. We use the .NET image's
+# standard app uid rather than assuming user-management tools like adduser are installed.
+ARG APP_UID=1654
+RUN mkdir -p /app/artifacts && \
+    chown -R ${APP_UID}:${APP_UID} /app
 
-COPY --from=build --chown=codeflow:codeflow /app/publish ./
-USER codeflow
+COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
+USER ${APP_UID}
 
 ENTRYPOINT ["dotnet", "CodeFlow.Worker.dll"]

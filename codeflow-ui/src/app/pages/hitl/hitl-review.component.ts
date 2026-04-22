@@ -26,6 +26,10 @@ import {
         <span class="tag warn">Pending</span>
       </header>
 
+      <p class="artifact-link-row">
+        <a href="" (click)="downloadReviewArtifact($event)">Download review artifact</a>
+      </p>
+
       @if (task().inputPreview) {
         <pre class="monospace preview">{{ task().inputPreview }}</pre>
       } @else {
@@ -131,6 +135,10 @@ import {
     }
     .preview-output {
       border-left: 3px solid var(--color-accent);
+    }
+    .artifact-link-row {
+      margin: 0.5rem 0 0.75rem;
+      font-size: 0.9rem;
     }
     .placeholder {
       font-size: 0.8rem;
@@ -274,5 +282,47 @@ export class HitlReviewComponent implements OnInit {
         this.error.set(err?.message ?? 'Failed to submit');
       }
     });
+  }
+
+  downloadReviewArtifact(event: Event): void {
+    event.preventDefault();
+
+    this.api.downloadArtifact(this.task().traceId, this.task().inputRef).subscribe({
+      next: response => {
+        const blob = response.body;
+        if (!blob) {
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = this.fileNameFromResponse(response.headers.get('content-disposition')) ?? this.fileNameForArtifact(this.task().inputRef);
+        anchor.click();
+        URL.revokeObjectURL(url);
+      },
+      error: err => {
+        this.error.set(err?.message ?? 'Failed to download artifact.');
+      }
+    });
+  }
+
+  private fileNameForArtifact(uri: string): string {
+    try {
+      const parsed = new URL(uri);
+      const fileName = parsed.pathname.split('/').filter(Boolean).at(-1);
+      return fileName || 'artifact.txt';
+    } catch {
+      return 'artifact.txt';
+    }
+  }
+
+  private fileNameFromResponse(contentDisposition: string | null): string | null {
+    if (!contentDisposition) {
+      return null;
+    }
+
+    const match = /filename=\"?([^\";]+)\"?/i.exec(contentDisposition);
+    return match?.[1] ?? null;
   }
 }

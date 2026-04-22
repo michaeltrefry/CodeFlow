@@ -23,6 +23,7 @@ interface TimelineEntry {
   agentKey: string;
   agentVersion: number;
   decision?: AgentDecisionKind | null;
+  decisionPayload?: unknown;
   timestampUtc: string;
   inputRef?: string | null;
   outputRef?: string | null;
@@ -68,6 +69,11 @@ interface ArtifactLoadState {
         @if (d.failureReason) {
           <div class="failure-reason">
             <strong>Failure:</strong> {{ d.failureReason }}
+            @if (failureHttpDiagnosticsRef(); as diagnosticsRef) {
+              <div class="failure-links">
+                <a href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics</a>
+              </div>
+            }
           </div>
         }
       </section>
@@ -166,6 +172,9 @@ interface ArtifactLoadState {
                     @if (entry.inputRef) {
                       <div class="artifact-block">
                         <h4>Input</h4>
+                        <p class="artifact-link-row">
+                          <a href="" (click)="downloadArtifact($event, entry.inputRef)">Download input artifact</a>
+                        </p>
                         @if (artifactState(entry.inputRef); as state) {
                           @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
                           @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
@@ -176,6 +185,11 @@ interface ArtifactLoadState {
                     @if (entry.outputRef) {
                       <div class="artifact-block">
                         <h4>Output</h4>
+                        @if (httpDiagnosticsRefForDecision(entry.decisionPayload); as diagnosticsRef) {
+                          <p class="artifact-link-row">
+                            <a href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics</a>
+                          </p>
+                        }
                         @if (artifactState(entry.outputRef); as state) {
                           @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
                           @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
@@ -258,6 +272,10 @@ interface ArtifactLoadState {
       background: var(--color-surface-alt);
       border-radius: 4px;
     }
+    .failure-links {
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+    }
     .timeline-body {
       display: flex;
       flex-direction: column;
@@ -297,6 +315,10 @@ interface ArtifactLoadState {
       letter-spacing: 0.05em;
       color: var(--color-muted);
     }
+    .artifact-link-row {
+      margin: 0 0 0.5rem;
+      font-size: 0.9rem;
+    }
     .artifact-block .error {
       color: var(--color-error, #c0392b);
     }
@@ -325,6 +347,23 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       ids.add(evaluation.nodeId);
     }
     return ids.size > 0 ? Array.from(ids) : [];
+  });
+
+  readonly failureHttpDiagnosticsRef = computed<string | null>(() => {
+    const detail = this.detail();
+    if (!detail) return null;
+
+    for (let index = detail.decisions.length - 1; index >= 0; index -= 1) {
+      const decision = detail.decisions[index];
+      if (decision.decision !== 'Failed') continue;
+
+      const ref = this.readNestedString(decision.decisionPayload, ['payload', 'http_diagnostics_ref']);
+      if (ref) {
+        return ref;
+      }
+    }
+
+    return null;
   });
 
   private streamSub?: Subscription;
@@ -370,6 +409,26 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     });
   }
 
+  downloadArtifact(event: Event, uri: string): void {
+    event.preventDefault();
+
+    this.api.downloadArtifact(this.id(), uri).subscribe({
+      next: response => {
+        const blob = response.body;
+        if (!blob) {
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = this.fileNameFromResponse(response.headers.get('content-disposition')) ?? this.fileNameForArtifact(uri);
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+    });
+  }
+
   ngOnInit(): void {
     this.reload();
 
@@ -400,6 +459,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           agentKey: d.agentKey,
           agentVersion: d.agentVersion,
           decision: d.decision,
+          decisionPayload: d.decisionPayload,
           timestampUtc: d.recordedAtUtc,
           inputRef: d.inputRef,
           outputRef: d.outputRef
@@ -442,6 +502,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       agentKey: evt.agentKey,
       agentVersion: evt.agentVersion,
       decision: evt.decision,
+      decisionPayload: evt.decisionPayload,
       timestampUtc: evt.timestampUtc,
       inputRef: evt.inputRef,
       outputRef: evt.outputRef
@@ -455,5 +516,41 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       this.reload();
       setTimeout(() => this.reload(), 600);
     }
+  }
+
+  private readNestedString(value: unknown, path: string[]): string | null {
+    let current: unknown = value;
+    for (const segment of path) {
+      if (!current || typeof current !== 'object' || !(segment in current)) {
+        return null;
+      }
+
+      current = (current as Record<string, unknown>)[segment];
+    }
+
+    return typeof current === 'string' && current.length > 0 ? current : null;
+  }
+
+  httpDiagnosticsRefForDecision(decisionPayload: unknown): string | null {
+    return this.readNestedString(decisionPayload, ['payload', 'http_diagnostics_ref']);
+  }
+
+  private fileNameForArtifact(uri: string): string {
+    try {
+      const parsed = new URL(uri);
+      const fileName = parsed.pathname.split('/').filter(Boolean).at(-1);
+      return fileName || 'artifact.txt';
+    } catch {
+      return 'artifact.txt';
+    }
+  }
+
+  private fileNameFromResponse(contentDisposition: string | null): string | null {
+    if (!contentDisposition) {
+      return null;
+    }
+
+    const match = /filename=\"?([^\";]+)\"?/i.exec(contentDisposition);
+    return match?.[1] ?? null;
   }
 }

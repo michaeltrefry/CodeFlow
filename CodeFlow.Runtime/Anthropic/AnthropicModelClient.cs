@@ -34,7 +34,8 @@ public sealed class AnthropicModelClient : IModelClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        using var httpRequest = BuildHttpRequest(request);
+        var toolNameMap = ProviderToolNameMap.Create(request.Tools);
+        using var httpRequest = BuildHttpRequest(request, toolNameMap);
         using var response = await SendWithRetryAsync(httpRequest, cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
@@ -42,16 +43,16 @@ public sealed class AnthropicModelClient : IModelClient
         await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(contentStream, cancellationToken: cancellationToken);
 
-        return ParseInvocationResponse(document.RootElement);
+        return ParseInvocationResponse(document.RootElement, toolNameMap);
     }
 
-    private HttpRequestMessage BuildHttpRequest(InvocationRequest request)
+    private HttpRequestMessage BuildHttpRequest(InvocationRequest request, ProviderToolNameMap toolNameMap)
     {
         var payload = new JsonObject
         {
             ["model"] = request.Model,
             ["max_tokens"] = request.MaxTokens ?? 1024,
-            ["messages"] = BuildMessages(request.Messages)
+            ["messages"] = BuildMessages(request.Messages, toolNameMap)
         };
 
         // Prompt caching: the system prompt and the tools catalog are identical across every
@@ -74,7 +75,7 @@ public sealed class AnthropicModelClient : IModelClient
 
         if (request.Tools is { Count: > 0 })
         {
-            var toolsJson = BuildTools(request.Tools);
+            var toolsJson = BuildTools(request.Tools, toolNameMap);
             // Anthropic's cache rule: the cache_control marker on the last tool caches the whole
             // tools array prefix — no need to mark every entry.
             if (toolsJson.Count > 0 && toolsJson[^1] is JsonObject lastTool)
@@ -199,7 +200,7 @@ public sealed class AnthropicModelClient : IModelClient
             : string.Join(Environment.NewLine + Environment.NewLine, systemParts);
     }
 
-    private static JsonArray BuildMessages(IReadOnlyList<ChatMessage> messages)
+    private static JsonArray BuildMessages(IReadOnlyList<ChatMessage> messages, ProviderToolNameMap toolNameMap)
     {
         var anthropicMessages = new JsonArray();
 
@@ -250,14 +251,14 @@ public sealed class AnthropicModelClient : IModelClient
             anthropicMessages.Add(new JsonObject
             {
                 ["role"] = ToAnthropicRole(message.Role),
-                ["content"] = BuildContentBlocks(message)
+                ["content"] = BuildContentBlocks(message, toolNameMap)
             });
         }
 
         return anthropicMessages;
     }
 
-    private static JsonArray BuildContentBlocks(ChatMessage message)
+    private static JsonArray BuildContentBlocks(ChatMessage message, ProviderToolNameMap toolNameMap)
     {
         var contentBlocks = new JsonArray();
 
@@ -281,7 +282,7 @@ public sealed class AnthropicModelClient : IModelClient
             {
                 ["type"] = "tool_use",
                 ["id"] = toolCall.Id,
-                ["name"] = toolCall.Name,
+                ["name"] = toolNameMap.ToProviderName(toolCall.Name),
                 ["input"] = toolCall.Arguments?.DeepClone() ?? new JsonObject()
             });
         }
@@ -289,7 +290,7 @@ public sealed class AnthropicModelClient : IModelClient
         return contentBlocks;
     }
 
-    private static JsonArray BuildTools(IReadOnlyList<ToolSchema> tools)
+    private static JsonArray BuildTools(IReadOnlyList<ToolSchema> tools, ProviderToolNameMap toolNameMap)
     {
         var anthropicTools = new JsonArray();
 
@@ -297,7 +298,7 @@ public sealed class AnthropicModelClient : IModelClient
         {
             var toolObject = new JsonObject
             {
-                ["name"] = tool.Name,
+                ["name"] = toolNameMap.ToProviderName(tool.Name),
                 ["input_schema"] = tool.Parameters?.DeepClone() ?? new JsonObject()
             };
 
@@ -312,7 +313,7 @@ public sealed class AnthropicModelClient : IModelClient
         return anthropicTools;
     }
 
-    private static InvocationResponse ParseInvocationResponse(JsonElement root)
+    private static InvocationResponse ParseInvocationResponse(JsonElement root, ProviderToolNameMap toolNameMap)
     {
         var toolCalls = new List<ToolCall>();
         var textParts = new List<string>();
@@ -346,8 +347,9 @@ public sealed class AnthropicModelClient : IModelClient
                     toolCalls.Add(new ToolCall(
                         contentItem.GetProperty("id").GetString()
                             ?? throw new InvalidOperationException("Anthropic tool_use block is missing an id."),
-                        contentItem.GetProperty("name").GetString()
-                            ?? throw new InvalidOperationException("Anthropic tool_use block is missing a name."),
+                        toolNameMap.ToInternalName(
+                            contentItem.GetProperty("name").GetString()
+                                ?? throw new InvalidOperationException("Anthropic tool_use block is missing a name.")),
                         contentItem.TryGetProperty("input", out var inputElement)
                             ? JsonNode.Parse(inputElement.GetRawText())
                             : null));

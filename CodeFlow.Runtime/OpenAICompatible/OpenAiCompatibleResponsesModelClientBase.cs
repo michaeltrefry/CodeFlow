@@ -35,7 +35,8 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        using var httpRequest = BuildHttpRequest(request);
+        var toolNameMap = ProviderToolNameMap.Create(request.Tools);
+        using var httpRequest = BuildHttpRequest(request, toolNameMap);
         using var response = await SendWithRetryAsync(httpRequest, cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
@@ -43,7 +44,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(contentStream, cancellationToken: cancellationToken);
 
-        return ParseInvocationResponse(document.RootElement);
+        return ParseInvocationResponse(document.RootElement, toolNameMap);
     }
 
     protected virtual void ApplyHeaders(HttpRequestMessage httpRequest)
@@ -54,18 +55,18 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         }
     }
 
-    private HttpRequestMessage BuildHttpRequest(InvocationRequest request)
+    private HttpRequestMessage BuildHttpRequest(InvocationRequest request, ProviderToolNameMap toolNameMap)
     {
         var payload = new JsonObject
         {
             ["model"] = request.Model,
-            ["input"] = BuildInputItems(request.Messages),
+            ["input"] = BuildInputItems(request.Messages, toolNameMap),
             ["store"] = false
         };
 
         if (request.Tools is { Count: > 0 })
         {
-            payload["tools"] = BuildTools(request.Tools);
+            payload["tools"] = BuildTools(request.Tools, toolNameMap);
         }
 
         if (request.MaxTokens is int maxTokens)
@@ -173,7 +174,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         return clone;
     }
 
-    private static JsonArray BuildInputItems(IReadOnlyList<ChatMessage> messages)
+    private static JsonArray BuildInputItems(IReadOnlyList<ChatMessage> messages, ProviderToolNameMap toolNameMap)
     {
         var inputItems = new JsonArray();
 
@@ -217,7 +218,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
                 {
                     ["type"] = "function_call",
                     ["call_id"] = toolCall.Id,
-                    ["name"] = toolCall.Name,
+                    ["name"] = toolNameMap.ToProviderName(toolCall.Name),
                     ["arguments"] = SerializeArguments(toolCall.Arguments)
                 });
             }
@@ -226,7 +227,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         return inputItems;
     }
 
-    private static JsonArray BuildTools(IReadOnlyList<ToolSchema> tools)
+    private static JsonArray BuildTools(IReadOnlyList<ToolSchema> tools, ProviderToolNameMap toolNameMap)
     {
         var jsonTools = new JsonArray();
 
@@ -235,7 +236,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
             var toolObject = new JsonObject
             {
                 ["type"] = "function",
-                ["name"] = tool.Name
+                ["name"] = toolNameMap.ToProviderName(tool.Name)
             };
 
             if (!string.IsNullOrWhiteSpace(tool.Description))
@@ -254,7 +255,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         return jsonTools;
     }
 
-    private static InvocationResponse ParseInvocationResponse(JsonElement root)
+    private static InvocationResponse ParseInvocationResponse(JsonElement root, ProviderToolNameMap toolNameMap)
     {
         var toolCalls = new List<ToolCall>();
         var textParts = new List<string>();
@@ -278,7 +279,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
 
                 if (string.Equals(itemType, "function_call", StringComparison.OrdinalIgnoreCase))
                 {
-                    toolCalls.Add(ParseToolCall(item));
+                    toolCalls.Add(ParseToolCall(item, toolNameMap));
                 }
             }
         }
@@ -328,7 +329,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         }
     }
 
-    private static ToolCall ParseToolCall(JsonElement item)
+    private static ToolCall ParseToolCall(JsonElement item, ProviderToolNameMap toolNameMap)
     {
         var callId = item.TryGetProperty("call_id", out var callIdElement)
             ? callIdElement.GetString()
@@ -344,7 +345,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
 
         return new ToolCall(
             callId ?? itemId ?? throw new InvalidOperationException("Function call output is missing an id."),
-            item.GetProperty("name").GetString() ?? throw new InvalidOperationException("Function call output is missing a name."),
+            toolNameMap.ToInternalName(item.GetProperty("name").GetString() ?? throw new InvalidOperationException("Function call output is missing a name.")),
             arguments);
     }
 
