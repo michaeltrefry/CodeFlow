@@ -13,7 +13,7 @@ builder.Services.AddCodeFlowObservability(
     configureTracing: static tracing => tracing.AddAspNetCoreInstrumentation());
 builder.Services.AddCodeFlowInfrastructure(builder.Configuration);
 builder.Services.AddCodeFlowApiBus(builder.Configuration);
-builder.Services.AddCodeFlowAuth(builder.Configuration);
+builder.Services.AddCodeFlowAuth(builder.Configuration, builder.Environment);
 builder.Services.AddCodeFlowApi(builder.Configuration);
 builder.Services.AddCodeFlowDeadLetter(builder.Configuration);
 

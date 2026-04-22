@@ -71,4 +71,60 @@ public sealed class AesGcmSecretProtectorTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    [Fact]
+    public async Task Protect_and_Unprotect_round_trip_under_concurrent_load()
+    {
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+
+        const int workerCount = 32;
+        const int iterationsPerWorker = 200;
+
+        var failures = new List<Exception>();
+        var failureLock = new object();
+
+        var tasks = Enumerable.Range(0, workerCount).Select(workerId => Task.Run(() =>
+        {
+            for (var i = 0; i < iterationsPerWorker; i++)
+            {
+                var plaintext = $"worker-{workerId}-iteration-{i}-payload";
+                try
+                {
+                    var cipher = protector.Protect(plaintext);
+                    var round = protector.Unprotect(cipher);
+                    if (round != plaintext)
+                    {
+                        lock (failureLock)
+                        {
+                            failures.Add(new InvalidOperationException(
+                                $"round-trip mismatch: expected '{plaintext}', got '{round}'"));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lock (failureLock)
+                    {
+                        failures.Add(ex);
+                    }
+                }
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        failures.Should().BeEmpty(
+            "concurrent Protect/Unprotect must round-trip cleanly because AesGcm instance members are not documented as thread-safe");
+    }
+
+    [Fact]
+    public void Protect_throws_after_Dispose()
+    {
+        var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        protector.Dispose();
+
+        var act = () => protector.Protect("anything");
+
+        act.Should().Throw<ObjectDisposedException>();
+    }
 }

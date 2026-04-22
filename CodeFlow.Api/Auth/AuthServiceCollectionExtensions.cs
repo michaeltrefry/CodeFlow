@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
@@ -14,13 +15,34 @@ public static class AuthServiceCollectionExtensions
 
     public static IServiceCollection AddCodeFlowAuth(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IHostEnvironment environment)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(environment);
 
         var authSection = configuration.GetSection(CodeFlowApiDefaults.AuthSectionName);
         services.Configure<AuthOptions>(authSection);
+
+        var developmentBypass = authSection.GetValue<bool>(nameof(AuthOptions.DevelopmentBypass));
+
+        if (developmentBypass && environment.IsProduction())
+        {
+            throw new InvalidOperationException(
+                "Auth:DevelopmentBypass is enabled but the host environment is Production. "
+                + "Development bypass unconditionally asserts an admin principal for every request "
+                + "and must never run in Production. Unset Auth__DevelopmentBypass (or set it to false) "
+                + "before starting the host.");
+        }
+
+        if (developmentBypass && !environment.IsDevelopment())
+        {
+            Console.Error.WriteLine(
+                $"[codeflow-auth] WARNING: Auth:DevelopmentBypass is enabled in environment '{environment.EnvironmentName}'. "
+                + "Every request will be authenticated as the configured development user with Admin roles. "
+                + "This is only safe for local development and test environments.");
+        }
 
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUser, ClaimsCurrentUser>();
@@ -41,7 +63,7 @@ public static class AuthServiceCollectionExtensions
 
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
-        services.AddAuthentication(PolicySchemeName)
+        var authenticationBuilder = services.AddAuthentication(PolicySchemeName)
             .AddPolicyScheme(PolicySchemeName, PolicySchemeName, schemeOptions =>
             {
                 schemeOptions.ForwardDefaultSelector = context =>
@@ -52,10 +74,14 @@ public static class AuthServiceCollectionExtensions
                         : JwtBearerDefaults.AuthenticationScheme;
                 };
             })
-            .AddScheme<DevelopmentAuthenticationOptions, DevelopmentAuthenticationHandler>(
-                DevelopmentAuthenticationHandler.SchemeName,
-                _ => { })
             .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, _ => { });
+
+        if (!environment.IsProduction())
+        {
+            authenticationBuilder.AddScheme<DevelopmentAuthenticationOptions, DevelopmentAuthenticationHandler>(
+                DevelopmentAuthenticationHandler.SchemeName,
+                _ => { });
+        }
 
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
             .Configure<IOptionsMonitor<AuthOptions>>((bearer, authOptionsMonitor) =>
