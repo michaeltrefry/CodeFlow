@@ -117,6 +117,47 @@ public sealed class DefaultMcpClientTests
         await act.Should().ThrowAsync<ObjectDisposedException>();
     }
 
+    [Fact]
+    public async Task InvokeAsync_evicts_failed_session_so_next_call_retries_from_scratch()
+    {
+        var provider = new FakeInfoProvider(ArtifactsServer);
+        var factory = new FakeSessionFactory { FailFirstOpen = true };
+
+        await using var client = new DefaultMcpClient(provider, factory);
+
+        // First call fails during handshake.
+        var first = () => client.InvokeAsync("artifacts", "read", null);
+        await first.Should().ThrowAsync<InvalidOperationException>();
+
+        // Second call must retry (not return the cached faulted task).
+        var result = await client.InvokeAsync("artifacts", "read", null);
+        result.Content.Should().Be("artifacts:read");
+
+        factory.OpenCount.Should().Be(2, "faulted open task must be evicted so the next caller retries");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_does_not_poison_cache_when_first_caller_cancels_while_opening()
+    {
+        var provider = new FakeInfoProvider(ArtifactsServer);
+        var factory = new FakeSessionFactory { OpenDelay = TimeSpan.FromMilliseconds(100) };
+
+        await using var client = new DefaultMcpClient(provider, factory);
+
+        using var firstCaller = new CancellationTokenSource();
+        var firstTask = client.InvokeAsync("artifacts", "read", null, firstCaller.Token);
+
+        // Cancel the first caller before the handshake completes.
+        firstCaller.Cancel();
+        var firstAct = async () => await firstTask;
+        await firstAct.Should().ThrowAsync<OperationCanceledException>();
+
+        // A fresh caller without cancellation must still be able to complete — the first caller's
+        // cancellation must not have been baked into the cached open task.
+        var result = await client.InvokeAsync("artifacts", "read", null);
+        result.Content.Should().Be("artifacts:read");
+    }
+
     private sealed class FakeInfoProvider : IMcpConnectionInfoProvider
     {
         private readonly Dictionary<string, McpServerConnectionInfo> infos;
@@ -138,13 +179,26 @@ public sealed class DefaultMcpClientTests
         public List<McpServerConnectionInfo> OpenedInfos { get; } = new();
         public List<FakeSession> Sessions { get; } = new();
         public int OpenCount => OpenedInfos.Count;
+        public bool FailFirstOpen { get; set; }
+        public TimeSpan OpenDelay { get; set; }
 
-        public Task<IMcpSession> OpenAsync(McpServerConnectionInfo info, CancellationToken cancellationToken = default)
+        public async Task<IMcpSession> OpenAsync(McpServerConnectionInfo info, CancellationToken cancellationToken = default)
         {
             OpenedInfos.Add(info);
+
+            if (FailFirstOpen && OpenedInfos.Count == 1)
+            {
+                throw new InvalidOperationException("simulated handshake failure");
+            }
+
+            if (OpenDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(OpenDelay, cancellationToken);
+            }
+
             var session = new FakeSession(info.Key);
             Sessions.Add(session);
-            return Task.FromResult<IMcpSession>(session);
+            return session;
         }
     }
 

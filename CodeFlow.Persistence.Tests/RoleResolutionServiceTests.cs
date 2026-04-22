@@ -296,6 +296,52 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ResolveAsync_dedupes_mcp_tools_granted_by_multiple_roles()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+        var serverKey = $"svc-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var mcpRepo = new McpServerRepository(ctx, protector);
+        var roleRepo = new AgentRoleRepository(ctx);
+
+        var serverId = await mcpRepo.CreateAsync(new McpServerCreate(
+            Key: serverKey,
+            DisplayName: "Svc",
+            Transport: McpTransportKind.StreamableHttp,
+            EndpointUrl: "https://svc.local/mcp",
+            BearerTokenPlaintext: null,
+            CreatedBy: null));
+
+        await mcpRepo.ReplaceToolsAsync(serverId, new[]
+        {
+            new McpServerToolWrite("read", "read artifact", null, IsMutating: false),
+        });
+
+        var roleA = await roleRepo.CreateAsync(new AgentRoleCreate($"a-{Guid.NewGuid():N}", "A", null, null));
+        var roleB = await roleRepo.CreateAsync(new AgentRoleCreate($"b-{Guid.NewGuid():N}", "B", null, null));
+        // Both roles grant the same MCP tool; resolver must not emit it twice or downstream
+        // McpToolProvider dictionary building throws.
+        await roleRepo.ReplaceGrantsAsync(roleA, new[]
+        {
+            new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:read"),
+        });
+        await roleRepo.ReplaceGrantsAsync(roleB, new[]
+        {
+            new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:read"),
+        });
+        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveAsync(agentKey);
+
+        result.McpTools.Should().ContainSingle(
+            "overlapping MCP grants from multiple roles must be deduplicated by full name");
+        result.AllowedToolNames.Should().BeEquivalentTo(new[] { $"mcp:{serverKey}:read" });
+    }
+
+    [Fact]
     public async Task ResolveAsync_returns_skills_even_when_no_tool_grants_exist()
     {
         var agentKey = $"agent-{Guid.NewGuid():N}";
