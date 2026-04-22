@@ -4,7 +4,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace CodeFlow.Host.DeadLetter;
@@ -13,18 +12,22 @@ public sealed class RabbitMqDeadLetterStore : IDeadLetterStore
 {
     private readonly HttpClient httpClient;
     private readonly DeadLetterOptions options;
+    private readonly IDlqRetryTransport retryTransport;
     private readonly ILogger<RabbitMqDeadLetterStore> logger;
 
     public RabbitMqDeadLetterStore(
         HttpClient httpClient,
         IOptions<DeadLetterOptions> options,
+        IDlqRetryTransport retryTransport,
         ILogger<RabbitMqDeadLetterStore> logger)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(retryTransport);
         ArgumentNullException.ThrowIfNull(logger);
 
         this.options = options.Value;
+        this.retryTransport = retryTransport;
         this.logger = logger;
         this.httpClient = httpClient;
 
@@ -127,86 +130,60 @@ public sealed class RabbitMqDeadLetterStore : IDeadLetterStore
         ArgumentException.ThrowIfNullOrWhiteSpace(queueName);
         ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
 
-        var consumedCount = 0;
-        var maxAttempts = Math.Max(1, options.MaxPeekPerQueue);
-        while (consumedCount < maxAttempts)
+        // Resolve the republish target by peeking once (non-destructive; ack_requeue_true above).
+        // We need the original-input-address header from the target message to know where to
+        // republish it — the dead-letter queue name alone would only round-trip it to itself.
+        var snapshot = await PeekQueueAsync(queueName, cancellationToken);
+        var targetMessage = snapshot.FirstOrDefault(m => string.Equals(m.MessageId, messageId, StringComparison.Ordinal));
+
+        if (targetMessage is null)
         {
-            consumedCount++;
-            var getRequest = new JsonObject
-            {
-                ["count"] = 1,
-                ["ackmode"] = "ack_requeue_false",
-                ["encoding"] = "auto",
-                ["truncate"] = 65536
-            };
-
-            var getPath = $"api/queues/{Uri.EscapeDataString(options.VirtualHost)}/{Uri.EscapeDataString(queueName)}/get";
-            using var getResponse = await httpClient.PostAsJsonAsync(getPath, getRequest, cancellationToken);
-
-            if (!getResponse.IsSuccessStatusCode)
-            {
-                return new DeadLetterRetryResult(false, null, $"Failed to fetch message: {getResponse.StatusCode}");
-            }
-
-            var body = await getResponse.Content.ReadFromJsonAsync<JsonArray>(cancellationToken: cancellationToken)
-                ?? new JsonArray();
-
-            if (body.Count == 0)
-            {
-                return new DeadLetterRetryResult(false, null, "Message not found; it may have already been retried or removed.");
-            }
-
-            var candidate = body[0] ?? throw new InvalidOperationException("Null RabbitMQ message entry.");
-            var mapped = MapMessage(queueName, candidate);
-
-            if (!string.Equals(mapped.MessageId, messageId, StringComparison.Ordinal))
-            {
-                // Not our target — we already consumed (ack_requeue_false). Republish it back unchanged.
-                await PublishOriginalAsync(candidate, queueName, cancellationToken);
-                continue;
-            }
-
-            var republishTarget = ResolveRepublishTarget(mapped, queueName);
-            await PublishToQueueAsync(republishTarget, candidate, cancellationToken);
-            return new DeadLetterRetryResult(true, republishTarget, null);
+            return new DeadLetterRetryResult(
+                false,
+                null,
+                "Message not found in the first peek window; it may have already been retried, drained, or exceeded the peek limit.");
         }
 
-        return new DeadLetterRetryResult(false, null, "Target message id was not found within the peek window.");
-    }
+        var republishTarget = ResolveRepublishTarget(targetMessage, queueName);
 
-    private async Task PublishOriginalAsync(JsonNode candidate, string queueName, CancellationToken cancellationToken)
-    {
-        // Put the rotated-past message back onto the same error queue.
-        await PublishToQueueAsync(queueName, candidate, cancellationToken);
-    }
-
-    private async Task PublishToQueueAsync(string targetQueue, JsonNode candidate, CancellationToken cancellationToken)
-    {
-        var payload = candidate["payload"]?.GetValue<string>() ?? string.Empty;
-        var payloadEncoding = candidate["payload_encoding"]?.GetValue<string>() ?? "string";
-        var properties = candidate["properties"]?.DeepClone() ?? new JsonObject();
-
-        var publishRequest = new JsonObject
+        try
         {
-            ["properties"] = properties,
-            ["routing_key"] = targetQueue,
-            ["payload"] = payload,
-            ["payload_encoding"] = payloadEncoding
-        };
+            var transfer = await retryTransport.TransferAsync(
+                sourceQueue: queueName,
+                targetQueue: republishTarget,
+                targetMessageId: messageId,
+                cancellationToken);
 
-        // Publish to the default exchange ("") with the target queue as routing key — this is a direct-to-queue send.
-        var path = $"api/exchanges/{Uri.EscapeDataString(options.VirtualHost)}/{Uri.EscapeDataString("amq.default")}/publish";
-        using var response = await httpClient.PostAsJsonAsync(path, publishRequest, cancellationToken);
-        response.EnsureSuccessStatusCode();
+            return transfer.Outcome switch
+            {
+                DlqTransferOutcome.Transferred => new DeadLetterRetryResult(true, republishTarget, null),
+                DlqTransferOutcome.NotFound => new DeadLetterRetryResult(
+                    false,
+                    null,
+                    transfer.ErrorMessage ?? "Target message id was not found during the AMQP retry scan."),
+                _ => new DeadLetterRetryResult(false, null, transfer.ErrorMessage ?? "Unknown AMQP retry failure.")
+            };
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "DLQ atomic retry failed for {Queue}/{MessageId} -> {Target}; source queue is unchanged",
+                queueName,
+                messageId,
+                republishTarget);
+            return new DeadLetterRetryResult(false, null, $"Atomic retry failed: {ex.Message}");
+        }
     }
 
     private DeadLetterMessage MapMessage(string queueName, JsonNode messageNode)
     {
         var payload = messageNode["payload"]?.GetValue<string>() ?? string.Empty;
-        var messageId = ComputeStableMessageId(queueName, payload);
+        var properties = messageNode["properties"] as JsonObject;
+        var explicitMessageId = properties?["message_id"]?.GetValue<string?>();
 
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (messageNode["properties"]?["headers"] is JsonObject headerObject)
+        if (properties?["headers"] is JsonObject headerObject)
         {
             foreach (var kvp in headerObject)
             {
@@ -219,14 +196,9 @@ public sealed class RabbitMqDeadLetterStore : IDeadLetterStore
             }
         }
 
-        string? originalInputAddress = null;
-        headers.TryGetValue("MT-Fault-InputAddress", out originalInputAddress);
-
-        string? faultException = null;
-        headers.TryGetValue("MT-Fault-Message", out faultException);
-
-        string? faultExceptionType = null;
-        headers.TryGetValue("MT-Fault-ExceptionType", out faultExceptionType);
+        headers.TryGetValue("MT-Fault-InputAddress", out var originalInputAddress);
+        headers.TryGetValue("MT-Fault-Message", out var faultException);
+        headers.TryGetValue("MT-Fault-ExceptionType", out var faultExceptionType);
 
         DateTimeOffset? faultedAtUtc = null;
         if (headers.TryGetValue("MT-Fault-Timestamp", out var timestamp)
@@ -234,6 +206,13 @@ public sealed class RabbitMqDeadLetterStore : IDeadLetterStore
         {
             faultedAtUtc = parsed;
         }
+
+        // Prefer the AMQP message_id property (MassTransit sets this per publish — unique per
+        // message). Fall back to a composite hash including any per-fault identifiers so two
+        // semantically-identical failures in the same queue don't collide.
+        var messageId = !string.IsNullOrWhiteSpace(explicitMessageId)
+            ? explicitMessageId!
+            : ComputeFallbackMessageId(queueName, payload, headers);
 
         var preview = payload.Length > 2048 ? payload[..2048] : payload;
         return new DeadLetterMessage(
@@ -247,11 +226,36 @@ public sealed class RabbitMqDeadLetterStore : IDeadLetterStore
             Headers: headers);
     }
 
-    private static string ComputeStableMessageId(string queueName, string payload)
+    private static string ComputeFallbackMessageId(
+        string queueName,
+        string payload,
+        IReadOnlyDictionary<string, string> headers)
     {
-        var bytes = Encoding.UTF8.GetBytes(queueName + "|" + payload);
+        var builder = new StringBuilder();
+        builder.Append(queueName).Append('|').Append(payload);
+
+        // Any one of these makes two otherwise-identical faults distinguishable. MT stamps the
+        // fault timestamp per fault event and the activity/conversation ids per invocation, so
+        // at least one of these is present in practice.
+        AppendIfPresent(builder, headers, "MT-Fault-Timestamp");
+        AppendIfPresent(builder, headers, "MT-Fault-ConsumerType");
+        AppendIfPresent(builder, headers, "MT-Activity-Id");
+        AppendIfPresent(builder, headers, "MT-ConversationId");
+
+        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
         var hash = SHA256.HashData(bytes);
-        return Convert.ToHexString(hash)[..24];
+        return "h-" + Convert.ToHexString(hash)[..24];
+    }
+
+    private static void AppendIfPresent(
+        StringBuilder builder,
+        IReadOnlyDictionary<string, string> headers,
+        string headerName)
+    {
+        if (headers.TryGetValue(headerName, out var value))
+        {
+            builder.Append('|').Append(headerName).Append('=').Append(value);
+        }
     }
 
     private string ResolveRepublishTarget(DeadLetterMessage message, string queueName)

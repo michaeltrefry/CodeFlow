@@ -15,6 +15,7 @@ public static class DeadLetterServiceCollectionExtensions
         services.AddOptions<DeadLetterOptions>()
             .Bind(configuration.GetSection(DeadLetterOptions.SectionName));
 
+        services.AddSingleton<IDlqRetryTransport, RabbitMqDlqRetryTransport>();
         services.AddHttpClient<IDeadLetterStore, RabbitMqDeadLetterStore>();
 
         return services;
