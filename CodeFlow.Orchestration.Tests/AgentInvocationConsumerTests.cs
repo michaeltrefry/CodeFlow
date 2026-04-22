@@ -49,6 +49,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -139,6 +140,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-retry-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -201,6 +203,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-failure-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -229,6 +232,153 @@ public sealed class AgentInvocationConsumerTests
             failureContext.GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
             failureContext.GetProperty("last_output").GetString().Should().Contain("Partial draft");
             failureContext.GetProperty("tool_calls_executed").GetInt32().Should().Be(7);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_WhenAgentInvokerThrows_ShouldPublishFailedCompletionInsteadOfFaulting()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "exception-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new ThrowingAgentInvoker(new HttpRequestException("Response status code does not indicate success: 400 (Bad Request)."));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-exception-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+            (await harness.Published.Any<Fault<AgentInvokeRequested>>()).Should().BeFalse();
+
+            artifactStore.Writes.Should().ContainSingle();
+            artifactStore.Writes[0].Content.Should().Contain("Agent invocation failed.");
+            artifactStore.Writes[0].Content.Should().Contain("400 (Bad Request)");
+
+            var completion = harness.Published
+                .Select<AgentInvocationCompleted>()
+                .Single()
+                .Context.Message;
+
+            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Failed);
+            completion.OutputPortName.Should().Be("Failed");
+            completion.DecisionPayload.Should().NotBeNull();
+            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("AgentInvocationFailed");
+            completion.DecisionPayload!.Value.GetProperty("failure_context").GetProperty("reason").GetString().Should().Be("AgentInvocationFailed");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("message").GetString().Should().Contain("400 (Bad Request)");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("exception_type").GetString().Should().Be(typeof(HttpRequestException).FullName);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_ShouldFlattenWorkflowContextIntoPromptTemplateVariables()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "context-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>
+            {
+                ["target"] = Json("""{"path":"/repos/blogger","branch":"main"}"""),
+                ["attempt"] = Json("2"),
+                ["approved"] = Json("true"),
+                ["plainText"] = Json("\"hello\"")
+            });
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai",
+                "gpt-5.4",
+                PromptTemplate: "Open {{context.target.path}} on {{context.target.branch}}"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-context-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            using var rawTarget = JsonDocument.Parse(variables!["context.target"]);
+            rawTarget.RootElement.GetProperty("path").GetString().Should().Be("/repos/blogger");
+            rawTarget.RootElement.GetProperty("branch").GetString().Should().Be("main");
+            variables["context.target.path"].Should().Be("/repos/blogger");
+            variables["context.target.branch"].Should().Be("main");
+            variables["context.attempt"].Should().Be("2");
+            variables["context.approved"].Should().Be("true");
+            variables["context.plainText"].Should().Be("hello");
         }
         finally
         {
@@ -280,6 +430,26 @@ public sealed class AgentInvocationConsumerTests
         }
     }
 
+    private sealed class FakeRoleResolutionService : IRoleResolutionService
+    {
+        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ResolvedAgentTools.Empty);
+        }
+    }
+
+    private sealed class ThrowingAgentInvoker(Exception exception) : IAgentInvoker
+    {
+        public Task<AgentInvocationResult> InvokeAsync(
+            AgentInvocationConfiguration configuration,
+            string? input,
+            ResolvedAgentTools tools,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<AgentInvocationResult>(exception);
+        }
+    }
+
     private sealed class RecordingArtifactStore((string Content, string? ContentType) initialContent) : IArtifactStore
     {
         public List<(Uri Uri, ArtifactMetadata Metadata, string Content)> Writes { get; } = [];
@@ -306,5 +476,11 @@ public sealed class AgentInvocationConsumerTests
             Writes.Add((uri, metadata, text));
             return uri;
         }
+    }
+
+    private static JsonElement Json(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 }
