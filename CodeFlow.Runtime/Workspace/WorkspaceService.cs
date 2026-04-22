@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -7,11 +9,16 @@ public sealed class WorkspaceService : IWorkspaceService
     private readonly WorkspaceOptions options;
     private readonly IGitCli git;
     private readonly IRepoUrlHostGuard hostGuard;
+    private readonly ILogger<WorkspaceService> logger;
     private readonly ConcurrentDictionary<(Guid CorrelationId, string RepoIdentityKey), Workspace> workspaces = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> mirrorLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<(Guid, string), SemaphoreSlim> openLocks = new();
 
-    public WorkspaceService(WorkspaceOptions options, IGitCli git, IRepoUrlHostGuard? hostGuard = null)
+    public WorkspaceService(
+        WorkspaceOptions options,
+        IGitCli git,
+        IRepoUrlHostGuard? hostGuard = null,
+        ILogger<WorkspaceService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(git);
@@ -19,6 +26,7 @@ public sealed class WorkspaceService : IWorkspaceService
         this.options = options;
         this.git = git;
         this.hostGuard = hostGuard ?? new PermissiveRepoUrlHostGuard();
+        this.logger = logger ?? NullLogger<WorkspaceService>.Instance;
     }
 
     public async Task<Workspace> OpenAsync(
@@ -125,6 +133,7 @@ public sealed class WorkspaceService : IWorkspaceService
                 continue;
             }
 
+            var worktreeRemoved = true;
             try
             {
                 await git.WorktreeRemoveAsync(
@@ -133,18 +142,34 @@ public sealed class WorkspaceService : IWorkspaceService
                     force: true,
                     cancellationToken);
             }
-            catch (GitCommandException)
+            catch (GitCommandException ex)
             {
+                worktreeRemoved = false;
+                logger.LogWarning(
+                    ex,
+                    "git worktree remove failed for workspace {RootPath} (correlation {CorrelationId}, repo {RepoIdentityKey}); will still attempt directory cleanup.",
+                    workspace.RootPath,
+                    correlationId,
+                    workspace.RepoIdentityKey);
             }
 
-            if (Directory.Exists(workspace.RootPath))
+            // `git worktree remove --force` already deletes the directory on success, so the
+            // fallback Directory.Delete only runs when we genuinely still have orphaned files
+            // — either because the git command failed, or because the directory survived on a
+            // filesystem that races with git's flush.
+            if (!worktreeRemoved && Directory.Exists(workspace.RootPath))
             {
                 try
                 {
                     Directory.Delete(workspace.RootPath, recursive: true);
                 }
-                catch
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
+                    logger.LogWarning(
+                        ex,
+                        "Directory.Delete fallback failed for workspace {RootPath} (correlation {CorrelationId}); disk may leak until manual cleanup.",
+                        workspace.RootPath,
+                        correlationId);
                 }
             }
 
@@ -158,8 +183,13 @@ public sealed class WorkspaceService : IWorkspaceService
             {
                 Directory.Delete(correlationDir, recursive: true);
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                logger.LogWarning(
+                    ex,
+                    "Failed to remove correlation directory {CorrelationDir} (correlation {CorrelationId}); disk may leak until manual cleanup.",
+                    correlationDir,
+                    correlationId);
             }
         }
     }

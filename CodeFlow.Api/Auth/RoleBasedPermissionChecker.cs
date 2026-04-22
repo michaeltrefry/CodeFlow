@@ -35,6 +35,12 @@ public sealed class RoleBasedPermissionChecker : IPermissionChecker
         return false;
     }
 
+    public Task<bool> HasPermissionAsync(ICurrentUser user, string permission, CancellationToken cancellationToken = default)
+    {
+        // Role lookup is a pure in-memory check; no need to go async.
+        return Task.FromResult(HasPermission(user, permission));
+    }
+
     private static IReadOnlyDictionary<string, IReadOnlySet<string>> BuildRolePermissions(AuthOptions options)
     {
         var source = options.RolePermissions.Count > 0

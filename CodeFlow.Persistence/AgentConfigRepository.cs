@@ -1,13 +1,23 @@
 using CodeFlow.Runtime;
 using Microsoft.EntityFrameworkCore;
-using System.Collections.Concurrent;
+using Microsoft.Extensions.Caching.Memory;
 using System.Data;
 
 namespace CodeFlow.Persistence;
 
 public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentConfigRepository
 {
-    private static readonly ConcurrentDictionary<AgentConfigCacheKey, AgentConfig> Cache = new();
+    // Process-wide cache for immutable agent-config versions. Bounded by size and sliding
+    // expiration so long-lived processes don't retain every version ever touched.
+    private const int CacheSizeLimit = 1024;
+    private static readonly TimeSpan CacheSlidingExpiration = TimeSpan.FromMinutes(15);
+    private static readonly MemoryCache Cache = new(new MemoryCacheOptions
+    {
+        SizeLimit = CacheSizeLimit,
+    });
+    private static readonly MemoryCacheEntryOptions CacheEntryOptions = new MemoryCacheEntryOptions()
+        .SetSize(1)
+        .SetSlidingExpiration(CacheSlidingExpiration);
 
     public async Task<AgentConfig> GetAsync(
         string key,
@@ -17,7 +27,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         var normalizedKey = NormalizeKey(key);
         var cacheKey = AgentConfigCacheKey.Create(normalizedKey, version);
 
-        if (Cache.TryGetValue(cacheKey, out var cachedConfig))
+        if (Cache.TryGetValue<AgentConfig>(cacheKey, out var cachedConfig) && cachedConfig is not null)
         {
             return cachedConfig;
         }
@@ -33,7 +43,9 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             throw new AgentConfigNotFoundException(normalizedKey, version);
         }
 
-        return Cache.GetOrAdd(cacheKey, _ => Map(entity));
+        var mapped = Map(entity);
+        Cache.Set(cacheKey, mapped, CacheEntryOptions);
+        return mapped;
     }
 
     public async Task<int> CreateNewVersionAsync(
@@ -81,7 +93,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
-            Cache[AgentConfigCacheKey.Create(normalizedKey, nextVersion)] = Map(entity, configuration);
+            Cache.Set(AgentConfigCacheKey.Create(normalizedKey, nextVersion), Map(entity, configuration), CacheEntryOptions);
 
             return nextVersion;
         });

@@ -1,5 +1,6 @@
 using CodeFlow.Contracts;
 using MassTransit;
+using MassTransit.RabbitMqTransport;
 
 namespace CodeFlow.Api.TraceEvents;
 
@@ -38,5 +39,20 @@ public sealed class TraceInvokeRequestedObserverDefinition : ConsumerDefinition<
     public TraceInvokeRequestedObserverDefinition()
     {
         EndpointName = $"api-trace-observer-invoke-{Environment.MachineName}-{Guid.NewGuid():N}";
+    }
+
+    protected override void ConfigureConsumer(
+        IReceiveEndpointConfigurator endpointConfigurator,
+        IConsumerConfigurator<TraceInvokeRequestedObserver> consumerConfigurator,
+        IRegistrationContext context)
+    {
+        // Per-instance, in-memory-only broadcast queue: declare as auto-delete and non-durable so
+        // each API pod's queue dies with it and RabbitMQ doesn't accumulate orphans across
+        // rolling deploys.
+        if (endpointConfigurator is IRabbitMqReceiveEndpointConfigurator rabbit)
+        {
+            rabbit.AutoDelete = true;
+            rabbit.Durable = false;
+        }
     }
 }

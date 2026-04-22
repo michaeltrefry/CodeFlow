@@ -86,7 +86,8 @@ public sealed class RoleResolutionService : IRoleResolutionService
                 mcpIdentifiers.Add(grant.ToolIdentifier);
             }
 
-            var (servers, toolsByServer) = await LoadMcpCatalogAsync(cancellationToken);
+            var parsedPairs = ParseMcpPairs(mcpGrants);
+            var (servers, toolsByServer) = await LoadMcpCatalogAsync(parsedPairs, cancellationToken);
             var resolvedTools = new List<McpToolDefinition>();
             // Dedupe by the full mcp:<server>:<tool> identifier: multiple roles assigned to the
             // same agent can grant the same tool, which would otherwise fail when downstream
@@ -180,19 +181,42 @@ public sealed class RoleResolutionService : IRoleResolutionService
             .ToArray();
     }
 
+    private static IReadOnlyCollection<(string ServerKey, string ToolName)> ParseMcpPairs(IEnumerable<GrantView> mcpGrants)
+    {
+        var pairs = new HashSet<(string, string)>();
+        foreach (var grant in mcpGrants)
+        {
+            var parts = grant.ToolIdentifier.Split(':', 3);
+            if (parts.Length != 3 || !string.Equals(parts[0], "mcp", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            pairs.Add((parts[1], parts[2]));
+        }
+        return pairs;
+    }
+
     private async Task<(IReadOnlyDictionary<string, McpServerLookup> Servers,
                        IReadOnlyDictionary<long, IReadOnlyDictionary<string, McpToolLookup>> ToolsByServer)>
-        LoadMcpCatalogAsync(CancellationToken cancellationToken)
+        LoadMcpCatalogAsync(IReadOnlyCollection<(string ServerKey, string ToolName)> grantedPairs, CancellationToken cancellationToken)
     {
+        // Filter at the DB: we only need rows whose server key is granted to this agent. This keeps
+        // per-invocation catalog load O(granted) rather than O(all mcp tools across the org).
+        var serverKeys = grantedPairs.Select(p => p.ServerKey).Distinct().ToArray();
+
         var servers = await dbContext.McpServers
             .AsNoTracking()
+            .Where(server => serverKeys.Contains(server.Key))
             .Select(server => new McpServerLookup(server.Id, server.Key, server.IsArchived))
             .ToListAsync(cancellationToken);
 
         var serverDictionary = servers.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
+        var serverIds = servers.Select(s => s.Id).ToArray();
+        var grantedToolNames = grantedPairs.Select(p => p.ToolName).Distinct().ToArray();
 
         var tools = await dbContext.McpServerTools
             .AsNoTracking()
+            .Where(tool => serverIds.Contains(tool.ServerId) && grantedToolNames.Contains(tool.ToolName))
             .Select(tool => new McpToolLookup(tool.ServerId, tool.ToolName, tool.Description, tool.ParametersJson, tool.IsMutating))
             .ToListAsync(cancellationToken);
 

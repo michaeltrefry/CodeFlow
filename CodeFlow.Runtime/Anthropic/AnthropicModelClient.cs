@@ -54,16 +54,34 @@ public sealed class AnthropicModelClient : IModelClient
             ["messages"] = BuildMessages(request.Messages)
         };
 
+        // Prompt caching: the system prompt and the tools catalog are identical across every
+        // round of a single agent invocation. Marking each with cache_control=ephemeral lets
+        // Anthropic serve rounds 2+ from cache instead of re-billing and re-latency-hitting the
+        // full prefix each time. Safe to do unconditionally on Claude >= 3.5.
         var systemPrompt = BuildSystemPrompt(request.Messages);
-
         if (!string.IsNullOrWhiteSpace(systemPrompt))
         {
-            payload["system"] = systemPrompt;
+            payload["system"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = systemPrompt,
+                    ["cache_control"] = new JsonObject { ["type"] = "ephemeral" },
+                },
+            };
         }
 
         if (request.Tools is { Count: > 0 })
         {
-            payload["tools"] = BuildTools(request.Tools);
+            var toolsJson = BuildTools(request.Tools);
+            // Anthropic's cache rule: the cache_control marker on the last tool caches the whole
+            // tools array prefix — no need to mark every entry.
+            if (toolsJson.Count > 0 && toolsJson[^1] is JsonObject lastTool)
+            {
+                lastTool["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
+            }
+            payload["tools"] = toolsJson;
         }
 
         if (request.Temperature is double temperature)

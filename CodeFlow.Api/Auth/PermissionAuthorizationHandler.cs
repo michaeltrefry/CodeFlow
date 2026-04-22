@@ -25,15 +25,17 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         this.currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
     }
 
-    protected override Task HandleRequirementAsync(
+    protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
         PermissionRequirement requirement)
     {
-        if (permissionChecker.HasPermission(currentUser, requirement.Permission))
+        var cancellationToken = context.Resource is Microsoft.AspNetCore.Http.HttpContext httpContext
+            ? httpContext.RequestAborted
+            : CancellationToken.None;
+
+        if (await permissionChecker.HasPermissionAsync(currentUser, requirement.Permission, cancellationToken))
         {
             context.Succeed(requirement);
         }
-
-        return Task.CompletedTask;
     }
 }

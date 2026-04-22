@@ -2,6 +2,7 @@ using CodeFlow.Runtime.Workspace;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Host.Workspace;
@@ -55,7 +56,8 @@ public static class WorkspaceServiceCollectionExtensions
             new WorkspaceService(
                 sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
                 sp.GetRequiredService<IGitCli>(),
-                sp.GetRequiredService<IRepoUrlHostGuard>()));
+                sp.GetRequiredService<IRepoUrlHostGuard>(),
+                sp.GetRequiredService<ILogger<WorkspaceService>>()));
 
         services.AddHostedService<WorkspaceRootInitializer>();
 

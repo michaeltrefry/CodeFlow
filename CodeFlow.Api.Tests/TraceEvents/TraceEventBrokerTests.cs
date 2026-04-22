@@ -63,6 +63,41 @@ public sealed class TraceEventBrokerTests
         completed.Should().Be(consumer);
     }
 
+    [Fact]
+    public async Task Publish_ToOtherTrace_IsNoOpWhenNoSubscribersOnThatTrace()
+    {
+        // Partitioning by TraceId: publishing an event for a trace with no subscribers must not
+        // touch any other trace's channel, regardless of subscriber count.
+        var broker = new TraceEventBroker();
+        var watchedTrace = Guid.NewGuid();
+        var unrelatedTrace = Guid.NewGuid();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var received = new List<TraceEvent>();
+
+        var consumer = Task.Run(async () =>
+        {
+            await foreach (var evt in broker.SubscribeAsync(watchedTrace, cts.Token))
+            {
+                received.Add(evt);
+                if (received.Count >= 1) break;
+            }
+        }, cts.Token);
+
+        await Task.Delay(50, cts.Token);
+
+        // 1000 events on the unrelated trace must not block or fill any buffer for watchedTrace.
+        for (var i = 0; i < 1000; i++)
+        {
+            await broker.PublishAsync(Make(unrelatedTrace, TraceEventKind.Requested), cts.Token);
+        }
+
+        await broker.PublishAsync(Make(watchedTrace, TraceEventKind.Completed), cts.Token);
+
+        await consumer;
+        received.Should().ContainSingle().Which.TraceId.Should().Be(watchedTrace);
+    }
+
     private static TraceEvent Make(Guid traceId, TraceEventKind kind)
     {
         return new TraceEvent(

@@ -52,64 +52,31 @@ public sealed class AuthOptions
 
     public static IDictionary<string, IList<string>> DefaultRolePermissions()
     {
-        return new Dictionary<string, IList<string>>(StringComparer.OrdinalIgnoreCase)
+        // Build role -> permissions by inverting the permission -> roles matrix so there's a
+        // single authoritative source of "which roles can do what". Adding a new permission
+        // only requires touching PermissionRoleMatrix.
+        var rolePermissions = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            [CodeFlowApiDefaults.Roles.Viewer] = new List<string>
-            {
-                CodeFlowApiDefaults.Permissions.AgentsRead,
-                CodeFlowApiDefaults.Permissions.WorkflowsRead,
-                CodeFlowApiDefaults.Permissions.TracesRead,
-                CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.SkillsRead
-            },
-            [CodeFlowApiDefaults.Roles.Author] = new List<string>
-            {
-                CodeFlowApiDefaults.Permissions.AgentsRead,
-                CodeFlowApiDefaults.Permissions.AgentsWrite,
-                CodeFlowApiDefaults.Permissions.WorkflowsRead,
-                CodeFlowApiDefaults.Permissions.WorkflowsWrite,
-                CodeFlowApiDefaults.Permissions.TracesRead,
-                CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.McpServersWrite,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesWrite,
-                CodeFlowApiDefaults.Permissions.SkillsRead,
-                CodeFlowApiDefaults.Permissions.SkillsWrite
-            },
-            [CodeFlowApiDefaults.Roles.Operator] = new List<string>
-            {
-                CodeFlowApiDefaults.Permissions.AgentsRead,
-                CodeFlowApiDefaults.Permissions.WorkflowsRead,
-                CodeFlowApiDefaults.Permissions.TracesRead,
-                CodeFlowApiDefaults.Permissions.TracesWrite,
-                CodeFlowApiDefaults.Permissions.HitlWrite,
-                CodeFlowApiDefaults.Permissions.OpsRead,
-                CodeFlowApiDefaults.Permissions.OpsWrite,
-                CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.SkillsRead
-            },
-            [CodeFlowApiDefaults.Roles.Admin] = new List<string>
-            {
-                CodeFlowApiDefaults.Permissions.AgentsRead,
-                CodeFlowApiDefaults.Permissions.AgentsWrite,
-                CodeFlowApiDefaults.Permissions.WorkflowsRead,
-                CodeFlowApiDefaults.Permissions.WorkflowsWrite,
-                CodeFlowApiDefaults.Permissions.TracesRead,
-                CodeFlowApiDefaults.Permissions.TracesWrite,
-                CodeFlowApiDefaults.Permissions.HitlWrite,
-                CodeFlowApiDefaults.Permissions.OpsRead,
-                CodeFlowApiDefaults.Permissions.OpsWrite,
-                CodeFlowApiDefaults.Permissions.McpServersRead,
-                CodeFlowApiDefaults.Permissions.McpServersWrite,
-                CodeFlowApiDefaults.Permissions.AgentRolesRead,
-                CodeFlowApiDefaults.Permissions.AgentRolesWrite,
-                CodeFlowApiDefaults.Permissions.SkillsRead,
-                CodeFlowApiDefaults.Permissions.SkillsWrite,
-                CodeFlowApiDefaults.Permissions.GitHostRead,
-                CodeFlowApiDefaults.Permissions.GitHostWrite
-            }
+            [CodeFlowApiDefaults.Roles.Viewer] = new(),
+            [CodeFlowApiDefaults.Roles.Author] = new(),
+            [CodeFlowApiDefaults.Roles.Operator] = new(),
+            [CodeFlowApiDefaults.Roles.Admin] = new(),
         };
+
+        foreach (var (permission, roles) in CodeFlowApiDefaults.PermissionRoleMatrix)
+        {
+            foreach (var role in roles)
+            {
+                if (rolePermissions.TryGetValue(role, out var list))
+                {
+                    list.Add(permission);
+                }
+            }
+        }
+
+        return rolePermissions.ToDictionary(
+            pair => pair.Key,
+            pair => (IList<string>)pair.Value,
+            StringComparer.OrdinalIgnoreCase);
     }
 }

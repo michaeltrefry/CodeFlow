@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,6 +20,7 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
     private readonly IMemoryCache cache;
     private readonly ILogger<CompanyPermissionChecker> logger;
     private readonly CompanyAuthOptions companyOptions;
+    private readonly string authorityHash;
 
     public CompanyPermissionChecker(
         IPermissionsApiClient permissionsApiClient,
@@ -36,10 +39,15 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
         this.fallback = fallback;
         this.cache = cache;
         this.logger = logger;
-        this.companyOptions = options.Value.Company;
+        var auth = options.Value;
+        this.companyOptions = auth.Company;
+        this.authorityHash = ComputeAuthorityHash(auth.Authority, auth.Audience);
     }
 
     public bool HasPermission(ICurrentUser user, string permission)
+        => HasPermissionAsync(user, permission, CancellationToken.None).GetAwaiter().GetResult();
+
+    public async Task<bool> HasPermissionAsync(ICurrentUser user, string permission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentException.ThrowIfNullOrWhiteSpace(permission);
@@ -56,11 +64,11 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
             return fallback.HasPermission(user, permission);
         }
 
-        var permissions = GetOrFetchPermissions(user);
+        var permissions = await GetOrFetchPermissionsAsync(user, cancellationToken);
         return permissions.Contains(permission);
     }
 
-    private IReadOnlySet<string> GetOrFetchPermissions(ICurrentUser user)
+    private async Task<IReadOnlySet<string>> GetOrFetchPermissionsAsync(ICurrentUser user, CancellationToken cancellationToken)
     {
         var userId = user.Id;
         if (string.IsNullOrWhiteSpace(userId))
@@ -68,7 +76,9 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        var cacheKey = $"codeflow:company-permissions:{userId}";
+        // Include an authority-hash prefix so identical `sub` claims asserted by different issuers
+        // (e.g. staging vs prod, or two tenants behind one CodeFlow instance) never collide.
+        var cacheKey = $"codeflow:company-permissions:{authorityHash}:{userId}";
         if (cache.TryGetValue<IReadOnlySet<string>>(cacheKey, out var cached) && cached is not null)
         {
             return cached;
@@ -77,9 +87,9 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
         IReadOnlyList<string> fetched;
         try
         {
-            fetched = permissionsApiClient.GetPermissionsAsync(userId!).GetAwaiter().GetResult();
+            fetched = await permissionsApiClient.GetPermissionsAsync(userId!, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(
                 ex,
@@ -94,5 +104,12 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
         var ttl = TimeSpan.FromSeconds(Math.Max(1, companyOptions.PermissionsCacheSeconds));
         cache.Set<IReadOnlySet<string>>(cacheKey, set, ttl);
         return set;
+    }
+
+    private static string ComputeAuthorityHash(string? authority, string? audience)
+    {
+        var material = $"{authority ?? string.Empty}|{audience ?? string.Empty}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return Convert.ToHexString(hash, 0, 6).ToLowerInvariant();
     }
 }
