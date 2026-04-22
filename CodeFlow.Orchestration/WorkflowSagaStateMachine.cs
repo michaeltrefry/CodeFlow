@@ -111,6 +111,16 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         activity?.SetTag(CodeFlowActivity.TagNames.AgentKey, message.AgentKey);
         activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, message.Decision.ToString());
 
+        // Reject completions from stale or duplicate rounds. Correlation by TraceId alone is
+        // not enough — a delayed redelivery or a duplicate publish from an earlier round could
+        // otherwise mutate the saga and route to the wrong node.
+        if (message.RoundId != saga.CurrentRoundId)
+        {
+            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, "StaleRound_Ignored");
+            activity?.SetTag("codeflow.saga.message_round_id", message.RoundId);
+            return;
+        }
+
         var services = context.GetPayload<IServiceProvider>();
         var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
         var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();

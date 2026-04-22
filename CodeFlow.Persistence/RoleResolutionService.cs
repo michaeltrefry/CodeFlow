@@ -88,9 +88,18 @@ public sealed class RoleResolutionService : IRoleResolutionService
 
             var (servers, toolsByServer) = await LoadMcpCatalogAsync(cancellationToken);
             var resolvedTools = new List<McpToolDefinition>();
+            // Dedupe by the full mcp:<server>:<tool> identifier: multiple roles assigned to the
+            // same agent can grant the same tool, which would otherwise fail when downstream
+            // McpToolProvider builds a dictionary keyed by full name.
+            var seenIdentifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var grant in mcpGrants)
             {
+                if (!seenIdentifiers.Add(grant.ToolIdentifier))
+                {
+                    continue;
+                }
+
                 var parts = grant.ToolIdentifier.Split(':', 3);
                 if (parts.Length != 3 || !string.Equals(parts[0], "mcp", StringComparison.OrdinalIgnoreCase))
                 {

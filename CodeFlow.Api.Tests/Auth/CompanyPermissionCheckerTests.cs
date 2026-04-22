@@ -2,6 +2,7 @@ using CodeFlow.Api;
 using CodeFlow.Api.Auth;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Tests.Auth;
@@ -62,9 +63,10 @@ public sealed class CompanyPermissionCheckerTests
     }
 
     [Fact]
-    public void HasPermission_FallsBackToRoleMap_WhenPermissionsApiReturnsEmpty()
+    public void HasPermission_Denies_WhenPermissionsApiReturnsEmpty()
     {
-        // Models a transient outage — PermissionsApi returns [] so we defer to role defaults.
+        // Fail-closed: PermissionsApi is configured, so an empty result must deny rather than
+        // silently widen access through the role map fallback.
         var checker = BuildChecker(
             new FakePermissionsApi(),
             baseUrl: "https://permissions.internal/",
@@ -74,11 +76,29 @@ public sealed class CompanyPermissionCheckerTests
             new FakeCurrentUser("op-1", [CodeFlowApiDefaults.Roles.Operator]),
             CodeFlowApiDefaults.Permissions.OpsRead);
 
-        granted.Should().BeTrue();
+        granted.Should().BeFalse("PermissionsApi is authoritative when configured; empty result is deny");
+    }
+
+    [Fact]
+    public void HasPermission_Denies_WhenPermissionsApiThrows()
+    {
+        // Fail-closed on backend error. Must also not cache the failure.
+        var api = new ThrowingPermissionsApi();
+        var checker = BuildChecker(
+            api,
+            baseUrl: "https://permissions.internal/",
+            roles: [CodeFlowApiDefaults.Roles.Admin]);
+
+        var user = new FakeCurrentUser("admin-1", [CodeFlowApiDefaults.Roles.Admin]);
+
+        checker.HasPermission(user, CodeFlowApiDefaults.Permissions.OpsRead).Should().BeFalse();
+        checker.HasPermission(user, CodeFlowApiDefaults.Permissions.OpsRead).Should().BeFalse();
+
+        api.CallCount.Should().Be(2, "errors must not be cached so the next request retries the backend");
     }
 
     private static CompanyPermissionChecker BuildChecker(
-        FakePermissionsApi api,
+        IPermissionsApiClient api,
         string? baseUrl,
         IReadOnlyList<string> roles)
     {
@@ -96,7 +116,25 @@ public sealed class CompanyPermissionCheckerTests
 
         var cache = new MemoryCache(new MemoryCacheOptions());
         var fallback = new RoleBasedPermissionChecker(options);
-        return new CompanyPermissionChecker(api, fallback, cache, options);
+        return new CompanyPermissionChecker(
+            api,
+            fallback,
+            cache,
+            NullLogger<CompanyPermissionChecker>.Instance,
+            options);
+    }
+
+    private sealed class ThrowingPermissionsApi : IPermissionsApiClient
+    {
+        public int CallCount { get; private set; }
+
+        public Task<IReadOnlyList<string>> GetPermissionsAsync(
+            string userId,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            throw new HttpRequestException("simulated backend failure");
+        }
     }
 
     private sealed class FakePermissionsApi : IPermissionsApiClient

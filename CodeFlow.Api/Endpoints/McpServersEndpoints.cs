@@ -1,5 +1,6 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
+using CodeFlow.Api.Mcp;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using Microsoft.AspNetCore.Builder;
@@ -81,6 +82,7 @@ public static class McpServersEndpoints
     private static async Task<IResult> CreateAsync(
         McpServerCreateRequest request,
         IMcpServerRepository repository,
+        IMcpEndpointPolicy endpointPolicy,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -88,6 +90,12 @@ public static class McpServersEndpoints
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
+        }
+
+        var policyErrors = await ValidateEndpointAsync(request.EndpointUrl!, endpointPolicy, cancellationToken);
+        if (policyErrors.Count > 0)
+        {
+            return Results.ValidationProblem(policyErrors);
         }
 
         var existing = await repository.GetByKeyAsync(request.Key!, cancellationToken);
@@ -112,6 +120,7 @@ public static class McpServersEndpoints
         long id,
         McpServerUpdateRequest request,
         IMcpServerRepository repository,
+        IMcpEndpointPolicy endpointPolicy,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -119,6 +128,12 @@ public static class McpServersEndpoints
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
+        }
+
+        var policyErrors = await ValidateEndpointAsync(request.EndpointUrl!, endpointPolicy, cancellationToken);
+        if (policyErrors.Count > 0)
+        {
+            return Results.ValidationProblem(policyErrors);
         }
 
         var bearerUpdate = (request.BearerToken?.Action ?? BearerTokenAction.Preserve) switch
@@ -254,6 +269,30 @@ public static class McpServersEndpoints
             LastVerifiedAtUtc: now,
             LastVerificationError: failure.Message,
             Tools: Array.Empty<McpServerToolResponse>()));
+    }
+
+    private static async Task<Dictionary<string, string[]>> ValidateEndpointAsync(
+        string endpointUrl,
+        IMcpEndpointPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out var uri))
+        {
+            // Shape validation already covers this; defensive here so the policy never runs against null.
+            return errors;
+        }
+
+        var result = await policy.ValidateAsync(uri, cancellationToken);
+        if (!result.IsAllowed)
+        {
+            errors["endpointUrl"] = new[]
+            {
+                result.Reason ?? "Endpoint is not allowed by the configured MCP endpoint policy.",
+            };
+        }
+
+        return errors;
     }
 
     private static Dictionary<string, string[]> ValidateCreate(McpServerCreateRequest? request)

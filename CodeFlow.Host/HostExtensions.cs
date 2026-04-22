@@ -76,8 +76,16 @@ public static class HostExtensions
 
         services.AddDbContext<CodeFlowDbContext>(builder =>
         {
-            var connectionString = configuration[CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable]
-                ?? CodeFlowPersistenceDefaults.LocalDevelopmentConnectionString;
+            var connectionString = configuration[CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable];
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException(
+                    $"CodeFlow requires a database connection string at configuration key "
+                    + $"'{CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable}' "
+                    + "(typically provided via environment variable of the same name). "
+                    + "Set it to a MariaDB/MySQL connection string before starting the host. "
+                    + "The runtime no longer falls back to a hard-coded local-dev connection string.");
+            }
             CodeFlowDbContextOptions.Configure(builder, connectionString);
         });
 
@@ -95,6 +103,14 @@ public static class HostExtensions
         {
             client.Timeout = TimeSpan.FromSeconds(15);
         });
+
+        // Route model clients through IHttpClientFactory so DNS rotation and handler-lifetime
+        // rotation actually happens. Typed clients are transient; ModelClientRegistry's Resolve
+        // factories invoke GetRequiredService on every agent invocation so each call sees a
+        // fresh HttpClient (sharing a pooled-and-rotated HttpMessageHandler).
+        services.AddHttpClient<OpenAIModelClient>();
+        services.AddHttpClient<AnthropicModelClient>();
+        services.AddHttpClient<LMStudioModelClient>();
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<ContextAssembler>();
@@ -204,32 +220,32 @@ public static class HostExtensions
             Path.Combine(Environment.CurrentDirectory, "artifacts"));
     }
 
-    private static ModelClientRegistry BuildModelClientRegistry(IServiceProvider provider)
+    private static ModelClientRegistry BuildModelClientRegistry(IServiceProvider rootProvider)
     {
-        var registrations = new List<ModelClientRegistration>();
-        var openAiOptions = provider.GetRequiredService<OpenAIModelClientOptions>();
-        var anthropicOptions = provider.GetRequiredService<AnthropicModelClientOptions>();
-        var lmStudioOptions = provider.GetRequiredService<LMStudioModelClientOptions>();
+        var factories = new List<KeyValuePair<string, Func<IModelClient>>>();
+        var openAiOptions = rootProvider.GetRequiredService<OpenAIModelClientOptions>();
+        var anthropicOptions = rootProvider.GetRequiredService<AnthropicModelClientOptions>();
+        _ = rootProvider.GetRequiredService<LMStudioModelClientOptions>();
 
         if (!string.IsNullOrWhiteSpace(openAiOptions.ApiKey))
         {
-            registrations.Add(new ModelClientRegistration(
+            factories.Add(new KeyValuePair<string, Func<IModelClient>>(
                 "openai",
-                new OpenAIModelClient(new HttpClient(), openAiOptions)));
+                () => rootProvider.GetRequiredService<OpenAIModelClient>()));
         }
 
         if (!string.IsNullOrWhiteSpace(anthropicOptions.ApiKey))
         {
-            registrations.Add(new ModelClientRegistration(
+            factories.Add(new KeyValuePair<string, Func<IModelClient>>(
                 "anthropic",
-                new AnthropicModelClient(new HttpClient(), anthropicOptions)));
+                () => rootProvider.GetRequiredService<AnthropicModelClient>()));
         }
 
-        registrations.Add(new ModelClientRegistration(
+        factories.Add(new KeyValuePair<string, Func<IModelClient>>(
             "lmstudio",
-            new LMStudioModelClient(new HttpClient(), lmStudioOptions)));
+            () => rootProvider.GetRequiredService<LMStudioModelClient>()));
 
-        return new ModelClientRegistry(registrations);
+        return new ModelClientRegistry(factories);
     }
 
     private static RabbitMqTransportOptions ResolveRabbitMqOptions(IConfiguration configuration)

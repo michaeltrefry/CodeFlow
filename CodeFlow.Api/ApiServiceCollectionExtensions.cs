@@ -1,3 +1,4 @@
+using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
 using CodeFlow.Host;
 using MassTransit;
@@ -43,6 +44,10 @@ public static class ApiServiceCollectionExtensions
         });
 
         services.AddSingleton<TraceEventBroker>();
+
+        services.Configure<McpEndpointPolicyOptions>(
+            configuration.GetSection(McpEndpointPolicyOptions.SectionName));
+        services.AddSingleton<IMcpEndpointPolicy, McpEndpointPolicy>();
 
         return services;
     }

@@ -243,6 +243,59 @@ public sealed class LogicNodeScriptHostTests
         cache.Count.Should().Be(1);
     }
 
+    [Fact]
+    public void Evaluate_FailsScript_WhenLogEntryCountExceedsHostBudget()
+    {
+        var host = BuildHost();
+        // MaxLogEntries = 1000; push past the cap in a tight loop. Statement limit (10_000) is
+        // high enough that we hit the log cap first.
+        const string script = """
+            for (var i = 0; i < 1500; i++) {
+                log('entry-' + i);
+            }
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            workflowKey: "wf",
+            workflowVersion: 1,
+            nodeId: Guid.NewGuid(),
+            script: script,
+            declaredPorts: new[] { "A" },
+            input: ParseJson("{}"),
+            context: EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("log()");
+        result.LogEntries.Count.Should().BeLessThanOrEqualTo(1_000);
+    }
+
+    [Fact]
+    public void Evaluate_TruncatesOversizedLogMessage()
+    {
+        var host = BuildHost();
+        // MaxLogEntryChars = 4_000. Emit a single 10k-character message and verify it was trimmed.
+        const string script = """
+            log('x'.repeat(10000));
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            workflowKey: "wf",
+            workflowVersion: 1,
+            nodeId: Guid.NewGuid(),
+            script: script,
+            declaredPorts: new[] { "A" },
+            input: ParseJson("{}"),
+            context: EmptyContext);
+
+        result.IsSuccess.Should().BeTrue();
+        result.LogEntries.Should().HaveCount(1);
+        result.LogEntries[0].Length.Should().BeLessThanOrEqualTo(4_100); // cap + " [truncated]" marker
+        result.LogEntries[0].Should().EndWith("[truncated]");
+    }
+
     private static LogicNodeScriptHost BuildHost()
     {
         return new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions()));

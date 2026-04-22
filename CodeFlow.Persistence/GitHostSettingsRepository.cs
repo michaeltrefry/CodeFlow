@@ -32,7 +32,7 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
     public async Task SetAsync(GitHostSettingsWrite write, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(write);
-        ArgumentException.ThrowIfNullOrWhiteSpace(write.Token);
+        ArgumentNullException.ThrowIfNull(write.Token);
 
         if (write.Mode == GitHostMode.GitLab)
         {
@@ -43,16 +43,22 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
             .SingleOrDefaultAsync(cancellationToken);
 
         var now = DateTime.UtcNow;
-        var encrypted = secretProtector.Protect(write.Token);
 
         if (entity is null)
         {
+            if (write.Token.Action == GitHostTokenAction.Preserve
+                || string.IsNullOrWhiteSpace(write.Token.Value))
+            {
+                throw new InvalidOperationException(
+                    "A token must be supplied when creating git host settings; Preserve is only valid when settings already exist.");
+            }
+
             dbContext.GitHostSettings.Add(new GitHostSettingsEntity
             {
                 Key = GitHostSettingsEntity.SingletonKey,
                 Mode = write.Mode,
                 BaseUrl = NormalizeBaseUrl(write),
-                EncryptedToken = encrypted,
+                EncryptedToken = secretProtector.Protect(write.Token.Value!),
                 LastVerifiedAtUtc = null,
                 UpdatedBy = Trim(write.UpdatedBy),
                 UpdatedAtUtc = now,
@@ -63,11 +69,25 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
             var modeChanged = entity.Mode != write.Mode;
             entity.Mode = write.Mode;
             entity.BaseUrl = NormalizeBaseUrl(write);
-            entity.EncryptedToken = encrypted;
             entity.UpdatedBy = Trim(write.UpdatedBy);
             entity.UpdatedAtUtc = now;
-            if (modeChanged)
+
+            if (write.Token.Action == GitHostTokenAction.Replace)
             {
+                if (string.IsNullOrWhiteSpace(write.Token.Value))
+                {
+                    throw new ArgumentException(
+                        "Token value is required when action is Replace.",
+                        nameof(write));
+                }
+                entity.EncryptedToken = secretProtector.Protect(write.Token.Value!);
+                // Token rotated — last verification is no longer authoritative.
+                entity.LastVerifiedAtUtc = null;
+            }
+            else if (modeChanged)
+            {
+                // Mode change invalidates the existing verification but the token (for the new
+                // host) is unchanged; operator must re-verify.
                 entity.LastVerifiedAtUtc = null;
             }
         }
