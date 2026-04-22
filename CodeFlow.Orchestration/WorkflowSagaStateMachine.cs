@@ -126,6 +126,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow,
+            NodeId: message.FromNodeId,
+            OutputPortName: message.OutputPortName,
             InputRef: saga.CurrentInputRef,
             OutputRef: message.OutputRef?.ToString()));
 

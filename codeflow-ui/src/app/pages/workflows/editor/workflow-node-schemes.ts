@@ -2,12 +2,15 @@ import { ClassicPreset, GetSchemes } from 'rete';
 import { AreaExtra } from './workflow-area-extra';
 import { WorkflowNodeKind } from '../../../core/models';
 
+export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
   agentKey: string | null;
   agentVersion: number | null;
   script: string | null;
+  traceState: WorkflowNodeTraceState = null;
 
   constructor(params: {
     nodeId: string;

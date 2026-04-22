@@ -18,7 +18,10 @@
             "tsConfig": "tsconfig.app.json",
             "assets": [],
             "styles": ["src/styles.css"],
-            "scripts": []
+            "scripts": [],
+            "loader": {
+              ".ttf": "file"
+            }
           },
           "configurations": {
             "production": {

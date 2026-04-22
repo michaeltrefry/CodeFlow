@@ -1,13 +1,14 @@
 import { Component, inject, input, signal, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
-import { AgentConfig } from '../../core/models';
+import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
 
 @Component({
   selector: 'cf-agent-editor',
   standalone: true,
-  imports: [FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink],
   template: `
     <header class="page-header">
       <div>
@@ -94,6 +95,45 @@ import { AgentConfig } from '../../core/models';
         </div>
       }
 
+      <section class="outputs-section">
+        <h3>Declared outputs</h3>
+        <p class="muted small">
+          List the decision kinds this agent emits. Workflow nodes that reference this agent
+          will automatically get a matching set of output ports in the canvas editor. Baseline
+          agents at least emit <code>Completed</code> and <code>Failed</code>.
+        </p>
+        @for (output of outputs(); track $index; let i = $index) {
+          <div class="output-card">
+            <div class="row-spread">
+              <strong class="mono">{{ output.kind || '(unnamed)' }}</strong>
+              <button type="button" class="icon-button" (click)="removeOutput(i)" title="Remove output">×</button>
+            </div>
+            <div class="form-field">
+              <label>Kind</label>
+              <input type="text" [ngModel]="output.kind" (ngModelChange)="updateOutput(i, { kind: $event })"
+                     [name]="'output_kind_' + i" placeholder="Completed" />
+              <div class="muted small">Becomes the port name on workflow edges.</div>
+            </div>
+            <div class="form-field">
+              <label>Description <span class="muted small">(optional)</span></label>
+              <input type="text" [ngModel]="output.description ?? ''"
+                     (ngModelChange)="updateOutput(i, { description: $event || null })"
+                     [name]="'output_desc_' + i"
+                     placeholder="Normal success" />
+            </div>
+            <div class="form-field">
+              <label>Payload example <span class="muted small">(optional JSON)</span></label>
+              <textarea rows="2" class="mono"
+                        [ngModel]="payloadExampleText(output)"
+                        (ngModelChange)="updatePayloadExample(i, $event)"
+                        [name]="'output_example_' + i"
+                        placeholder='{"reasons": ["..."]}'></textarea>
+            </div>
+          </div>
+        }
+        <button type="button" class="secondary" (click)="addOutput()">+ Add output</button>
+      </section>
+
       @if (error()) {
         <div class="tag error">{{ error() }}</div>
       }
@@ -109,6 +149,29 @@ import { AgentConfig } from '../../core/models';
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .outputs-section {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .outputs-section h3 { margin-top: 0; }
+    .output-card {
+      padding: 0.75rem;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      margin-bottom: 0.75rem;
+      background: var(--color-surface);
+    }
+    .row-spread { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .icon-button {
+      width: 22px; height: 22px; padding: 0; border-radius: 50%;
+      border: 1px solid var(--color-border); background: var(--color-surface);
+      cursor: pointer; color: inherit;
+    }
+    .icon-button:hover { border-color: #f85149; color: #f85149; }
   `]
 })
 export class AgentEditorComponent implements OnInit {
@@ -128,6 +191,10 @@ export class AgentEditorComponent implements OnInit {
   readonly outputTemplate = signal('');
   readonly maxTokens = signal<number | undefined>(undefined);
   readonly temperature = signal<number | undefined>(undefined);
+  readonly outputs = signal<AgentOutputDeclaration[]>([
+    { kind: 'Completed', description: null, payloadExample: null },
+    { kind: 'Failed', description: null, payloadExample: null }
+  ]);
 
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -149,8 +216,52 @@ export class AgentEditorComponent implements OnInit {
           this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
           this.maxTokens.set(config['maxTokens'] as number | undefined);
           this.temperature.set(config['temperature'] as number | undefined);
+          const declared = (config as AgentConfig)['outputs'];
+          if (Array.isArray(declared) && declared.length > 0) {
+            this.outputs.set(declared.map(d => ({
+              kind: d.kind ?? '',
+              description: d.description ?? null,
+              payloadExample: d.payloadExample ?? null
+            })));
+          }
         }
       });
+    }
+  }
+
+  addOutput(): void {
+    this.outputs.set([
+      ...this.outputs(),
+      { kind: '', description: null, payloadExample: null }
+    ]);
+  }
+
+  removeOutput(index: number): void {
+    this.outputs.set(this.outputs().filter((_, i) => i !== index));
+  }
+
+  updateOutput(index: number, patch: Partial<AgentOutputDeclaration>): void {
+    this.outputs.set(this.outputs().map((o, i) => (i === index ? { ...o, ...patch } : o)));
+  }
+
+  payloadExampleText(output: AgentOutputDeclaration): string {
+    if (output.payloadExample === null || output.payloadExample === undefined) return '';
+    if (typeof output.payloadExample === 'string') return output.payloadExample;
+    return JSON.stringify(output.payloadExample, null, 2);
+  }
+
+  updatePayloadExample(index: number, raw: string): void {
+    const trimmed = raw?.trim() ?? '';
+    if (!trimmed) {
+      this.updateOutput(index, { payloadExample: null });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      this.updateOutput(index, { payloadExample: parsed });
+    } catch {
+      // Keep the raw string so the user can fix it; round-trip will re-parse on save.
+      this.updateOutput(index, { payloadExample: raw });
     }
   }
 
@@ -176,6 +287,20 @@ export class AgentEditorComponent implements OnInit {
 
     if (this.type() === 'hitl') {
       config.outputTemplate = this.outputTemplate() || undefined;
+    }
+
+    const cleanedOutputs = this.outputs()
+      .map(o => ({
+        kind: (o.kind ?? '').trim(),
+        description: o.description?.trim() || null,
+        payloadExample: typeof o.payloadExample === 'string'
+          ? tryParseJson(o.payloadExample)
+          : o.payloadExample ?? null
+      }))
+      .filter(o => o.kind.length > 0);
+
+    if (cleanedOutputs.length > 0) {
+      config.outputs = cleanedOutputs;
     }
 
     const existingKey = this.existingKey();
@@ -206,5 +331,13 @@ export class AgentEditorComponent implements OnInit {
       }
     }
     return 'Save failed';
+  }
+}
+
+function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
   }
 }

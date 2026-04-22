@@ -10,5 +10,7 @@ public sealed record DecisionRecord(
     JsonElement? DecisionPayload,
     Guid RoundId,
     DateTime RecordedAtUtc,
+    Guid? NodeId = null,
+    string? OutputPortName = null,
     string? InputRef = null,
     string? OutputRef = null);
