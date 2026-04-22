@@ -386,6 +386,135 @@ public sealed class AgentInvocationConsumerTests
         }
     }
 
+    [Fact]
+    public async Task Consumer_ShouldFlattenJsonInputIntoPromptTemplateVariables()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "input-context-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai",
+                "gpt-5.4",
+                PromptTemplate: "Summary: {{input.summary}}"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(
+            ("""{"summary":"Create a new blog website","reasoning":"greenfield"}""", "application/json"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-input-context-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!["input.summary"].Should().Be("Create a new blog website");
+            variables["input.reasoning"].Should().Be("greenfield");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_ShouldIgnoreNonJsonInputWhenBuildingTemplateVariables()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "input-context-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai",
+                "gpt-5.4",
+                PromptTemplate: "Raw: {{input}}\nField: {{input.summary}}"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(
+            ("Create a new blog website using .NET 10 and React.", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-plain-input-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var invocation = agentInvoker.Invocations[0];
+            invocation.Input.Should().Be("Create a new blog website using .NET 10 and React.");
+            invocation.Configuration.Variables.Should().BeNullOrEmpty();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     private sealed class FakeAgentConfigRepository(AgentConfig agentConfig) : IAgentConfigRepository
     {
         public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)

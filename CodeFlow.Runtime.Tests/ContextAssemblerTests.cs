@@ -52,6 +52,39 @@ public sealed class ContextAssemblerTests
     }
 
     [Fact]
+    public void Assemble_ShouldTreatInputPathVariablesAsConsumingInput()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "Summarize {{input.summary}} for {{context.target.path}}",
+            Input: """{"summary":"Build a blog"}""",
+            Variables: new Dictionary<string, string?>
+            {
+                ["input.summary"] = "Build a blog",
+                ["context.target.path"] = "/repos/blogger"
+            }));
+
+        messages.Should().Equal(
+            new ChatMessage(
+                ChatMessageRole.User,
+                "Summarize Build a blog for /repos/blogger"));
+    }
+
+    [Fact]
+    public void Assemble_ShouldKeepRawInputAvailableForPlainText_WhenInputPathVariablesAreUnresolved()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "Raw: {{input}}\nField: {{input.summary}}",
+            Input: "Create a new blog website using .NET 10 and React."));
+
+        messages.Should().Equal(
+            new ChatMessage(
+                ChatMessageRole.User,
+                "Raw: Create a new blog website using .NET 10 and React.\nField: {{input.summary}}"));
+    }
+
+    [Fact]
     public void Assemble_ShouldPrependRetryNote_WhenRetryContextProvided()
     {
         var messages = assembler.Assemble(new ContextAssemblyRequest(

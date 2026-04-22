@@ -188,9 +188,11 @@ public sealed class ContextAssembler
         return VariablePattern
             .Matches(template)
             .Cast<Match>()
-            .Any(static match => string.Equals(
-                match.Groups["name"].Value,
-                "input",
-                StringComparison.OrdinalIgnoreCase));
+            .Any(static match =>
+            {
+                var name = match.Groups["name"].Value;
+                return string.Equals(name, "input", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("input.", StringComparison.OrdinalIgnoreCase);
+            });
     }
 }

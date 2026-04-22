@@ -184,6 +184,51 @@ public sealed class OpenAIModelClientTests
         response.TokenUsage.Should().BeEquivalentTo(new TokenUsage(20, 6, 26));
     }
 
+    [Fact]
+    public async Task InvokeAsync_WhenProviderReturnsBadRequest_ShouldIncludeRequestAndResponseBodiesInException()
+    {
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = JsonContent("""
+                {
+                  "error": {
+                    "type": "invalid_request_error",
+                    "message": "Missing required field."
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(
+            httpClient,
+            new OpenAIModelClientOptions
+            {
+                ApiKey = "test-key",
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        Func<Task> act = async () => await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Write a PRD")],
+                Tools: null,
+                Model: "gpt-5"));
+
+        var exception = await act.Should().ThrowAsync<HttpRequestException>();
+        exception.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        exception.Which.Message.Should().Contain("400 (Bad Request)");
+        exception.Which.Message.Should().Contain("Request: ");
+        exception.Which.Message.Should().Contain("\"model\":\"gpt-5\"");
+        exception.Which.Message.Should().Contain("\"content\":\"Write a PRD\"");
+        exception.Which.Message.Should().Contain("Response: ");
+        exception.Which.Message.Should().Contain("invalid_request_error");
+        exception.Which.Message.Should().Contain("Missing required field.");
+        exception.Which.Message.Should().NotContain("test-key");
+    }
+
     private static StringContent JsonContent(string json)
     {
         return new StringContent(json, Encoding.UTF8, "application/json");

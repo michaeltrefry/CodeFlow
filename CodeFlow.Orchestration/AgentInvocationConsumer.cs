@@ -76,7 +76,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             {
                 Variables = MergeVariables(
                     agentConfig.Configuration.Variables,
-                    BuildContextTemplateVariables(message.ContextInputs))
+                    BuildContextTemplateVariables(message.ContextInputs),
+                    BuildInputTemplateVariables(input))
             };
             if (message.RetryContext is { } retryContext)
             {
@@ -178,9 +179,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
     private static IReadOnlyDictionary<string, string?>? MergeVariables(
         IReadOnlyDictionary<string, string?>? configured,
-        IReadOnlyDictionary<string, string?> contextVariables)
+        IReadOnlyDictionary<string, string?> contextVariables,
+        IReadOnlyDictionary<string, string?> inputVariables)
     {
-        if ((configured is null || configured.Count == 0) && contextVariables.Count == 0)
+        if ((configured is null || configured.Count == 0)
+            && contextVariables.Count == 0
+            && inputVariables.Count == 0)
         {
             return configured;
         }
@@ -195,6 +199,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         foreach (var entry in contextVariables)
+        {
+            merged[entry.Key] = entry.Value;
+        }
+
+        foreach (var entry in inputVariables)
         {
             merged[entry.Key] = entry.Value;
         }
@@ -217,6 +226,34 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         return variables;
+    }
+
+    private static IReadOnlyDictionary<string, string?> BuildInputTemplateVariables(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(input);
+            var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            switch (document.RootElement.ValueKind)
+            {
+                case JsonValueKind.Object:
+                case JsonValueKind.Array:
+                    AddContextTemplateVariables(variables, "input", document.RootElement);
+                    break;
+            }
+
+            return variables;
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     private static void AddContextTemplateVariables(

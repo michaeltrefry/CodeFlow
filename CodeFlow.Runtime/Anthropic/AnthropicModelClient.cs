@@ -37,7 +37,7 @@ public sealed class AnthropicModelClient : IModelClient
         using var httpRequest = BuildHttpRequest(request);
         using var response = await SendWithRetryAsync(httpRequest, cancellationToken);
 
-        response.EnsureSuccessStatusCode();
+        await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
 
         await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(contentStream, cancellationToken: cancellationToken);
