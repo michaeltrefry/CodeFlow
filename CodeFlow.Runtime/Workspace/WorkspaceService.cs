@@ -7,7 +7,7 @@ public sealed class WorkspaceService : IWorkspaceService
     private readonly WorkspaceOptions options;
     private readonly IGitCli git;
     private readonly IRepoUrlHostGuard hostGuard;
-    private readonly ConcurrentDictionary<(Guid CorrelationId, string RepoSlug), Workspace> workspaces = new();
+    private readonly ConcurrentDictionary<(Guid CorrelationId, string RepoIdentityKey), Workspace> workspaces = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> mirrorLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<(Guid, string), SemaphoreSlim> openLocks = new();
 
@@ -35,7 +35,7 @@ public sealed class WorkspaceService : IWorkspaceService
 
         var repo = RepoReference.Parse(repoUrl);
         await hostGuard.AssertAllowedAsync(repo, cancellationToken);
-        var key = (correlationId, repo.Slug);
+        var key = (correlationId, repo.IdentityKey);
 
         var openLock = openLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         await openLock.WaitAsync(cancellationToken);
@@ -52,7 +52,7 @@ public sealed class WorkspaceService : IWorkspaceService
             var defaultBranch = await ResolveDefaultBranchAsync(mirrorPath, cancellationToken);
             var effectiveBase = string.IsNullOrWhiteSpace(baseBranch) ? defaultBranch : baseBranch!;
 
-            var worktreePath = Path.Combine(options.WorkPath, correlationId.ToString("N"), repo.Slug);
+            var worktreePath = Path.Combine(options.WorkPath, correlationId.ToString("N"), repo.IdentityKey);
             Directory.CreateDirectory(Path.GetDirectoryName(worktreePath)!);
 
             var branchName = BuildWorkBranchName(correlationId, repo);
@@ -82,10 +82,29 @@ public sealed class WorkspaceService : IWorkspaceService
         }
     }
 
-    public Workspace? Get(Guid correlationId, string repoSlug)
+    public Workspace? Get(Guid correlationId, string repoSlugOrIdentityKey)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(repoSlug);
-        return workspaces.TryGetValue((correlationId, repoSlug), out var workspace) ? workspace : null;
+        ArgumentException.ThrowIfNullOrWhiteSpace(repoSlugOrIdentityKey);
+        // Accepts either the identity key (collision-free) or the slug (human-readable). The
+        // dictionary is keyed by identity key; slug lookups walk the open workspaces for this
+        // correlation and match on either to preserve backwards compatibility with callers that
+        // only know the slug.
+        if (workspaces.TryGetValue((correlationId, repoSlugOrIdentityKey), out var direct))
+        {
+            return direct;
+        }
+
+        foreach (var ((corr, _), workspace) in workspaces)
+        {
+            if (corr == correlationId
+                && (string.Equals(workspace.RepoSlug, repoSlugOrIdentityKey, StringComparison.Ordinal)
+                    || string.Equals(workspace.RepoIdentityKey, repoSlugOrIdentityKey, StringComparison.Ordinal)))
+            {
+                return workspace;
+            }
+        }
+
+        return null;
     }
 
     public async Task ReleaseAsync(Guid correlationId, CancellationToken cancellationToken = default)

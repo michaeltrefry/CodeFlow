@@ -40,7 +40,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitHub",
             baseUrl = (string?)null,
-            token = "ghp_round_trip_secret_value",
+            token = new { action = "Replace", value = "ghp_round_trip_secret_value" },
         });
         put.EnsureSuccessStatusCode();
 
@@ -56,7 +56,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task Put_rejects_missing_token()
+    public async Task Put_rejects_replace_with_empty_value()
     {
         using var client = factory.CreateClient();
 
@@ -64,10 +64,54 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitHub",
             baseUrl = (string?)null,
-            token = "",
+            token = new { action = "Replace", value = "" },
         });
 
         put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Put_rejects_preserve_on_first_save()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitHub",
+            baseUrl = (string?)null,
+            token = new { action = "Preserve", value = (string?)null },
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Put_with_preserve_updates_mode_without_retouching_token()
+    {
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitHub",
+            baseUrl = (string?)null,
+            token = new { action = "Replace", value = "ghp_preserve_test_secret" },
+        })).EnsureSuccessStatusCode();
+
+        var preserve = await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitLab",
+            baseUrl = "https://gitlab.example.com",
+            token = new { action = "Preserve", value = (string?)null },
+        });
+        preserve.EnsureSuccessStatusCode();
+
+        var settings = (await preserve.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
+        settings.Mode.Should().Be("GitLab");
+        settings.BaseUrl.Should().Be("https://gitlab.example.com");
+        settings.HasToken.Should().BeTrue();
+
+        var preservedBody = await preserve.Content.ReadAsStringAsync();
+        preservedBody.Should().NotContain("ghp_preserve_test_secret");
     }
 
     [Fact]
@@ -79,7 +123,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitLab",
             baseUrl = (string?)null,
-            token = "glpat_token",
+            token = new { action = "Replace", value = "glpat_token" },
         });
 
         put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -94,7 +138,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitLab",
             baseUrl = "https://gitlab.example.com/",
-            token = "glpat_tok",
+            token = new { action = "Replace", value = "glpat_tok" },
         });
         put.EnsureSuccessStatusCode();
 
@@ -119,7 +163,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitHub",
             baseUrl = (string?)null,
-            token = "ghp_for_verify",
+            token = new { action = "Replace", value = "ghp_for_verify" },
         })).EnsureSuccessStatusCode();
 
         var verify = await client.PostAsync("/api/admin/git-host/verify", content: null);
@@ -149,7 +193,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             mode = "GitHub",
             baseUrl = (string?)null,
-            token = "ghp_bad",
+            token = new { action = "Replace", value = "ghp_bad" },
         })).EnsureSuccessStatusCode();
 
         var verify = await client.PostAsync("/api/admin/git-host/verify", content: null);

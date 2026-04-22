@@ -13,6 +13,7 @@ import {
   WorkflowDetail
 } from '../../core/models';
 import { streamTrace } from '../../core/trace-stream';
+import { AuthService } from '../../auth/auth.service';
 import { HitlReviewComponent } from '../hitl/hitl-review.component';
 import { WorkflowReadonlyCanvasComponent } from '../workflows/editor/workflow-readonly-canvas.component';
 
@@ -304,6 +305,7 @@ interface ArtifactLoadState {
 export class TraceDetailComponent implements OnInit, OnDestroy {
   private readonly api = inject(TracesApi);
   private readonly workflowsApi = inject(WorkflowsApi);
+  private readonly auth = inject(AuthService);
 
   readonly id = input.required<string>();
   readonly detail = signal<TraceDetail | null>(null);
@@ -371,7 +373,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.reload();
 
-    this.streamSub = streamTrace(this.id()).subscribe({
+    this.streamSub = streamTrace(this.id(), this.auth).subscribe({
       next: evt => this.appendEvent(evt)
     });
   }

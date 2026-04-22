@@ -59,17 +59,36 @@ public static class GitHostEndpoints
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
-        var errors = Validate(request);
+        var existing = await repository.GetAsync(cancellationToken);
+        var errors = Validate(request, existing);
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
         }
 
-        await repository.SetAsync(new GitHostSettingsWrite(
-            Mode: request.Mode,
-            BaseUrl: request.BaseUrl,
-            Token: request.Token!,
-            UpdatedBy: currentUser.Id), cancellationToken);
+        var tokenUpdate = (request.Token?.Action ?? GitHostTokenAction.Preserve) switch
+        {
+            GitHostTokenAction.Replace when !string.IsNullOrWhiteSpace(request.Token?.Value) =>
+                GitHostTokenUpdate.Replace(request.Token!.Value!),
+            GitHostTokenAction.Preserve => GitHostTokenUpdate.Preserve(),
+            _ => GitHostTokenUpdate.Preserve(),
+        };
+
+        try
+        {
+            await repository.SetAsync(new GitHostSettingsWrite(
+                Mode: request.Mode,
+                BaseUrl: request.BaseUrl,
+                Token: tokenUpdate,
+                UpdatedBy: currentUser.Id), cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["token"] = new[] { ex.Message },
+            });
+        }
 
         var updated = await repository.GetAsync(cancellationToken);
         return Results.Ok(new GitHostSettingsResponse(
@@ -116,7 +135,7 @@ public static class GitHostEndpoints
             Error: null));
     }
 
-    private static Dictionary<string, string[]> Validate(GitHostSettingsRequest? request)
+    private static Dictionary<string, string[]> Validate(GitHostSettingsRequest? request, GitHostSettings? existing)
     {
         var errors = new Dictionary<string, string[]>();
         if (request is null)
@@ -125,9 +144,16 @@ public static class GitHostEndpoints
             return errors;
         }
 
-        if (string.IsNullOrWhiteSpace(request.Token))
+        var action = request.Token?.Action ?? GitHostTokenAction.Preserve;
+
+        if (action == GitHostTokenAction.Replace && string.IsNullOrWhiteSpace(request.Token?.Value))
         {
-            errors["token"] = ["Token is required."];
+            errors["token.value"] = ["Token value is required when action is Replace."];
+        }
+
+        if (action == GitHostTokenAction.Preserve && (existing is null || !existing.HasToken))
+        {
+            errors["token"] = ["A token must be supplied on first save — Preserve is only valid once a token is already stored."];
         }
 
         if (request.Mode == GitHostMode.GitLab)

@@ -38,8 +38,39 @@ public sealed class RepoReferenceTests
         var repo = RepoReference.Parse("file:///tmp/origins/foo/bar.git");
 
         repo.Host.Should().Be("local");
-        repo.Owner.Should().Be("foo");
+        repo.Owner.Should().Be("tmp/origins/foo");
         repo.Name.Should().Be("bar");
+    }
+
+    [Fact]
+    public void Parse_ShouldPreserveFullPath_ForNestedHttpRepos()
+    {
+        var repo = RepoReference.Parse("https://gitlab.com/group/subgroup/repo.git");
+
+        repo.Host.Should().Be("gitlab.com");
+        repo.Owner.Should().Be("group/subgroup");
+        repo.Name.Should().Be("repo");
+    }
+
+    [Fact]
+    public void IdentityKey_ShouldDiffer_ForRepoUrlsThatWouldCollideOnSluggingAlone()
+    {
+        var nested = RepoReference.Parse("https://gitlab.com/group/subgroup/repo");
+        var flat = RepoReference.Parse("https://gitlab.com/group-subgroup/repo");
+
+        nested.Slug.Should().Be(flat.Slug,
+            "the slug intentionally collapses slashes and matches for both URLs — identity must not rely on slug alone");
+        nested.IdentityKey.Should().NotBe(flat.IdentityKey,
+            "IdentityKey must be collision-free so the two repos get distinct workspaces");
+    }
+
+    [Fact]
+    public void MirrorRelativePath_ShouldSplitOwnerPathSegments()
+    {
+        var repo = RepoReference.Parse("https://gitlab.com/group/subgroup/repo");
+
+        var expected = Path.Combine("gitlab.com", "group", "subgroup", "repo.git");
+        repo.MirrorRelativePath.Should().Be(expected);
     }
 
     [Fact]

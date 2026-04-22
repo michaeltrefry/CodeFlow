@@ -41,7 +41,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         await repo.SetAsync(new GitHostSettingsWrite(
             Mode: GitHostMode.GitHub,
             BaseUrl: null,
-            Token: "ghp_initial_secret",
+            Token: GitHostTokenUpdate.Replace("ghp_initial_secret"),
             UpdatedBy: "admin"));
 
         var row = await context.GitHostSettings.AsNoTracking().SingleAsync();
@@ -64,7 +64,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         await repo.SetAsync(new GitHostSettingsWrite(
             Mode: GitHostMode.GitLab,
             BaseUrl: "https://gitlab.example.com",
-            Token: "glpat_secret",
+            Token: GitHostTokenUpdate.Replace("glpat_secret"),
             UpdatedBy: "admin"));
 
         var settings = await repo.GetAsync();
@@ -85,7 +85,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         await repo.SetAsync(new GitHostSettingsWrite(
             GitHostMode.GitHub,
             null,
-            "ghp_runtime_secret",
+            GitHostTokenUpdate.Replace("ghp_runtime_secret"),
             "admin"));
 
         var token = await repo.GetDecryptedTokenAsync();
@@ -100,9 +100,9 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
         var repo = new GitHostSettingsRepository(context, protector);
 
-        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, "first", "admin"));
-        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, "second", "admin"));
-        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, "third", "admin"));
+        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, GitHostTokenUpdate.Replace("first"), "admin"));
+        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, GitHostTokenUpdate.Replace("second"), "admin"));
+        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, GitHostTokenUpdate.Replace("third"), "admin"));
 
         var rowCount = await context.GitHostSettings.AsNoTracking().CountAsync();
         rowCount.Should().Be(1);
@@ -117,7 +117,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
         var repo = new GitHostSettingsRepository(context, protector);
 
-        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, "ghp_token", "admin"));
+        await repo.SetAsync(new GitHostSettingsWrite(GitHostMode.GitHub, null, GitHostTokenUpdate.Replace("ghp_token"), "admin"));
         await repo.MarkVerifiedAsync(new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc));
 
         (await repo.GetAsync())!.LastVerifiedAtUtc.Should().NotBeNull();
@@ -125,7 +125,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         await repo.SetAsync(new GitHostSettingsWrite(
             GitHostMode.GitLab,
             "https://gitlab.example.com",
-            "glpat_token",
+            GitHostTokenUpdate.Replace("glpat_token"),
             "admin"));
 
         (await repo.GetAsync())!.LastVerifiedAtUtc.Should().BeNull();
@@ -153,7 +153,7 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         await repo.SetAsync(new GitHostSettingsWrite(
             GitHostMode.GitLab,
             "https://gitlab.example.com/",
-            "glpat",
+            GitHostTokenUpdate.Replace("glpat"),
             "admin"));
 
         (await repo.GetAsync())!.BaseUrl.Should().Be("https://gitlab.example.com");
@@ -169,10 +169,81 @@ public sealed class GitHostSettingsRepositoryTests : IAsyncLifetime
         var act = () => repo.SetAsync(new GitHostSettingsWrite(
             GitHostMode.GitLab,
             null,
-            "token",
+            GitHostTokenUpdate.Replace("token"),
             "admin"));
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task SetAsync_with_Preserve_keeps_existing_token_when_settings_already_exist()
+    {
+        await using var context = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var repo = new GitHostSettingsRepository(context, protector);
+
+        await repo.SetAsync(new GitHostSettingsWrite(
+            GitHostMode.GitHub,
+            null,
+            GitHostTokenUpdate.Replace("ghp_original"),
+            "admin"));
+        await repo.MarkVerifiedAsync(DateTime.UtcNow);
+
+        // Update non-token fields without re-supplying the token.
+        await repo.SetAsync(new GitHostSettingsWrite(
+            GitHostMode.GitHub,
+            null,
+            GitHostTokenUpdate.Preserve(),
+            "other-admin"));
+
+        var settings = (await repo.GetAsync())!;
+        settings.HasToken.Should().BeTrue();
+        settings.UpdatedBy.Should().Be("other-admin");
+        // Token wasn't rotated, so last verification timestamp must survive the save.
+        settings.LastVerifiedAtUtc.Should().NotBeNull();
+
+        (await repo.GetDecryptedTokenAsync()).Should().Be("ghp_original",
+            "Preserve must not touch the stored ciphertext");
+    }
+
+    [Fact]
+    public async Task SetAsync_with_Preserve_on_first_save_is_rejected()
+    {
+        await using var context = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var repo = new GitHostSettingsRepository(context, protector);
+
+        var act = () => repo.SetAsync(new GitHostSettingsWrite(
+            GitHostMode.GitHub,
+            null,
+            GitHostTokenUpdate.Preserve(),
+            "admin"));
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task SetAsync_with_Replace_clears_LastVerifiedAt_even_when_mode_unchanged()
+    {
+        await using var context = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var repo = new GitHostSettingsRepository(context, protector);
+
+        await repo.SetAsync(new GitHostSettingsWrite(
+            GitHostMode.GitHub,
+            null,
+            GitHostTokenUpdate.Replace("ghp_v1"),
+            "admin"));
+        await repo.MarkVerifiedAsync(DateTime.UtcNow);
+
+        await repo.SetAsync(new GitHostSettingsWrite(
+            GitHostMode.GitHub,
+            null,
+            GitHostTokenUpdate.Replace("ghp_v2"),
+            "admin"));
+
+        (await repo.GetAsync())!.LastVerifiedAtUtc.Should().BeNull(
+            "rotating the token invalidates the prior verification record");
     }
 
     private CodeFlowDbContext CreateDbContext()

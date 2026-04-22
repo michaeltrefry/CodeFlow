@@ -18,7 +18,7 @@ public static class AgentTestEndpoints
         ArgumentNullException.ThrowIfNull(routes);
 
         routes.MapPost("/api/agent-test", RunAgentTestAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
         return routes;
     }

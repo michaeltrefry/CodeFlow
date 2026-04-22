@@ -35,15 +35,35 @@ public sealed class DefaultMcpClient : IMcpClient, IAsyncDisposable
         return await session.CallToolAsync(toolName, arguments, cancellationToken);
     }
 
-    private Task<IMcpSession> GetOrOpenSessionAsync(string serverKey, CancellationToken cancellationToken)
+    private async Task<IMcpSession> GetOrOpenSessionAsync(string serverKey, CancellationToken cancellationToken)
     {
+        // The Lazy factory is shared across callers, so we must not capture the first caller's
+        // cancellation token — if that caller cancels before the handshake completes, every
+        // subsequent caller would see a cancelled task for the life of the process. Pass
+        // CancellationToken.None into the underlying open call and let each caller apply its own
+        // token via WaitAsync below.
         var entry = sessions.GetOrAdd(
             serverKey,
             key => new Lazy<Task<IMcpSession>>(
-                () => OpenSessionAsync(key, cancellationToken),
+                () => OpenSessionAsync(key, CancellationToken.None),
                 LazyThreadSafetyMode.ExecutionAndPublication));
 
-        return entry.Value;
+        try
+        {
+            return await entry.Value.WaitAsync(cancellationToken);
+        }
+        catch
+        {
+            // Evict the cached entry when the underlying open task has failed so the next caller
+            // retries from scratch instead of seeing the same fault forever. A caller-side
+            // cancellation alone (with the inner task still running or completed successfully)
+            // must not evict — other callers may be waiting on it.
+            if (entry.Value.IsFaulted || entry.Value.IsCanceled)
+            {
+                sessions.TryRemove(new KeyValuePair<string, Lazy<Task<IMcpSession>>>(serverKey, entry));
+            }
+            throw;
+        }
     }
 
     private async Task<IMcpSession> OpenSessionAsync(string serverKey, CancellationToken cancellationToken)
