@@ -46,7 +46,8 @@ interface InputFieldState {
             <h3>Workflow inputs</h3>
             <p class="muted small">
               These values are handed to the run. The <code>input</code> field becomes the Start agent's input artifact;
-              the rest are available to agents as <code>ContextInputs</code> and to Logic nodes as <code>context.&lt;key&gt;</code>.
+              the rest are available to agent prompt templates as <code>{{'{{'}}context.&lt;key&gt;{{'}}'}}</code>
+              (including nested JSON like <code>{{'{{'}}context.target.path{{'}}'}}</code>) and to Logic nodes as <code>context.&lt;key&gt;</code>.
             </p>
             @for (field of inputFields(); track field.key) {
               <div class="form-field">

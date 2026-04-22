@@ -45,7 +45,7 @@ A workflow can declare an ordered list of typed **inputs**:
 }
 ```
 
-`Kind` is `Text` or `Json`. At trace launch, the UI renders a form from the schema and posts concrete values on `CreateTraceRequest.inputs`. The resolved map is frozen onto the saga state for the duration of the run; every `AgentInvokeRequested` published during the trace includes it as `ContextInputs`, and the Logic-node script host exposes it as a frozen `context` object.
+`Kind` is `Text` or `Json`. At trace launch, the UI renders a form from the schema and posts concrete values on `CreateTraceRequest.inputs`. The resolved map is frozen onto the saga state for the duration of the run; every `AgentInvokeRequested` published during the trace includes it as `ContextInputs`. Logic-node scripts read it through a frozen `context` object, and agent prompt templates can reference it through a reserved flattened variable namespace such as `{{context.gitRepo}}` or `{{context.target.path}}`.
 
 Inputs are immutable once a trace is launched. Nodes cannot mutate them.
 

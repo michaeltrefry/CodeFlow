@@ -14,6 +14,7 @@ namespace CodeFlow.Orchestration;
 public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 {
     private const int HitlInputPreviewLength = 2048;
+    private const string AgentInvocationFailedReason = "AgentInvocationFailed";
 
     private readonly IAgentConfigRepository agentConfigRepository;
     private readonly IArtifactStore artifactStore;
@@ -51,43 +52,93 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         activity?.SetTag(CodeFlowActivity.TagNames.AgentVersion, message.AgentVersion);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var agentConfig = await agentConfigRepository.GetAsync(
-            message.AgentKey,
-            message.AgentVersion,
-            context.CancellationToken);
+        string? input = null;
 
-        await using var inputStream = await artifactStore.ReadAsync(
-            message.InputRef,
-            context.CancellationToken);
-        var input = await ReadInputAsync(inputStream, context.CancellationToken);
-
-        if (agentConfig.Kind == AgentKind.Hitl)
+        try
         {
-            await CreateHitlTaskAsync(message, input, context.CancellationToken);
-            return;
-        }
+            var agentConfig = await agentConfigRepository.GetAsync(
+                message.AgentKey,
+                message.AgentVersion,
+                context.CancellationToken);
 
-        var invocationConfig = agentConfig.Configuration;
-        if (message.RetryContext is { } retryContext)
-        {
-            invocationConfig = invocationConfig with
+            await using var inputStream = await artifactStore.ReadAsync(
+                message.InputRef,
+                context.CancellationToken);
+            input = await ReadInputAsync(inputStream, context.CancellationToken);
+
+            if (agentConfig.Kind == AgentKind.Hitl)
             {
-                RetryContext = new Runtime.RetryContext(
-                    retryContext.AttemptNumber,
-                    retryContext.PriorFailureReason,
-                    retryContext.PriorAttemptSummary)
+                await CreateHitlTaskAsync(message, input, context.CancellationToken);
+                return;
+            }
+
+            var invocationConfig = agentConfig.Configuration with
+            {
+                Variables = MergeVariables(
+                    agentConfig.Configuration.Variables,
+                    BuildContextTemplateVariables(message.ContextInputs))
             };
-            activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
+            if (message.RetryContext is { } retryContext)
+            {
+                invocationConfig = invocationConfig with
+                {
+                    RetryContext = new Runtime.RetryContext(
+                        retryContext.AttemptNumber,
+                        retryContext.PriorFailureReason,
+                        retryContext.PriorAttemptSummary)
+                };
+                activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
+            }
+
+            var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
+
+            var invocationResult = await agentInvoker.InvokeAsync(
+                invocationConfig,
+                input,
+                resolvedTools,
+                context.CancellationToken);
+
+            await PublishCompletionAsync(
+                context,
+                message,
+                invocationResult,
+                $"{message.AgentKey}-output.txt",
+                DateTimeOffset.UtcNow - startedAt);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException || !context.CancellationToken.IsCancellationRequested)
+        {
+            activity?.SetTag(CodeFlowActivity.TagNames.FailureReason, ex.Message);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
 
-        var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
+            var failureResult = new AgentInvocationResult(
+                Output: BuildInvocationFailureOutput(ex),
+                Decision: new FailedDecision(
+                    AgentInvocationFailedReason,
+                    new JsonObject
+                    {
+                        ["exception_type"] = ex.GetType().FullName,
+                        ["message"] = ex.Message
+                    }),
+                Transcript: [],
+                TokenUsage: null,
+                ToolCallsExecuted: 0);
 
-        var invocationResult = await agentInvoker.InvokeAsync(
-            invocationConfig,
-            input,
-            resolvedTools,
-            context.CancellationToken);
+            await PublishCompletionAsync(
+                context,
+                message,
+                failureResult,
+                $"{message.AgentKey}-error.txt",
+                DateTimeOffset.UtcNow - startedAt);
+        }
+    }
 
+    private async Task PublishCompletionAsync(
+        ConsumeContext<AgentInvokeRequested> context,
+        AgentInvokeRequested message,
+        AgentInvocationResult invocationResult,
+        string outputFileName,
+        TimeSpan duration)
+    {
         await using var outputStream = new MemoryStream(Encoding.UTF8.GetBytes(invocationResult.Output));
         var outputRef = await artifactStore.WriteAsync(
             outputStream,
@@ -96,7 +147,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 message.RoundId,
                 Guid.NewGuid(),
                 ContentType: "text/plain",
-                FileName: $"{message.AgentKey}-output.txt"),
+                FileName: outputFileName),
             context.CancellationToken);
 
         var contractsDecision = MapDecisionKind(invocationResult.Decision.Kind);
@@ -111,9 +162,99 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 OutputRef: outputRef,
                 Decision: contractsDecision,
                 DecisionPayload: BuildDecisionPayload(invocationResult.Decision, invocationResult),
-                Duration: DateTimeOffset.UtcNow - startedAt,
+                Duration: duration,
                 TokenUsage: MapTokenUsage(invocationResult.TokenUsage)),
             context.CancellationToken);
+    }
+
+    private static string BuildInvocationFailureOutput(Exception ex)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("Agent invocation failed.");
+        builder.Append("Exception: ").AppendLine(ex.GetType().FullName ?? ex.GetType().Name);
+        builder.Append("Message: ").AppendLine(ex.Message);
+        return builder.ToString();
+    }
+
+    private static IReadOnlyDictionary<string, string?>? MergeVariables(
+        IReadOnlyDictionary<string, string?>? configured,
+        IReadOnlyDictionary<string, string?> contextVariables)
+    {
+        if ((configured is null || configured.Count == 0) && contextVariables.Count == 0)
+        {
+            return configured;
+        }
+
+        var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (configured is not null)
+        {
+            foreach (var entry in configured)
+            {
+                merged[entry.Key] = entry.Value;
+            }
+        }
+
+        foreach (var entry in contextVariables)
+        {
+            merged[entry.Key] = entry.Value;
+        }
+
+        return merged;
+    }
+
+    private static IReadOnlyDictionary<string, string?> BuildContextTemplateVariables(
+        IReadOnlyDictionary<string, JsonElement> contextInputs)
+    {
+        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in contextInputs)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            AddContextTemplateVariables(variables, $"context.{key}", value);
+        }
+
+        return variables;
+    }
+
+    private static void AddContextTemplateVariables(
+        IDictionary<string, string?> variables,
+        string key,
+        JsonElement value)
+    {
+        variables[key] = ToTemplateValue(value);
+
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in value.EnumerateObject())
+                {
+                    AddContextTemplateVariables(variables, $"{key}.{property.Name}", property.Value);
+                }
+                break;
+
+            case JsonValueKind.Array:
+                var index = 0;
+                foreach (var item in value.EnumerateArray())
+                {
+                    AddContextTemplateVariables(variables, $"{key}.{index}", item);
+                    index += 1;
+                }
+                break;
+        }
+    }
+
+    private static string? ToTemplateValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Null => null,
+            JsonValueKind.Undefined => null,
+            _ => value.GetRawText()
+        };
     }
 
     private static JsonObject? BuildFailureContext(
