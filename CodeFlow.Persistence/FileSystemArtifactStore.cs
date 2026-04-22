@@ -111,6 +111,8 @@ public sealed class FileSystemArtifactStore : IArtifactStore
         var artifactDirectory = Path.GetDirectoryName(artifactPath)!;
         var blobPath = Path.GetFullPath(sidecar.BlobRelativePath, artifactDirectory);
 
+        EnsureBlobWithinBlobRoot(blobPath, uri);
+
         if (!File.Exists(blobPath))
         {
             throw new FileNotFoundException($"Artifact blob was not found for '{uri}'.", blobPath);
@@ -129,7 +131,15 @@ public sealed class FileSystemArtifactStore : IArtifactStore
         Uri uri,
         CancellationToken cancellationToken = default)
     {
-        var (_, sidecar) = await ResolveSidecarAsync(uri, cancellationToken);
+        var (artifactPath, sidecar) = await ResolveSidecarAsync(uri, cancellationToken);
+
+        // Defence-in-depth: a sidecar whose BlobRelativePath escapes the .blobs directory could
+        // point anywhere on disk. Write paths never produce such sidecars today, but any future
+        // write change, test seed, or manual restore could — reject before we hand out metadata
+        // that references an out-of-root path.
+        var artifactDirectory = Path.GetDirectoryName(artifactPath)!;
+        var blobPath = Path.GetFullPath(sidecar.BlobRelativePath, artifactDirectory);
+        EnsureBlobWithinBlobRoot(blobPath, uri);
 
         return new ArtifactMetadata(
             sidecar.TraceId,
@@ -140,6 +150,19 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             sidecar.ContentHash,
             sidecar.ContentLength,
             DateTime.SpecifyKind(sidecar.CreatedAtUtc, DateTimeKind.Utc));
+    }
+
+    private void EnsureBlobWithinBlobRoot(string resolvedBlobPath, Uri uri)
+    {
+        var normalizedBlobRoot = blobDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        var normalizedPath = Path.GetFullPath(resolvedBlobPath);
+
+        if (!normalizedPath.StartsWith(normalizedBlobRoot, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Artifact sidecar for '{uri}' points outside the configured blob directory.");
+        }
     }
 
     private static void EnsureValidMetadata(ArtifactMetadata metadata)

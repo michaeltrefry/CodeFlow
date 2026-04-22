@@ -74,6 +74,36 @@ public sealed class FileSystemArtifactStoreTests : IDisposable
         (await reader2.ReadToEndAsync()).Should().Be("same bytes");
     }
 
+    [Fact]
+    public async Task ReadAsync_Rejects_Sidecar_Pointing_Outside_Blob_Root()
+    {
+        var store = CreateStore();
+        var metadata = new ArtifactMetadata(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            ArtifactId: Guid.NewGuid(),
+            ContentType: "text/plain",
+            FileName: "malicious.txt");
+
+        var uri = await store.WriteAsync(new MemoryStream(Encoding.UTF8.GetBytes("safe payload")), metadata);
+
+        // Tamper with the sidecar to point at a path-traversal target outside the .blobs directory.
+        var sidecarPath = uri.LocalPath + ".json";
+        var sidecarContent = await File.ReadAllTextAsync(sidecarPath);
+        var tamperedContent = sidecarContent.Replace(
+            "\"blobRelativePath\":",
+            "\"blobRelativePath\": \"../../../../../../etc/passwd\", \"__orig\":");
+        await File.WriteAllTextAsync(sidecarPath, tamperedContent);
+
+        var readAct = () => store.ReadAsync(uri);
+        await readAct.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*outside the configured blob directory*");
+
+        var metadataAct = () => store.GetMetadataAsync(uri);
+        await metadataAct.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*outside the configured blob directory*");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(rootDirectory))
