@@ -22,6 +22,10 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
       <div class="header">
         <span class="kind-badge">{{ kindLabel }}</span>
         <span class="title" data-testid="title">{{ data.label }}</span>
+        <span *ngIf="hasScript"
+              class="script-badge"
+              title="Routing script attached"
+              data-testid="node-script-badge">{{ '{ }' }}</span>
       </div>
 
       <div class="ports">
@@ -98,6 +102,16 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
       border-radius: 3px;
       background: rgba(255, 255, 255, 0.12);
     }
+    .script-badge {
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.05rem 0.35rem;
+      border-radius: 3px;
+      background: rgba(210, 153, 34, 0.45);
+      color: #fff8d6;
+      border: 1px solid rgba(210, 153, 34, 0.7);
+    }
     .title {
       flex: 1;
       overflow: hidden;
@@ -170,6 +184,11 @@ export class WorkflowNodeComponent implements OnChanges {
 
   get kindLabel(): string {
     return this.data.kind === 'Hitl' ? 'HITL' : this.data.kind;
+  }
+
+  get hasScript(): boolean {
+    const script = this.data.script;
+    return typeof script === 'string' && script.trim().length > 0;
   }
 
   constructor(private readonly cdr: ChangeDetectorRef) {

@@ -296,6 +296,198 @@ public sealed class LogicNodeScriptHostTests
         result.LogEntries[0].Should().EndWith("[truncated]");
     }
 
+    [Fact]
+    public void Evaluate_SetContext_NotCalled_ReturnsEmptyUpdates()
+    {
+        var host = BuildHost();
+        const string script = "setNodePath('A');";
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ContextUpdates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_WithScalar_CapturedInResult()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('turn', 3);
+            setContext('status', 'active');
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ContextUpdates.Should().HaveCount(2);
+        result.ContextUpdates["turn"].GetInt32().Should().Be(3);
+        result.ContextUpdates["status"].GetString().Should().Be("active");
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_WithArray_AppendsPriorContextValue()
+    {
+        // Simulates the interviewer loop: prior transcript is in context.transcript,
+        // script appends the latest Q&A and writes it back.
+        var host = BuildHost();
+        const string script = """
+            var prior = (context.transcript || []).slice();
+            prior.push({ q: input.question, a: input.answer });
+            setContext('transcript', prior);
+            setNodePath('A');
+            """;
+        var context = new Dictionary<string, JsonElement>
+        {
+            ["transcript"] = ParseJson("""[{"q":"q1","a":"a1"}]""")
+        };
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("""{"question":"q2","answer":"a2"}"""),
+            context);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ContextUpdates.Should().ContainKey("transcript");
+        var transcript = result.ContextUpdates["transcript"];
+        transcript.ValueKind.Should().Be(JsonValueKind.Array);
+        transcript.GetArrayLength().Should().Be(2);
+        transcript[1].GetProperty("q").GetString().Should().Be("q2");
+        transcript[1].GetProperty("a").GetString().Should().Be("a2");
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_LastWriteWins_ForSameKey()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('k', 'first');
+            setContext('k', 'second');
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ContextUpdates["k"].GetString().Should().Be("second");
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_EmptyKey_FailsScript()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('', 'x');
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("non-empty string key");
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_NonStringKey_FailsScript()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext(42, 'x');
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_DroppedWhenScriptFails()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('k', 'should-not-persist');
+            throw new Error('boom');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ContextUpdates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Evaluate_SetContext_OversizedPayload_FailsWithContextBudgetExceeded()
+    {
+        var host = BuildHost();
+        // 256KB cap — emit a single 300k-character string.
+        const string script = """
+            setContext('big', 'x'.repeat(300000));
+            setNodePath('A');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "A" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ContextBudgetExceeded);
+    }
+
+    [Fact]
+    public void Evaluate_ContextMutation_StillFrozen_EvenWithSetContextAvailable()
+    {
+        // Regression: setContext must not open a write path through the frozen context object.
+        var host = BuildHost();
+        const string script = """
+            try { context.existing = 'mutated'; } catch (e) { /* expected */ }
+            setNodePath(context.existing);
+            """;
+        var context = new Dictionary<string, JsonElement>
+        {
+            ["existing"] = ParseJson("\"original\"")
+        };
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "original", "mutated" },
+            ParseJson("{}"),
+            context);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputPortName.Should().Be("original");
+    }
+
     private static LogicNodeScriptHost BuildHost()
     {
         return new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions()));

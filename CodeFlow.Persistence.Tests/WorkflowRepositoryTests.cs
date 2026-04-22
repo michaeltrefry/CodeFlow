@@ -151,6 +151,71 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
             .Which.Kind.Should().Be(WorkflowInputKind.Json);
     }
 
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripAgentNodeWithScriptAndCustomPorts()
+    {
+        // Covers Slice 3 of the agent-attached routing scripts epic: an Agent/HITL node
+        // may carry a Script + custom OutputPorts list that survives persistence round-trip.
+        var workflowKey = $"scripted-agent-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var hitlNodeId = Guid.NewGuid();
+        var acceptNodeId = Guid.NewGuid();
+        var exitNodeId = Guid.NewGuid();
+
+        const string interviewerScript = """
+            var prior = (context.transcript || []).slice();
+            prior.push({ q: input.question, a: input.answer });
+            setContext('transcript', prior);
+            setNodePath(input.answer === 'end' ? 'NextTurn' : 'NextTurn');
+            """;
+        const string hitlScript = """
+            setNodePath(input.decision === 'Approved' ? 'Answer' : 'Exit');
+            """;
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Scripted interviewer",
+            MaxRoundsPerRound: 5,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "interviewer", 1,
+                    interviewerScript, new[] { "NextTurn" }, 0, 0),
+                new WorkflowNodeDraft(hitlNodeId, WorkflowNodeKind.Hitl, "interviewee", 1,
+                    hitlScript, new[] { "Answer", "Exit" }, 250, 0),
+                new WorkflowNodeDraft(acceptNodeId, WorkflowNodeKind.Agent, "continueFlow", 1,
+                    null, new[] { "Completed", "Failed" }, 500, 0),
+                new WorkflowNodeDraft(exitNodeId, WorkflowNodeKind.Agent, "exitFlow", 1,
+                    null, new[] { "Completed", "Failed" }, 500, 0)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "NextTurn", hitlNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(hitlNodeId, "Answer", acceptNodeId, WorkflowEdge.DefaultInputPort, false, 1),
+                new WorkflowEdgeDraft(hitlNodeId, "Exit", exitNodeId, WorkflowEdge.DefaultInputPort, false, 2)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var reloadedStart = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        reloadedStart.Kind.Should().Be(WorkflowNodeKind.Start);
+        reloadedStart.Script.Should().Be(interviewerScript);
+        reloadedStart.OutputPorts.Should().Equal("NextTurn");
+
+        var reloadedHitl = reloaded.Nodes.Single(n => n.Id == hitlNodeId);
+        reloadedHitl.Kind.Should().Be(WorkflowNodeKind.Hitl);
+        reloadedHitl.Script.Should().Be(hitlScript);
+        reloadedHitl.OutputPorts.Should().Equal("Answer", "Exit");
+
+        var reloadedAccept = reloaded.Nodes.Single(n => n.Id == acceptNodeId);
+        reloadedAccept.Script.Should().BeNull("unscripted agent nodes must round-trip with null Script");
+    }
+
     private static WorkflowNodeEntity NodeEntity(Guid nodeId, WorkflowNodeKind kind, string agentKey)
     {
         return new WorkflowNodeEntity

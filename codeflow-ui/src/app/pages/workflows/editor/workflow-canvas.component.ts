@@ -142,9 +142,31 @@ function defaultStartInput(): WorkflowInput {
                             [ngModel]="outputPortsText()"
                             (ngModelChange)="onOutputPortsChanged(sel.editor, $event)"></textarea>
                   <span class="muted xsmall">
-                    Ports should match the decision kinds this agent returns. Baseline agents emit <code>Completed</code> or <code>Failed</code>.
+                    Without a script, ports match the decision kinds this agent returns (baseline: <code>Completed</code>, <code>Failed</code>). With a script, declare whatever ports the script picks.
                   </span>
                 </label>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Routing script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    If set, this script runs after the agent completes. It sees <code>input</code> (the agent's output with <code>input.decision</code> and <code>input.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.script ?? ''"
+                    [markers]="scriptMarkers()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor)">Validate</button>
+                  @if (scriptValidationError()) {
+                    <span class="tag error">{{ scriptValidationError() }}</span>
+                  } @else if (scriptValidationOk()) {
+                    <span class="tag success">Script parses OK</span>
+                  }
+                </div>
               </div>
             }
 
@@ -156,10 +178,10 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.script ?? ''"
                     [markers]="scriptMarkers()"
-                    (valueChange)="onLogicScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                    (valueChange)="onNodeScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
-                  <button type="button" (click)="validateLogicScript(sel.editor)">Validate</button>
+                  <button type="button" (click)="validateNodeScript(sel.editor)">Validate</button>
                   @if (scriptValidationError()) {
                     <span class="tag error">{{ scriptValidationError() }}</span>
                   } @else if (scriptValidationOk()) {
@@ -714,7 +736,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return input.key === DEFAULT_INPUT_KEY;
   }
 
-  onLogicScriptChanged(node: WorkflowEditorNode, value: string): void {
+  onNodeScriptChanged(node: WorkflowEditorNode, value: string): void {
     node.script = value;
     // Clear stale markers/status while the user is typing.
     if (this.scriptMarkers().length > 0) this.scriptMarkers.set([]);
@@ -722,7 +744,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
   }
 
-  validateLogicScript(node: WorkflowEditorNode): void {
+  validateNodeScript(node: WorkflowEditorNode): void {
     if (!node.script) {
       this.scriptValidationError.set('Script is empty.');
       this.scriptValidationOk.set(false);

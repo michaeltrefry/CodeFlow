@@ -161,7 +161,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        var edge = workflow.FindNext(message.FromNodeId, message.OutputPortName);
+        var effectivePortName = await ResolveSourcePortAsync(
+            context,
+            workflow,
+            saga,
+            scriptHost,
+            artifactStore,
+            message);
+
+        var edge = workflow.FindNext(message.FromNodeId, effectivePortName);
 
         if (edge is null)
         {
@@ -172,7 +180,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             else
             {
                 saga.PendingTransition = PendingTransitionFailed;
-                saga.FailureReason = $"No outgoing edge from node {message.FromNodeId} port '{message.OutputPortName}'.";
+                saga.FailureReason = $"No outgoing edge from node {message.FromNodeId} port '{effectivePortName}'.";
             }
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -254,6 +262,124 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }
 
+    /// <summary>
+    /// If the source node (the one that just emitted <see cref="AgentInvocationCompleted"/>) is an
+    /// Agent/HITL/Escalation/Start node with a non-empty script, evaluate the script to pick the
+    /// outgoing port. The script sees the agent's output artifact as <c>input</c> (with
+    /// <c>input.decision</c> and <c>input.decisionPayload</c> attached) and the workflow
+    /// <c>context</c>. On any failure or if <c>setNodePath</c> is not called, fall back to the
+    /// AgentDecisionKind-named port carried on the completion message. Context writes made via
+    /// <c>setContext</c> are merged into <see cref="WorkflowSagaStateEntity.InputsJson"/>.
+    /// </summary>
+    private static async Task<string> ResolveSourcePortAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        Workflow workflow,
+        WorkflowSagaStateEntity saga,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
+        AgentInvocationCompleted message)
+    {
+        var fallbackPort = message.OutputPortName;
+        var fromNode = workflow.FindNode(message.FromNodeId);
+        if (fromNode is null
+            || fromNode.Kind == WorkflowNodeKind.Logic
+            || string.IsNullOrWhiteSpace(fromNode.Script))
+        {
+            return fallbackPort;
+        }
+
+        if (message.OutputRef is null)
+        {
+            return fallbackPort;
+        }
+
+        var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var artifactJson = await ReadArtifactAsJsonAsync(
+            artifactStore,
+            message.OutputRef,
+            context.CancellationToken);
+        var scriptInput = ComposeAgentScriptInput(artifactJson, message.Decision, message.DecisionPayload);
+
+        var eval = scriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: fromNode.Id,
+            script: fromNode.Script!,
+            declaredPorts: fromNode.OutputPorts,
+            input: scriptInput,
+            context: contextInputs,
+            cancellationToken: context.CancellationToken);
+
+        saga.AppendLogicEvaluation(new LogicEvaluationRecord(
+            NodeId: fromNode.Id,
+            OutputPortName: eval.OutputPortName,
+            RoundId: saga.CurrentRoundId,
+            Duration: eval.Duration,
+            Logs: eval.LogEntries,
+            FailureKind: eval.Failure?.ToString(),
+            FailureMessage: eval.FailureMessage,
+            RecordedAtUtc: DateTime.UtcNow));
+
+        if (eval.ContextUpdates.Count > 0)
+        {
+            var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
+            foreach (var (key, value) in eval.ContextUpdates)
+            {
+                merged[key] = value;
+            }
+            saga.InputsJson = SerializeContextInputs(merged);
+        }
+
+        return eval.IsSuccess ? eval.OutputPortName! : fallbackPort;
+    }
+
+    private static JsonElement ComposeAgentScriptInput(
+        JsonElement artifactJson,
+        AgentDecisionKind decision,
+        JsonElement? decisionPayload)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+
+            if (artifactJson.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in artifactJson.EnumerateObject())
+                {
+                    // Never let the artifact shadow the decision metadata we inject below.
+                    if (string.Equals(property.Name, "decision", StringComparison.Ordinal)
+                        || string.Equals(property.Name, "decisionPayload", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    property.WriteTo(writer);
+                }
+            }
+            else
+            {
+                writer.WritePropertyName("value");
+                artifactJson.WriteTo(writer);
+            }
+
+            writer.WriteString("decision", decision.ToString());
+
+            writer.WritePropertyName("decisionPayload");
+            if (decisionPayload is { } payload)
+            {
+                payload.WriteTo(writer);
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return JsonDocument.Parse(buffer.ToArray()).RootElement.Clone();
+    }
+
     private static async Task<LogicChainResolution?> ResolveTargetThroughLogicChainAsync(
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         Workflow workflow,
@@ -318,6 +444,17 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 FailureKind: eval.Failure?.ToString(),
                 FailureMessage: eval.FailureMessage,
                 RecordedAtUtc: DateTime.UtcNow));
+
+            if (eval.ContextUpdates.Count > 0)
+            {
+                var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
+                foreach (var (key, value) in eval.ContextUpdates)
+                {
+                    merged[key] = value;
+                }
+                contextInputs = merged;
+                saga.InputsJson = SerializeContextInputs(merged);
+            }
 
             var chosenPort = eval.IsSuccess
                 ? eval.OutputPortName!
