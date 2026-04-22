@@ -149,10 +149,7 @@ function defaultStartInput(): WorkflowInput {
 
               <div class="inspector-section">
                 <div class="field">
-                  <span class="field-label">Routing script <span class="muted xsmall">(optional)</span></span>
-                  <p class="muted xsmall">
-                    If set, this script runs after the agent completes. It sees <code>input</code> (the agent's output with <code>input.decision</code> and <code>input.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
-                  </p>
+                  <span class="field-label">Routing script (optional)</span>
                   <cf-monaco-script-editor
                     class="script-editor"
                     [value]="sel.editor.script ?? ''"
@@ -166,6 +163,9 @@ function defaultStartInput(): WorkflowInput {
                   } @else if (scriptValidationOk()) {
                     <span class="tag success">Script parses OK</span>
                   }
+                </div>
+                <div class="muted xsmall script-hint">
+                  If set, runs after the agent completes. Sees <code>input</code> (the agent's output with <code>input.decision</code> and <code>input.decisionPayload</code> attached) and <code>context</code>. Call <code>setNodePath('…')</code> to choose an outgoing port, optionally <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
                 </div>
               </div>
             }
@@ -408,6 +408,8 @@ function defaultStartInput(): WorkflowInput {
       border-radius: 4px;
       overflow: hidden;
     }
+    .script-hint { margin-top: 0.5rem; line-height: 1.4; }
+    .script-hint code { font-size: 0.75rem; }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {
       padding: 0.75rem;
