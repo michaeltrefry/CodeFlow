@@ -185,6 +185,87 @@ public sealed class OpenAIModelClientTests
     }
 
     [Fact]
+    public async Task InvokeAsync_ShouldAliasProviderToolNamesAndMapThemBackToInternalNames()
+    {
+        const string internalToolName = "mcp:codegraph:find_consumers";
+        const string providerToolName = "mcp_codegraph_find_consumers";
+
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent($$"""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "id": "fc_alias",
+                      "call_id": "call_alias",
+                      "type": "function_call",
+                      "name": "{{providerToolName}}",
+                      "arguments": "{\"name\":\"TraceCreated\"}"
+                    }
+                  ],
+                  "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 6,
+                    "total_tokens": 26
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(httpClient, new OpenAIModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages:
+                [
+                    new ChatMessage(ChatMessageRole.User, "Find consumers."),
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        string.Empty,
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "call_prev",
+                                internalToolName,
+                                new JsonObject { ["name"] = "WorkflowStarted" })
+                        ]),
+                    new ChatMessage(ChatMessageRole.Tool, "{\"consumers\":[]}", ToolCallId: "call_prev")
+                ],
+                Tools:
+                [
+                    new ToolSchema(
+                        internalToolName,
+                        "Find all consumers for an event.",
+                        new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JsonObject
+                            {
+                                ["name"] = new JsonObject
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        })
+                ],
+                Model: "gpt-5"));
+
+        var requestJson = JsonNode.Parse(handler.Requests.Single().Body)!;
+        requestJson["tools"]!.AsArray()[0]!["name"]!.GetValue<string>().Should().Be(providerToolName);
+        requestJson["input"]!.AsArray()[1]!["type"]!.GetValue<string>().Should().Be("function_call");
+        requestJson["input"]!.AsArray()[1]!["name"]!.GetValue<string>().Should().Be(providerToolName);
+
+        response.Message.ToolCalls.Should().ContainSingle();
+        response.Message.ToolCalls![0].Name.Should().Be(internalToolName);
+        response.Message.ToolCalls[0].Arguments!["name"]!.GetValue<string>().Should().Be("TraceCreated");
+    }
+
+    [Fact]
     public async Task InvokeAsync_WhenProviderReturnsBadRequest_ShouldIncludeRequestAndResponseBodiesInException()
     {
         var handler = new StubHttpMessageHandler(
@@ -217,9 +298,15 @@ public sealed class OpenAIModelClientTests
                 Tools: null,
                 Model: "gpt-5"));
 
-        var exception = await act.Should().ThrowAsync<HttpRequestException>();
+        var exception = await act.Should().ThrowAsync<ModelClientHttpException>();
         exception.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         exception.Which.Message.Should().Contain("400 (Bad Request)");
+        exception.Which.ProviderErrorMessage.Should().Be("Missing required field.");
+        exception.Which.RequestUri.Should().Be(new Uri("https://api.openai.com/v1/responses"));
+        exception.Which.RequestHeaders["Authorization"].Should().ContainSingle("[REDACTED]");
+        exception.Which.RequestBody.Should().Contain("\"model\":\"gpt-5\"");
+        exception.Which.ResponseHeaders["Content-Type"].Should().ContainSingle(header => header.Contains("application/json"));
+        exception.Which.ResponseBody.Should().Contain("Missing required field.");
         exception.Which.Message.Should().Contain("Request: ");
         exception.Which.Message.Should().Contain("\"model\":\"gpt-5\"");
         exception.Which.Message.Should().Contain("\"content\":\"Write a PRD\"");
@@ -257,7 +344,8 @@ public sealed class OpenAIModelClientTests
                 Tools: null,
                 Model: "gpt-5"));
 
-        var exception = await act.Should().ThrowAsync<HttpRequestException>();
+        var exception = await act.Should().ThrowAsync<ModelClientHttpException>();
+        exception.Which.ProviderErrorMessage.Should().Be("bad request");
         exception.Which.Message.Should().Contain("Request: ");
         exception.Which.Message.Should().Contain("\"model\":\"gpt-5\"");
         exception.Which.Message.Should().Contain("TAIL-MARKER-123");

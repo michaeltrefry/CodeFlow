@@ -185,6 +185,90 @@ public sealed class AnthropicModelClientTests
     }
 
     [Fact]
+    public async Task InvokeAsync_ShouldAliasProviderToolNamesAndMapThemBackToInternalNames()
+    {
+        const string internalToolName = "mcp:codegraph:find_consumers";
+        const string providerToolName = "mcp_codegraph_find_consumers";
+
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent($$"""
+                {
+                  "id": "msg_alias",
+                  "type": "message",
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "tool_use",
+                      "id": "toolu_alias",
+                      "name": "{{providerToolName}}",
+                      "input": {
+                        "name": "TraceCreated"
+                      }
+                    }
+                  ],
+                  "stop_reason": "tool_use",
+                  "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 6
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new AnthropicModelClient(httpClient, new AnthropicModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages:
+                [
+                    new ChatMessage(ChatMessageRole.User, "Find consumers."),
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        string.Empty,
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "toolu_prev",
+                                internalToolName,
+                                new JsonObject { ["name"] = "WorkflowStarted" })
+                        ]),
+                    new ChatMessage(ChatMessageRole.Tool, "{\"consumers\":[]}", ToolCallId: "toolu_prev")
+                ],
+                Tools:
+                [
+                    new ToolSchema(
+                        internalToolName,
+                        "Find all consumers for an event.",
+                        new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JsonObject
+                            {
+                                ["name"] = new JsonObject
+                                {
+                                    ["type"] = "string"
+                                }
+                            }
+                        })
+                ],
+                Model: "claude-sonnet-4-20250514"));
+
+        var requestJson = JsonNode.Parse(handler.Requests.Single().Body)!;
+        requestJson["tools"]!.AsArray()[0]!["name"]!.GetValue<string>().Should().Be(providerToolName);
+        requestJson["messages"]!.AsArray()[1]!["content"]!.AsArray()[0]!["type"]!.GetValue<string>().Should().Be("tool_use");
+        requestJson["messages"]!.AsArray()[1]!["content"]!.AsArray()[0]!["name"]!.GetValue<string>().Should().Be(providerToolName);
+
+        response.Message.ToolCalls.Should().ContainSingle();
+        response.Message.ToolCalls![0].Name.Should().Be(internalToolName);
+        response.Message.ToolCalls[0].Arguments!["name"]!.GetValue<string>().Should().Be("TraceCreated");
+    }
+
+    [Fact]
     public async Task InvokeAsync_WhenProviderReturnsBadRequest_ShouldIncludeRequestAndResponseBodiesInException()
     {
         var handler = new StubHttpMessageHandler(
@@ -218,9 +302,14 @@ public sealed class AnthropicModelClientTests
                 Tools: null,
                 Model: "claude-sonnet-4-20250514"));
 
-        var exception = await act.Should().ThrowAsync<HttpRequestException>();
+        var exception = await act.Should().ThrowAsync<ModelClientHttpException>();
         exception.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         exception.Which.Message.Should().Contain("400 (Bad Request)");
+        exception.Which.ProviderErrorMessage.Should().Be("messages: field is required");
+        exception.Which.RequestUri.Should().Be(new Uri("https://api.anthropic.com/v1/messages"));
+        exception.Which.RequestHeaders["x-api-key"].Should().ContainSingle("[REDACTED]");
+        exception.Which.RequestBody.Should().Contain("\"model\":\"claude-sonnet-4-20250514\"");
+        exception.Which.ResponseBody.Should().Contain("messages: field is required");
         exception.Which.Message.Should().Contain("Request: ");
         exception.Which.Message.Should().Contain("\"model\":\"claude-sonnet-4-20250514\"");
         exception.Which.Message.Should().Contain("\"text\":\"Write a PRD\"");

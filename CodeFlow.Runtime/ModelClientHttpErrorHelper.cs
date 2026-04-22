@@ -18,6 +18,15 @@ internal static class ModelClientHttpErrorHelper
         "password",
         "x-api-key"
     ];
+    private static readonly string[] SensitiveHeaderNameFragments =
+    [
+        "authorization",
+        "cookie",
+        "api-key",
+        "apikey",
+        "token",
+        "secret"
+    ];
 
     private const int ErrorContentLimit = 128 * 1024;
 
@@ -38,7 +47,18 @@ internal static class ModelClientHttpErrorHelper
             .Append(response.ReasonPhrase ?? response.StatusCode.ToString())
             .Append(").");
 
-        var requestContent = await ReadSanitizedContentAsync(request.Content, cancellationToken);
+        if (request.RequestUri is not null)
+        {
+            builder.AppendLine()
+                .Append("Request URL: ")
+                .Append(request.RequestUri);
+        }
+
+        var rawRequestContent = await ReadRawContentAsync(request.Content, cancellationToken);
+        var rawResponseContent = await ReadRawContentAsync(response.Content, cancellationToken);
+        var requestContent = string.IsNullOrWhiteSpace(rawRequestContent)
+            ? null
+            : TruncateForErrorMessage(SanitizeJsonContent(rawRequestContent));
         if (!string.IsNullOrWhiteSpace(requestContent))
         {
             builder.AppendLine()
@@ -46,7 +66,9 @@ internal static class ModelClientHttpErrorHelper
                 .Append(requestContent);
         }
 
-        var responseContent = await ReadSanitizedContentAsync(response.Content, cancellationToken);
+        var responseContent = string.IsNullOrWhiteSpace(rawResponseContent)
+            ? null
+            : TruncateForErrorMessage(SanitizeJsonContent(rawResponseContent));
         if (!string.IsNullOrWhiteSpace(responseContent))
         {
             builder.AppendLine()
@@ -54,10 +76,20 @@ internal static class ModelClientHttpErrorHelper
                 .Append(responseContent);
         }
 
-        throw new HttpRequestException(builder.ToString(), inner: null, response.StatusCode);
+        throw new ModelClientHttpException(
+            builder.ToString(),
+            response.StatusCode,
+            request.Method.Method,
+            request.RequestUri,
+            CaptureHeaders(request.Headers, request.Content?.Headers),
+            rawRequestContent,
+            ExtractProviderErrorMessage(rawResponseContent),
+            response.ReasonPhrase,
+            CaptureHeaders(response.Headers, response.Content?.Headers),
+            rawResponseContent);
     }
 
-    private static async Task<string?> ReadSanitizedContentAsync(
+    private static async Task<string?> ReadRawContentAsync(
         HttpContent? content,
         CancellationToken cancellationToken)
     {
@@ -67,12 +99,7 @@ internal static class ModelClientHttpErrorHelper
         }
 
         var raw = await content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        return TruncateForErrorMessage(SanitizeJsonContent(raw));
+        return string.IsNullOrEmpty(raw) ? null : raw;
     }
 
     private static string SanitizeJsonContent(string raw)
@@ -92,6 +119,52 @@ internal static class ModelClientHttpErrorHelper
         {
             return raw;
         }
+    }
+
+    private static string? ExtractProviderErrorMessage(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
+
+            if (TryGetString(root, "message", out var directMessage))
+            {
+                return directMessage;
+            }
+
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("error", out var error)
+                && TryGetString(error, "message", out var nestedMessage))
+            {
+                return nestedMessage;
+            }
+        }
+        catch (JsonException)
+        {
+            // Fall through to null when the provider returned non-JSON content.
+        }
+
+        return null;
+    }
+
+    private static bool TryGetString(JsonElement element, string propertyName, out string? value)
+    {
+        value = null;
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = property.GetString();
+        return !string.IsNullOrWhiteSpace(value);
     }
 
     private static void RedactSensitiveValues(JsonNode node)
@@ -151,5 +224,47 @@ internal static class ModelClientHttpErrorHelper
             value.AsSpan(0, headLength),
             $"...(truncated {omittedCharacters} chars)...",
             value.AsSpan(value.Length - tailLength));
+    }
+
+    private static IReadOnlyDictionary<string, string[]> CaptureHeaders(
+        IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers,
+        IEnumerable<KeyValuePair<string, IEnumerable<string>>>? contentHeaders)
+    {
+        var captured = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
+        AddHeaders(captured, headers);
+        if (contentHeaders is not null)
+        {
+            AddHeaders(captured, contentHeaders);
+        }
+
+        return captured;
+    }
+
+    private static void AddHeaders(
+        IDictionary<string, string[]> captured,
+        IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers)
+    {
+        foreach (var header in headers)
+        {
+            var values = header.Value
+                .Select(value => IsSensitiveHeaderName(header.Key) ? "[REDACTED]" : value)
+                .ToArray();
+
+            if (captured.TryGetValue(header.Key, out var existing))
+            {
+                captured[header.Key] = existing.Concat(values).ToArray();
+            }
+            else
+            {
+                captured[header.Key] = values;
+            }
+        }
+    }
+
+    private static bool IsSensitiveHeaderName(string headerName)
+    {
+        return SensitiveHeaderNameFragments.Any(fragment =>
+            headerName.Contains(fragment, StringComparison.OrdinalIgnoreCase));
     }
 }
