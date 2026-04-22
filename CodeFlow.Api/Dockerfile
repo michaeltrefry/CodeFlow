@@ -28,7 +28,16 @@ RUN dotnet publish CodeFlow.Api/CodeFlow.Api.csproj \
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
-COPY --from=build /app/publish ./
+
+# Run as a non-root user so post-exploitation (SSRF, deserialization, file upload) runs with
+# uid 1000 instead of root. The artifacts mount point is pre-created with the right ownership
+# so docker-compose's volume mount inherits it.
+RUN adduser --disabled-password --gecos "" --uid 1000 codeflow && \
+    mkdir -p /app/artifacts && \
+    chown -R codeflow:codeflow /app
+
+COPY --from=build --chown=codeflow:codeflow /app/publish ./
+USER codeflow
 
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
