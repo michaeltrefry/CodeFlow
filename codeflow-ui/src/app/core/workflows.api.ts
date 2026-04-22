@@ -14,7 +14,6 @@ export interface WorkflowPayload {
 
 export interface ValidateScriptRequest {
   script: string;
-  declaredPorts: string[];
 }
 
 export interface ValidateScriptError {

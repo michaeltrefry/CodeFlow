@@ -63,7 +63,7 @@ public sealed record UpdateWorkflowRequest(
     IReadOnlyList<WorkflowEdgeDto>? Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs);
 
-public sealed record ValidateScriptRequest(string? Script, IReadOnlyList<string>? DeclaredPorts);
+public sealed record ValidateScriptRequest(string? Script);
 
 public sealed record ValidateScriptResponse(bool Ok, IReadOnlyList<ValidateScriptError> Errors);
 

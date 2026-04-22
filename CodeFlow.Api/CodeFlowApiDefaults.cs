@@ -55,4 +55,31 @@ public static class CodeFlowApiDefaults
         public const string Operator = "operator";
         public const string Admin = "admin";
     }
+
+    /// <summary>
+    /// Single declarative source for "which roles grant which permissions". AuthOptions inverts
+    /// this into the role -> permissions map at startup, so adding a new permission only
+    /// requires one edit here (plus the Permissions/Policies constants).
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> PermissionRoleMatrix =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Permissions.AgentsRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.AgentsWrite] = new[] { Roles.Author, Roles.Admin },
+            [Permissions.WorkflowsRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.WorkflowsWrite] = new[] { Roles.Author, Roles.Admin },
+            [Permissions.TracesRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.TracesWrite] = new[] { Roles.Operator, Roles.Admin },
+            [Permissions.HitlWrite] = new[] { Roles.Operator, Roles.Admin },
+            [Permissions.OpsRead] = new[] { Roles.Operator, Roles.Admin },
+            [Permissions.OpsWrite] = new[] { Roles.Operator, Roles.Admin },
+            [Permissions.McpServersRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.McpServersWrite] = new[] { Roles.Author, Roles.Admin },
+            [Permissions.AgentRolesRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.AgentRolesWrite] = new[] { Roles.Author, Roles.Admin },
+            [Permissions.SkillsRead] = new[] { Roles.Viewer, Roles.Author, Roles.Operator, Roles.Admin },
+            [Permissions.SkillsWrite] = new[] { Roles.Author, Roles.Admin },
+            [Permissions.GitHostRead] = new[] { Roles.Admin },
+            [Permissions.GitHostWrite] = new[] { Roles.Admin },
+        };
 }

@@ -730,7 +730,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    this.api.validateScript({ script: node.script, declaredPorts: node.outputPortNames }).subscribe({
+    this.api.validateScript({ script: node.script }).subscribe({
       next: result => {
         if (result.ok) {
           this.scriptValidationError.set(null);
