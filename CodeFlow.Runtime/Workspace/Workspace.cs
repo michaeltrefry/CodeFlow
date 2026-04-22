@@ -26,6 +26,8 @@ public sealed class Workspace
 
     public string RepoSlug => Repo.Slug;
 
+    public string RepoIdentityKey => Repo.IdentityKey;
+
     public string RepoUrl { get; }
 
     public string RootPath { get; }

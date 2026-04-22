@@ -160,6 +160,58 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task StaleRoundCompletion_ShouldBeIgnored()
+    {
+        var traceId = Guid.NewGuid();
+        var currentRoundId = Guid.NewGuid();
+        var staleRoundId = Guid.NewGuid();
+
+        var workflow = BuildWorkflow(
+            key: "stale-round",
+            maxRounds: 10,
+            startAgentKey: "evaluator",
+            edges:
+            [
+                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: false)
+            ]);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 1 });
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, currentRoundId);
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            // Publish a completion whose RoundId does not match the saga's current round
+            // (simulates a delayed redelivery or duplicate completion from a prior round).
+            await harness.Bus.Publish(BuildCompletion(
+                workflow, traceId, staleRoundId, "evaluator", 1, AgentDecisionKind.Completed));
+
+            // Give the saga a moment to process (or reject) the message.
+            await Task.Delay(200);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("evaluator",
+                "stale-round completion must not advance the saga to the next agent");
+            saga.GetDecisionHistory().Should().BeEmpty(
+                "stale-round completion must not be recorded in decision history");
+
+            // Sanity: a completion with the correct RoundId still advances the saga.
+            await harness.Bus.Publish(BuildCompletion(
+                workflow, traceId, currentRoundId, "evaluator", 1, AgentDecisionKind.Completed));
+            SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.CurrentAgentKey == "reviewer");
+            sagaHarness.Sagas.Contains(traceId)!.GetDecisionHistory().Should().ContainSingle();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task UnmappedDecision_ShouldTerminateFailed()
     {
         var traceId = Guid.NewGuid();
