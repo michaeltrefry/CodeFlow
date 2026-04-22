@@ -79,6 +79,9 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
                 ["Artifacts:RootDirectory"] = artifactRoot,
                 ["Auth:DevelopmentBypass"] = "true",
                 ["Auth:RequireHttpsMetadata"] = "false",
+                ["McpEndpointPolicy:AllowInternalTargets"] = "true",
+                ["McpEndpointPolicy:AllowedSchemes:0"] = "http",
+                ["McpEndpointPolicy:AllowedSchemes:1"] = "https",
                 ["Secrets:MasterKey"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
             });
         });
