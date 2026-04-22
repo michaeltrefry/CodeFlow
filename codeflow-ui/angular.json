@@ -17,7 +17,10 @@
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
             "assets": [],
-            "styles": ["src/styles.css"],
+            "styles": [
+              "src/styles.css",
+              "node_modules/monaco-editor/min/vs/editor/editor.main.css"
+            ],
             "scripts": [],
             "loader": {
               ".ttf": "file"

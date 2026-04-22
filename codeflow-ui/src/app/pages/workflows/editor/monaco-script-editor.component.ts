@@ -14,6 +14,7 @@ import {
   ViewChild,
   inject
 } from '@angular/core';
+import { ensureMonacoEnvironment } from './monaco-environment';
 
 export interface MonacoMarker {
   startLineNumber: number;
@@ -82,6 +83,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
 
   async ngAfterViewInit(): Promise<void> {
     try {
+      ensureMonacoEnvironment();
       const monaco = await import('monaco-editor');
       this.monacoApi = monaco;
 
