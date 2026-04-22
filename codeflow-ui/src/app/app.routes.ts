@@ -15,6 +15,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/agents/agent-test.component').then(m => m.AgentTestComponent)
   },
   {
+    path: 'agents/:key/edit',
+    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorComponent)
+  },
+  {
     path: 'agents/:key',
     loadComponent: () => import('./pages/agents/agent-detail.component').then(m => m.AgentDetailComponent)
   },

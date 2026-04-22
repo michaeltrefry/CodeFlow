@@ -19,7 +19,7 @@ internal static class ModelClientHttpErrorHelper
         "x-api-key"
     ];
 
-    private const int ErrorContentLimit = 16 * 1024;
+    private const int ErrorContentLimit = 128 * 1024;
 
     public static async Task EnsureSuccessStatusCodeAsync(
         HttpRequestMessage request,
@@ -143,6 +143,13 @@ internal static class ModelClientHttpErrorHelper
             return value;
         }
 
-        return $"{value[..ErrorContentLimit]}...(truncated)";
+        var omittedCharacters = value.Length - ErrorContentLimit;
+        var headLength = ErrorContentLimit / 2;
+        var tailLength = ErrorContentLimit - headLength;
+
+        return string.Concat(
+            value.AsSpan(0, headLength),
+            $"...(truncated {omittedCharacters} chars)...",
+            value.AsSpan(value.Length - tailLength));
     }
 }

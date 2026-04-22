@@ -229,6 +229,41 @@ public sealed class OpenAIModelClientTests
         exception.Which.Message.Should().NotContain("test-key");
     }
 
+    [Fact]
+    public async Task InvokeAsync_WhenErrorRequestBodyIsLarge_ShouldPreserveBothStartAndEndOfRequest()
+    {
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = JsonContent("""{"error":{"message":"bad request"}}""")
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(
+            httpClient,
+            new OpenAIModelClientOptions
+            {
+                ApiKey = "test-key",
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        var largePrompt = new string('A', 140_000) + "TAIL-MARKER-123";
+
+        Func<Task> act = async () => await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, largePrompt)],
+                Tools: null,
+                Model: "gpt-5"));
+
+        var exception = await act.Should().ThrowAsync<HttpRequestException>();
+        exception.Which.Message.Should().Contain("Request: ");
+        exception.Which.Message.Should().Contain("\"model\":\"gpt-5\"");
+        exception.Which.Message.Should().Contain("TAIL-MARKER-123");
+        exception.Which.Message.Should().Contain("(truncated ");
+    }
+
     private static StringContent JsonContent(string json)
     {
         return new StringContent(json, Encoding.UTF8, "application/json");

@@ -41,8 +41,8 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
           <a [routerLink]="['/agents', key(), 'test']">
             <button class="secondary">Test Agent</button>
           </a>
-          <a [routerLink]="['/agents', key()]" [queryParams]="{ mode: 'edit' }">
-            <button routerLink="/agents/new" [queryParams]="{ key: key() }">New version</button>
+          <a [routerLink]="['/agents', key(), 'edit']">
+            <button>New version</button>
           </a>
           <button class="secondary" (click)="retire()" [disabled]="retiring()">
             {{ retiring() ? 'Retiring…' : 'Retire agent' }}
