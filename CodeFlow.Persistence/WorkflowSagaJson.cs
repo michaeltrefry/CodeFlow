@@ -1,7 +1,5 @@
-using CodeFlow.Runtime;
 using System.Collections.Generic;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace CodeFlow.Persistence;
 
@@ -9,11 +7,7 @@ public static class WorkflowSagaJson
 {
     public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
-        Converters =
-        {
-            new JsonStringEnumConverter<AgentDecisionKind>()
-        },
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
     public static IReadOnlyDictionary<string, int> DeserializePinnedVersions(string? json)
@@ -30,35 +24,5 @@ public static class WorkflowSagaJson
     public static string SerializePinnedVersions(IReadOnlyDictionary<string, int> versions)
     {
         return JsonSerializer.Serialize(versions, Options);
-    }
-
-    public static IReadOnlyList<DecisionRecord> DeserializeDecisionHistory(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
-
-        return JsonSerializer.Deserialize<List<DecisionRecord>>(json, Options) ?? [];
-    }
-
-    public static string SerializeDecisionHistory(IReadOnlyList<DecisionRecord> history)
-    {
-        return JsonSerializer.Serialize(history, Options);
-    }
-
-    public static IReadOnlyList<LogicEvaluationRecord> DeserializeLogicEvaluationHistory(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
-
-        return JsonSerializer.Deserialize<List<LogicEvaluationRecord>>(json, Options) ?? [];
-    }
-
-    public static string SerializeLogicEvaluationHistory(IReadOnlyList<LogicEvaluationRecord> history)
-    {
-        return JsonSerializer.Serialize(history, Options);
     }
 }

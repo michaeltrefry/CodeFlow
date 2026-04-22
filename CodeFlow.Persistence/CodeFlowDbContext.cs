@@ -17,6 +17,10 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<WorkflowSagaStateEntity> WorkflowSagas => Set<WorkflowSagaStateEntity>();
 
+    public DbSet<WorkflowSagaDecisionEntity> WorkflowSagaDecisions => Set<WorkflowSagaDecisionEntity>();
+
+    public DbSet<WorkflowSagaLogicEvaluationEntity> WorkflowSagaLogicEvaluations => Set<WorkflowSagaLogicEvaluationEntity>();
+
     public DbSet<HitlTaskEntity> HitlTasks => Set<HitlTaskEntity>();
 
     public DbSet<McpServerEntity> McpServers => Set<McpServerEntity>();

@@ -56,6 +56,16 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnType("longtext")
             .IsRequired();
 
+        builder.Property(saga => saga.DecisionCount)
+            .HasColumnName("decision_count")
+            .HasDefaultValue(0)
+            .IsRequired();
+
+        builder.Property(saga => saga.LogicEvaluationCount)
+            .HasColumnName("logic_evaluation_count")
+            .HasDefaultValue(0)
+            .IsRequired();
+
         builder.Property(saga => saga.WorkflowKey)
             .HasColumnName("workflow_key")
             .HasMaxLength(128)
@@ -99,5 +109,15 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
         builder.Ignore(saga => saga.PendingTransition);
 
         builder.HasIndex(saga => new { saga.WorkflowKey, saga.WorkflowVersion });
+
+        builder.HasMany(saga => saga.Decisions)
+            .WithOne()
+            .HasForeignKey(d => d.SagaCorrelationId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(saga => saga.LogicEvaluations)
+            .WithOne()
+            .HasForeignKey(e => e.SagaCorrelationId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
