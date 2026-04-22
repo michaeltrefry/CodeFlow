@@ -104,6 +104,83 @@ public sealed class FileSystemArtifactStoreTests : IDisposable
             .WithMessage("*outside the configured blob directory*");
     }
 
+    [Fact]
+    public async Task WriteAsync_Rejects_Payload_Larger_Than_MaxArtifactBytes()
+    {
+        var store = CreateStore(maxArtifactBytes: 16);
+        var metadata = new ArtifactMetadata(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var oversized = new byte[17];
+
+        var act = () => store.WriteAsync(new MemoryStream(oversized), metadata);
+
+        var ex = await act.Should().ThrowAsync<ArtifactTooLargeException>();
+        ex.Which.MaxBytes.Should().Be(16);
+        ex.Which.ObservedBytes.Should().BeGreaterThan(16);
+
+        // The temp file and any partial artifact path must be cleaned up — no leftovers in .tmp or .blobs.
+        Directory.Exists(Path.Combine(rootDirectory, ".tmp")).Should().BeTrue();
+        Directory.GetFiles(Path.Combine(rootDirectory, ".tmp")).Should().BeEmpty();
+        Directory.GetFiles(Path.Combine(rootDirectory, ".blobs"), "*.bin").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WriteAsync_Accepts_Payload_Equal_To_MaxArtifactBytes()
+    {
+        var store = CreateStore(maxArtifactBytes: 32);
+        var metadata = new ArtifactMetadata(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var exactly = new byte[32];
+
+        var uri = await store.WriteAsync(new MemoryStream(exactly), metadata);
+        var persisted = await store.GetMetadataAsync(uri);
+
+        persisted.ContentLength.Should().Be(32);
+    }
+
+    [Fact]
+    public async Task WriteAsync_With_No_Cap_Allows_Payload_Larger_Than_Default_Buffer()
+    {
+        var store = CreateStore(maxArtifactBytes: null);
+        var metadata = new ArtifactMetadata(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var content = new byte[200_000]; // > single 81920-byte read
+
+        var uri = await store.WriteAsync(new MemoryStream(content), metadata);
+        var persisted = await store.GetMetadataAsync(uri);
+
+        persisted.ContentLength.Should().Be(content.Length);
+    }
+
+    [Fact]
+    public async Task ReadAsync_Rejects_Sidecar_With_ContentLength_Over_Current_Cap()
+    {
+        // Write with no cap so the artifact lands on disk at 256 bytes.
+        var writerStore = CreateStore(maxArtifactBytes: null);
+        var metadata = new ArtifactMetadata(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            ArtifactId: Guid.NewGuid(),
+            ContentType: "application/octet-stream");
+        var content = new byte[256];
+        var uri = await writerStore.WriteAsync(new MemoryStream(content), metadata);
+
+        // Simulate an operator lowering the cap after the artifact already exists.
+        var readerStore = CreateStore(maxArtifactBytes: 64);
+
+        var act = () => readerStore.ReadAsync(uri);
+        var ex = await act.Should().ThrowAsync<ArtifactTooLargeException>();
+        ex.Which.MaxBytes.Should().Be(64);
+        ex.Which.ObservedBytes.Should().Be(256);
+    }
+
+    [Fact]
+    public void Construction_Rejects_NonPositive_MaxArtifactBytes()
+    {
+        var act = () => new FileSystemArtifactStore(
+            new FileSystemArtifactStoreOptions(rootDirectory, MaxArtifactBytes: 0));
+
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*MaxArtifactBytes*");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(rootDirectory))
@@ -112,8 +189,9 @@ public sealed class FileSystemArtifactStoreTests : IDisposable
         }
     }
 
-    private IArtifactStore CreateStore()
+    private IArtifactStore CreateStore(long? maxArtifactBytes = null)
     {
-        return new FileSystemArtifactStore(new FileSystemArtifactStoreOptions(rootDirectory));
+        return new FileSystemArtifactStore(
+            new FileSystemArtifactStoreOptions(rootDirectory, maxArtifactBytes));
     }
 }
