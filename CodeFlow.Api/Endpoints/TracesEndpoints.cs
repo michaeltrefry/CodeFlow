@@ -97,8 +97,17 @@ public static class TracesEndpoints
             .OrderBy(task => task.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
-        var decisionHistory = saga.GetDecisionHistory();
-        var logicHistory = saga.GetLogicEvaluationHistory();
+        var decisions = await dbContext.WorkflowSagaDecisions
+            .AsNoTracking()
+            .Where(d => d.SagaCorrelationId == saga.CorrelationId)
+            .OrderBy(d => d.Ordinal)
+            .ToListAsync(cancellationToken);
+
+        var logicEvaluations = await dbContext.WorkflowSagaLogicEvaluations
+            .AsNoTracking()
+            .Where(e => e.SagaCorrelationId == saga.CorrelationId)
+            .OrderBy(e => e.Ordinal)
+            .ToListAsync(cancellationToken);
 
         var detail = new TraceDetailDto(
             TraceId: saga.TraceId,
@@ -109,29 +118,29 @@ public static class TracesEndpoints
             CurrentRoundId: saga.CurrentRoundId,
             RoundCount: saga.RoundCount,
             PinnedAgentVersions: saga.GetPinnedAgentVersions(),
-            Decisions: decisionHistory
-                .Select(record => new TraceDecisionDto(
-                    AgentKey: record.AgentKey,
-                    AgentVersion: record.AgentVersion,
-                    Decision: (Runtime.AgentDecisionKind)(int)record.Decision,
-                    DecisionPayload: record.DecisionPayload,
-                    RoundId: record.RoundId,
-                    RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc),
-                    NodeId: record.NodeId,
-                    OutputPortName: record.OutputPortName,
-                    InputRef: record.InputRef,
-                    OutputRef: record.OutputRef))
+            Decisions: decisions
+                .Select(entity => new TraceDecisionDto(
+                    AgentKey: entity.AgentKey,
+                    AgentVersion: entity.AgentVersion,
+                    Decision: entity.Decision,
+                    DecisionPayload: ParsePayload(entity.DecisionPayloadJson),
+                    RoundId: entity.RoundId,
+                    RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc),
+                    NodeId: entity.NodeId,
+                    OutputPortName: entity.OutputPortName,
+                    InputRef: entity.InputRef,
+                    OutputRef: entity.OutputRef))
                 .ToArray(),
-            LogicEvaluations: logicHistory
-                .Select(record => new TraceLogicEvaluationDto(
-                    NodeId: record.NodeId,
-                    OutputPortName: record.OutputPortName,
-                    RoundId: record.RoundId,
-                    Duration: record.Duration,
-                    Logs: record.Logs,
-                    FailureKind: record.FailureKind,
-                    FailureMessage: record.FailureMessage,
-                    RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc)))
+            LogicEvaluations: logicEvaluations
+                .Select(entity => new TraceLogicEvaluationDto(
+                    NodeId: entity.NodeId,
+                    OutputPortName: entity.OutputPortName,
+                    RoundId: entity.RoundId,
+                    Duration: TimeSpan.FromTicks(entity.DurationTicks),
+                    Logs: DeserializeLogs(entity.LogsJson),
+                    FailureKind: entity.FailureKind,
+                    FailureMessage: entity.FailureMessage,
+                    RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc)))
                 .ToArray(),
             PendingHitl: pendingHitl.Select(MapHitl).ToArray(),
             CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
@@ -363,19 +372,16 @@ public static class TracesEndpoints
         Guid traceId,
         CancellationToken cancellationToken)
     {
-        var saga = await dbContext.WorkflowSagas
+        var decisions = await dbContext.WorkflowSagaDecisions
             .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TraceId == traceId, cancellationToken);
+            .Where(d => d.TraceId == traceId)
+            .OrderBy(d => d.Ordinal)
+            .ToListAsync(cancellationToken);
 
-        if (saga is null)
-        {
-            return;
-        }
-
-        foreach (var decision in saga.GetDecisionHistory())
+        foreach (var decision in decisions)
         {
             var traceEvent = new TraceEvent(
-                TraceId: saga.TraceId,
+                TraceId: decision.TraceId,
                 RoundId: decision.RoundId,
                 Kind: TraceEventKind.Completed,
                 AgentKey: decision.AgentKey,
@@ -383,7 +389,7 @@ public static class TracesEndpoints
                 OutputRef: null,
                 InputRef: null,
                 Decision: decision.Decision,
-                DecisionPayload: decision.DecisionPayload,
+                DecisionPayload: ParsePayload(decision.DecisionPayloadJson),
                 TimestampUtc: DateTime.SpecifyKind(decision.RecordedAtUtc, DateTimeKind.Utc));
 
             await WriteEventAsync(httpContext, traceEvent, cancellationToken);
@@ -535,6 +541,27 @@ public static class TracesEndpoints
 
         using var document = JsonDocument.Parse(json.ToJsonString());
         return document.RootElement.Clone();
+    }
+
+    private static JsonElement? ParsePayload(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static IReadOnlyList<string> DeserializeLogs(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return Array.Empty<string>();
+        }
+
+        return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
     }
 
     private static TraceSummaryDto MapSummary(WorkflowSagaStateEntity saga) => new(

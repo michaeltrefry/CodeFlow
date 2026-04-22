@@ -74,6 +74,8 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
         {
             var loaded = await readContext.WorkflowSagas
                 .AsNoTracking()
+                .Include(s => s.Decisions)
+                .Include(s => s.LogicEvaluations)
                 .SingleAsync(s => s.CorrelationId == correlationId);
 
             loaded.TraceId.Should().Be(traceId);

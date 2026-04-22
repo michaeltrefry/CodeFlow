@@ -1,4 +1,6 @@
+using CodeFlow.Runtime;
 using MassTransit;
+using System.Text.Json;
 
 namespace CodeFlow.Persistence;
 
@@ -20,9 +22,17 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public string AgentVersionsJson { get; set; } = "{}";
 
+    // Legacy JSON history columns. No longer written or read after F-012 — superseded by the
+    // workflow_saga_decisions / workflow_saga_logic_evaluations child tables. Retained on the
+    // row so existing sagas keep their history on disk until a follow-up migration drops the
+    // columns once all in-flight sagas have drained.
     public string DecisionHistoryJson { get; set; } = "[]";
 
     public string LogicEvaluationHistoryJson { get; set; } = "[]";
+
+    public int DecisionCount { get; set; }
+
+    public int LogicEvaluationCount { get; set; }
 
     public string WorkflowKey { get; set; } = null!;
 
@@ -64,6 +74,10 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     /// </summary>
     public string? PendingTransition { get; set; }
 
+    public ICollection<WorkflowSagaDecisionEntity> Decisions { get; set; } = new List<WorkflowSagaDecisionEntity>();
+
+    public ICollection<WorkflowSagaLogicEvaluationEntity> LogicEvaluations { get; set; } = new List<WorkflowSagaLogicEvaluationEntity>();
+
     public IReadOnlyDictionary<string, int> GetPinnedAgentVersions()
     {
         return WorkflowSagaJson.DeserializePinnedVersions(AgentVersionsJson);
@@ -90,31 +104,141 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
         SetPinnedAgentVersions(versions);
     }
 
+    /// <summary>
+    /// Returns the decision history from the tracked <see cref="Decisions"/> navigation collection.
+    /// For DB-backed reads to see all persisted history, the caller must eager-load the navigation
+    /// (e.g. <c>.Include(s =&gt; s.Decisions)</c>) or query <c>WorkflowSagaDecisions</c> directly.
+    /// </summary>
     public IReadOnlyList<DecisionRecord> GetDecisionHistory()
     {
-        return WorkflowSagaJson.DeserializeDecisionHistory(DecisionHistoryJson);
+        return Decisions
+            .OrderBy(d => d.Ordinal)
+            .Select(DecisionEntityMapping.ToRecord)
+            .ToArray();
     }
 
     public void AppendDecision(DecisionRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        var history = GetDecisionHistory().ToList();
-        history.Add(record);
-        DecisionHistoryJson = WorkflowSagaJson.SerializeDecisionHistory(history);
+        Decisions.Add(DecisionEntityMapping.ToEntity(CorrelationId, TraceId, DecisionCount, record));
+        DecisionCount += 1;
     }
 
+    /// <summary>
+    /// Returns the logic evaluation history from the tracked <see cref="LogicEvaluations"/>
+    /// navigation collection. Same loading caveat as <see cref="GetDecisionHistory"/>.
+    /// </summary>
     public IReadOnlyList<LogicEvaluationRecord> GetLogicEvaluationHistory()
     {
-        return WorkflowSagaJson.DeserializeLogicEvaluationHistory(LogicEvaluationHistoryJson);
+        return LogicEvaluations
+            .OrderBy(e => e.Ordinal)
+            .Select(LogicEvaluationEntityMapping.ToRecord)
+            .ToArray();
     }
 
     public void AppendLogicEvaluation(LogicEvaluationRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        var history = GetLogicEvaluationHistory().ToList();
-        history.Add(record);
-        LogicEvaluationHistoryJson = WorkflowSagaJson.SerializeLogicEvaluationHistory(history);
+        LogicEvaluations.Add(LogicEvaluationEntityMapping.ToEntity(
+            CorrelationId,
+            TraceId,
+            LogicEvaluationCount,
+            record));
+        LogicEvaluationCount += 1;
+    }
+}
+
+internal static class DecisionEntityMapping
+{
+    public static WorkflowSagaDecisionEntity ToEntity(
+        Guid correlationId,
+        Guid traceId,
+        int ordinal,
+        DecisionRecord record)
+    {
+        return new WorkflowSagaDecisionEntity
+        {
+            SagaCorrelationId = correlationId,
+            Ordinal = ordinal,
+            TraceId = traceId,
+            AgentKey = record.AgentKey,
+            AgentVersion = record.AgentVersion,
+            Decision = record.Decision,
+            DecisionPayloadJson = record.DecisionPayload?.GetRawText(),
+            RoundId = record.RoundId,
+            RecordedAtUtc = record.RecordedAtUtc,
+            NodeId = record.NodeId,
+            OutputPortName = record.OutputPortName,
+            InputRef = record.InputRef,
+            OutputRef = record.OutputRef
+        };
+    }
+
+    public static DecisionRecord ToRecord(WorkflowSagaDecisionEntity entity)
+    {
+        JsonElement? payload = null;
+        if (!string.IsNullOrWhiteSpace(entity.DecisionPayloadJson))
+        {
+            using var document = JsonDocument.Parse(entity.DecisionPayloadJson);
+            payload = document.RootElement.Clone();
+        }
+
+        return new DecisionRecord(
+            AgentKey: entity.AgentKey,
+            AgentVersion: entity.AgentVersion,
+            Decision: entity.Decision,
+            DecisionPayload: payload,
+            RoundId: entity.RoundId,
+            RecordedAtUtc: entity.RecordedAtUtc,
+            NodeId: entity.NodeId,
+            OutputPortName: entity.OutputPortName,
+            InputRef: entity.InputRef,
+            OutputRef: entity.OutputRef);
+    }
+}
+
+internal static class LogicEvaluationEntityMapping
+{
+    private static readonly JsonSerializerOptions LogsSerializerOptions = new(JsonSerializerDefaults.Web);
+
+    public static WorkflowSagaLogicEvaluationEntity ToEntity(
+        Guid correlationId,
+        Guid traceId,
+        int ordinal,
+        LogicEvaluationRecord record)
+    {
+        return new WorkflowSagaLogicEvaluationEntity
+        {
+            SagaCorrelationId = correlationId,
+            Ordinal = ordinal,
+            TraceId = traceId,
+            NodeId = record.NodeId,
+            OutputPortName = record.OutputPortName,
+            RoundId = record.RoundId,
+            DurationTicks = record.Duration.Ticks,
+            LogsJson = JsonSerializer.Serialize(record.Logs, LogsSerializerOptions),
+            FailureKind = record.FailureKind,
+            FailureMessage = record.FailureMessage,
+            RecordedAtUtc = record.RecordedAtUtc
+        };
+    }
+
+    public static LogicEvaluationRecord ToRecord(WorkflowSagaLogicEvaluationEntity entity)
+    {
+        var logs = string.IsNullOrWhiteSpace(entity.LogsJson)
+            ? Array.Empty<string>()
+            : JsonSerializer.Deserialize<string[]>(entity.LogsJson, LogsSerializerOptions) ?? Array.Empty<string>();
+
+        return new LogicEvaluationRecord(
+            NodeId: entity.NodeId,
+            OutputPortName: entity.OutputPortName,
+            RoundId: entity.RoundId,
+            Duration: TimeSpan.FromTicks(entity.DurationTicks),
+            Logs: logs,
+            FailureKind: entity.FailureKind,
+            FailureMessage: entity.FailureMessage,
+            RecordedAtUtc: entity.RecordedAtUtc);
     }
 }
