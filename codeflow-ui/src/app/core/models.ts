@@ -188,10 +188,17 @@ export interface GitHostSettingsResponse {
   updatedAtUtc?: string | null;
 }
 
+export type GitHostTokenAction = 'Preserve' | 'Replace';
+
+export interface GitHostTokenUpdateRequest {
+  action: GitHostTokenAction;
+  value?: string | null;
+}
+
 export interface GitHostSettingsRequest {
   mode: GitHostMode;
   baseUrl?: string | null;
-  token: string;
+  token: GitHostTokenUpdateRequest;
 }
 
 export interface GitHostVerifyResponse {

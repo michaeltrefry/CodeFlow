@@ -13,7 +13,11 @@ public sealed record GitHostSettingsResponse(
 public sealed record GitHostSettingsRequest(
     GitHostMode Mode,
     string? BaseUrl,
-    string? Token);
+    GitHostTokenUpdateRequest? Token);
+
+public sealed record GitHostTokenUpdateRequest(
+    GitHostTokenAction Action,
+    string? Value);
 
 public sealed record GitHostVerifyResponse(
     bool Success,

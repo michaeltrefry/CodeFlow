@@ -175,11 +175,14 @@ export class GitHostSettingsComponent implements OnInit {
 
     this.saving.set(true);
     this.error.set(null);
+    const isReplacing = !this.hasToken() || this.replacingToken();
     this.api
       .set({
         mode: this.mode(),
         baseUrl: this.mode() === 'GitLab' ? this.baseUrl() : null,
-        token: this.tokenValue(),
+        token: isReplacing
+          ? { action: 'Replace', value: this.tokenValue() }
+          : { action: 'Preserve' },
       })
       .subscribe({
         next: response => {
