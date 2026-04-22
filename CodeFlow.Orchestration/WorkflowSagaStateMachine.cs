@@ -86,6 +86,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
+        saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
         saga.UpdatedAtUtc = DateTime.UtcNow;
     }
@@ -124,7 +125,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             Decision: runtimeKind,
             DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
             RoundId: saga.CurrentRoundId,
-            RecordedAtUtc: DateTime.UtcNow));
+            RecordedAtUtc: DateTime.UtcNow,
+            InputRef: saga.CurrentInputRef,
+            OutputRef: message.OutputRef?.ToString()));
 
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,
@@ -150,9 +153,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (edge is null)
         {
-            saga.PendingTransition = message.Decision == AgentDecisionKind.Completed
-                ? PendingTransitionCompleted
-                : PendingTransitionFailed;
+            if (message.Decision == AgentDecisionKind.Completed)
+            {
+                saga.PendingTransition = PendingTransitionCompleted;
+            }
+            else
+            {
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason = $"No outgoing edge from node {message.FromNodeId} port '{message.OutputPortName}'.";
+            }
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
@@ -170,6 +179,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         if (resolution is { FailureTerminal: true })
         {
             saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason ??= BuildLogicChainFailureReason(saga);
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
@@ -206,6 +216,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             else
             {
                 saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason = $"Round limit {workflow.MaxRoundsPerRound} exceeded and no escalation node is configured.";
             }
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -264,13 +275,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
             if (string.IsNullOrWhiteSpace(currentNode.Script))
             {
+                var reason = $"Logic node {currentNode.Id} has no script.";
                 saga.AppendLogicEvaluation(LogicEvaluationRecordFailure(
                     currentNode.Id,
                     saga.CurrentRoundId,
                     TimeSpan.Zero,
                     Array.Empty<string>(),
                     kind: "ConfigurationError",
-                    message: $"Logic node {currentNode.Id} has no script."));
+                    message: reason));
+                saga.FailureReason = reason;
                 return new LogicChainResolution(null, rotates, FailureTerminal: true);
             }
 
@@ -301,6 +314,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             var nextEdge = workflow.FindNext(currentNode.Id, chosenPort);
             if (nextEdge is null)
             {
+                saga.FailureReason = eval.IsSuccess
+                    ? $"Logic node {currentNode.Id} emitted port '{chosenPort}' but no outgoing edge is connected."
+                    : $"Logic node {currentNode.Id} failed ({eval.Failure}) and has no '{AgentDecisionPorts.FailedPort}' edge.";
                 return new LogicChainResolution(null, rotates, FailureTerminal: true);
             }
 
@@ -319,14 +335,32 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             }
         }
 
+        var tooLongReason = $"Logic chain exceeded {MaxLogicChainHops} hops.";
         saga.AppendLogicEvaluation(LogicEvaluationRecordFailure(
             currentNode.Id,
             saga.CurrentRoundId,
             TimeSpan.Zero,
             Array.Empty<string>(),
             kind: "LogicChainTooLong",
-            message: $"Logic chain exceeded {MaxLogicChainHops} hops."));
+            message: tooLongReason));
+        saga.FailureReason = tooLongReason;
         return new LogicChainResolution(null, rotates, FailureTerminal: true);
+    }
+
+    private static string BuildLogicChainFailureReason(WorkflowSagaStateEntity saga)
+    {
+        var last = saga.GetLogicEvaluationHistory().LastOrDefault();
+        if (last is null)
+        {
+            return "Logic chain terminated without a downstream edge.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(last.FailureMessage))
+        {
+            return last.FailureMessage!;
+        }
+
+        return $"Logic node {last.NodeId} emitted port '{last.OutputPortName}' but no outgoing edge is connected.";
     }
 
     private static LogicEvaluationRecord LogicEvaluationRecordFailure(
@@ -477,6 +511,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
             saga.PinAgentVersion(targetAgentKey, pinnedVersion.Value);
         }
+
+        saga.CurrentInputRef = inputRef.ToString();
 
         await context.Publish(new AgentInvokeRequested(
             TraceId: saga.TraceId,

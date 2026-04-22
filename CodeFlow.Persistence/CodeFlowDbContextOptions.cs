@@ -17,7 +17,10 @@ public static class CodeFlowDbContextOptions
             throw new ArgumentException("A MariaDB connection string is required.", nameof(connectionString));
         }
 
-        builder.UseMySql(connectionString, ServerVersion);
+        builder.UseMySql(connectionString, ServerVersion, mysql =>
+        {
+            mysql.EnableRetryOnFailure(maxRetryCount: 5);
+        });
         return builder;
     }
 

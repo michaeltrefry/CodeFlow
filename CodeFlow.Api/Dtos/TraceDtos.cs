@@ -28,7 +28,9 @@ public sealed record TraceDecisionDto(
     AgentDecisionKind Decision,
     JsonElement? DecisionPayload,
     Guid RoundId,
-    DateTime RecordedAtUtc);
+    DateTime RecordedAtUtc,
+    string? InputRef,
+    string? OutputRef);
 
 public sealed record TraceDetailDto(
     Guid TraceId,
@@ -42,7 +44,8 @@ public sealed record TraceDetailDto(
     IReadOnlyList<TraceDecisionDto> Decisions,
     IReadOnlyList<HitlTaskDto> PendingHitl,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    string? FailureReason);
 
 public sealed record HitlTaskDto(
     long Id,

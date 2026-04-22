@@ -132,36 +132,43 @@ public sealed class McpServerRepository(CodeFlowDbContext dbContext, ISecretProt
     {
         ArgumentNullException.ThrowIfNull(tools);
 
-        var server = await dbContext.McpServers
-            .SingleOrDefaultAsync(s => s.Id == id, cancellationToken)
-            ?? throw new McpServerNotFoundException(id);
+        var serverExists = await dbContext.McpServers
+            .AsNoTracking()
+            .AnyAsync(s => s.Id == id, cancellationToken);
+        if (!serverExists) throw new McpServerNotFoundException(id);
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existing = await dbContext.McpServerTools
-            .Where(tool => tool.ServerId == id)
-            .ToListAsync(cancellationToken);
-
-        dbContext.McpServerTools.RemoveRange(existing);
-
-        var now = DateTime.UtcNow;
-        foreach (var tool in tools)
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            dbContext.McpServerTools.Add(new McpServerToolEntity
-            {
-                ServerId = id,
-                ToolName = Require(tool.ToolName, nameof(tool.ToolName)),
-                Description = tool.Description,
-                ParametersJson = tool.ParametersJson,
-                IsMutating = tool.IsMutating,
-                SyncedAtUtc = now,
-            });
-        }
+            dbContext.ChangeTracker.Clear();
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var existing = await dbContext.McpServerTools
+                .Where(tool => tool.ServerId == id)
+                .ToListAsync(cancellationToken);
+
+            dbContext.McpServerTools.RemoveRange(existing);
+
+            var now = DateTime.UtcNow;
+            foreach (var tool in tools)
+            {
+                dbContext.McpServerTools.Add(new McpServerToolEntity
+                {
+                    ServerId = id,
+                    ToolName = Require(tool.ToolName, nameof(tool.ToolName)),
+                    Description = tool.Description,
+                    ParametersJson = tool.ParametersJson,
+                    IsMutating = tool.IsMutating,
+                    SyncedAtUtc = now,
+                });
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
     }
 
     public async Task<IReadOnlyList<McpServerTool>> GetToolsAsync(long id, CancellationToken cancellationToken = default)

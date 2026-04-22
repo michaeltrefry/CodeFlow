@@ -266,6 +266,8 @@ export interface TraceDecision {
   decisionPayload?: unknown;
   roundId: string;
   recordedAtUtc: string;
+  inputRef?: string | null;
+  outputRef?: string | null;
 }
 
 export interface HitlTask {
@@ -296,6 +298,7 @@ export interface TraceDetail {
   pendingHitl: HitlTask[];
   createdAtUtc: string;
   updatedAtUtc: string;
+  failureReason?: string | null;
 }
 
 export interface CreateTraceRequest {

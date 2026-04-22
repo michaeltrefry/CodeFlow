@@ -33,4 +33,11 @@ export class TracesApi {
   submitHitlDecision(traceId: string, request: HitlDecisionRequest): Observable<{ taskId: number }> {
     return this.http.post<{ taskId: number }>(`/api/traces/${traceId}/hitl-decision`, request);
   }
+
+  getArtifact(traceId: string, artifactUri: string): Observable<string> {
+    return this.http.get(`/api/traces/${traceId}/artifact`, {
+      params: { uri: artifactUri },
+      responseType: 'text'
+    });
+  }
 }

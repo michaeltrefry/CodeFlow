@@ -107,38 +107,47 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
     {
         ArgumentNullException.ThrowIfNull(grants);
 
-        var role = await dbContext.AgentRoles
-            .SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
-            ?? throw new AgentRoleNotFoundException(id);
+        var roleExists = await dbContext.AgentRoles
+            .AsNoTracking()
+            .AnyAsync(r => r.Id == id, cancellationToken);
+        if (!roleExists) throw new AgentRoleNotFoundException(id);
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existing = await dbContext.AgentRoleToolGrants
-            .Where(grant => grant.RoleId == id)
-            .ToListAsync(cancellationToken);
-
-        dbContext.AgentRoleToolGrants.RemoveRange(existing);
-
-        var deduped = grants
-            .GroupBy(g => (g.Category, g.ToolIdentifier))
-            .Select(group => group.First());
-
-        foreach (var grant in deduped)
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            dbContext.AgentRoleToolGrants.Add(new AgentRoleToolGrantEntity
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var role = await dbContext.AgentRoles.SingleAsync(r => r.Id == id, cancellationToken);
+
+            var existing = await dbContext.AgentRoleToolGrants
+                .Where(grant => grant.RoleId == id)
+                .ToListAsync(cancellationToken);
+
+            dbContext.AgentRoleToolGrants.RemoveRange(existing);
+
+            var deduped = grants
+                .GroupBy(g => (g.Category, g.ToolIdentifier))
+                .Select(group => group.First());
+
+            foreach (var grant in deduped)
             {
-                RoleId = id,
-                Category = grant.Category,
-                ToolIdentifier = Require(grant.ToolIdentifier, nameof(grant.ToolIdentifier)),
-            });
-        }
+                dbContext.AgentRoleToolGrants.Add(new AgentRoleToolGrantEntity
+                {
+                    RoleId = id,
+                    Category = grant.Category,
+                    ToolIdentifier = Require(grant.ToolIdentifier, nameof(grant.ToolIdentifier)),
+                });
+            }
 
-        role.UpdatedAtUtc = DateTime.UtcNow;
+            role.UpdatedAtUtc = DateTime.UtcNow;
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
     }
 
     public async Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, CancellationToken cancellationToken = default)
@@ -176,29 +185,35 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
             }
         }
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existing = await dbContext.AgentRoleAssignments
-            .Where(assignment => assignment.AgentKey == normalized)
-            .ToListAsync(cancellationToken);
-
-        dbContext.AgentRoleAssignments.RemoveRange(existing);
-
-        var now = DateTime.UtcNow;
-        foreach (var roleId in distinctRoleIds)
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
-            {
-                AgentKey = normalized,
-                RoleId = roleId,
-                CreatedAtUtc = now,
-            });
-        }
+            dbContext.ChangeTracker.Clear();
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var existing = await dbContext.AgentRoleAssignments
+                .Where(assignment => assignment.AgentKey == normalized)
+                .ToListAsync(cancellationToken);
+
+            dbContext.AgentRoleAssignments.RemoveRange(existing);
+
+            var now = DateTime.UtcNow;
+            foreach (var roleId in distinctRoleIds)
+            {
+                dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+                {
+                    AgentKey = normalized,
+                    RoleId = roleId,
+                    CreatedAtUtc = now,
+                });
+            }
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
     }
 
     public async Task<IReadOnlyList<long>> GetSkillGrantsAsync(long id, CancellationToken cancellationToken = default)
@@ -217,15 +232,17 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
     {
         ArgumentNullException.ThrowIfNull(skillIds);
 
-        var role = await dbContext.AgentRoles
-            .SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
-            ?? throw new AgentRoleNotFoundException(id);
+        var roleExists = await dbContext.AgentRoles
+            .AsNoTracking()
+            .AnyAsync(r => r.Id == id, cancellationToken);
+        if (!roleExists) throw new AgentRoleNotFoundException(id);
 
         var distinctSkillIds = skillIds.Distinct().ToArray();
 
         if (distinctSkillIds.Length > 0)
         {
             var validIds = await dbContext.Skills
+                .AsNoTracking()
                 .Where(skill => distinctSkillIds.Contains(skill.Id))
                 .Select(skill => skill.Id)
                 .ToListAsync(cancellationToken);
@@ -237,29 +254,37 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
             }
         }
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existing = await dbContext.AgentRoleSkillGrants
-            .Where(grant => grant.RoleId == id)
-            .ToListAsync(cancellationToken);
-
-        dbContext.AgentRoleSkillGrants.RemoveRange(existing);
-
-        foreach (var skillId in distinctSkillIds)
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            dbContext.AgentRoleSkillGrants.Add(new AgentRoleSkillGrantEntity
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var role = await dbContext.AgentRoles.SingleAsync(r => r.Id == id, cancellationToken);
+
+            var existing = await dbContext.AgentRoleSkillGrants
+                .Where(grant => grant.RoleId == id)
+                .ToListAsync(cancellationToken);
+
+            dbContext.AgentRoleSkillGrants.RemoveRange(existing);
+
+            foreach (var skillId in distinctSkillIds)
             {
-                RoleId = id,
-                SkillId = skillId,
-            });
-        }
+                dbContext.AgentRoleSkillGrants.Add(new AgentRoleSkillGrantEntity
+                {
+                    RoleId = id,
+                    SkillId = skillId,
+                });
+            }
 
-        role.UpdatedAtUtc = DateTime.UtcNow;
+            role.UpdatedAtUtc = DateTime.UtcNow;
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
     }
 
     private static AgentRole Map(AgentRoleEntity entity) => new(

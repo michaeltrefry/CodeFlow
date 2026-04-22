@@ -34,6 +34,9 @@ public static class TracesEndpoints
         group.MapGet("/{id:guid}/stream", StreamTraceAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        group.MapGet("/{id:guid}/artifact", GetArtifactAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         group.MapGet("/hitl/pending", ListPendingHitlAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
@@ -112,11 +115,14 @@ public static class TracesEndpoints
                     Decision: (Runtime.AgentDecisionKind)(int)record.Decision,
                     DecisionPayload: record.DecisionPayload,
                     RoundId: record.RoundId,
-                    RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc)))
+                    RecordedAtUtc: DateTime.SpecifyKind(record.RecordedAtUtc, DateTimeKind.Utc),
+                    InputRef: record.InputRef,
+                    OutputRef: record.OutputRef))
                 .ToArray(),
             PendingHitl: pendingHitl.Select(MapHitl).ToArray(),
             CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
-            UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc));
+            UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
+            FailureReason: saga.FailureReason);
 
         return Results.Ok(detail);
     }
@@ -127,6 +133,7 @@ public static class TracesEndpoints
         IAgentConfigRepository agentRepository,
         IArtifactStore artifactStore,
         IPublishEndpoint publishEndpoint,
+        CodeFlowDbContext dbContext,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -217,6 +224,8 @@ public static class TracesEndpoints
                 }),
             cancellationToken);
 
+        await dbContext.SaveChangesAsync(cancellationToken);
+
         return Results.Created($"/api/traces/{traceId}", new CreateTraceResponse(traceId));
     }
 
@@ -263,6 +272,52 @@ public static class TracesEndpoints
         }
 
         return (resolved, null);
+    }
+
+    private static async Task<IResult> GetArtifactAsync(
+        Guid id,
+        string uri,
+        IArtifactStore artifactStore,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(uri) || !Uri.TryCreate(uri, UriKind.Absolute, out var artifactUri))
+        {
+            return Results.BadRequest(new { error = "A valid artifact URI is required." });
+        }
+
+        ArtifactMetadata metadata;
+        try
+        {
+            metadata = await artifactStore.GetMetadataAsync(artifactUri, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(new { error = "The artifact URI is not valid for this store." });
+        }
+
+        if (metadata.TraceId != id)
+        {
+            return Results.NotFound();
+        }
+
+        Stream content;
+        try
+        {
+            content = await artifactStore.ReadAsync(artifactUri, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Stream(
+            content,
+            contentType: metadata.ContentType ?? "application/octet-stream",
+            fileDownloadName: metadata.FileName);
     }
 
     private static async Task StreamTraceAsync(
@@ -386,7 +441,6 @@ public static class TracesEndpoints
         task.DecisionPayloadJson = decisionPayload.GetRawText();
         task.DeciderId = currentUser.Id;
         task.DecidedAtUtc = DateTime.UtcNow;
-        await dbContext.SaveChangesAsync(cancellationToken);
 
         await publishEndpoint.Publish(
             new AgentInvocationCompleted(
@@ -402,6 +456,8 @@ public static class TracesEndpoints
                 Duration: DateTimeOffset.UtcNow - startedAt,
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)),
             cancellationToken);
+
+        await dbContext.SaveChangesAsync(cancellationToken);
 
         return Results.Ok(new { taskId = task.Id });
     }

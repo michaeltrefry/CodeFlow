@@ -26,7 +26,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.script = params.script ?? null;
 
     if (params.kind !== 'Start') {
-      this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in'));
+      this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));
     }
 
     if (params.kind !== 'Escalation') {

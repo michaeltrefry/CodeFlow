@@ -30,6 +30,13 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public string InputsJson { get; set; } = "{}";
 
+    /// <summary>
+    /// Input artifact URI that was sent to the currently-active agent. Tracked so the saga can
+    /// record it on the next decision and so the trace detail endpoint can surface the pairing
+    /// of input → output per agent invocation.
+    /// </summary>
+    public string? CurrentInputRef { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }
@@ -43,6 +50,13 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     /// Cleared after the escalation decision is routed.
     /// </summary>
     public Guid? EscalatedFromNodeId { get; set; }
+
+    /// <summary>
+    /// Set when the saga transitions to a terminal failure state. Describes why routing could not
+    /// continue (e.g. missing edge, logic configuration error, max-rounds exceeded) so operators
+    /// can diagnose workflow issues without reading raw event logs.
+    /// </summary>
+    public string? FailureReason { get; set; }
 
     /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
