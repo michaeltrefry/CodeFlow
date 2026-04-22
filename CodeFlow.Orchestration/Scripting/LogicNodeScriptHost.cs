@@ -9,11 +9,15 @@ namespace CodeFlow.Orchestration.Scripting;
 /// <summary>
 /// Executes a Logic node's JavaScript using Jint in a sandboxed, bounded engine.
 ///
-/// Scripts receive three globals:
+/// Scripts receive these globals:
 /// <list type="bullet">
 ///   <item><c>input</c> — parsed JSON from the upstream node's output.</item>
 ///   <item><c>context</c> — frozen workflow inputs for the run (<see cref="Object.freeze"/>, deep).</item>
 ///   <item><c>setNodePath(portName)</c> — selects the outgoing port.</item>
+///   <item><c>setContext(key, value)</c> — writes a top-level key into the workflow context
+///     so downstream nodes (and re-entries of upstream nodes) see it as <c>context.key</c>.
+///     The value must be JSON-serializable. Writes are applied when the script completes
+///     successfully; a failed evaluation discards them.</item>
 ///   <item><c>log(message)</c> — appends to the evaluation's log buffer.</item>
 /// </list>
 ///
@@ -28,6 +32,7 @@ public sealed class LogicNodeScriptHost
     private const int MaxLogEntries = 1_000;
     private const int MaxLogEntryChars = 4_000;
     private const int MaxTotalLogChars = 256 * 1024; // 256 KB of UTF-16 (host-side, outside Jint accounting)
+    private const int MaxContextUpdatesChars = 256 * 1024; // 256 KB of serialized JSON per evaluation
     private const string LogBudgetExceededMessage =
         "log() output exceeded the host budget and evaluation was aborted.";
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(250);
@@ -42,6 +47,19 @@ public sealed class LogicNodeScriptHost
                 }
             }
             return o;
+        }
+        var __contextUpdates = Object.create(null);
+        function setContext(key, value) {
+            if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
+                throw new TypeError('setContext(key, value) requires a non-empty string key.');
+            }
+            __contextUpdates[key] = value;
+        }
+        function __readContextUpdates() {
+            try { return JSON.stringify(__contextUpdates); }
+            catch (e) {
+                throw new TypeError('setContext value is not JSON-serializable: ' + e.message);
+            }
         }
         """;
 
@@ -136,7 +154,20 @@ public sealed class LogicNodeScriptHost
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
             engine.Execute(prepared);
 
+            var updatesJson = engine.Evaluate("__readContextUpdates()").AsString();
+
             stopwatch.Stop();
+
+            if (updatesJson.Length > MaxContextUpdatesChars)
+            {
+                return LogicNodeEvaluationResult.Fail(
+                    LogicNodeFailureKind.ContextBudgetExceeded,
+                    $"setContext payload exceeded {MaxContextUpdatesChars} characters when serialized.",
+                    logs,
+                    stopwatch.Elapsed);
+            }
+
+            var contextUpdates = ParseContextUpdates(updatesJson);
 
             if (chosenPort is null)
             {
@@ -156,7 +187,7 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
-            return LogicNodeEvaluationResult.Success(chosenPort, logs, stopwatch.Elapsed);
+            return LogicNodeEvaluationResult.Success(chosenPort, logs, stopwatch.Elapsed, contextUpdates);
         }
         catch (TimeoutException)
         {
@@ -237,6 +268,33 @@ public sealed class LogicNodeScriptHost
             options.CancellationToken(cancellationToken);
             // AllowClr intentionally not called — default blocks all CLR interop.
         });
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> ParseContextUpdates(string updatesJson)
+    {
+        if (string.IsNullOrWhiteSpace(updatesJson))
+        {
+            return LogicNodeEvaluationResult.EmptyContextUpdates;
+        }
+
+        using var document = JsonDocument.Parse(updatesJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return LogicNodeEvaluationResult.EmptyContextUpdates;
+        }
+
+        if (!document.RootElement.EnumerateObject().Any())
+        {
+            return LogicNodeEvaluationResult.EmptyContextUpdates;
+        }
+
+        var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            result[property.Name] = property.Value.Clone();
+        }
+
+        return result;
     }
 
     private static string SerializeContext(IReadOnlyDictionary<string, JsonElement> context)

@@ -92,7 +92,10 @@ interface ArtifactLoadState {
 
       @if (d.logicEvaluations.length > 0) {
         <section class="card">
-          <h3>Logic node evaluations</h3>
+          <h3>Script evaluations</h3>
+          <p class="muted xsmall">
+            Includes both Logic node evaluations and agent/HITL-attached routing scripts.
+          </p>
           <table class="logic-table">
             <thead><tr><th>Node</th><th>Port chosen</th><th>Duration</th><th>Outcome</th><th>Logs</th></tr></thead>
             <tbody>
