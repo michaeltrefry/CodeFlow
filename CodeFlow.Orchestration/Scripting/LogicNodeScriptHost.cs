@@ -25,6 +25,11 @@ public sealed class LogicNodeScriptHost
     private const int DefaultRecursionLimit = 64;
     private const int DefaultStatementLimit = 10_000;
     private const long DefaultMemoryLimitBytes = 4_000_000; // 4 MB
+    private const int MaxLogEntries = 1_000;
+    private const int MaxLogEntryChars = 4_000;
+    private const int MaxTotalLogChars = 256 * 1024; // 256 KB of UTF-16 (host-side, outside Jint accounting)
+    private const string LogBudgetExceededMessage =
+        "log() output exceeded the host budget and evaluation was aborted.";
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(250);
 
     private const string BootstrapScript = """
@@ -65,6 +70,8 @@ public sealed class LogicNodeScriptHost
         var logs = new List<string>();
         var stopwatch = Stopwatch.StartNew();
         string? chosenPort = null;
+        var logBudgetExceeded = false;
+        var totalLogChars = 0;
 
         try
         {
@@ -82,7 +89,46 @@ public sealed class LogicNodeScriptHost
 
             engine.SetValue("log", (Action<string>)(message =>
             {
-                logs.Add(message ?? string.Empty);
+                if (logBudgetExceeded)
+                {
+                    throw new JavaScriptException(LogBudgetExceededMessage);
+                }
+
+                if (logs.Count >= MaxLogEntries)
+                {
+                    logBudgetExceeded = true;
+                    throw new JavaScriptException(LogBudgetExceededMessage);
+                }
+
+                const string truncationMarker = " [truncated]";
+                var text = message ?? string.Empty;
+                var truncated = false;
+                if (text.Length > MaxLogEntryChars)
+                {
+                    text = text[..(MaxLogEntryChars - truncationMarker.Length)];
+                    truncated = true;
+                }
+
+                var remaining = MaxTotalLogChars - totalLogChars;
+                if (remaining <= 0)
+                {
+                    logBudgetExceeded = true;
+                    throw new JavaScriptException(LogBudgetExceededMessage);
+                }
+
+                if (text.Length > remaining)
+                {
+                    text = text[..Math.Max(0, remaining - truncationMarker.Length)];
+                    truncated = true;
+                }
+
+                if (truncated)
+                {
+                    text += truncationMarker;
+                }
+
+                logs.Add(text);
+                totalLogChars += text.Length;
             }));
 
             engine.Execute(BootstrapScript);

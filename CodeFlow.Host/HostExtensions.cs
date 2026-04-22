@@ -76,8 +76,16 @@ public static class HostExtensions
 
         services.AddDbContext<CodeFlowDbContext>(builder =>
         {
-            var connectionString = configuration[CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable]
-                ?? CodeFlowPersistenceDefaults.LocalDevelopmentConnectionString;
+            var connectionString = configuration[CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable];
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException(
+                    $"CodeFlow requires a database connection string at configuration key "
+                    + $"'{CodeFlowPersistenceDefaults.ConnectionStringEnvironmentVariable}' "
+                    + "(typically provided via environment variable of the same name). "
+                    + "Set it to a MariaDB/MySQL connection string before starting the host. "
+                    + "The runtime no longer falls back to a hard-coded local-dev connection string.");
+            }
             CodeFlowDbContextOptions.Configure(builder, connectionString);
         });
 
