@@ -95,71 +95,77 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         ArgumentNullException.ThrowIfNull(draft);
         var normalizedKey = NormalizeKey(draft.Key);
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existing = await dbContext.Workflows
-            .Where(workflow => workflow.Key == normalizedKey)
-            .OrderByDescending(workflow => workflow.Version)
-            .Select(workflow => workflow.Version)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        var nextVersion = existing == 0 ? 1 : existing + 1;
-
-        var entity = new WorkflowEntity
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            Key = normalizedKey,
-            Version = nextVersion,
-            Name = draft.Name.Trim(),
-            MaxRoundsPerRound = draft.MaxRoundsPerRound,
-            CreatedAtUtc = DateTime.UtcNow,
-            Nodes = draft.Nodes
-                .Select(node => new WorkflowNodeEntity
-                {
-                    NodeId = node.Id,
-                    Kind = node.Kind,
-                    AgentKey = NormalizeOptionalString(node.AgentKey),
-                    AgentVersion = node.AgentVersion,
-                    Script = node.Script,
-                    OutputPortsJson = WorkflowJson.SerializePorts(node.OutputPorts),
-                    LayoutX = node.LayoutX,
-                    LayoutY = node.LayoutY
-                })
-                .ToList(),
-            Edges = draft.Edges
-                .Select((edge, index) => new WorkflowEdgeEntity
-                {
-                    FromNodeId = edge.FromNodeId,
-                    FromPort = edge.FromPort,
-                    ToNodeId = edge.ToNodeId,
-                    ToPort = string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
-                    RotatesRound = edge.RotatesRound,
-                    SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder
-                })
-                .ToList(),
-            Inputs = draft.Inputs
-                .Select(input => new WorkflowInputEntity
-                {
-                    Key = input.Key.Trim(),
-                    DisplayName = input.DisplayName.Trim(),
-                    Kind = input.Kind,
-                    Required = input.Required,
-                    DefaultValueJson = input.DefaultValueJson,
-                    Description = input.Description,
-                    Ordinal = input.Ordinal
-                })
-                .ToList()
-        };
+            dbContext.ChangeTracker.Clear();
 
-        dbContext.Workflows.Add(entity);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
 
-        var mapped = Map(entity);
-        Cache[WorkflowCacheKey.Create(normalizedKey, nextVersion)] = mapped;
+            var existing = await dbContext.Workflows
+                .Where(workflow => workflow.Key == normalizedKey)
+                .OrderByDescending(workflow => workflow.Version)
+                .Select(workflow => workflow.Version)
+                .FirstOrDefaultAsync(cancellationToken);
 
-        return nextVersion;
+            var nextVersion = existing == 0 ? 1 : existing + 1;
+
+            var entity = new WorkflowEntity
+            {
+                Key = normalizedKey,
+                Version = nextVersion,
+                Name = draft.Name.Trim(),
+                MaxRoundsPerRound = draft.MaxRoundsPerRound,
+                CreatedAtUtc = DateTime.UtcNow,
+                Nodes = draft.Nodes
+                    .Select(node => new WorkflowNodeEntity
+                    {
+                        NodeId = node.Id,
+                        Kind = node.Kind,
+                        AgentKey = NormalizeOptionalString(node.AgentKey),
+                        AgentVersion = node.AgentVersion,
+                        Script = node.Script,
+                        OutputPortsJson = WorkflowJson.SerializePorts(node.OutputPorts),
+                        LayoutX = node.LayoutX,
+                        LayoutY = node.LayoutY
+                    })
+                    .ToList(),
+                Edges = draft.Edges
+                    .Select((edge, index) => new WorkflowEdgeEntity
+                    {
+                        FromNodeId = edge.FromNodeId,
+                        FromPort = edge.FromPort,
+                        ToNodeId = edge.ToNodeId,
+                        ToPort = string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
+                        RotatesRound = edge.RotatesRound,
+                        SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder
+                    })
+                    .ToList(),
+                Inputs = draft.Inputs
+                    .Select(input => new WorkflowInputEntity
+                    {
+                        Key = input.Key.Trim(),
+                        DisplayName = input.DisplayName.Trim(),
+                        Kind = input.Kind,
+                        Required = input.Required,
+                        DefaultValueJson = input.DefaultValueJson,
+                        Description = input.Description,
+                        Ordinal = input.Ordinal
+                    })
+                    .ToList()
+            };
+
+            dbContext.Workflows.Add(entity);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            var mapped = Map(entity);
+            Cache[WorkflowCacheKey.Create(normalizedKey, nextVersion)] = mapped;
+
+            return nextVersion;
+        });
     }
 
     private IQueryable<WorkflowEntity> LoadWorkflowsQuery()

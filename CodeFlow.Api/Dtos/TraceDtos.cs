@@ -30,7 +30,9 @@ public sealed record TraceDecisionDto(
     Guid RoundId,
     DateTime RecordedAtUtc,
     Guid? NodeId,
-    string? OutputPortName);
+    string? OutputPortName,
+    string? InputRef,
+    string? OutputRef);
 
 public sealed record TraceLogicEvaluationDto(
     Guid NodeId,
@@ -55,7 +57,8 @@ public sealed record TraceDetailDto(
     IReadOnlyList<TraceLogicEvaluationDto> LogicEvaluations,
     IReadOnlyList<HitlTaskDto> PendingHitl,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    string? FailureReason);
 
 public sealed record HitlTaskDto(
     long Id,

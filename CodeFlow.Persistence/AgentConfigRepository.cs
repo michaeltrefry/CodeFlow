@@ -46,39 +46,45 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         var normalizedCreatedBy = NormalizeCreatedBy(createdBy);
         var configuration = AgentConfigJson.Deserialize(configJson);
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        var existingConfigs = await dbContext.Agents
-            .Where(agent => agent.Key == normalizedKey)
-            .OrderBy(agent => agent.Version)
-            .ToListAsync(cancellationToken);
-
-        var nextVersion = existingConfigs.Count == 0 ? 1 : existingConfigs[^1].Version + 1;
-
-        foreach (var existingConfig in existingConfigs.Where(agent => agent.IsActive))
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            existingConfig.IsActive = false;
-        }
+            dbContext.ChangeTracker.Clear();
 
-        var entity = new AgentConfigEntity
-        {
-            Key = normalizedKey,
-            Version = nextVersion,
-            ConfigJson = configJson,
-            CreatedAtUtc = DateTime.UtcNow,
-            CreatedBy = normalizedCreatedBy,
-            IsActive = true
-        };
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
 
-        dbContext.Agents.Add(entity);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+            var existingConfigs = await dbContext.Agents
+                .Where(agent => agent.Key == normalizedKey)
+                .OrderBy(agent => agent.Version)
+                .ToListAsync(cancellationToken);
 
-        Cache[AgentConfigCacheKey.Create(normalizedKey, nextVersion)] = Map(entity, configuration);
+            var nextVersion = existingConfigs.Count == 0 ? 1 : existingConfigs[^1].Version + 1;
 
-        return nextVersion;
+            foreach (var existingConfig in existingConfigs.Where(agent => agent.IsActive))
+            {
+                existingConfig.IsActive = false;
+            }
+
+            var entity = new AgentConfigEntity
+            {
+                Key = normalizedKey,
+                Version = nextVersion,
+                ConfigJson = configJson,
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = normalizedCreatedBy,
+                IsActive = true
+            };
+
+            dbContext.Agents.Add(entity);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            Cache[AgentConfigCacheKey.Create(normalizedKey, nextVersion)] = Map(entity, configuration);
+
+            return nextVersion;
+        });
     }
 
     public Task<int> CreateNewVersionAsync(

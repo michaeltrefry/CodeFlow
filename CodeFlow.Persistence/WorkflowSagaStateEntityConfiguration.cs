@@ -70,6 +70,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnType("longtext")
             .IsRequired();
 
+        builder.Property(saga => saga.CurrentInputRef)
+            .HasColumnName("current_input_ref")
+            .HasMaxLength(1024);
+
         builder.Property(saga => saga.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")
@@ -87,6 +91,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
 
         builder.Property(saga => saga.EscalatedFromNodeId)
             .HasColumnName("escalated_from_node_id");
+
+        builder.Property(saga => saga.FailureReason)
+            .HasColumnName("failure_reason")
+            .HasMaxLength(512);
 
         builder.Ignore(saga => saga.PendingTransition);
 

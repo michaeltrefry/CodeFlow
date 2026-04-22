@@ -275,6 +275,8 @@ export interface TraceDecision {
   recordedAtUtc: string;
   nodeId?: string | null;
   outputPortName?: string | null;
+  inputRef?: string | null;
+  outputRef?: string | null;
 }
 
 export interface TraceLogicEvaluation {
@@ -317,6 +319,7 @@ export interface TraceDetail {
   pendingHitl: HitlTask[];
   createdAtUtc: string;
   updatedAtUtc: string;
+  failureReason?: string | null;
 }
 
 export interface CreateTraceRequest {

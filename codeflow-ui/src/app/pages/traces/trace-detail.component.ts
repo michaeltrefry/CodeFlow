@@ -1,7 +1,8 @@
 import { Component, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Subscription, retry, timer } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowsApi } from '../../core/workflows.api';
 import {
@@ -22,7 +23,14 @@ interface TimelineEntry {
   agentVersion: number;
   decision?: AgentDecisionKind | null;
   timestampUtc: string;
+  inputRef?: string | null;
   outputRef?: string | null;
+}
+
+interface ArtifactLoadState {
+  loading: boolean;
+  content?: string;
+  error?: string;
 }
 
 @Component({
@@ -56,6 +64,11 @@ interface TimelineEntry {
         <div class="muted small" style="margin-top: 0.5rem;">
           created {{ d.createdAtUtc | date:'medium' }} &middot; updated {{ d.updatedAtUtc | date:'medium' }}
         </div>
+        @if (d.failureReason) {
+          <div class="failure-reason">
+            <strong>Failure:</strong> {{ d.failureReason }}
+          </div>
+        }
       </section>
 
       @if (workflow()) {
@@ -130,16 +143,47 @@ interface TimelineEntry {
           @for (entry of timeline(); track entry.id) {
             <li [class.completed]="entry.kind === 'Completed'">
               <span class="timeline-dot"></span>
-              <div>
-                <div class="timeline-header">
-                  <strong>{{ entry.agentKey }}</strong>
-                  <span class="muted small">v{{ entry.agentVersion }} &middot; {{ entry.timestampUtc | date:'mediumTime' }}</span>
-                </div>
-                <div>
-                  <span class="tag" [class.accent]="entry.kind === 'Requested'" [class.ok]="entry.decision === 'Completed'" [class.error]="entry.decision === 'Failed' || entry.decision === 'Rejected'">
-                    {{ entry.kind }}{{ entry.decision ? ': ' + entry.decision : '' }}
-                  </span>
-                </div>
+              <div class="timeline-body">
+                <button type="button" class="timeline-toggle" (click)="toggleEntry(entry)"
+                        [disabled]="!entry.inputRef && !entry.outputRef"
+                        [attr.aria-expanded]="expandedEntries().has(entry.id)">
+                  <div class="timeline-header">
+                    <strong>{{ entry.agentKey }}</strong>
+                    <span class="muted small">v{{ entry.agentVersion }} &middot; {{ entry.timestampUtc | date:'mediumTime' }}</span>
+                  </div>
+                  <div>
+                    <span class="tag" [class.accent]="entry.kind === 'Requested'" [class.ok]="entry.decision === 'Completed'" [class.error]="entry.decision === 'Failed' || entry.decision === 'Rejected'">
+                      {{ entry.kind }}{{ entry.decision ? ': ' + entry.decision : '' }}
+                    </span>
+                    @if (entry.inputRef || entry.outputRef) {
+                      <span class="caret">{{ expandedEntries().has(entry.id) ? '▾' : '▸' }}</span>
+                    }
+                  </div>
+                </button>
+                @if (expandedEntries().has(entry.id)) {
+                  <div class="timeline-expand">
+                    @if (entry.inputRef) {
+                      <div class="artifact-block">
+                        <h4>Input</h4>
+                        @if (artifactState(entry.inputRef); as state) {
+                          @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
+                          @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
+                          @else if (state.content !== undefined) { <pre class="monospace">{{ state.content }}</pre> }
+                        }
+                      </div>
+                    }
+                    @if (entry.outputRef) {
+                      <div class="artifact-block">
+                        <h4>Output</h4>
+                        @if (artifactState(entry.outputRef); as state) {
+                          @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
+                          @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
+                          @else if (state.content !== undefined) { <pre class="monospace">{{ state.content }}</pre> }
+                        }
+                      </div>
+                    }
+                  </div>
+                }
               </div>
             </li>
           }
@@ -206,6 +250,55 @@ interface TimelineEntry {
       padding: 0.75rem;
       border-radius: 4px;
     }
+    .failure-reason {
+      margin-top: 0.75rem;
+      padding: 0.75rem;
+      border-left: 3px solid var(--color-error, #c0392b);
+      background: var(--color-surface-alt);
+      border-radius: 4px;
+    }
+    .timeline-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .timeline-toggle {
+      all: unset;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      width: 100%;
+      cursor: pointer;
+      padding: 0.25rem 0;
+    }
+    .timeline-toggle:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+    .timeline-toggle:disabled {
+      cursor: default;
+    }
+    .caret {
+      margin-left: 0.5rem;
+      color: var(--color-muted);
+    }
+    .timeline-expand {
+      margin-top: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .artifact-block h4 {
+      margin: 0 0 0.25rem;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--color-muted);
+    }
+    .artifact-block .error {
+      color: var(--color-error, #c0392b);
+    }
   `]
 })
 export class TraceDetailComponent implements OnInit, OnDestroy {
@@ -216,6 +309,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly detail = signal<TraceDetail | null>(null);
   readonly workflow = signal<WorkflowDetail | null>(null);
   readonly timeline = signal<TimelineEntry[]>([]);
+  readonly expandedEntries = signal<Set<string>>(new Set());
+  private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
 
   readonly highlightedNodeIds = computed<string[] | null>(() => {
     const d = this.detail();
@@ -234,6 +329,45 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private loadedWorkflowKey: string | null = null;
   private loadedWorkflowVersion: number | null = null;
 
+  artifactState(uri: string | null | undefined): ArtifactLoadState | undefined {
+    if (!uri) return undefined;
+    return this.artifacts().get(uri);
+  }
+
+  toggleEntry(entry: TimelineEntry): void {
+    const expanded = new Set(this.expandedEntries());
+    if (expanded.has(entry.id)) {
+      expanded.delete(entry.id);
+    } else {
+      expanded.add(entry.id);
+      if (entry.inputRef) this.loadArtifact(entry.inputRef);
+      if (entry.outputRef) this.loadArtifact(entry.outputRef);
+    }
+    this.expandedEntries.set(expanded);
+  }
+
+  private loadArtifact(uri: string): void {
+    const existing = this.artifacts().get(uri);
+    if (existing && (existing.content !== undefined || existing.loading)) return;
+
+    const next = new Map(this.artifacts());
+    next.set(uri, { loading: true });
+    this.artifacts.set(next);
+
+    this.api.getArtifact(this.id(), uri).subscribe({
+      next: content => {
+        const m = new Map(this.artifacts());
+        m.set(uri, { loading: false, content });
+        this.artifacts.set(m);
+      },
+      error: err => {
+        const m = new Map(this.artifacts());
+        m.set(uri, { loading: false, error: err?.message ?? 'Failed to load artifact.' });
+        this.artifacts.set(m);
+      }
+    });
+  }
+
   ngOnInit(): void {
     this.reload();
 
@@ -247,7 +381,15 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   reload(): void {
-    this.api.get(this.id()).subscribe({
+    this.api.get(this.id()).pipe(
+      retry({
+        count: 10,
+        delay: (err, attempt) =>
+          err instanceof HttpErrorResponse && err.status === 404
+            ? timer(500 * Math.min(attempt, 4))
+            : (() => { throw err; })()
+      })
+    ).subscribe({
       next: detail => {
         this.detail.set(detail);
         const baseline: TimelineEntry[] = detail.decisions.map((d, i) => ({
@@ -256,7 +398,9 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           agentKey: d.agentKey,
           agentVersion: d.agentVersion,
           decision: d.decision,
-          timestampUtc: d.recordedAtUtc
+          timestampUtc: d.recordedAtUtc,
+          inputRef: d.inputRef,
+          outputRef: d.outputRef
         }));
         this.timeline.set(baseline);
         this.loadWorkflowForTrace(detail);
@@ -297,6 +441,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       agentVersion: evt.agentVersion,
       decision: evt.decision,
       timestampUtc: evt.timestampUtc,
+      inputRef: evt.inputRef,
       outputRef: evt.outputRef
     };
 
@@ -306,6 +451,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
     if (evt.kind === 'Completed') {
       this.reload();
+      setTimeout(() => this.reload(), 600);
     }
   }
 }
