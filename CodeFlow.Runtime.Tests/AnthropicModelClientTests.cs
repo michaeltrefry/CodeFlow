@@ -97,7 +97,12 @@ public sealed class AnthropicModelClientTests
 
         var requestJson = JsonNode.Parse(handler.Requests[1].Body)!;
         requestJson["model"]!.GetValue<string>().Should().Be("claude-sonnet-4-20250514");
-        requestJson["system"]!.GetValue<string>().Should().Be("You are a geography assistant.");
+        // System prompt is now shaped as a cache_control-marked text block for Anthropic prompt
+        // caching, so drill into the first (and only) content block.
+        var systemBlock = requestJson["system"]!.AsArray()[0]!;
+        systemBlock["type"]!.GetValue<string>().Should().Be("text");
+        systemBlock["text"]!.GetValue<string>().Should().Be("You are a geography assistant.");
+        systemBlock["cache_control"]!["type"]!.GetValue<string>().Should().Be("ephemeral");
         requestJson["max_tokens"]!.GetValue<int>().Should().Be(200);
         requestJson["temperature"]!.GetValue<double>().Should().Be(0.1);
         requestJson["tools"]!.AsArray().Should().HaveCount(1);
