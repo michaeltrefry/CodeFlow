@@ -112,6 +112,46 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldPassToolExecutionContextToProviders()
+    {
+        var expectedContext = new ToolExecutionContext(
+            new ToolWorkspaceContext(
+                Guid.NewGuid(),
+                "/tmp/codeflow/workspaces/abc123/repo",
+                RepoUrl: "https://github.com/example/repo.git",
+                RepoIdentityKey: "github.com/example/repo",
+                RepoSlug: "example/repo"));
+        var provider = new FakeToolProvider(
+            ToolCategory.Execution,
+            [new ToolSchema("capture_context", "Captures execution context.", new JsonObject())]);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Capturing context.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_context", "capture_context", new JsonObject())
+                    ]),
+                InvocationStopReason.ToolCalls),
+            _ => new InvocationResponse(
+                new ChatMessage(ChatMessageRole.Assistant, "done"),
+                InvocationStopReason.EndTurn)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([provider]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Capture the current tool context.")],
+            "gpt-5",
+            ToolExecutionContext: expectedContext));
+
+        result.Decision.Should().BeOfType<CompletedDecision>();
+        provider.InvokedContexts.Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(expectedContext);
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldFailWhenToolCallBudgetIsExceeded()
     {
         var modelClient = new ScriptedModelClient(
@@ -258,6 +298,7 @@ public sealed class InvocationLoopTests
         public Exception? ExceptionToThrow { get; init; }
 
         public List<string> InvokedToolNames { get; } = [];
+        public List<ToolExecutionContext?> InvokedContexts { get; } = [];
 
         public ToolCategory Category { get; } = category;
 
@@ -266,9 +307,13 @@ public sealed class InvocationLoopTests
             return tools;
         }
 
-        public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+        public Task<ToolResult> InvokeAsync(
+            ToolCall toolCall,
+            CancellationToken cancellationToken = default,
+            ToolExecutionContext? context = null)
         {
             InvokedToolNames.Add(toolCall.Name);
+            InvokedContexts.Add(context);
 
             if (ExceptionToThrow is not null)
             {

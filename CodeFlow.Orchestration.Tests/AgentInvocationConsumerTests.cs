@@ -172,6 +172,80 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
+    public async Task Consumer_WhenToolExecutionContextPresent_ShouldForwardItToAgentInvoker()
+    {
+        var toolExecutionContext = new CodeFlow.Contracts.ToolExecutionContext(
+            new CodeFlow.Contracts.ToolWorkspaceContext(
+                Guid.NewGuid(),
+                "/tmp/codeflow/workspaces/abc123/repo",
+                RepoUrl: "https://github.com/example/repo.git",
+                RepoIdentityKey: "github.com/example/repo",
+                RepoSlug: "example/repo"));
+
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "workspace-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ToolExecutionContext: toolExecutionContext);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            agentInvoker.Invocations[0].ToolExecutionContext.Should().BeEquivalentTo(
+                new CodeFlow.Runtime.ToolExecutionContext(
+                    new CodeFlow.Runtime.ToolWorkspaceContext(
+                        toolExecutionContext.Workspace!.CorrelationId,
+                        toolExecutionContext.Workspace.RootPath,
+                        toolExecutionContext.Workspace.RepoUrl,
+                        toolExecutionContext.Workspace.RepoIdentityKey,
+                        toolExecutionContext.Workspace.RepoSlug)));
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Consumer_WhenAgentFails_ShouldIncludeFailureContextInDecisionPayload()
     {
         var request = new AgentInvokeRequested(
@@ -637,15 +711,16 @@ public sealed class AgentInvocationConsumerTests
 
     private sealed class FakeAgentInvoker(AgentInvocationResult result) : IAgentInvoker
     {
-        public List<(AgentInvocationConfiguration Configuration, string? Input)> Invocations { get; } = [];
+        public List<(AgentInvocationConfiguration Configuration, string? Input, CodeFlow.Runtime.ToolExecutionContext? ToolExecutionContext)> Invocations { get; } = [];
 
         public Task<AgentInvocationResult> InvokeAsync(
             AgentInvocationConfiguration configuration,
             string? input,
             ResolvedAgentTools tools,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            CodeFlow.Runtime.ToolExecutionContext? toolExecutionContext = null)
         {
-            Invocations.Add((configuration, input));
+            Invocations.Add((configuration, input, toolExecutionContext));
             return Task.FromResult(result);
         }
     }
@@ -664,7 +739,8 @@ public sealed class AgentInvocationConsumerTests
             AgentInvocationConfiguration configuration,
             string? input,
             ResolvedAgentTools tools,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            CodeFlow.Runtime.ToolExecutionContext? toolExecutionContext = null)
         {
             return Task.FromException<AgentInvocationResult>(exception);
         }

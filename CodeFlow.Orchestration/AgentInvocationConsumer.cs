@@ -8,6 +8,10 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ContractsToolExecutionContext = CodeFlow.Contracts.ToolExecutionContext;
+using ContractsToolWorkspaceContext = CodeFlow.Contracts.ToolWorkspaceContext;
+using RuntimeToolExecutionContext = CodeFlow.Runtime.ToolExecutionContext;
+using RuntimeToolWorkspaceContext = CodeFlow.Runtime.ToolWorkspaceContext;
 
 namespace CodeFlow.Orchestration;
 
@@ -97,7 +101,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 invocationConfig,
                 input,
                 resolvedTools,
-                context.CancellationToken);
+                context.CancellationToken,
+                MapToolExecutionContext(message.ToolExecutionContext));
 
             await PublishCompletionAsync(
                 context,
@@ -370,6 +375,31 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             JsonValueKind.Undefined => null,
             _ => value.GetRawText()
         };
+    }
+
+    private static RuntimeToolExecutionContext? MapToolExecutionContext(ContractsToolExecutionContext? context)
+    {
+        if (context is null)
+        {
+            return null;
+        }
+
+        return new RuntimeToolExecutionContext(MapWorkspaceContext(context.Workspace));
+    }
+
+    private static RuntimeToolWorkspaceContext? MapWorkspaceContext(ContractsToolWorkspaceContext? workspace)
+    {
+        if (workspace is null)
+        {
+            return null;
+        }
+
+        return new RuntimeToolWorkspaceContext(
+            workspace.CorrelationId,
+            workspace.RootPath,
+            workspace.RepoUrl,
+            workspace.RepoIdentityKey,
+            workspace.RepoSlug);
     }
 
     private static JsonObject? BuildFailureContext(

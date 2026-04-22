@@ -96,7 +96,10 @@ public sealed class ToolRegistryTests
                 .ToArray();
         }
 
-        public Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+        public Task<ToolResult> InvokeAsync(
+            ToolCall toolCall,
+            CancellationToken cancellationToken = default,
+            ToolExecutionContext? context = null)
         {
             InvokedToolNames.Add(toolCall.Name);
             return Task.FromResult(new ToolResult(toolCall.Id, $"handled:{toolCall.Name}"));

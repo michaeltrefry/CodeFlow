@@ -59,6 +59,7 @@ public sealed class ObservabilityTests
             .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"obs-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -126,8 +127,15 @@ public sealed class ObservabilityTests
             AgentInvocationConfiguration configuration,
             string? input,
             ResolvedAgentTools tools,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            CodeFlow.Runtime.ToolExecutionContext? toolExecutionContext = null)
             => Task.FromResult(result);
+    }
+
+    private sealed class FakeRoleResolutionService : IRoleResolutionService
+    {
+        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
+            => Task.FromResult(ResolvedAgentTools.Empty);
     }
 
     private sealed class RecordingArtifactStore(string content) : IArtifactStore

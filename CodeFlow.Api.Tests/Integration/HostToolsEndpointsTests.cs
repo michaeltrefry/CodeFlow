@@ -21,10 +21,13 @@ public sealed class HostToolsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var tools = await client.GetFromJsonAsync<IReadOnlyList<HostToolDto>>("/api/host-tools");
 
         tools.Should().NotBeNull();
-        tools!.Select(t => t.Name).Should().Contain(new[] { "echo", "now" });
+        tools!.Select(t => t.Name).Should().Contain(new[] { "echo", "now", "read_file", "apply_patch", "run_command" });
 
         var echo = tools.Single(t => t.Name == "echo");
         echo.Description.Should().NotBeNullOrWhiteSpace();
+
+        tools.Single(t => t.Name == "apply_patch").IsMutating.Should().BeTrue();
+        tools.Single(t => t.Name == "run_command").IsMutating.Should().BeTrue();
     }
 
     private sealed record HostToolDto(

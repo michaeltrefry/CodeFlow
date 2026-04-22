@@ -29,15 +29,17 @@ public sealed class Agent : IAgentInvoker
         AgentInvocationConfiguration configuration,
         string? input,
         ResolvedAgentTools tools,
-        CancellationToken cancellationToken = default)
-        => InvokeAsync(configuration, input, tools, observer: null, cancellationToken);
+        CancellationToken cancellationToken = default,
+        ToolExecutionContext? toolExecutionContext = null)
+        => InvokeAsync(configuration, input, tools, observer: null, cancellationToken, toolExecutionContext);
 
     public async Task<AgentInvocationResult> InvokeAsync(
         AgentInvocationConfiguration configuration,
         string? input,
         ResolvedAgentTools tools,
         IInvocationObserver? observer,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ToolExecutionContext? toolExecutionContext = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(tools);
@@ -71,7 +73,8 @@ public sealed class Agent : IAgentInvoker
                 toolAccessPolicy,
                 configuration.Budget,
                 configuration.MaxTokens,
-                configuration.Temperature),
+                configuration.Temperature,
+                toolExecutionContext),
             observer,
             cancellationToken);
 

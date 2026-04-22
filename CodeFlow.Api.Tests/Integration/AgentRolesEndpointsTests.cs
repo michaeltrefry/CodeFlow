@@ -70,6 +70,31 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task Put_tools_accepts_new_workspace_host_tools()
+    {
+        using var client = factory.CreateClient();
+
+        var role = await CreateRole(client);
+
+        var update = await client.PutAsJsonAsync($"/api/agent-roles/{role.Id}/tools", new object[]
+        {
+            new { category = "Host", toolIdentifier = "read_file" },
+            new { category = "Host", toolIdentifier = "apply_patch" },
+            new { category = "Host", toolIdentifier = "run_command" },
+        });
+
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var persisted = (await update.Content.ReadFromJsonAsync<IReadOnlyList<GrantDto>>())!;
+        persisted.Select(g => g.ToolIdentifier).Should().BeEquivalentTo(new[]
+        {
+            "read_file",
+            "apply_patch",
+            "run_command",
+        });
+    }
+
+    [Fact]
     public async Task Put_tools_rejects_unknown_host_tool()
     {
         using var client = factory.CreateClient();

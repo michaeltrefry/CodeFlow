@@ -13,4 +13,5 @@ public sealed record AgentInvokeRequested(
     Uri InputRef,
     IReadOnlyDictionary<string, JsonElement> ContextInputs,
     IReadOnlyDictionary<string, string>? CorrelationHeaders = null,
-    RetryContext? RetryContext = null);
+    RetryContext? RetryContext = null,
+    ToolExecutionContext? ToolExecutionContext = null);

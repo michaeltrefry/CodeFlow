@@ -212,7 +212,11 @@ public sealed class InvocationLoop
                     continue;
                 }
 
-                var toolResult = await InvokeToolAsync(toolCall, request.ToolAccessPolicy, cancellationToken);
+                var toolResult = await InvokeToolAsync(
+                    toolCall,
+                    request.ToolAccessPolicy,
+                    cancellationToken,
+                    request.ToolExecutionContext);
                 transcript.Add(new ChatMessage(
                     ChatMessageRole.Tool,
                     toolResult.Content,
@@ -245,14 +249,15 @@ public sealed class InvocationLoop
     private async Task<ToolResult> InvokeToolAsync(
         ToolCall toolCall,
         ToolAccessPolicy? policy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ToolExecutionContext? context)
     {
         using var activity = CodeFlowActivity.StartChild("tool.call");
         activity?.SetTag(CodeFlowActivity.TagNames.ToolName, toolCall.Name);
 
         try
         {
-            var result = await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken);
+            var result = await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken, context);
             if (result.IsError)
             {
                 activity?.SetStatus(ActivityStatusCode.Error, "tool reported error");
