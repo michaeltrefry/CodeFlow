@@ -10,6 +10,7 @@ public sealed class FileSystemArtifactStore : IArtifactStore
     private readonly string rootDirectory;
     private readonly string blobDirectory;
     private readonly string temporaryDirectory;
+    private readonly long? maxArtifactBytes;
 
     public FileSystemArtifactStore(FileSystemArtifactStoreOptions options)
     {
@@ -20,9 +21,17 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             throw new ArgumentException("A root directory is required.", nameof(options));
         }
 
+        if (options.MaxArtifactBytes is { } configuredMax && configuredMax <= 0)
+        {
+            throw new ArgumentException(
+                "MaxArtifactBytes must be positive when set.",
+                nameof(options));
+        }
+
         rootDirectory = Path.GetFullPath(options.RootDirectory);
         blobDirectory = Path.Combine(rootDirectory, ".blobs");
         temporaryDirectory = Path.Combine(rootDirectory, ".tmp");
+        maxArtifactBytes = options.MaxArtifactBytes;
     }
 
     public async Task<Uri> WriteAsync(
@@ -51,6 +60,7 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             var (contentHash, contentLength) = await CopyToTemporaryFileAndHashAsync(
                 content,
                 temporaryContentPath,
+                maxArtifactBytes,
                 cancellationToken);
 
             var blobPath = Path.Combine(blobDirectory, $"{contentHash}.bin");
@@ -116,6 +126,13 @@ public sealed class FileSystemArtifactStore : IArtifactStore
         if (!File.Exists(blobPath))
         {
             throw new FileNotFoundException($"Artifact blob was not found for '{uri}'.", blobPath);
+        }
+
+        // An operator can tighten the cap after data has been written; reject stale oversized
+        // blobs before handing back a stream so a downstream materialize can't OOM.
+        if (maxArtifactBytes is { } limit && sidecar.ContentLength > limit)
+        {
+            throw new ArtifactTooLargeException(sidecar.ContentLength, limit);
         }
 
         return new FileStream(
@@ -197,6 +214,7 @@ public sealed class FileSystemArtifactStore : IArtifactStore
     private static async Task<(string ContentHash, long ContentLength)> CopyToTemporaryFileAndHashAsync(
         Stream content,
         string temporaryContentPath,
+        long? maxBytes,
         CancellationToken cancellationToken)
     {
         using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -220,9 +238,17 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 break;
             }
 
+            totalBytes += bytesRead;
+
+            // Fail fast before writing to disk so an oversized producer can't exhaust the temp
+            // directory. The outer `finally` deletes the partial temp file on throw.
+            if (maxBytes is { } limit && totalBytes > limit)
+            {
+                throw new ArtifactTooLargeException(totalBytes, limit);
+            }
+
             hasher.AppendData(buffer, 0, bytesRead);
             await temporaryStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            totalBytes += bytesRead;
         }
 
         await temporaryStream.FlushAsync(cancellationToken);

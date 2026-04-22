@@ -208,16 +208,15 @@ public static class HostExtensions
 
     private static FileSystemArtifactStoreOptions ResolveArtifactOptions(IConfiguration configuration)
     {
-        var configuredRootDirectory = configuration
-            .GetSection(CodeFlowHostDefaults.ArtifactsSectionName)["RootDirectory"];
+        var section = configuration.GetSection(CodeFlowHostDefaults.ArtifactsSectionName);
+        var configuredRootDirectory = section["RootDirectory"];
+        var maxArtifactBytes = section.GetValue<long?>("MaxArtifactBytes");
 
-        if (!string.IsNullOrWhiteSpace(configuredRootDirectory))
-        {
-            return new FileSystemArtifactStoreOptions(configuredRootDirectory);
-        }
+        var rootDirectory = string.IsNullOrWhiteSpace(configuredRootDirectory)
+            ? Path.Combine(Environment.CurrentDirectory, "artifacts")
+            : configuredRootDirectory;
 
-        return new FileSystemArtifactStoreOptions(
-            Path.Combine(Environment.CurrentDirectory, "artifacts"));
+        return new FileSystemArtifactStoreOptions(rootDirectory, maxArtifactBytes);
     }
 
     private static ModelClientRegistry BuildModelClientRegistry(IServiceProvider rootProvider)
