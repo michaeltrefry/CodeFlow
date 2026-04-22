@@ -6,5 +6,6 @@ public interface IAgentInvoker
         AgentInvocationConfiguration configuration,
         string? input,
         ResolvedAgentTools tools,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        ToolExecutionContext? toolExecutionContext = null);
 }

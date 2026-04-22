@@ -15,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using System.Net.Http;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Host;
 
@@ -114,7 +115,10 @@ public static class HostExtensions
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<ContextAssembler>();
-        services.AddSingleton<HostToolProvider>();
+        services.AddSingleton<HostToolProvider>(sp =>
+            new HostToolProvider(
+                workspaceTools: new WorkspaceHostToolService(
+                    sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value)));
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 

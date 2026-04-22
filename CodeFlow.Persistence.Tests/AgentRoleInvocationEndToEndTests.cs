@@ -246,6 +246,204 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
         subAgentInvocations.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Agent_invoked_with_role_grant_can_execute_workspace_host_tools()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+        var roleKey = $"role-{Guid.NewGuid():N}";
+        var serverKey = $"svc-{Guid.NewGuid():N}";
+        var workspaceRoot = CreateWorkspaceRoot();
+
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
+            await File.WriteAllTextAsync(Path.Combine(workspaceRoot, "src", "main.txt"), "alpha\nbeta\ngamma\n");
+
+            await SeedAsync(agentKey, roleKey, serverKey,
+                grants: new[]
+                {
+                    new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
+                    new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
+                    new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                });
+
+            var modelClient = new ToolScriptedModelClient(
+            [
+                _ => new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Read the file first.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_read", "read_file", new JsonObject { ["path"] = "src/main.txt" })
+                        ]),
+                    InvocationStopReason.ToolCalls),
+                request =>
+                {
+                    request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                    request.Messages[^1].Content.Should().Contain("alpha");
+                    return new InvocationResponse(
+                        new ChatMessage(
+                            ChatMessageRole.Assistant,
+                            "Patch it.",
+                            ToolCalls:
+                            [
+                                new ToolCall(
+                                    "call_patch",
+                                    "apply_patch",
+                                    new JsonObject
+                                    {
+                                        ["patch"] =
+                                            """
+                                            *** Begin Patch
+                                            *** Update File: src/main.txt
+                                             alpha
+                                            -beta
+                                            +beta patched
+                                             gamma
+                                            *** End Patch
+                                            """
+                                    })
+                            ]),
+                        InvocationStopReason.ToolCalls);
+                },
+                request =>
+                {
+                    request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                    request.Messages[^1].Content.Should().Contain("\"ok\":true");
+                    return new InvocationResponse(
+                        new ChatMessage(
+                            ChatMessageRole.Assistant,
+                            "Now run a command.",
+                            ToolCalls:
+                            [
+                                new ToolCall(
+                                    "call_run",
+                                    "run_command",
+                                    new JsonObject
+                                    {
+                                        ["command"] = "dotnet",
+                                        ["args"] = new JsonArray("--version")
+                                    })
+                            ]),
+                        InvocationStopReason.ToolCalls);
+                },
+                request =>
+                {
+                    request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                    request.Messages[^1].Content.Should().Contain("\"exitCode\":0");
+                    return new InvocationResponse(
+                        new ChatMessage(ChatMessageRole.Assistant, "Workspace tools complete."),
+                        InvocationStopReason.EndTurn);
+                },
+            ]);
+
+            var agent = new Agent(
+                new ModelClientRegistry([new ModelClientRegistration("test", modelClient)]),
+                hostToolProvider: new HostToolProvider(
+                    workspaceTools: new CodeFlow.Runtime.Workspace.WorkspaceHostToolService(
+                        new CodeFlow.Runtime.Workspace.WorkspaceOptions
+                        {
+                            Root = workspaceRoot,
+                            ReadMaxBytes = 256 * 1024,
+                            ExecTimeoutSeconds = 30,
+                            ExecOutputMaxBytes = 128 * 1024
+                        })));
+
+            await using var ctx = CreateDbContext();
+            var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+            var tools = await resolver.ResolveAsync(agentKey);
+
+            var result = await agent.InvokeAsync(
+                new AgentInvocationConfiguration(Provider: "test", Model: "m"),
+                "start",
+                tools,
+                toolExecutionContext: new ToolExecutionContext(
+                    new ToolWorkspaceContext(Guid.NewGuid(), workspaceRoot)));
+
+            result.Decision.Should().BeOfType<CompletedDecision>();
+            result.ToolCallsExecuted.Should().Be(3);
+            (await File.ReadAllTextAsync(Path.Combine(workspaceRoot, "src", "main.txt")))
+                .Should().Be("alpha\nbeta patched\ngamma\n");
+        }
+        finally
+        {
+            DeleteWorkspaceRoot(workspaceRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Agent_invocation_denies_ungranted_expanded_host_tool_even_when_other_new_host_tool_is_allowed()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+        var roleKey = $"role-{Guid.NewGuid():N}";
+        var serverKey = $"svc-{Guid.NewGuid():N}";
+        var workspaceRoot = CreateWorkspaceRoot();
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(workspaceRoot, "main.txt"), "alpha\n");
+
+            await SeedAsync(agentKey, roleKey, serverKey,
+                grants: new[] { new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file") });
+
+            var modelClient = new ToolScriptedModelClient(
+            [
+                _ => new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Try an ungranted mutating tool.",
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "call_patch",
+                                "apply_patch",
+                                new JsonObject
+                                {
+                                    ["patch"] =
+                                        """
+                                        *** Begin Patch
+                                        *** Update File: main.txt
+                                        -alpha
+                                        +beta
+                                        *** End Patch
+                                        """
+                                })
+                        ]),
+                    InvocationStopReason.ToolCalls),
+                request =>
+                {
+                    var toolMessage = request.Messages[^1];
+                    toolMessage.Role.Should().Be(ChatMessageRole.Tool);
+                    toolMessage.Content.Should().Contain("not available");
+                    return new InvocationResponse(
+                        new ChatMessage(ChatMessageRole.Assistant, "Denied as expected."),
+                        InvocationStopReason.EndTurn);
+                },
+            ]);
+
+            var agent = new Agent(new ModelClientRegistry([new ModelClientRegistration("test", modelClient)]));
+
+            await using var ctx = CreateDbContext();
+            var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+            var tools = await resolver.ResolveAsync(agentKey);
+
+            var result = await agent.InvokeAsync(
+                new AgentInvocationConfiguration(Provider: "test", Model: "m"),
+                "start",
+                tools,
+                toolExecutionContext: new ToolExecutionContext(
+                    new ToolWorkspaceContext(Guid.NewGuid(), workspaceRoot)));
+
+            result.Output.Should().Be("Denied as expected.");
+            (await File.ReadAllTextAsync(Path.Combine(workspaceRoot, "main.txt"))).Should().Be("alpha\n");
+        }
+        finally
+        {
+            DeleteWorkspaceRoot(workspaceRoot);
+        }
+    }
+
     private async Task SeedAsync(
         string agentKey,
         string roleKey,
@@ -284,6 +482,27 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();
         CodeFlowDbContextOptions.Configure(builder, connectionString!);
         return new CodeFlowDbContext(builder.Options);
+    }
+
+    private static string CreateWorkspaceRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codeflow-role-e2e-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static void DeleteWorkspaceRoot(string workspaceRoot)
+    {
+        try
+        {
+            if (Directory.Exists(workspaceRoot))
+            {
+                Directory.Delete(workspaceRoot, recursive: true);
+            }
+        }
+        catch
+        {
+        }
     }
 
     private sealed class ToolScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient

@@ -30,7 +30,14 @@ public sealed class ContractSerializationTests
             {
                 ["x-trace-origin"] = "api",
                 ["x-request-id"] = "req-123"
-            });
+            },
+            ToolExecutionContext: new ToolExecutionContext(
+                new ToolWorkspaceContext(
+                    Guid.NewGuid(),
+                    "/tmp/codeflow/workspaces/abc123/repo",
+                    RepoUrl: "https://github.com/example/repo.git",
+                    RepoIdentityKey: "github.com/example/repo",
+                    RepoSlug: "example/repo")));
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         var roundTripped = JsonSerializer.Deserialize<AgentInvokeRequested>(json, SerializerOptions);
@@ -46,6 +53,7 @@ public sealed class ContractSerializationTests
         roundTripped.InputRef.Should().Be(message.InputRef);
         roundTripped.ContextInputs.Should().ContainKeys("initialRequest", "settings");
         roundTripped.CorrelationHeaders.Should().BeEquivalentTo(message.CorrelationHeaders);
+        roundTripped.ToolExecutionContext.Should().BeEquivalentTo(message.ToolExecutionContext);
     }
 
     [Fact]

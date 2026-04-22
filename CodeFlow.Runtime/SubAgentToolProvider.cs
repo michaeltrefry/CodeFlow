@@ -67,7 +67,10 @@ public sealed class SubAgentToolProvider : IToolProvider
         return [SpawnSubAgentTool];
     }
 
-    public async Task<ToolResult> InvokeAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    public async Task<ToolResult> InvokeAsync(
+        ToolCall toolCall,
+        CancellationToken cancellationToken = default,
+        ToolExecutionContext? context = null)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
 
@@ -78,7 +81,7 @@ public sealed class SubAgentToolProvider : IToolProvider
 
         var invocations = ParseInvocations(toolCall.Arguments);
         var childTasks = invocations
-            .Select(invocation => InvokeSubAgentAsync(invocation, cancellationToken))
+            .Select(invocation => InvokeSubAgentAsync(invocation, context, cancellationToken))
             .ToArray();
 
         var results = await Task.WhenAll(childTasks);
@@ -89,6 +92,7 @@ public sealed class SubAgentToolProvider : IToolProvider
 
     private async Task<JsonObject> InvokeSubAgentAsync(
         SubAgentInvocation invocation,
+        ToolExecutionContext? toolExecutionContext,
         CancellationToken cancellationToken)
     {
         if (!subAgents.TryGetValue(invocation.Agent, out var configuration))
@@ -96,7 +100,12 @@ public sealed class SubAgentToolProvider : IToolProvider
             throw new InvalidOperationException($"Unknown sub-agent '{invocation.Agent}'.");
         }
 
-        var result = await agent.InvokeAsync(configuration, invocation.Input, inheritedTools, cancellationToken);
+        var result = await agent.InvokeAsync(
+            configuration,
+            invocation.Input,
+            inheritedTools,
+            cancellationToken,
+            toolExecutionContext);
 
         return new JsonObject
         {

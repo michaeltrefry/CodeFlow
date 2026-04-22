@@ -330,7 +330,8 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
             AgentInvocationConfiguration configuration,
             string? input,
             ResolvedAgentTools tools,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            CodeFlow.Runtime.ToolExecutionContext? toolExecutionContext = null)
         {
             ArgumentNullException.ThrowIfNull(configuration);
             var agentKey = configuration.Model;

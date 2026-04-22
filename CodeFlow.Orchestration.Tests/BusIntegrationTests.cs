@@ -326,7 +326,8 @@ public sealed class BusIntegrationTests : IAsyncLifetime
             AgentInvocationConfiguration configuration,
             string? input,
             ResolvedAgentTools tools,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            CodeFlow.Runtime.ToolExecutionContext? toolExecutionContext = null)
         {
             Interlocked.Increment(ref invocationCount);
 
