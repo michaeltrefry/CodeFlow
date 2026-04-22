@@ -60,6 +60,17 @@ services:
       - "4317:4317"
       - "4318:4318"
 
+  codeflow-artifacts-init:
+    image: alpine:3.20
+    container_name: codeflow-artifacts-init
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - mkdir -p /app/artifacts && chown -R 1654:1654 /app/artifacts
+    volumes:
+      - codeflow-artifacts:/app/artifacts
+
   codeflow-api:
     build:
       context: .
@@ -71,6 +82,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      codeflow-artifacts-init:
+        condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
@@ -115,6 +128,8 @@ services:
         condition: service_healthy
       codeflow-api:
         condition: service_started
+      codeflow-artifacts-init:
+        condition: service_completed_successfully
     environment:
       DOTNET_ENVIRONMENT: Development
       CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;

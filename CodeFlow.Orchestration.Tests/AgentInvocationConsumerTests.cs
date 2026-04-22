@@ -7,6 +7,7 @@ using MassTransit;
 using MassTransit.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -299,10 +300,100 @@ public sealed class AgentInvocationConsumerTests
             completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Failed);
             completion.OutputPortName.Should().Be("Failed");
             completion.DecisionPayload.Should().NotBeNull();
-            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("AgentInvocationFailed");
-            completion.DecisionPayload!.Value.GetProperty("failure_context").GetProperty("reason").GetString().Should().Be("AgentInvocationFailed");
+            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("Response status code does not indicate success: 400 (Bad Request).");
+            completion.DecisionPayload!.Value.GetProperty("failure_context").GetProperty("reason").GetString().Should().Be("Response status code does not indicate success: 400 (Bad Request).");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("failure_code").GetString().Should().Be("AgentInvocationFailed");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("message").GetString().Should().Contain("400 (Bad Request)");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("exception_type").GetString().Should().Be(typeof(HttpRequestException).FullName);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_WhenModelHttpExceptionThrown_ShouldPersistDiagnosticsArtifactAndReferenceIt()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "exception-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new ThrowingAgentInvoker(new ModelClientHttpException(
+            message: "Response status code does not indicate success: 400 (Bad Request).",
+            statusCode: HttpStatusCode.BadRequest,
+            method: "POST",
+            requestUri: new Uri("https://api.openai.com/v1/responses"),
+            requestHeaders: new Dictionary<string, string[]>
+            {
+                ["Authorization"] = ["[REDACTED]"],
+                ["Content-Type"] = ["application/json"]
+            },
+            requestBody: """{"model":"gpt-5","input":"hello"}""",
+            providerErrorMessage: "boom",
+            responseReasonPhrase: "Bad Request",
+            responseHeaders: new Dictionary<string, string[]>
+            {
+                ["Content-Type"] = ["application/json"]
+            },
+            responseBody: """{"error":{"message":"boom"}}"""));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-http-exception-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            artifactStore.Writes.Should().HaveCount(2);
+            artifactStore.Writes.Should().Contain(entry => entry.Metadata.FileName == "reviewer-http-diagnostics.txt");
+            artifactStore.Writes.Should().Contain(entry => entry.Metadata.FileName == "reviewer-error.txt");
+
+            var diagnostics = artifactStore.Writes.Single(entry => entry.Metadata.FileName == "reviewer-http-diagnostics.txt");
+            diagnostics.Content.Should().Contain("Request URL: https://api.openai.com/v1/responses");
+            diagnostics.Content.Should().Contain("Authorization: [REDACTED]");
+            diagnostics.Content.Should().Contain("""{"model":"gpt-5","input":"hello"}""");
+
+            var completion = harness.Published
+                .Select<AgentInvocationCompleted>()
+                .Single()
+                .Context.Message;
+
+            completion.DecisionPayload.Should().NotBeNull();
+            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("boom");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("message").GetString().Should().Be("boom");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("provider_error_message").GetString().Should().Be("boom");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("http_diagnostics_ref").GetString().Should().Be(diagnostics.Uri.ToString());
         }
         finally
         {

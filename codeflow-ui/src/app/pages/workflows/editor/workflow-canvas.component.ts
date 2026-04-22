@@ -190,7 +190,7 @@ function defaultStartInput(): WorkflowInput {
                 handed to the Start agent.
               </p>
               <div class="inputs-list">
-                @for (input of inputs(); track input.key; let i = $index) {
+                @for (input of inputs(); track i; let i = $index) {
                   <div class="input-card">
                     <div class="row-spread">
                       <strong class="mono">{{ input.key }}</strong>
