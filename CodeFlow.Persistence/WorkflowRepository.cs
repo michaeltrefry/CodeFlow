@@ -147,7 +147,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         LayoutY = node.LayoutY,
                         SubflowKey = NormalizeOptionalString(node.SubflowKey),
                         SubflowVersion = node.SubflowVersion,
-                        ReviewMaxRounds = node.ReviewMaxRounds
+                        ReviewMaxRounds = node.ReviewMaxRounds,
+                        LoopDecision = NormalizeOptionalString(node.LoopDecision)
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -230,7 +231,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.LayoutY,
             entity.SubflowKey,
             entity.SubflowVersion,
-            entity.ReviewMaxRounds);
+            entity.ReviewMaxRounds,
+            entity.LoopDecision);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

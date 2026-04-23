@@ -249,7 +249,17 @@ function defaultStartInput(): WorkflowInput {
                          [ngModel]="sel.editor.reviewMaxRounds ?? null"
                          (ngModelChange)="onReviewMaxRoundsChanged(sel.editor, $event)" />
                   <span class="muted xsmall">
-                    Number of produce→review→revise iterations before the loop gives up. If the child returns <code>Rejected</code> on the final round, the loop exits the <code>Exhausted</code> port.
+                    Number of produce→review→revise iterations before the loop gives up. If the child returns the loop decision on the final round, the loop exits the <code>Exhausted</code> port.
+                  </span>
+                </label>
+                <label class="field">
+                  <span>Loop decision <span class="muted xsmall">(default <code>Rejected</code>)</span></span>
+                  <input type="text"
+                         [ngModel]="sel.editor.loopDecision ?? ''"
+                         (ngModelChange)="onLoopDecisionChanged(sel.editor, $event)"
+                         placeholder="Rejected" />
+                  <span class="muted xsmall">
+                    The port name on the child workflow's terminal node that triggers another iteration. Matches case-sensitively against the child's effective port (routing-script result or decision kind). Change to <code>Answered</code>, etc., for non-standard loop triggers. <code>Failed</code> and <code>Escalated</code> are reserved.
                   </span>
                 </label>
                 @if (selectedSubflowDetail(); as detail) {
@@ -869,6 +879,14 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       node.reviewMaxRounds = Math.max(1, Math.min(10, Math.floor(value)));
     }
     node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  onLoopDecisionChanged(node: WorkflowEditorNode, value: string): void {
+    // Empty string means "use the default" (Rejected); store null so the API layer can see
+    // the author didn't override it and the config travels cleanly.
+    const trimmed = value?.trim() ?? '';
+    node.loopDecision = trimmed.length === 0 ? null : trimmed;
     this.area?.update('node', node.id);
   }
 

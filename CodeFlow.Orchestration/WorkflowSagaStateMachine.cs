@@ -201,6 +201,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.SubflowDepth = message.Depth;
         saga.ParentReviewRound = message.ReviewRound;
         saga.ParentReviewMaxRounds = message.ReviewMaxRounds;
+        saga.ParentLoopDecision = message.LoopDecision;
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
@@ -277,7 +278,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             OutputRef: new Uri(outputRefStr),
             SharedContext: sharedContext,
             Decision: terminalDecision,
-            ReviewRound: saga.ParentReviewRound));
+            ReviewRound: saga.ParentReviewRound,
+            TerminalPort: saga.LastEffectivePort));
     }
 
     private static AgentDecisionKind MapRuntimeDecisionKindToContract(Runtime.AgentDecisionKind kind)
@@ -298,32 +300,61 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         string? PortName);
 
     /// <summary>
+    /// The default port name that triggers another ReviewLoop iteration when the child's
+    /// terminal effective port matches. Kept as a string so workflow authors can override it via
+    /// <see cref="WorkflowNode.LoopDecision"/> to use any port name they want (e.g. a socratic
+    /// interview loop that uses <c>"Answered"</c> as its loop signal).
+    /// </summary>
+    public const string DefaultLoopDecision = "Rejected";
+
+    private static string ResolveLoopDecision(WorkflowNode reviewLoopNode)
+        => string.IsNullOrWhiteSpace(reviewLoopNode.LoopDecision)
+            ? DefaultLoopDecision
+            : reviewLoopNode.LoopDecision!.Trim();
+
+    /// <summary>
     /// Maps a child saga's terminal <see cref="SubflowCompleted"/> back onto the ReviewLoop
-    /// parent's outcome surface. Priority: the child's last-agent <c>Decision</c> wins over the
-    /// saga's terminal <c>OutputPortName</c>, because the Subflow exit model can only terminate
-    /// cleanly via an unwired <c>Completed</c> port — any non-Completed unwired port fails the
-    /// child saga even when its last agent emitted a meaningful <c>Rejected</c>. The
-    /// ReviewLoop contract is "the child's terminal decision drives the loop," so we trust the
-    /// decision kind when it's present and only fall back to the port name when it's not.
-    /// <para/>
-    /// Mapping:
-    /// <list type="bullet">
-    /// <item><description><c>Approved</c>/<c>Completed</c> → <c>Approved</c> port.</description></item>
-    /// <item><description><c>Rejected</c> with rounds remaining → spawn next round.</description></item>
-    /// <item><description><c>Rejected</c> on the last round → <c>Exhausted</c> port.</description></item>
-    /// <item><description><c>Failed</c> decision → <c>Failed</c> port.</description></item>
-    /// <item><description>No decision metadata, or <c>OutputPortName</c> is <c>Escalated</c>/<c>Failed</c> → <c>Failed</c> port.</description></item>
+    /// parent's outcome surface. Priority of signals:
+    /// <list type="number">
+    /// <item><description><c>TerminalPort</c> (the child saga's last effective port — set by a
+    ///   routing script's <c>setNodePath</c> or the decision-kind-derived port name) compared
+    ///   case-sensitive against the ReviewLoop node's <c>LoopDecision</c>. Match → iterate (or
+    ///   Exhausted on last round).</description></item>
+    /// <item><description>Otherwise fall back to <c>Decision</c> — <c>Approved</c>/<c>Completed</c>
+    ///   → Approved port; <c>Failed</c> → Failed port; <c>Rejected</c> that didn't match
+    ///   <c>LoopDecision</c> → Failed port (a <c>Rejected</c> decision on a ReviewLoop whose
+    ///   loop trigger is <em>not</em> "Rejected" is a terminal verdict, not an iterate).</description></item>
+    /// <item><description><c>OutputPortName = Escalated</c>/<c>Failed</c> without a matching
+    ///   Decision → Failed port.</description></item>
     /// </list>
+    /// Using TerminalPort as the primary signal lets workflow authors name any port as the
+    /// loop trigger — critical for patterns like a socratic-interview child whose routing
+    /// script picks "Rejected" based on a payload field even though the underlying HITL
+    /// decision kind was "Completed".
     /// </summary>
     private static ReviewLoopOutcome ResolveReviewLoopOutcome(
         SubflowCompleted message,
         WorkflowNode reviewLoopNode)
     {
-        // Prefer the child's last-agent decision over the saga's terminal state. A child whose
-        // reviewer emits Rejected but has no wired edge from its Rejected port will terminate
-        // as Failed at the saga level (per Subflow exit rules), yet the reviewer's intent is
-        // still captured on the last Decision. For ReviewLoop purposes, that intent is the
-        // signal to advance to the next round — matching the documented contract.
+        var loopDecision = ResolveLoopDecision(reviewLoopNode);
+
+        // 1. TerminalPort match against the configured LoopDecision.
+        if (!string.IsNullOrWhiteSpace(message.TerminalPort)
+            && string.Equals(message.TerminalPort, loopDecision, StringComparison.Ordinal))
+        {
+            var justFinishedRound = message.ReviewRound ?? 1;
+            var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
+            if (justFinishedRound < maxRounds)
+            {
+                return new ReviewLoopOutcome(
+                    SpawnNextRound: true,
+                    NextRound: justFinishedRound + 1,
+                    PortName: null);
+            }
+            return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
+        }
+
+        // 2. Fall back to Decision-kind mapping.
         if (message.Decision is AgentDecisionKind decision)
         {
             switch (decision)
@@ -333,16 +364,25 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Approved");
 
                 case AgentDecisionKind.Rejected:
+                    // A Rejected Decision that didn't match a "Rejected"-named LoopDecision means
+                    // the author reconfigured LoopDecision to something else (e.g. "Answered");
+                    // in that case a bare Decision=Rejected is a terminal verdict, not a loop
+                    // signal. Route to Failed so the author can handle it explicitly.
                     var justFinishedRound = message.ReviewRound ?? 1;
                     var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
-                    if (justFinishedRound < maxRounds)
+                    if (string.Equals(loopDecision, "Rejected", StringComparison.Ordinal)
+                        && justFinishedRound < maxRounds)
                     {
                         return new ReviewLoopOutcome(
                             SpawnNextRound: true,
                             NextRound: justFinishedRound + 1,
                             PortName: null);
                     }
-                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
+                    if (string.Equals(loopDecision, "Rejected", StringComparison.Ordinal))
+                    {
+                        return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
+                    }
+                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
 
                 case AgentDecisionKind.Failed:
                 default:
@@ -350,10 +390,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             }
         }
 
-        // No Decision metadata — this is a legacy or synthetic completion that doesn't carry the
-        // child's last-agent intent. Fall back to the saga's terminal port: Escalated / Failed
-        // both collapse to Failed; an unexpected value (Completed without a Decision) also
-        // collapses to Failed as a conservative default.
+        // 3. No Decision metadata and no matching TerminalPort — treat as Failed.
         return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
     }
 
@@ -441,7 +478,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     inputRef: message.OutputRef,
                     roundId: saga.CurrentRoundId,
                     reviewRound: outcome.NextRound,
-                    reviewMaxRounds: parentNode.ReviewMaxRounds);
+                    reviewMaxRounds: parentNode.ReviewMaxRounds,
+                    loopDecision: ResolveLoopDecision(parentNode));
 
                 saga.UpdatedAtUtc = DateTime.UtcNow;
                 return;
@@ -449,6 +487,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
             effectivePortName = outcome.PortName!;
         }
+
+        // Track the parent's effective port so it rides up on TerminalPort if the parent is
+        // itself a child of another ReviewLoop (nested case).
+        saga.LastEffectivePort = effectivePortName;
 
         // Synthetic decision record so the parent's history shows the subflow returned a
         // result. Decision kind is Failed for the Failed port, Completed otherwise — best-effort
@@ -653,6 +695,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             artifactStore,
             message);
 
+        // Remember the effective port so the terminal SubflowCompleted can carry it as
+        // TerminalPort — the ReviewLoop parent compares that against its configured
+        // LoopDecision to decide whether to iterate or exit.
+        saga.LastEffectivePort = effectivePortName;
+
         var edge = workflow.FindNext(message.FromNodeId, effectivePortName);
 
         if (edge is null)
@@ -661,15 +708,21 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             //   - Completed: always a legal clean exit (top-level and subflow).
             //   - Approved / Rejected: a legal clean exit *for child sagas* — the decision kind
             //     is preserved on SubflowCompleted.Decision so parents (especially ReviewLoop)
-            //     can route on the last agent's intent. A top-level saga has no parent to
-            //     propagate to, so these fall through to the failure branch to surface the
-            //     authoring gap.
-            //   - Anything else (Failed, Escalated, custom logic ports, missing decision): the
+            //     can route on the last agent's intent.
+            //   - Match for the parent's ReviewLoop LoopDecision (propagated to the child saga
+            //     at dispatch): also a legal clean exit, so authors can use any port name as
+            //     the loop trigger without the child saga failing on the unwired port.
+            //   - Anything else (Failed, Escalated, top-level with non-Completed, typos): the
             //     port is unexpectedly unwired; fail with a clear reason.
             var isChildSaga = saga.ParentTraceId is not null;
+            var matchesParentLoopDecision = isChildSaga
+                && !string.IsNullOrWhiteSpace(saga.ParentLoopDecision)
+                && string.Equals(effectivePortName, saga.ParentLoopDecision, StringComparison.Ordinal);
+
             if (message.Decision == AgentDecisionKind.Completed
                 || (isChildSaga && (message.Decision == AgentDecisionKind.Approved
-                                    || message.Decision == AgentDecisionKind.Rejected)))
+                                    || message.Decision == AgentDecisionKind.Rejected))
+                || matchesParentLoopDecision)
             {
                 saga.PendingTransition = PendingTransitionCompleted;
             }
@@ -1204,7 +1257,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     reviewRound: 1,
                     reviewMaxRounds: node.ReviewMaxRounds
                         ?? throw new InvalidOperationException(
-                            $"ReviewLoop node {node.Id} in workflow {workflow.Key} v{workflow.Version} has no ReviewMaxRounds configured.")),
+                            $"ReviewLoop node {node.Id} in workflow {workflow.Key} v{workflow.Version} has no ReviewMaxRounds configured."),
+                    loopDecision: ResolveLoopDecision(node)),
             WorkflowNodeKind.Logic =>
                 throw new InvalidOperationException(
                     "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),
@@ -1221,7 +1275,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         Uri inputRef,
         Guid roundId,
         int? reviewRound = null,
-        int? reviewMaxRounds = null)
+        int? reviewMaxRounds = null,
+        string? loopDecision = null)
     {
         if (string.IsNullOrWhiteSpace(subflowNode.SubflowKey))
         {
@@ -1253,7 +1308,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             SharedContext: sharedContext,
             Depth: saga.SubflowDepth + 1,
             ReviewRound: reviewRound,
-            ReviewMaxRounds: reviewMaxRounds));
+            ReviewMaxRounds: reviewMaxRounds,
+            LoopDecision: loopDecision));
     }
 
     private static async Task PublishHandoffAsync(
