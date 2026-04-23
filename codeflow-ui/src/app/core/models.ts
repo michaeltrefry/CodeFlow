@@ -321,6 +321,7 @@ export interface TraceDetail {
   currentRoundId: string;
   roundCount: number;
   pinnedAgentVersions: Record<string, number>;
+  contextInputs: Record<string, unknown>;
   decisions: TraceDecision[];
   logicEvaluations: TraceLogicEvaluation[];
   pendingHitl: HitlTask[];
@@ -341,8 +342,18 @@ export interface CreateTraceResponse {
   traceId: string;
 }
 
+export interface BulkDeleteTracesRequest {
+  state?: string | null;
+  olderThanDays: number;
+}
+
+export interface BulkDeleteTracesResponse {
+  deletedCount: number;
+}
+
 export interface HitlDecisionRequest {
   decision: AgentDecisionKind;
+  outputPortName?: string;
   reason?: string;
   actions?: string[];
   reasons?: string[];

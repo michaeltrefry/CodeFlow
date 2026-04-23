@@ -12,6 +12,12 @@ public sealed record CreateTraceRequest(
 
 public sealed record CreateTraceResponse(Guid TraceId);
 
+public sealed record BulkDeleteTracesRequest(
+    string? State,
+    int OlderThanDays);
+
+public sealed record BulkDeleteTracesResponse(int DeletedCount);
+
 public sealed record TraceSummaryDto(
     Guid TraceId,
     string WorkflowKey,
@@ -53,6 +59,7 @@ public sealed record TraceDetailDto(
     Guid CurrentRoundId,
     int RoundCount,
     IReadOnlyDictionary<string, int> PinnedAgentVersions,
+    IReadOnlyDictionary<string, JsonElement> ContextInputs,
     IReadOnlyList<TraceDecisionDto> Decisions,
     IReadOnlyList<TraceLogicEvaluationDto> LogicEvaluations,
     IReadOnlyList<HitlTaskDto> PendingHitl,
@@ -76,6 +83,7 @@ public sealed record HitlTaskDto(
 
 public sealed record HitlDecisionRequest(
     AgentDecisionKind Decision,
+    string? OutputPortName,
     string? Reason,
     IReadOnlyList<string>? Actions,
     IReadOnlyList<string>? Reasons,

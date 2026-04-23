@@ -8,6 +8,7 @@ using MassTransit.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -680,6 +681,138 @@ public sealed class AgentInvocationConsumerTests
         }
     }
 
+    [Fact]
+    public async Task Consumer_WhenHitlAgentReenteredSameRoundWithDifferentInputRef_ShouldCreateAnotherTask()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var firstInputRef = new Uri("file:///tmp/question-1.bin");
+        var secondInputRef = new Uri("file:///tmp/question-2.bin");
+
+        var agentConfig = new AgentConfig(
+            Key: "human-socratic-interviewee",
+            Version: 7,
+            Kind: AgentKind.Hitl,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: """{"type":"hitl"}""",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question text", "text/plain")))
+            .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
+                Output: "unused",
+                Decision: new CompletedDecision(),
+                Transcript: [])))
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-hitl-repeat-{Guid.NewGuid():N}"))
+            .BuildServiceProvider(true);
+
+        using var scope = provider.CreateScope();
+        var consumer = new AgentInvocationConsumer(
+            scope.ServiceProvider.GetRequiredService<IAgentConfigRepository>(),
+            scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
+            scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
+            scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+
+        await InvokeCreateHitlTaskAsync(consumer, new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: roundId,
+            WorkflowKey: "socratic-interview",
+            WorkflowVersion: 14,
+            NodeId: nodeId,
+            AgentKey: agentConfig.Key,
+            AgentVersion: agentConfig.Version,
+            InputRef: firstInputRef,
+            ContextInputs: new Dictionary<string, JsonElement>()), "Question 1");
+
+        await InvokeCreateHitlTaskAsync(consumer, new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: roundId,
+            WorkflowKey: "socratic-interview",
+            WorkflowVersion: 14,
+            NodeId: nodeId,
+            AgentKey: agentConfig.Key,
+            AgentVersion: agentConfig.Version,
+            InputRef: secondInputRef,
+            ContextInputs: new Dictionary<string, JsonElement>()), "Question 2");
+
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var tasks = await db.HitlTasks
+            .Where(task => task.TraceId == traceId)
+            .OrderBy(task => task.CreatedAtUtc)
+            .ToListAsync();
+
+        tasks.Should().HaveCount(2);
+        tasks.Select(task => task.InputRef).Should().BeEquivalentTo(
+            [firstInputRef.ToString(), secondInputRef.ToString()]);
+        tasks.Should().OnlyContain(task => task.NodeId == nodeId && task.RoundId == roundId);
+    }
+
+    [Fact]
+    public async Task Consumer_WhenHitlRequestIsRedeliveredForSameInvocation_ShouldNotDuplicateTask()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var inputRef = new Uri("file:///tmp/question-1.bin");
+
+        var agentConfig = new AgentConfig(
+            Key: "human-socratic-interviewee",
+            Version: 7,
+            Kind: AgentKind.Hitl,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: """{"type":"hitl"}""",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question text", "text/plain")))
+            .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
+                Output: "unused",
+                Decision: new CompletedDecision(),
+                Transcript: [])))
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-hitl-redelivery-{Guid.NewGuid():N}"))
+            .BuildServiceProvider(true);
+
+        using var scope = provider.CreateScope();
+        var consumer = new AgentInvocationConsumer(
+            scope.ServiceProvider.GetRequiredService<IAgentConfigRepository>(),
+            scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
+            scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
+            scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+        var request = new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: roundId,
+            WorkflowKey: "socratic-interview",
+            WorkflowVersion: 14,
+            NodeId: nodeId,
+            AgentKey: agentConfig.Key,
+            AgentVersion: agentConfig.Version,
+            InputRef: inputRef,
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        await InvokeCreateHitlTaskAsync(consumer, request, "Question 1");
+        await InvokeCreateHitlTaskAsync(consumer, request, "Question 1");
+
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var tasks = await db.HitlTasks
+            .Where(task => task.TraceId == traceId)
+            .ToListAsync();
+
+        tasks.Should().HaveCount(1);
+        tasks[0].InputRef.Should().Be(inputRef.ToString());
+        tasks[0].NodeId.Should().Be(nodeId);
+    }
+
     private sealed class FakeAgentConfigRepository(AgentConfig agentConfig) : IAgentConfigRepository
     {
         public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)
@@ -778,5 +911,20 @@ public sealed class AgentInvocationConsumerTests
     {
         using var document = JsonDocument.Parse(json);
         return document.RootElement.Clone();
+    }
+
+    private static async Task InvokeCreateHitlTaskAsync(
+        AgentInvocationConsumer consumer,
+        AgentInvokeRequested request,
+        string? input)
+    {
+        var method = typeof(AgentInvocationConsumer).GetMethod(
+            "CreateHitlTaskAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        method.Should().NotBeNull();
+
+        var result = method!.Invoke(consumer, [request, input, CancellationToken.None]);
+        result.Should().BeAssignableTo<Task>();
+        await (Task)result!;
     }
 }

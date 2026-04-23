@@ -16,6 +16,8 @@ namespace CodeFlow.Api.Endpoints;
 
 public static class TracesEndpoints
 {
+    private static readonly string[] TerminalTraceStates = ["Completed", "Failed", "Escalated"];
+
     public static IEndpointRouteBuilder MapTracesEndpoints(this IEndpointRouteBuilder routes)
     {
         ArgumentNullException.ThrowIfNull(routes);
@@ -42,6 +44,15 @@ public static class TracesEndpoints
 
         group.MapPost("/{id:guid}/hitl-decision", SubmitHitlDecisionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.HitlWrite);
+
+        group.MapPost("/{id:guid}/terminate", TerminateTraceAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesWrite);
+
+        group.MapDelete("/{id:guid}", DeleteTraceAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesWrite);
+
+        group.MapPost("/bulk-delete", BulkDeleteTracesAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesWrite);
 
         return routes;
     }
@@ -118,6 +129,7 @@ public static class TracesEndpoints
             CurrentRoundId: saga.CurrentRoundId,
             RoundCount: saga.RoundCount,
             PinnedAgentVersions: saga.GetPinnedAgentVersions(),
+            ContextInputs: DeserializeContextInputs(saga.InputsJson),
             Decisions: decisions
                 .Select(entity => new TraceDecisionDto(
                     AgentKey: entity.AgentKey,
@@ -250,6 +262,116 @@ public static class TracesEndpoints
         await dbContext.SaveChangesAsync(cancellationToken);
 
         return Results.Created($"/api/traces/{traceId}", new CreateTraceResponse(traceId));
+    }
+
+    private static async Task<IResult> TerminateTraceAsync(
+        Guid id,
+        CodeFlowDbContext dbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        var saga = await dbContext.WorkflowSagas
+            .FirstOrDefaultAsync(s => s.TraceId == id, cancellationToken);
+
+        if (saga is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!string.Equals(saga.CurrentState, "Running", StringComparison.Ordinal))
+        {
+            return Results.Conflict(new
+            {
+                error = $"Trace {id} is not running and cannot be terminated."
+            });
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        saga.CurrentState = "Failed";
+        saga.FailureReason = "Terminated by user.";
+        saga.UpdatedAtUtc = nowUtc;
+
+        var pendingTasks = await dbContext.HitlTasks
+            .Where(task => task.TraceId == id && task.State == HitlTaskState.Pending)
+            .ToListAsync(cancellationToken);
+
+        foreach (var task in pendingTasks)
+        {
+            task.State = HitlTaskState.Cancelled;
+            task.DeciderId = currentUser.Id ?? "unknown";
+            task.DecidedAtUtc = nowUtc;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> DeleteTraceAsync(
+        Guid id,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var saga = await dbContext.WorkflowSagas
+            .FirstOrDefaultAsync(s => s.TraceId == id, cancellationToken);
+
+        if (saga is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (string.Equals(saga.CurrentState, "Running", StringComparison.Ordinal))
+        {
+            return Results.Conflict(new
+            {
+                error = $"Trace {id} is still running. Terminate it before deleting."
+            });
+        }
+
+        await DeleteTracesAsync(dbContext, [saga], cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> BulkDeleteTracesAsync(
+        BulkDeleteTracesRequest request,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        if (request.OlderThanDays < 1 || request.OlderThanDays > 3650)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["olderThanDays"] = ["olderThanDays must be between 1 and 3650."]
+            });
+        }
+
+        string? normalizedState = null;
+        if (!string.IsNullOrWhiteSpace(request.State))
+        {
+            normalizedState = request.State.Trim();
+            if (!TerminalTraceStates.Contains(normalizedState, StringComparer.Ordinal))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["state"] = [$"state must be one of: {string.Join(", ", TerminalTraceStates)}."]
+                });
+            }
+        }
+
+        var cutoffUtc = DateTime.UtcNow.AddDays(-request.OlderThanDays);
+        var query = dbContext.WorkflowSagas
+            .Where(saga => TerminalTraceStates.Contains(saga.CurrentState)
+                && saga.UpdatedAtUtc <= cutoffUtc);
+
+        if (normalizedState is not null)
+        {
+            query = query.Where(saga => saga.CurrentState == normalizedState);
+        }
+
+        var sagas = await query.ToListAsync(cancellationToken);
+        var deletedCount = await DeleteTracesAsync(dbContext, sagas, cancellationToken);
+
+        return Results.Ok(new BulkDeleteTracesResponse(deletedCount));
     }
 
     private static (IReadOnlyDictionary<string, JsonElement> Values, string? Error) ResolveContextInputs(
@@ -454,6 +576,9 @@ public static class TracesEndpoints
             cancellationToken);
 
         var contractsDecision = (Contracts.AgentDecisionKind)(int)request.Decision;
+        var outputPortName = string.IsNullOrWhiteSpace(request.OutputPortName)
+            ? AgentDecisionPorts.ToPortName(contractsDecision)
+            : request.OutputPortName.Trim();
         var decisionPayload = BuildDecisionPayload(request);
 
         task.State = HitlTaskState.Decided;
@@ -469,7 +594,7 @@ public static class TracesEndpoints
                 FromNodeId: task.NodeId,
                 AgentKey: task.AgentKey,
                 AgentVersion: task.AgentVersion,
-                OutputPortName: AgentDecisionPorts.ToPortName(contractsDecision),
+                OutputPortName: outputPortName,
                 OutputRef: outputRef,
                 Decision: contractsDecision,
                 DecisionPayload: decisionPayload,
@@ -520,6 +645,11 @@ public static class TracesEndpoints
             ["kind"] = request.Decision.ToString()
         };
 
+        if (!string.IsNullOrWhiteSpace(request.OutputPortName))
+        {
+            json["outputPortName"] = request.OutputPortName.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(request.Reason))
         {
             json["reason"] = request.Reason;
@@ -552,6 +682,28 @@ public static class TracesEndpoints
 
         using var document = JsonDocument.Parse(json);
         return document.RootElement.Clone();
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)
+    {
+        if (string.IsNullOrWhiteSpace(inputsJson))
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
+
+        using var document = JsonDocument.Parse(inputsJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
+
+        var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            result[property.Name] = property.Value.Clone();
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<string> DeserializeLogs(string? json)
@@ -587,6 +739,49 @@ public static class TracesEndpoints
         Decision: task.Decision,
         DecidedAtUtc: task.DecidedAtUtc is null ? null : DateTime.SpecifyKind(task.DecidedAtUtc.Value, DateTimeKind.Utc),
         DeciderId: task.DeciderId);
+
+    private static async Task<int> DeleteTracesAsync(
+        CodeFlowDbContext dbContext,
+        IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
+        CancellationToken cancellationToken)
+    {
+        if (sagas.Count == 0)
+        {
+            return 0;
+        }
+
+        var traceIds = sagas.Select(saga => saga.TraceId).ToArray();
+        var correlationIds = sagas.Select(saga => saga.CorrelationId).ToArray();
+
+        var hitlTasks = await dbContext.HitlTasks
+            .Where(task => traceIds.Contains(task.TraceId))
+            .ToListAsync(cancellationToken);
+        if (hitlTasks.Count > 0)
+        {
+            dbContext.HitlTasks.RemoveRange(hitlTasks);
+        }
+
+        var decisions = await dbContext.WorkflowSagaDecisions
+            .Where(decision => correlationIds.Contains(decision.SagaCorrelationId))
+            .ToListAsync(cancellationToken);
+        if (decisions.Count > 0)
+        {
+            dbContext.WorkflowSagaDecisions.RemoveRange(decisions);
+        }
+
+        var logicEvaluations = await dbContext.WorkflowSagaLogicEvaluations
+            .Where(evaluation => correlationIds.Contains(evaluation.SagaCorrelationId))
+            .ToListAsync(cancellationToken);
+        if (logicEvaluations.Count > 0)
+        {
+            dbContext.WorkflowSagaLogicEvaluations.RemoveRange(logicEvaluations);
+        }
+
+        dbContext.WorkflowSagas.RemoveRange(sagas);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return sagas.Count;
+    }
 }
 
 internal static class TraceEventJson

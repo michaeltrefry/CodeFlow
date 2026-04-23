@@ -52,7 +52,11 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
           <div class="muted small">
             Defines exactly how reviewers enter their response.
             Use <code>{{ '{{name}}' }}</code> for free text or <code>{{ '{{name:Opt1|Opt2}}' }}</code> for a dropdown.
-            <code>{{ '{{decision}}' }}</code> is special — its value becomes the decision kind sent to the workflow.
+            <code>{{ '{{decision}}' }}</code> is special — if its options match built-in decision kinds, that choice is sent directly.
+            Otherwise the selected value is emitted as the HITL node's output port while the canonical decision stays <code>Completed</code>.
+            Use <code>{{ '{{json(name)}}' }}</code> when the final artifact should be valid JSON; the form still treats it like the underlying field, so
+            <code>{{ '{{json(context.lastQuestion)}}' }}</code> stays read-only, <code>{{ '{{json(answer)}}' }}</code> stays a textbox, and
+            <code>{{ '{{json(decision:Answered|Exit)}}' }}</code> stays a decision chooser.
           </div>
         </div>
       }
@@ -80,7 +84,12 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
 
         <div class="form-field">
           <label>Prompt template</label>
-          <textarea [(ngModel)]="promptTemplate" name="promptTemplate" rows="4" placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
+          <textarea
+            [(ngModel)]="promptTemplate"
+            name="promptTemplate"
+            rows="20"
+            class="prompt-template-input"
+            placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
         </div>
 
         <div class="grid-two">
@@ -166,6 +175,7 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
       background: var(--color-surface);
     }
     .row-spread { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .prompt-template-input { min-height: 28rem; resize: vertical; }
     .icon-button {
       width: 22px; height: 22px; padding: 0; border-radius: 50%;
       border: 1px solid var(--color-border); background: var(--color-surface);

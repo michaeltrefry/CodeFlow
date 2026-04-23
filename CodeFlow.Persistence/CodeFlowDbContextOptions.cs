@@ -17,10 +17,11 @@ public static class CodeFlowDbContextOptions
             throw new ArgumentException("A MariaDB connection string is required.", nameof(connectionString));
         }
 
-        builder.UseMySql(connectionString, ServerVersion, mysql =>
-        {
-            mysql.EnableRetryOnFailure(maxRetryCount: 5);
-        });
+        // MassTransit already applies its own receive retries around the EF inbox/outbox flow.
+        // Enabling EF's execution-strategy retries here can replay the same DbContext after a
+        // transient MariaDB deadlock, which leaves duplicate InboxState entries tracked and
+        // wedges message consumption. Keep retries explicit at the call site instead.
+        builder.UseMySql(connectionString, ServerVersion);
         return builder;
     }
 

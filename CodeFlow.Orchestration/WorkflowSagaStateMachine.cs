@@ -78,6 +78,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)
     {
+        var nowUtc = DateTime.UtcNow;
         saga.TraceId = message.TraceId;
         saga.WorkflowKey = message.WorkflowKey;
         saga.WorkflowVersion = message.WorkflowVersion;
@@ -88,7 +89,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
-        saga.UpdatedAtUtc = DateTime.UtcNow;
+        if (saga.CreatedAtUtc == default)
+        {
+            saga.CreatedAtUtc = nowUtc;
+        }
+        saga.UpdatedAtUtc = nowUtc;
     }
 
     private static void ClearPendingTransition(BehaviorContext<WorkflowSagaStateEntity> context)
@@ -266,7 +271,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// If the source node (the one that just emitted <see cref="AgentInvocationCompleted"/>) is an
     /// Agent/HITL/Escalation/Start node with a non-empty script, evaluate the script to pick the
     /// outgoing port. The script sees the agent's output artifact as <c>input</c> (with
-    /// <c>input.decision</c> and <c>input.decisionPayload</c> attached) and the workflow
+    /// <c>input.decision</c>, <c>input.decisionKind</c>, <c>input.outputPortName</c>, and
+    /// <c>input.decisionPayload</c> attached) and the workflow
     /// <c>context</c>. On any failure or if <c>setNodePath</c> is not called, fall back to the
     /// AgentDecisionKind-named port carried on the completion message. Context writes made via
     /// <c>setContext</c> are merged into <see cref="WorkflowSagaStateEntity.InputsJson"/>.
@@ -338,6 +344,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         AgentDecisionKind decision,
         JsonElement? decisionPayload)
     {
+        var decisionKindText = decision.ToString();
+        var outputPortName = TryReadOutputPortName(decisionPayload) ?? decisionKindText;
+
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -349,6 +358,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 {
                     // Never let the artifact shadow the decision metadata we inject below.
                     if (string.Equals(property.Name, "decision", StringComparison.Ordinal)
+                        || string.Equals(property.Name, "decisionKind", StringComparison.Ordinal)
+                        || string.Equals(property.Name, "outputPortName", StringComparison.Ordinal)
                         || string.Equals(property.Name, "decisionPayload", StringComparison.Ordinal))
                     {
                         continue;
@@ -362,7 +373,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 artifactJson.WriteTo(writer);
             }
 
-            writer.WriteString("decision", decision.ToString());
+            writer.WriteString("decision", outputPortName);
+            writer.WriteString("decisionKind", decisionKindText);
+            writer.WriteString("outputPortName", outputPortName);
 
             writer.WritePropertyName("decisionPayload");
             if (decisionPayload is { } payload)
@@ -378,6 +391,23 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         return JsonDocument.Parse(buffer.ToArray()).RootElement.Clone();
+    }
+
+    private static string? TryReadOutputPortName(JsonElement? decisionPayload)
+    {
+        if (decisionPayload is not { ValueKind: JsonValueKind.Object } payload)
+        {
+            return null;
+        }
+
+        if (!payload.TryGetProperty("outputPortName", out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = property.GetString();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static async Task<LogicChainResolution?> ResolveTargetThroughLogicChainAsync(

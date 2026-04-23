@@ -2,6 +2,8 @@ import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
+  BulkDeleteTracesRequest,
+  BulkDeleteTracesResponse,
   CreateTraceRequest,
   CreateTraceResponse,
   HitlDecisionRequest,
@@ -32,6 +34,18 @@ export class TracesApi {
 
   submitHitlDecision(traceId: string, request: HitlDecisionRequest): Observable<{ taskId: number }> {
     return this.http.post<{ taskId: number }>(`/api/traces/${traceId}/hitl-decision`, request);
+  }
+
+  terminate(traceId: string): Observable<void> {
+    return this.http.post<void>(`/api/traces/${traceId}/terminate`, {});
+  }
+
+  delete(traceId: string): Observable<void> {
+    return this.http.delete<void>(`/api/traces/${traceId}`);
+  }
+
+  bulkDelete(request: BulkDeleteTracesRequest): Observable<BulkDeleteTracesResponse> {
+    return this.http.post<BulkDeleteTracesResponse>('/api/traces/bulk-delete', request);
   }
 
   getArtifact(traceId: string, artifactUri: string): Observable<string> {
