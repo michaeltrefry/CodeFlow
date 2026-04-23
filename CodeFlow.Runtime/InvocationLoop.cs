@@ -17,7 +17,7 @@ public sealed class InvocationLoop
                 ["decision"] = new JsonObject
                 {
                     ["type"] = "string",
-                    ["enum"] = new JsonArray("completed", "approved", "approved_with_actions", "rejected")
+                    ["enum"] = new JsonArray("completed", "approved", "rejected")
                 },
                 ["payload"] = new JsonObject()
             },
