@@ -80,8 +80,7 @@ public sealed class HitlTaskEntityConfiguration : IEntityTypeConfiguration<HitlT
             .HasColumnName("decided_at")
             .HasColumnType("datetime(6)");
 
-        builder.HasIndex(entity => new { entity.TraceId, entity.RoundId, entity.AgentKey })
-            .IsUnique();
+        builder.HasIndex(entity => new { entity.TraceId, entity.RoundId, entity.AgentKey });
 
         builder.HasIndex(entity => entity.State);
     }
