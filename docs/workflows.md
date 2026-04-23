@@ -232,26 +232,31 @@ A consequence: **a workflow designed to be callable both top-level and as a subf
 
 ### Exiting a subflow
 
-There is no explicit "exit node" marker — a child saga terminates as soon as it walks off the graph, i.e. reaches a node whose chosen output port has no outgoing edge. Which port gets chosen determines which of the parent's Subflow ports fires:
+There is no explicit "exit node" marker — a child saga terminates as soon as it walks off the graph, i.e. reaches a node whose chosen output port has no outgoing edge. Which port gets chosen determines the child's terminal state and the decision kind propagated back to the parent:
 
-| Child terminates on | Parent routes from |
-|---|---|
-| Any node's `Completed` port with no outgoing edge | `Subflow.Completed` |
-| Any node's `Failed` port with no outgoing edge (or any non-`Completed` port that has no wired edge) | `Subflow.Failed` |
-| The child's Escalation node emits `Rejected` (the escalation-recovery flow) | `Subflow.Escalated` |
+| Child's last agent emits | Unwired port behaviour | Child terminal state | `SubflowCompleted.Decision` |
+|---|---|---|---|
+| `Completed` | Legal clean exit | `Completed` | `Completed` |
+| `Approved` | Legal clean exit (signals approval to the parent) | `Completed` | `Approved` |
+| `Rejected` | Legal clean exit (signals "revise" to a ReviewLoop parent, or a terminal rejection otherwise) | `Completed` | `Rejected` |
+| `Failed` | Terminates the child as `Failed` with a "no outgoing edge" reason | `Failed` | `Failed` |
+| Escalation node resolves with `Rejected` | Escalation-recovery flow | `Escalated` | (unchanged; escalation path) |
+
+A plain `Subflow` parent maps the child's terminal state to its three output ports (`Completed` / `Failed` / `Escalated`), so `Approved` / `Rejected` unwired exits both surface as `Subflow.Completed` — the `Decision` field is metadata the parent can inspect but not a distinct port. A `ReviewLoop` parent uses `Decision` directly: `Approved` or `Completed` → Approved port; `Rejected` with rounds remaining → next round; `Rejected` on the last round → Exhausted port; `Failed` / missing decision → Failed port.
 
 The child's **last output artifact** — the artifact produced by the final agent before termination — becomes the input to whatever the parent routes to next. The child's final `global` is shallow-merged back into the parent's `global` regardless of which port fired.
 
 **Common patterns:**
 
 - **Single happy exit.** Route every success path to one final agent, and leave its `Completed` port unwired. That node becomes the de-facto exit — when it completes, the child terminates `Completed` and the parent continues from `Subflow.Completed`.
-- **Multi-exit.** Any node with an unwired `Completed` port is a legal exit. The first one the saga reaches terminates the subflow; there is no priority mechanism beyond execution order.
-- **Explicit failure exit.** Wire the error-handling branch to an agent whose `Failed` port (or any non-`Completed` port) is left open. That terminates the child `Failed`, routing the parent from `Subflow.Failed`.
+- **Multi-exit.** Any node with an unwired `Completed`, `Approved`, or `Rejected` port is a legal exit. The first one the saga reaches terminates the subflow; there is no priority mechanism beyond execution order.
+- **ReviewLoop child pattern.** A reviewer agent inside a ReviewLoop child typically leaves its `Approved` and `Rejected` ports unwired — the parent ReviewLoop routes on the emitted decision kind to either exit Approved or spawn the next round. No wiring needed inside the child for the loop to work.
+- **Explicit failure exit.** Wire the error-handling branch to an agent whose `Failed` port is left open. That terminates the child `Failed`, routing the parent from `Subflow.Failed`.
 - **Use Escalation for recoverable failures only.** A child `Escalated` terminal is specifically the Escalation node resolving with `Rejected`. Reserve it for cases where the child truly couldn't recover despite escalation — for ordinary failure, use `Failed`.
 
 **Gotchas:**
 
-- If a node emits a non-`Completed` port and you *don't* want that to fail the subflow, wire it somewhere. An unwired non-`Completed` port always terminates as `Failed`.
+- Only `Completed` / `Approved` / `Rejected` have the "unwired = clean exit" semantics. Unwired `Failed` still fails the child (that's the design — `Failed` means something actually went wrong). Any other custom port name that's unwired also fails the child with a "no outgoing edge" reason.
 - The save-time validator rejects unknown Subflow output ports on the parent (only `Completed`, `Failed`, `Escalated` are allowed on the Subflow node itself), but doesn't verify the child workflow's exit shape — a child with only unwired `Failed` ports will always return `Failed` to the parent.
 
 ### Example: shared review subflow

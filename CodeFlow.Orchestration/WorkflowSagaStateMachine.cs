@@ -299,51 +299,62 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     /// <summary>
     /// Maps a child saga's terminal <see cref="SubflowCompleted"/> back onto the ReviewLoop
-    /// parent's outcome surface. <c>Approved</c>/<c>Completed</c> → <c>Approved</c> port;
-    /// <c>Rejected</c> with rounds remaining → spawn next round; <c>Rejected</c> on the last
-    /// round → <c>Exhausted</c> port; <c>Failed</c>/<c>Escalated</c> (and missing metadata) →
-    /// <c>Failed</c> port.
+    /// parent's outcome surface. Priority: the child's last-agent <c>Decision</c> wins over the
+    /// saga's terminal <c>OutputPortName</c>, because the Subflow exit model can only terminate
+    /// cleanly via an unwired <c>Completed</c> port — any non-Completed unwired port fails the
+    /// child saga even when its last agent emitted a meaningful <c>Rejected</c>. The
+    /// ReviewLoop contract is "the child's terminal decision drives the loop," so we trust the
+    /// decision kind when it's present and only fall back to the port name when it's not.
+    /// <para/>
+    /// Mapping:
+    /// <list type="bullet">
+    /// <item><description><c>Approved</c>/<c>Completed</c> → <c>Approved</c> port.</description></item>
+    /// <item><description><c>Rejected</c> with rounds remaining → spawn next round.</description></item>
+    /// <item><description><c>Rejected</c> on the last round → <c>Exhausted</c> port.</description></item>
+    /// <item><description><c>Failed</c> decision → <c>Failed</c> port.</description></item>
+    /// <item><description>No decision metadata, or <c>OutputPortName</c> is <c>Escalated</c>/<c>Failed</c> → <c>Failed</c> port.</description></item>
+    /// </list>
     /// </summary>
     private static ReviewLoopOutcome ResolveReviewLoopOutcome(
         SubflowCompleted message,
         WorkflowNode reviewLoopNode)
     {
-        // Child that hit its own escalation node bubbles Failed regardless of the last agent
-        // decision — the escalation is a "went sideways" signal distinct from "please revise."
-        if (string.Equals(message.OutputPortName, "Escalated", StringComparison.Ordinal)
-            || string.Equals(message.OutputPortName, "Failed", StringComparison.Ordinal))
+        // Prefer the child's last-agent decision over the saga's terminal state. A child whose
+        // reviewer emits Rejected but has no wired edge from its Rejected port will terminate
+        // as Failed at the saga level (per Subflow exit rules), yet the reviewer's intent is
+        // still captured on the last Decision. For ReviewLoop purposes, that intent is the
+        // signal to advance to the next round — matching the documented contract.
+        if (message.Decision is AgentDecisionKind decision)
         {
-            return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+            switch (decision)
+            {
+                case AgentDecisionKind.Approved:
+                case AgentDecisionKind.Completed:
+                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Approved");
+
+                case AgentDecisionKind.Rejected:
+                    var justFinishedRound = message.ReviewRound ?? 1;
+                    var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
+                    if (justFinishedRound < maxRounds)
+                    {
+                        return new ReviewLoopOutcome(
+                            SpawnNextRound: true,
+                            NextRound: justFinishedRound + 1,
+                            PortName: null);
+                    }
+                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
+
+                case AgentDecisionKind.Failed:
+                default:
+                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+            }
         }
 
-        if (message.Decision is not AgentDecisionKind decision)
-        {
-            // No decision metadata on the completion — defensive fallback.
-            return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
-        }
-
-        switch (decision)
-        {
-            case AgentDecisionKind.Approved:
-            case AgentDecisionKind.Completed:
-                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Approved");
-
-            case AgentDecisionKind.Rejected:
-                var justFinishedRound = message.ReviewRound ?? 1;
-                var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
-                if (justFinishedRound < maxRounds)
-                {
-                    return new ReviewLoopOutcome(
-                        SpawnNextRound: true,
-                        NextRound: justFinishedRound + 1,
-                        PortName: null);
-                }
-                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
-
-            case AgentDecisionKind.Failed:
-            default:
-                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
-        }
+        // No Decision metadata — this is a legacy or synthetic completion that doesn't carry the
+        // child's last-agent intent. Fall back to the saga's terminal port: Escalated / Failed
+        // both collapse to Failed; an unexpected value (Completed without a Decision) also
+        // collapses to Failed as a conservative default.
+        return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
     }
 
     /// <summary>
@@ -646,7 +657,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (edge is null)
         {
-            if (message.Decision == AgentDecisionKind.Completed)
+            // Unwired-port exit rules:
+            //   - Completed: always a legal clean exit (top-level and subflow).
+            //   - Approved / Rejected: a legal clean exit *for child sagas* — the decision kind
+            //     is preserved on SubflowCompleted.Decision so parents (especially ReviewLoop)
+            //     can route on the last agent's intent. A top-level saga has no parent to
+            //     propagate to, so these fall through to the failure branch to surface the
+            //     authoring gap.
+            //   - Anything else (Failed, Escalated, custom logic ports, missing decision): the
+            //     port is unexpectedly unwired; fail with a clear reason.
+            var isChildSaga = saga.ParentTraceId is not null;
+            if (message.Decision == AgentDecisionKind.Completed
+                || (isChildSaga && (message.Decision == AgentDecisionKind.Approved
+                                    || message.Decision == AgentDecisionKind.Rejected)))
             {
                 saga.PendingTransition = PendingTransitionCompleted;
             }
