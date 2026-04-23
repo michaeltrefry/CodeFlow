@@ -83,13 +83,24 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
         </div>
 
         <div class="form-field">
-          <label>Prompt template</label>
+          <label>
+            Prompt template
+            <a
+              class="doc-link"
+              href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/prompt-templates.md"
+              target="_blank"
+              rel="noopener noreferrer">Learn more ↗</a>
+          </label>
           <textarea
             [(ngModel)]="promptTemplate"
             name="promptTemplate"
             rows="20"
             class="prompt-template-input"
             placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
+          <div class="muted small">
+            Supports <code>{{ '{{ name }}' }}</code> substitution plus conditionals and loops —
+            see the <a href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/prompt-templates.md" target="_blank" rel="noopener noreferrer">prompt template guide</a>.
+          </div>
         </div>
 
         <div class="grid-two">
@@ -196,6 +207,11 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
       cursor: pointer; color: inherit;
     }
     .icon-button:hover { border-color: #f85149; color: #f85149; }
+    .doc-link {
+      margin-left: 0.5rem; font-size: 0.75rem; font-weight: normal;
+      color: var(--color-muted); text-decoration: none;
+    }
+    .doc-link:hover { color: var(--color-accent, #58a6ff); text-decoration: underline; }
   `]
 })
 export class AgentEditorComponent implements OnInit {

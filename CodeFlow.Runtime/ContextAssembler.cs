@@ -1,14 +1,43 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Scriban;
+using Scriban.Parsing;
+using Scriban.Runtime;
+using Scriban.Syntax;
 
 namespace CodeFlow.Runtime;
 
 public sealed class ContextAssembler
 {
-    private static readonly Regex VariablePattern = new(
-        "{{\\s*(?<name>[A-Za-z0-9_.-]+)\\s*}}",
+    internal static readonly TimeSpan RenderTimeout = TimeSpan.FromMilliseconds(50);
+
+    // Matches the exact shape the legacy regex engine handled: bare `{{ name }}` or `{{ path.to.key }}`
+    // references with no expressions, pipes, filters, or statement keywords. Anything outside this shape
+    // is forwarded to Scriban verbatim.
+    private static readonly Regex LegacyPlaceholderPattern = new(
+        "{{\\s*(?<name>[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s*}}",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(1));
+
+    // Finds loop-bound names (`{{ for x in y }}`, `{% for x in y %}`) so their usages inside the
+    // loop don't get pre-escaped as "unresolved" — the engine supplies them at render time.
+    private static readonly Regex LocalBindingPattern = new(
+        "(?:\\{\\{-?|\\{%-?)\\s*(?:for|capture)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
+
+    // Scriban statement/expression keywords that can appear as the sole identifier inside `{{ ... }}`
+    // (for example, `{{ end }}`). These must pass through to the engine rather than being treated as
+    // unresolved variable references.
+    private static readonly HashSet<string> ScribanKeywords = new(StringComparer.Ordinal)
+    {
+        "if", "else", "end", "for", "in", "do", "while", "break", "continue", "capture",
+        "case", "when", "with", "ret", "import", "include", "wrap", "func", "tablerow",
+        "cycle", "this", "null", "true", "false", "and", "or", "not", "empty", "blank",
+        "nan", "as", "offset", "limit", "reversed", "by", "unless", "endcase", "endfor",
+        "endif", "endunless", "endcapture", "endwhile"
+    };
 
     public IReadOnlyList<ChatMessage> Assemble(ContextAssemblyRequest request)
     {
@@ -84,28 +113,295 @@ public sealed class ContextAssembler
         IReadOnlyDictionary<string, string?>? variables,
         string? input)
     {
-        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-
+        var flat = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         if (variables is not null)
         {
             foreach (var entry in variables)
             {
-                values[entry.Key] = entry.Value;
+                flat[entry.Key] = entry.Value;
             }
         }
 
-        values["input"] = input;
+        flat["input"] = input;
 
-        return VariablePattern.Replace(
+        var locallyBound = CollectLocallyBoundNames(template);
+
+        // Pre-pass: any legacy-style `{{ name }}` that can't resolve stays as literal text,
+        // matching the old regex substituter. Anything not matching the legacy shape (Scriban
+        // expressions, conditionals, loops, filters) falls through to the engine untouched.
+        var escaped = LegacyPlaceholderPattern.Replace(
             template,
             match =>
             {
-                var variableName = match.Groups["name"].Value;
+                var name = match.Groups["name"].Value;
+                if (ScribanKeywords.Contains(name))
+                {
+                    return match.Value;
+                }
 
-                return values.TryGetValue(variableName, out var value) && value is not null
-                    ? value
-                    : match.Value;
+                var root = GetRootSegment(name);
+                if (locallyBound.Contains(root))
+                {
+                    return match.Value;
+                }
+
+                return ResolvesInFlat(flat, name)
+                    ? match.Value
+                    : EscapeLegacyLiteral(match.Value);
             });
+
+        return RenderWithScriban(escaped, flat);
+    }
+
+    private static HashSet<string> CollectLocallyBoundNames(string template)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match match in LocalBindingPattern.Matches(template))
+        {
+            names.Add(match.Groups["name"].Value);
+        }
+        return names;
+    }
+
+    private static string GetRootSegment(string dottedName)
+    {
+        var dot = dottedName.IndexOf('.');
+        return dot < 0 ? dottedName : dottedName[..dot];
+    }
+
+    private static string RenderWithScriban(string template, IReadOnlyDictionary<string, string?> flat)
+    {
+        Template parsed;
+        try
+        {
+            parsed = Template.Parse(template);
+        }
+        catch (Exception ex) when (ex is not PromptTemplateException)
+        {
+            throw new PromptTemplateException(
+                $"Prompt template could not be parsed: {ex.Message}", ex);
+        }
+
+        if (parsed.HasErrors)
+        {
+            var details = string.Join(
+                "; ",
+                parsed.Messages.Where(m => m.Type == ParserMessageType.Error).Select(m => m.Message));
+            throw new PromptTemplateException(
+                string.IsNullOrWhiteSpace(details)
+                    ? "Prompt template has syntax errors."
+                    : $"Prompt template has syntax errors: {details}");
+        }
+
+        var scriptObject = BuildScriptObject(flat);
+        using var cts = new CancellationTokenSource(RenderTimeout);
+        var context = new TemplateContext
+        {
+            TemplateLoader = null,
+            LoopLimit = 1000,
+            RecursiveLimit = 64,
+            LimitToString = 1_000_000,
+            StrictVariables = false,
+            EnableRelaxedMemberAccess = true,
+            CancellationToken = cts.Token
+        };
+        context.PushGlobal(scriptObject);
+
+        try
+        {
+            return parsed.Render(context);
+        }
+        catch (ScriptAbortException)
+        {
+            throw new PromptTemplateException(
+                $"Prompt template render exceeded the {RenderTimeout.TotalMilliseconds:F0}ms sandbox budget.");
+        }
+        catch (ScriptRuntimeException ex)
+        {
+            throw new PromptTemplateException(
+                $"Prompt template render failed: {ex.OriginalMessage}", ex);
+        }
+    }
+
+    private static string EscapeLegacyLiteral(string literal)
+    {
+        // Emit a Scriban expression that outputs the verbatim legacy token as a raw string literal.
+        var escaped = literal.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return "{{ \"" + escaped + "\" }}";
+    }
+
+    private static bool ResolvesInFlat(IReadOnlyDictionary<string, string?> flat, string name)
+    {
+        if (flat.TryGetValue(name, out var value))
+        {
+            return value is not null;
+        }
+
+        return false;
+    }
+
+    private static ScriptObject BuildScriptObject(IReadOnlyDictionary<string, string?> flat)
+    {
+        var root = new ScriptObject();
+
+        // Populate shallow (single-segment) keys first so nested containers overwrite leaf scalars
+        // rather than the other way around — e.g. `context` is often set as a bare key via configured
+        // variables while `context.foo` and `context.foo.bar` arrive from the flattened JSON tree.
+        foreach (var (key, value) in flat.OrderBy(e => e.Key.Count(c => c == '.')))
+        {
+            SetNestedPath(root, key.Split('.'), value);
+        }
+
+        return root;
+    }
+
+    private static void SetNestedPath(ScriptObject root, string[] parts, string? value)
+    {
+        if (parts.Length == 0)
+        {
+            return;
+        }
+
+        object current = root;
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            var part = parts[i];
+            var nextPart = parts[i + 1];
+            var nextIsIndex = IsArrayIndex(nextPart, out _);
+
+            current = DescendOrCreate(current, part, nextIsIndex);
+            if (current is not ScriptObject and not ScriptArray)
+            {
+                return;
+            }
+        }
+
+        var leafKey = parts[^1];
+        var coerced = CoerceValue(value);
+
+        switch (current)
+        {
+            case ScriptObject obj:
+                if (!(obj.TryGetValue(leafKey, out var existingLeaf)
+                      && existingLeaf is ScriptObject or ScriptArray))
+                {
+                    obj[leafKey] = coerced;
+                }
+                break;
+
+            case ScriptArray arr when IsArrayIndex(leafKey, out var leafIndex):
+                EnsureArrayCapacity(arr, leafIndex + 1);
+                if (!(arr[leafIndex] is ScriptObject or ScriptArray))
+                {
+                    arr[leafIndex] = coerced;
+                }
+                break;
+        }
+    }
+
+    private static object DescendOrCreate(object current, string part, bool childIsIndex)
+    {
+        switch (current)
+        {
+            case ScriptObject obj:
+                if (obj.TryGetValue(part, out var existing)
+                    && existing is ScriptObject or ScriptArray)
+                {
+                    return existing;
+                }
+
+                object next = childIsIndex ? new ScriptArray() : new ScriptObject();
+                obj[part] = next;
+                return next;
+
+            case ScriptArray arr when IsArrayIndex(part, out var index):
+                EnsureArrayCapacity(arr, index + 1);
+                var existingElement = arr[index];
+                if (existingElement is ScriptObject or ScriptArray)
+                {
+                    return existingElement!;
+                }
+
+                object container = childIsIndex ? new ScriptArray() : new ScriptObject();
+                arr[index] = container;
+                return container;
+
+            default:
+                return current;
+        }
+    }
+
+    private static void EnsureArrayCapacity(ScriptArray array, int size)
+    {
+        while (array.Count < size)
+        {
+            array.Add(null);
+        }
+    }
+
+    private static bool IsArrayIndex(string part, out int index)
+    {
+        return int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out index)
+               && index >= 0;
+    }
+
+    private static object? CoerceValue(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (string.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.Equals(value, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Coerce plain integer strings so numeric comparisons (e.g. `round < maxRounds`) behave
+        // intuitively. Preserve the string shape for anything else — zero-padded numbers, decimals,
+        // version strings, etc.
+        if (LooksLikePlainInteger(value)
+            && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer))
+        {
+            return integer;
+        }
+
+        return value;
+    }
+
+    private static bool LooksLikePlainInteger(string value)
+    {
+        if (value.Length == 0 || value.Length > 10)
+        {
+            return false;
+        }
+
+        var start = value[0] == '-' ? 1 : 0;
+        if (start == value.Length)
+        {
+            return false;
+        }
+
+        // Reject leading zeros on multi-digit values so "007" keeps rendering as "007".
+        if (value.Length - start > 1 && value[start] == '0')
+        {
+            return false;
+        }
+
+        for (var i = start; i < value.Length; i++)
+        {
+            if (value[i] < '0' || value[i] > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string? BuildSkillsBlock(
@@ -242,7 +538,7 @@ public sealed class ContextAssembler
             return false;
         }
 
-        return VariablePattern
+        return LegacyPlaceholderPattern
             .Matches(template)
             .Cast<Match>()
             .Any(static match =>
@@ -251,5 +547,16 @@ public sealed class ContextAssembler
                 return string.Equals(name, "input", StringComparison.OrdinalIgnoreCase)
                     || name.StartsWith("input.", StringComparison.OrdinalIgnoreCase);
             });
+    }
+}
+
+public sealed class PromptTemplateException : Exception
+{
+    public PromptTemplateException(string message) : base(message)
+    {
+    }
+
+    public PromptTemplateException(string message, Exception innerException) : base(message, innerException)
+    {
     }
 }
