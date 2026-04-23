@@ -296,6 +296,139 @@ public sealed class ContextAssemblerTests
     }
 
     [Fact]
+    public void Assemble_ShouldRenderConditionalBranch_OnIsLastRoundBoolean()
+    {
+        var template =
+            "{{ if isLastRound }}Ship it now.{{ else }}Round {{ round }} of {{ maxRounds }}.{{ end }}";
+
+        var lastRound = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: template,
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["round"] = "3",
+                ["maxRounds"] = "3",
+                ["isLastRound"] = "true"
+            })).Single();
+
+        lastRound.Content.Should().Be("Ship it now.");
+
+        var earlyRound = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: template,
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["round"] = "1",
+                ["maxRounds"] = "3",
+                ["isLastRound"] = "false"
+            })).Single();
+
+        earlyRound.Content.Should().Be("Round 1 of 3.");
+    }
+
+    [Fact]
+    public void Assemble_ShouldIterateOverJsonArray_FromContextVariables()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "{{ for item in context.items }}- {{ item }}\n{{ end }}",
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["context.items"] = "[\"alpha\",\"bravo\",\"charlie\"]",
+                ["context.items.0"] = "alpha",
+                ["context.items.1"] = "bravo",
+                ["context.items.2"] = "charlie"
+            }));
+
+        messages.Single().Content.Should().Be("- alpha\n- bravo\n- charlie");
+    }
+
+    [Fact]
+    public void Assemble_ShouldLeaveUnresolvedLegacyPlaceholdersAsLiterals_WhenRenderedThroughScriban()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "Hello {{ unresolved }} and {{ also.missing }}.",
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["greeting"] = "Hi"
+            }));
+
+        messages.Single().Content.Should().Be("Hello {{ unresolved }} and {{ also.missing }}.");
+    }
+
+    [Fact]
+    public void Assemble_ShouldThrowReadableError_WhenTemplateHasSyntaxError()
+    {
+        var act = () => assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "{{ if isLastRound }}missing end",
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["isLastRound"] = "true"
+            }));
+
+        act.Should().Throw<PromptTemplateException>()
+            .WithMessage("Prompt template has syntax errors*");
+    }
+
+    [Fact]
+    public void Assemble_ShouldTerminatePathologicalTemplate_WithinSandboxBudget()
+    {
+        // Scriban's LoopLimit + wall-clock CancellationToken cooperate to abort runaway templates.
+        var template = "{{ for i in 1..999999999 }}{{ i }} {{ end }}";
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: template,
+            Input: null));
+
+        act.Should().Throw<PromptTemplateException>();
+        stopwatch.Stop();
+        // Generous ceiling — render budget is 50ms and LoopLimit=1000 caps iterations almost instantly.
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void Assemble_ShouldResolveNestedPath_WhenParentAndChildrenAreProvided()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "{{ context.target.repo }} / {{ context.target.branch }}",
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["context.target"] = "{\"repo\":\"codeflow\",\"branch\":\"main\"}",
+                ["context.target.repo"] = "codeflow",
+                ["context.target.branch"] = "main"
+            }));
+
+        messages.Single().Content.Should().Be("codeflow / main");
+    }
+
+    [Fact]
+    public void Assemble_ShouldRenderInputPathFromJsonInput_InsideConditional()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: null,
+            PromptTemplate: "{{ if input.priority == \"high\" }}URGENT: {{ input.title }}{{ else }}{{ input.title }}{{ end }}",
+            Input: null,
+            Variables: new Dictionary<string, string?>
+            {
+                ["input.priority"] = "high",
+                ["input.title"] = "Review the draft"
+            }));
+
+        messages.Single().Content.Should().Be("URGENT: Review the draft");
+    }
+
+    [Fact]
     public void Assemble_ShouldCarryForwardHistoryBeforeAppendingNextUserTurn()
     {
         var history = new[]
