@@ -60,6 +60,9 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
         builder.Property(node => node.SubflowVersion)
             .HasColumnName("subflow_version");
 
+        builder.Property(node => node.ReviewMaxRounds)
+            .HasColumnName("review_max_rounds");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

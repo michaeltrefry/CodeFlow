@@ -175,7 +175,7 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
         var evaluator = Guid.NewGuid();
         var reviewer = Guid.NewGuid();
         var publisher = Guid.NewGuid();
-        const string portsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""";
+        const string portsJson = """["Completed","Approved","Rejected","Failed"]""";
 
         var workflow = new WorkflowEntity
         {

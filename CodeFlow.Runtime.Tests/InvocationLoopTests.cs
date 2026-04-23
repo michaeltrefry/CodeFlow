@@ -43,10 +43,10 @@ public sealed class InvocationLoopTests
                             "submit",
                             new JsonObject
                             {
-                                ["decision"] = "approved_with_actions",
+                                ["decision"] = "rejected",
                                 ["payload"] = new JsonObject
                                 {
-                                    ["actions"] = new JsonArray("Tighten validation", "Add regression tests"),
+                                    ["reasons"] = new JsonArray("Tighten validation", "Add regression tests"),
                                     ["ticket"] = "CF-17"
                                 }
                             })
@@ -61,8 +61,8 @@ public sealed class InvocationLoopTests
 
         result.Output.Should().Be("Review complete.");
         result.ToolCallsExecuted.Should().Be(1);
-        var decision = result.Decision.Should().BeOfType<ApprovedWithActionsDecision>().Subject;
-        decision.Actions.Should().Equal("Tighten validation", "Add regression tests");
+        var decision = result.Decision.Should().BeOfType<RejectedDecision>().Subject;
+        decision.Reasons.Should().Equal("Tighten validation", "Add regression tests");
         decision.DecisionPayload!["ticket"]!.GetValue<string>().Should().Be("CF-17");
     }
 

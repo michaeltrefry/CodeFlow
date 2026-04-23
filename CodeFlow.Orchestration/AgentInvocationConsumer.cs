@@ -512,7 +512,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         {
             Runtime.AgentDecisionKind.Completed => CodeFlow.Contracts.AgentDecisionKind.Completed,
             Runtime.AgentDecisionKind.Approved => CodeFlow.Contracts.AgentDecisionKind.Approved,
-            Runtime.AgentDecisionKind.ApprovedWithActions => CodeFlow.Contracts.AgentDecisionKind.ApprovedWithActions,
             Runtime.AgentDecisionKind.Rejected => CodeFlow.Contracts.AgentDecisionKind.Rejected,
             Runtime.AgentDecisionKind.Failed => CodeFlow.Contracts.AgentDecisionKind.Failed,
             _ => throw new ArgumentOutOfRangeException(nameof(decisionKind), decisionKind, "Unsupported decision kind.")
@@ -535,12 +534,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
         switch (decision)
         {
-            case ApprovedWithActionsDecision approvedWithActions:
-                json["actions"] = new JsonArray(approvedWithActions.Actions
-                    .Select(static action => (JsonNode?)JsonValue.Create(action))
-                    .ToArray());
-                break;
-
             case RejectedDecision rejected:
                 json["reasons"] = new JsonArray(rejected.Reasons
                     .Select(static reason => (JsonNode?)JsonValue.Create(reason))

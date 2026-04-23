@@ -20,6 +20,13 @@ namespace CodeFlow.Contracts;
 ///   whatever the parent routes to next.</param>
 /// <param name="SharedContext">The child saga's final <c>global</c> bag, including any
 ///   <c>setGlobal</c> writes performed during the child's execution.</param>
+/// <param name="Decision">The child saga's terminal <see cref="AgentDecisionKind"/>. Included so
+///   a ReviewLoop parent can drive its outcome mapping (Approved/Completed → Approved port,
+///   Rejected → next round or Exhausted port, Failed/Escalated → Failed port) without re-fetching
+///   the child's last decision from storage. Null for legacy or synthetic completions.</param>
+/// <param name="ReviewRound">1-indexed round number when the completing child was spawned by a
+///   ReviewLoop parent. Tells the parent which round just finished so it can compute whether
+///   rounds remain before mapping to the Exhausted port. Null for plain Subflow completions.</param>
 public sealed record SubflowCompleted(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -27,4 +34,6 @@ public sealed record SubflowCompleted(
     Guid ChildTraceId,
     string OutputPortName,
     Uri OutputRef,
-    IReadOnlyDictionary<string, JsonElement> SharedContext);
+    IReadOnlyDictionary<string, JsonElement> SharedContext,
+    AgentDecisionKind? Decision = null,
+    int? ReviewRound = null);

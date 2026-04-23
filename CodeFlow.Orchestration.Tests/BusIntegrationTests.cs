@@ -218,7 +218,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
                     Kind = WorkflowNodeKind.Start,
                     AgentKey = "echo-agent",
                     AgentVersion = 1,
-                    OutputPortsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""",
+                    OutputPortsJson = """["Completed","Approved","Rejected","Failed"]""",
                     LayoutX = 0,
                     LayoutY = 0
                 }

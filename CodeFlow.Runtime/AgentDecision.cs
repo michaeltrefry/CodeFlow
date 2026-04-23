@@ -12,11 +12,6 @@ public sealed record CompletedDecision(JsonNode? DecisionPayload = null)
 public sealed record ApprovedDecision(JsonNode? DecisionPayload = null)
     : AgentDecision(AgentDecisionKind.Approved, DecisionPayload);
 
-public sealed record ApprovedWithActionsDecision(
-    IReadOnlyList<string> Actions,
-    JsonNode? DecisionPayload = null)
-    : AgentDecision(AgentDecisionKind.ApprovedWithActions, DecisionPayload);
-
 public sealed record RejectedDecision(
     IReadOnlyList<string> Reasons,
     JsonNode? DecisionPayload = null)

@@ -19,7 +19,7 @@ Every node has a stable `Id` (GUID) that persists across saves, a set of named *
 
 ## Edges and ports
 
-An edge is `(FromNodeId, FromPort) → (ToNodeId, ToPort)` plus a `RotatesRound` flag and a `SortOrder`. Ports are strings — for agent nodes the port name equals the returned `AgentDecisionKind` (`Completed`, `Approved`, `ApprovedWithActions`, `Rejected`, `Failed`). Logic nodes declare their ports explicitly.
+An edge is `(FromNodeId, FromPort) → (ToNodeId, ToPort)` plus a `RotatesRound` flag and a `SortOrder`. Ports are strings — for agent nodes the port name equals the returned `AgentDecisionKind` (`Completed`, `Approved`, `Rejected`, `Failed`). Logic nodes declare their ports explicitly.
 
 **Connection rules enforced by the editor:**
 
@@ -154,7 +154,7 @@ Agent, HITL, Escalation, and Start nodes may carry an **optional** `Script` that
 After the agent emits `AgentInvocationCompleted`, the saga:
 
 1. Finds the source node.
-2. If the node has a non-empty `Script`, reads the agent's output artifact as JSON, attaches `input.decision` (the AgentDecisionKind name: `Completed`, `Approved`, `ApprovedWithActions`, `Rejected`, `Failed`) and `input.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context`.
+2. If the node has a non-empty `Script`, reads the agent's output artifact as JSON, attaches `input.decision` (the AgentDecisionKind name: `Completed`, `Approved`, `Rejected`, `Failed`) and `input.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context`.
 3. Uses the port chosen by `setNodePath` to find the outgoing edge.
 4. If the script fails (throws, times out, omits `setNodePath`, or picks an undeclared port), routing **falls back** to the `AgentDecisionKind`-named port carried on the completion message (i.e., the pre-script behavior).
 

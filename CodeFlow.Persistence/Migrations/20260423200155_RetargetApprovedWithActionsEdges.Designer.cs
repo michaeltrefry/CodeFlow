@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260423200155_RetargetApprovedWithActionsEdges")]
+    partial class RetargetApprovedWithActionsEdges
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -728,10 +731,6 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("output_ports_json");
 
-                    b.Property<int?>("ReviewMaxRounds")
-                        .HasColumnType("int")
-                        .HasColumnName("review_max_rounds");
-
                     b.Property<string>("Script")
                         .HasColumnType("longtext")
                         .HasColumnName("script");
@@ -966,14 +965,6 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<Guid?>("ParentNodeId")
                         .HasColumnType("char(36)")
                         .HasColumnName("parent_node_id");
-
-                    b.Property<int?>("ParentReviewMaxRounds")
-                        .HasColumnType("int")
-                        .HasColumnName("parent_review_max_rounds");
-
-                    b.Property<int?>("ParentReviewRound")
-                        .HasColumnType("int")
-                        .HasColumnName("parent_review_round");
 
                     b.Property<Guid?>("ParentRoundId")
                         .HasColumnType("char(36)")

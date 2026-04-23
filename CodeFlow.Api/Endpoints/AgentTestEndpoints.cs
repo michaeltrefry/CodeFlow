@@ -200,11 +200,6 @@ public static class AgentTestEndpoints
 
         switch (decision)
         {
-            case ApprovedWithActionsDecision approved:
-                json["actions"] = new JsonArray(approved.Actions
-                    .Select(static a => (JsonNode?)JsonValue.Create(a))
-                    .ToArray());
-                break;
             case RejectedDecision rejected:
                 json["reasons"] = new JsonArray(rejected.Reasons
                     .Select(static r => (JsonNode?)JsonValue.Create(r))

@@ -199,6 +199,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.ParentNodeId = message.ParentNodeId;
         saga.ParentRoundId = message.ParentRoundId;
         saga.SubflowDepth = message.Depth;
+        saga.ParentReviewRound = message.ReviewRound;
+        saga.ParentReviewMaxRounds = message.ReviewMaxRounds;
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
@@ -258,6 +260,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
 
+        // For ReviewLoop children, the parent drives outcome mapping off Decision (not
+        // OutputPortName). Translate the runtime enum to its Contracts counterpart.
+        AgentDecisionKind? terminalDecision = lastDecision is null
+            ? null
+            : MapRuntimeDecisionKindToContract(lastDecision.Decision);
+
         await context.Publish(new SubflowCompleted(
             ParentTraceId: saga.ParentTraceId.Value,
             ParentNodeId: saga.ParentNodeId.Value,
@@ -265,7 +273,75 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ChildTraceId: saga.TraceId,
             OutputPortName: terminalPortName,
             OutputRef: new Uri(outputRefStr),
-            SharedContext: sharedContext));
+            SharedContext: sharedContext,
+            Decision: terminalDecision,
+            ReviewRound: saga.ParentReviewRound));
+    }
+
+    private static AgentDecisionKind MapRuntimeDecisionKindToContract(Runtime.AgentDecisionKind kind)
+    {
+        return kind switch
+        {
+            Runtime.AgentDecisionKind.Completed => AgentDecisionKind.Completed,
+            Runtime.AgentDecisionKind.Approved => AgentDecisionKind.Approved,
+            Runtime.AgentDecisionKind.Rejected => AgentDecisionKind.Rejected,
+            Runtime.AgentDecisionKind.Failed => AgentDecisionKind.Failed,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported runtime decision kind.")
+        };
+    }
+
+    private readonly record struct ReviewLoopOutcome(
+        bool SpawnNextRound,
+        int NextRound,
+        string? PortName);
+
+    /// <summary>
+    /// Maps a child saga's terminal <see cref="SubflowCompleted"/> back onto the ReviewLoop
+    /// parent's outcome surface. <c>Approved</c>/<c>Completed</c> → <c>Approved</c> port;
+    /// <c>Rejected</c> with rounds remaining → spawn next round; <c>Rejected</c> on the last
+    /// round → <c>Exhausted</c> port; <c>Failed</c>/<c>Escalated</c> (and missing metadata) →
+    /// <c>Failed</c> port.
+    /// </summary>
+    private static ReviewLoopOutcome ResolveReviewLoopOutcome(
+        SubflowCompleted message,
+        WorkflowNode reviewLoopNode)
+    {
+        // Child that hit its own escalation node bubbles Failed regardless of the last agent
+        // decision — the escalation is a "went sideways" signal distinct from "please revise."
+        if (string.Equals(message.OutputPortName, "Escalated", StringComparison.Ordinal)
+            || string.Equals(message.OutputPortName, "Failed", StringComparison.Ordinal))
+        {
+            return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+        }
+
+        if (message.Decision is not AgentDecisionKind decision)
+        {
+            // No decision metadata on the completion — defensive fallback.
+            return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+        }
+
+        switch (decision)
+        {
+            case AgentDecisionKind.Approved:
+            case AgentDecisionKind.Completed:
+                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Approved");
+
+            case AgentDecisionKind.Rejected:
+                var justFinishedRound = message.ReviewRound ?? 1;
+                var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
+                if (justFinishedRound < maxRounds)
+                {
+                    return new ReviewLoopOutcome(
+                        SpawnNextRound: true,
+                        NextRound: justFinishedRound + 1,
+                        PortName: null);
+                }
+                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
+
+            case AgentDecisionKind.Failed:
+            default:
+                return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+        }
     }
 
     /// <summary>
@@ -316,10 +392,55 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var artifactStore = services.GetRequiredService<IArtifactStore>();
         var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
 
+        var workflow = await workflowRepo.GetAsync(
+            saga.WorkflowKey,
+            saga.WorkflowVersion,
+            context.CancellationToken);
+
+        // ReviewLoop parent: map the child's terminal decision to either (a) a specific output
+        // port on the ReviewLoop node (Approved/Exhausted/Failed) or (b) a directive to re-invoke
+        // the child workflow for the next round. Plain Subflow parents fall through unchanged.
+        var parentNode = workflow.FindNode(message.ParentNodeId);
+        var effectivePortName = message.OutputPortName;
+
+        if (parentNode?.Kind == WorkflowNodeKind.ReviewLoop)
+        {
+            var outcome = ResolveReviewLoopOutcome(message, parentNode);
+
+            if (outcome.SpawnNextRound)
+            {
+                if (saga.SubflowDepth + 1 > MaxSubflowDepth)
+                {
+                    saga.PendingTransition = PendingTransitionFailed;
+                    saga.FailureReason =
+                        $"SubflowDepthExceeded: spawning round {outcome.NextRound} of ReviewLoop node "
+                        + $"{parentNode.Id} would yield depth {saga.SubflowDepth + 1}, exceeding "
+                        + $"the maximum of {MaxSubflowDepth}.";
+                    saga.UpdatedAtUtc = DateTime.UtcNow;
+                    return;
+                }
+
+                await PublishSubflowDispatchAsync(
+                    context,
+                    saga,
+                    workflow,
+                    parentNode,
+                    inputRef: message.OutputRef,
+                    roundId: saga.CurrentRoundId,
+                    reviewRound: outcome.NextRound,
+                    reviewMaxRounds: parentNode.ReviewMaxRounds);
+
+                saga.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            effectivePortName = outcome.PortName!;
+        }
+
         // Synthetic decision record so the parent's history shows the subflow returned a
-        // result. Decision kind is Completed for the Completed/Escalated ports and Failed for
-        // the Failed port — best-effort mapping for analytics.
-        var syntheticDecisionKind = string.Equals(message.OutputPortName, "Failed", StringComparison.Ordinal)
+        // result. Decision kind is Failed for the Failed port, Completed otherwise — best-effort
+        // mapping for analytics.
+        var syntheticDecisionKind = string.Equals(effectivePortName, "Failed", StringComparison.Ordinal)
             ? Runtime.AgentDecisionKind.Failed
             : Runtime.AgentDecisionKind.Completed;
 
@@ -331,23 +452,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow,
             NodeId: message.ParentNodeId,
-            OutputPortName: message.OutputPortName,
+            OutputPortName: effectivePortName,
             InputRef: saga.CurrentInputRef,
             OutputRef: message.OutputRef.ToString()));
 
-        var workflow = await workflowRepo.GetAsync(
-            saga.WorkflowKey,
-            saga.WorkflowVersion,
-            context.CancellationToken);
-
-        var edge = workflow.FindNext(message.ParentNodeId, message.OutputPortName);
+        var edge = workflow.FindNext(message.ParentNodeId, effectivePortName);
 
         if (edge is null)
         {
             // No edge wired from this port — terminate the parent based on the port name.
-            switch (message.OutputPortName)
+            switch (effectivePortName)
             {
                 case "Completed":
+                case "Approved":
                     saga.PendingTransition = PendingTransitionCompleted;
                     break;
                 case "Escalated":
@@ -356,7 +473,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 default:
                     saga.PendingTransition = PendingTransitionFailed;
                     saga.FailureReason ??=
-                        $"No outgoing edge from Subflow node {message.ParentNodeId} port '{message.OutputPortName}'.";
+                        $"No outgoing edge from {(parentNode?.Kind == WorkflowNodeKind.ReviewLoop ? "ReviewLoop" : "Subflow")} node {message.ParentNodeId} port '{effectivePortName}'.";
                     break;
             }
 
@@ -390,12 +507,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
 
-        if (targetNode.Kind == WorkflowNodeKind.Subflow
+        if ((targetNode.Kind == WorkflowNodeKind.Subflow || targetNode.Kind == WorkflowNodeKind.ReviewLoop)
             && saga.SubflowDepth + 1 > MaxSubflowDepth)
         {
             saga.PendingTransition = PendingTransitionFailed;
             saga.FailureReason =
-                $"SubflowDepthExceeded: spawning Subflow node {targetNode.Id} would yield depth "
+                $"SubflowDepthExceeded: spawning {targetNode.Kind} node {targetNode.Id} would yield depth "
                 + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
@@ -597,12 +714,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        if (targetNode.Kind == WorkflowNodeKind.Subflow
+        if ((targetNode.Kind == WorkflowNodeKind.Subflow || targetNode.Kind == WorkflowNodeKind.ReviewLoop)
             && saga.SubflowDepth + 1 > MaxSubflowDepth)
         {
             saga.PendingTransition = PendingTransitionFailed;
             saga.FailureReason =
-                $"SubflowDepthExceeded: spawning Subflow node {targetNode.Id} would yield depth "
+                $"SubflowDepthExceeded: spawning {targetNode.Kind} node {targetNode.Id} would yield depth "
                 + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
@@ -995,7 +1112,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         switch (decision)
         {
             case Runtime.AgentDecisionKind.Approved:
-            case Runtime.AgentDecisionKind.ApprovedWithActions:
                 var resumeNode = workflow.FindNode(resumeFromNodeId)
                     ?? throw new InvalidOperationException(
                         $"Escalation recovery target node {resumeFromNodeId} is missing from workflow {workflow.Key} v{workflow.Version}.");
@@ -1048,6 +1164,18 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 PublishHandoffAsync(context, agentConfigRepo, saga, workflow, node, inputRef, roundId, retryContext),
             WorkflowNodeKind.Subflow =>
                 PublishSubflowDispatchAsync(context, saga, workflow, node, inputRef, roundId),
+            WorkflowNodeKind.ReviewLoop =>
+                PublishSubflowDispatchAsync(
+                    context,
+                    saga,
+                    workflow,
+                    node,
+                    inputRef,
+                    roundId,
+                    reviewRound: 1,
+                    reviewMaxRounds: node.ReviewMaxRounds
+                        ?? throw new InvalidOperationException(
+                            $"ReviewLoop node {node.Id} in workflow {workflow.Key} v{workflow.Version} has no ReviewMaxRounds configured.")),
             WorkflowNodeKind.Logic =>
                 throw new InvalidOperationException(
                     "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),
@@ -1062,7 +1190,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         Workflow workflow,
         WorkflowNode subflowNode,
         Uri inputRef,
-        Guid roundId)
+        Guid roundId,
+        int? reviewRound = null,
+        int? reviewMaxRounds = null)
     {
         if (string.IsNullOrWhiteSpace(subflowNode.SubflowKey))
         {
@@ -1092,7 +1222,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             SubflowVersion: subflowVersion,
             InputRef: inputRef,
             SharedContext: sharedContext,
-            Depth: saga.SubflowDepth + 1));
+            Depth: saga.SubflowDepth + 1,
+            ReviewRound: reviewRound,
+            ReviewMaxRounds: reviewMaxRounds));
     }
 
     private static async Task PublishHandoffAsync(
@@ -1227,7 +1359,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         {
             AgentDecisionKind.Completed => Runtime.AgentDecisionKind.Completed,
             AgentDecisionKind.Approved => Runtime.AgentDecisionKind.Approved,
-            AgentDecisionKind.ApprovedWithActions => Runtime.AgentDecisionKind.ApprovedWithActions,
             AgentDecisionKind.Rejected => Runtime.AgentDecisionKind.Rejected,
             AgentDecisionKind.Failed => Runtime.AgentDecisionKind.Failed,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported decision kind.")
