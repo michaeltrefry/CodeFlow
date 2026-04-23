@@ -1735,6 +1735,261 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Theory]
+    [InlineData(AgentDecisionKind.Approved)]
+    [InlineData(AgentDecisionKind.Completed)]
+    public async Task ReviewLoopCompleted_ApprovedOrCompletedOnRound1_ShouldExitApprovedPort(
+        AgentDecisionKind childDecision)
+    {
+        // Slice 10 scenarios 1 + 2: the permissive-mapping leg of ResolveReviewLoopOutcome.
+        // Both Approved and Completed at any round exit the parent via the Approved port; with
+        // no downstream edge from Approved, the parent falls through to Completed.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-approved-round1", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: reviewLoopNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/round1-out.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: childDecision,
+                ReviewRound: 1));
+
+            await sagaHarness.Exists(traceId, x => x.Completed);
+
+            // Exactly one round spawned — no second round for an approved/completed outcome.
+            var allRequests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+            allRequests.Should().HaveCount(1);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.GetDecisionHistory().Should()
+                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Approved",
+                    "synthetic parent decision for the ReviewLoop must record the mapped port");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_RejectOnEveryRound_ShouldExitExhaustedPort()
+    {
+        // Slice 10 scenario 4: with MaxRounds=2, a Rejected on round 1 spawns round 2; a
+        // Rejected on round 2 has no rounds left and exits via the Exhausted port (which has
+        // no downstream edge here, so the parent transitions to Failed with a clear reason).
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-exhausted", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 2);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Round 1: Rejected → next round.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r1-out.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Rejected, ReviewRound: 1));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+            round2.ReviewRound.Should().Be(2);
+
+            // Round 2 (last): Rejected → Exhausted port (no outgoing edge → Failed terminal).
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r2-out.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Rejected, ReviewRound: 2));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.FailureReason.Should().Contain("Exhausted",
+                "an unwired Exhausted port produces a Failed terminal with the port name surfaced");
+
+            resumed.GetDecisionHistory().Should()
+                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Exhausted");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_FailedOnRound2_ShouldExitFailedPort_AndKeepRound1GlobalMerged()
+    {
+        // Slice 10 scenario 5: a Failed return from round 2 exits the Failed port (no edge →
+        // Failed terminal). Round 1's setGlobal writes must still be visible on the parent's
+        // global, because the merge happens inline with each SubflowCompleted.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-failed-after-rounds", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Round 1: Rejected with a setGlobal write; next round spawns.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r1.bin"),
+                SharedContext: new Dictionary<string, JsonElement>
+                {
+                    ["fromRound1"] = JsonDocument.Parse("\"carried\"").RootElement.Clone()
+                },
+                Decision: AgentDecisionKind.Rejected, ReviewRound: 1));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+
+            // Round 2: Failed → Failed port (no outgoing edge → Failed terminal).
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Failed",
+                OutputRef: new Uri("file:///tmp/r2-failed.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Failed, ReviewRound: 2));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.GlobalInputsJson!.Should().Contain("fromRound1",
+                "round 1's setGlobal write must survive even when a later round fails");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_EscalatedFromChild_ShouldExitFailedPort()
+    {
+        // Slice 10 scenario 6: if the child saga hits its own escalation node, the completion
+        // arrives with OutputPortName = "Escalated". ReviewLoop collapses Escalated to the
+        // Failed port regardless of Decision metadata — escalation signals "went sideways,"
+        // not "please revise."
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-escalated", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Escalated",
+                OutputRef: new Uri("file:///tmp/escalated.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: null, ReviewRound: 1));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.GetDecisionHistory().Should()
+                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Failed",
+                    "Escalated from a ReviewLoop child must surface on the parent as the Failed port");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopNode_ShouldFailFast_WhenSpawningWouldExceedSubflowDepth()
+    {
+        // Slice 10 scenario 8: ReviewLoop nodes count toward MaxSubflowDepth the same way
+        // plain Subflow nodes do. Seed SubflowDepth = MaxSubflowDepth so the next spawn would
+        // land at depth 4; the parent must fail with SubflowDepthExceeded and emit no
+        // SubflowInvokeRequested.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-depth-cap", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.SubflowDepth = WorkflowSagaStateMachine.MaxSubflowDepth;
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var failed = sagaHarness.Sagas.Contains(traceId)!;
+            failed.FailureReason.Should().NotBeNullOrWhiteSpace();
+            failed.FailureReason!.Should().Contain("SubflowDepthExceeded");
+            failed.FailureReason.Should().Contain("ReviewLoop",
+                "depth-exceeded reason names the target node kind for operator diagnostics");
+
+            (await harness.Published.Any<SubflowInvokeRequested>()).Should().BeFalse(
+                "depth-cap rejection must not spawn a child dispatch");
+        }
+        finally { await harness.Stop(); }
+    }
+
     [Fact]
     public async Task SubflowInvokeRequested_ShouldCreateChildSagaWithLinkageAndDispatchStart()
     {
