@@ -1948,6 +1948,59 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task ReviewLoopCompleted_RejectedDecisionOnFailedSaga_ShouldAdvanceToNextRound()
+    {
+        // Regression: in production trace aafafbde-b0eb-44d2-bf96-642ceba34b05, the child
+        // workflow's reviewer emitted Decision = Rejected via the submit tool correctly, but
+        // the reviewer node's Rejected output port had no outgoing edge. The child saga
+        // transitioned to Failed per the Subflow unwired-port rule, even though the last
+        // decision was Rejected. Before the priority flip, the ReviewLoop saw
+        // OutputPortName = "Failed" and exited the Failed port; the correct behaviour is to
+        // trust Decision = Rejected and advance to the next round, because the ReviewLoop
+        // contract is "the child's terminal decision drives the loop."
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-rejected-on-failed-saga", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Simulates the production trace: child's reviewer decided Rejected, but the child
+            // saga terminated as Failed because the Rejected port was unwired.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId,
+                OutputPortName: "Failed",
+                OutputRef: new Uri("file:///tmp/r1-reviewer-rejected.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Rejected,
+                ReviewRound: 1));
+
+            // Parent should have spawned round 2, not exited the Failed port.
+            var allRequests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
+            allRequests.Should().HaveCount(2,
+                "Decision = Rejected must outrank OutputPortName = Failed when there are rounds remaining");
+            var round2 = allRequests[1].Context.Message;
+            round2.ReviewRound.Should().Be(2);
+            round2.InputRef.Should().Be(new Uri("file:///tmp/r1-reviewer-rejected.bin"));
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
     public async Task ReviewLoopNode_ShouldFailFast_WhenSpawningWouldExceedSubflowDepth()
     {
         // Slice 10 scenario 8: ReviewLoop nodes count toward MaxSubflowDepth the same way
@@ -1986,6 +2039,97 @@ public sealed class WorkflowSagaStateMachineTests
 
             (await harness.Published.Any<SubflowInvokeRequested>()).Should().BeFalse(
                 "depth-cap rejection must not spawn a child dispatch");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Theory]
+    [InlineData(AgentDecisionKind.Rejected)]
+    [InlineData(AgentDecisionKind.Approved)]
+    public async Task ChildSaga_WithUnwiredApprovedOrRejectedPort_ShouldTerminateCompletedWithDecisionPreserved(
+        AgentDecisionKind childDecision)
+    {
+        // Subflow exit rule: an unwired Approved or Rejected port on a CHILD saga is a legal
+        // clean exit — the saga terminates in Completed state and the agent's decision kind is
+        // preserved on SubflowCompleted.Decision so the parent (especially a ReviewLoop) can
+        // route on the last agent's intent. Without this rule, the child would have to wire
+        // every non-Completed port somewhere just to avoid Failed, and ReviewLoops would show
+        // up in the UI as failed child traces every time the reviewer rejected.
+        var parentTraceId = Guid.NewGuid();
+        var parentNodeId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+
+        var childStartNodeId = Guid.NewGuid();
+        var childWorkflow = new Workflow(
+            Key: "reviewer-only",
+            Version: 1,
+            Name: "reviewer-only",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "reviewer-agent",
+                    AgentVersion: null, Script: null,
+                    OutputPorts: new[] { "Completed", "Approved", "Rejected", "Failed" },
+                    LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(), // no wired ports — all exits are unwired
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var harness = BuildHarness(childWorkflow, new Dictionary<string, int> { ["reviewer-agent"] = 1 });
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new SubflowInvokeRequested(
+                ParentTraceId: parentTraceId,
+                ParentNodeId: parentNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: childTraceId,
+                SubflowKey: "reviewer-only",
+                SubflowVersion: 1,
+                InputRef: new Uri("file:///tmp/reviewer-in.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Depth: 1));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(childTraceId, x => x.Running);
+
+            // Reviewer agent emits Rejected (or Approved) via the submit tool.
+            var invocations = await WaitForPublishedAsync<AgentInvokeRequested>(harness, expectedCount: 1);
+            var invocation = invocations[0].Context.Message;
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: childTraceId,
+                RoundId: invocation.RoundId,
+                FromNodeId: childStartNodeId,
+                AgentKey: "reviewer-agent",
+                AgentVersion: 1,
+                OutputPortName: AgentDecisionPorts.ToPortName(childDecision),
+                OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
+                Decision: childDecision,
+                DecisionPayload: JsonDocument.Parse($"{{\"kind\":\"{childDecision}\"}}").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            // Child saga must terminate as Completed (not Failed), even though the emitted port
+            // had no outgoing edge. The old rule ("unwired non-Completed = Failed") would have
+            // produced a Failed terminal with a "No outgoing edge" FailureReason.
+            await sagaHarness.Exists(childTraceId, x => x.Completed);
+
+            var terminal = sagaHarness.Sagas.Contains(childTraceId)!;
+            terminal.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
+            terminal.FailureReason.Should().BeNull(
+                "an unwired Approved/Rejected port is a legal exit, not an error");
+
+            // SubflowCompleted must carry the decision kind the reviewer emitted so a ReviewLoop
+            // parent can iterate on Rejected without re-interpreting a Failed saga state.
+            var completions = await WaitForPublishedAsync<SubflowCompleted>(harness, expectedCount: 1);
+            completions.Should().HaveCount(1);
+            var completion = completions[0].Context.Message;
+            completion.Decision.Should().Be(childDecision);
+            completion.OutputPortName.Should().Be("Completed",
+                "unwired Approved/Rejected ports cleanly complete the child saga");
         }
         finally { await harness.Stop(); }
     }
