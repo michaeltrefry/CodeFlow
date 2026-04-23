@@ -102,9 +102,13 @@ public static class TracesEndpoints
             return Results.NotFound();
         }
 
+        var subtreeSagas = await CollectSubtreeSagasAsync(dbContext, saga, cancellationToken);
+        var subtreeTraceIds = subtreeSagas.Select(s => s.TraceId).ToArray();
+        var subflowPaths = BuildSubflowPaths(saga.TraceId, subtreeSagas);
+
         var pendingHitl = await dbContext.HitlTasks
             .AsNoTracking()
-            .Where(task => task.TraceId == id && task.State == HitlTaskState.Pending)
+            .Where(task => subtreeTraceIds.Contains(task.TraceId) && task.State == HitlTaskState.Pending)
             .OrderBy(task => task.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
@@ -154,7 +158,12 @@ public static class TracesEndpoints
                     FailureMessage: entity.FailureMessage,
                     RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc)))
                 .ToArray(),
-            PendingHitl: pendingHitl.Select(MapHitl).ToArray(),
+            PendingHitl: pendingHitl
+                .Select(task => MapHitl(
+                    task,
+                    originTraceId: task.TraceId,
+                    subflowPath: subflowPaths.TryGetValue(task.TraceId, out var path) ? path : Array.Empty<string>()))
+                .ToArray(),
             CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
             UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
             FailureReason: saga.FailureReason);
@@ -724,21 +733,112 @@ public static class TracesEndpoints
         CurrentAgentKey: saga.CurrentAgentKey,
         RoundCount: saga.RoundCount,
         CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
-        UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc));
+        UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
+        ParentTraceId: saga.ParentTraceId);
 
-    private static HitlTaskDto MapHitl(HitlTaskEntity task) => new(
-        Id: task.Id,
-        TraceId: task.TraceId,
-        RoundId: task.RoundId,
-        AgentKey: task.AgentKey,
-        AgentVersion: task.AgentVersion,
-        InputRef: new Uri(task.InputRef),
-        InputPreview: task.InputPreview,
-        CreatedAtUtc: DateTime.SpecifyKind(task.CreatedAtUtc, DateTimeKind.Utc),
-        State: task.State.ToString(),
-        Decision: task.Decision,
-        DecidedAtUtc: task.DecidedAtUtc is null ? null : DateTime.SpecifyKind(task.DecidedAtUtc.Value, DateTimeKind.Utc),
-        DeciderId: task.DeciderId);
+    private static HitlTaskDto MapHitl(HitlTaskEntity task) =>
+        MapHitl(task, originTraceId: null, subflowPath: null);
+
+    private static HitlTaskDto MapHitl(
+        HitlTaskEntity task,
+        Guid? originTraceId,
+        IReadOnlyList<string>? subflowPath) => new(
+            Id: task.Id,
+            TraceId: task.TraceId,
+            RoundId: task.RoundId,
+            AgentKey: task.AgentKey,
+            AgentVersion: task.AgentVersion,
+            InputRef: new Uri(task.InputRef),
+            InputPreview: task.InputPreview,
+            CreatedAtUtc: DateTime.SpecifyKind(task.CreatedAtUtc, DateTimeKind.Utc),
+            State: task.State.ToString(),
+            Decision: task.Decision,
+            DecidedAtUtc: task.DecidedAtUtc is null ? null : DateTime.SpecifyKind(task.DecidedAtUtc.Value, DateTimeKind.Utc),
+            DeciderId: task.DeciderId,
+            OriginTraceId: originTraceId,
+            SubflowPath: subflowPath);
+
+    /// <summary>
+    /// Breadth-first walk from the root saga down through descendants via parent_trace_id.
+    /// Bounded by <see cref="CodeFlow.Orchestration.WorkflowSagaStateMachine.MaxSubflowDepth"/>
+    /// so there's no risk of unbounded recursion even if the depth column is somehow corrupt.
+    /// Returns the root plus every descendant saga reachable within the cap.
+    /// </summary>
+    private static async Task<IReadOnlyList<WorkflowSagaStateEntity>> CollectSubtreeSagasAsync(
+        CodeFlowDbContext dbContext,
+        WorkflowSagaStateEntity root,
+        CancellationToken cancellationToken)
+    {
+        var all = new List<WorkflowSagaStateEntity> { root };
+        var currentLevel = new List<Guid> { root.TraceId };
+
+        for (var level = 0; level < CodeFlow.Orchestration.WorkflowSagaStateMachine.MaxSubflowDepth; level++)
+        {
+            if (currentLevel.Count == 0)
+            {
+                break;
+            }
+
+            var parents = currentLevel;
+            var children = await dbContext.WorkflowSagas
+                .AsNoTracking()
+                .Where(s => s.ParentTraceId != null && parents.Contains(s.ParentTraceId!.Value))
+                .ToListAsync(cancellationToken);
+
+            if (children.Count == 0)
+            {
+                break;
+            }
+
+            all.AddRange(children);
+            currentLevel = children.Select(s => s.TraceId).ToList();
+        }
+
+        return all;
+    }
+
+    /// <summary>
+    /// Builds the <c>subflowPath</c> for each saga in the subtree: the ordered list of workflow
+    /// keys from the immediate child of the root down to (and including) the owning saga. The
+    /// root itself maps to an empty path.
+    /// </summary>
+    private static IReadOnlyDictionary<Guid, IReadOnlyList<string>> BuildSubflowPaths(
+        Guid rootTraceId,
+        IReadOnlyList<WorkflowSagaStateEntity> sagas)
+    {
+        var byTrace = sagas.ToDictionary(s => s.TraceId);
+        var result = new Dictionary<Guid, IReadOnlyList<string>>
+        {
+            [rootTraceId] = Array.Empty<string>(),
+        };
+
+        foreach (var saga in sagas)
+        {
+            if (saga.TraceId == rootTraceId)
+            {
+                continue;
+            }
+
+            var path = new List<string>();
+            var cursor = saga;
+            var guard = CodeFlow.Orchestration.WorkflowSagaStateMachine.MaxSubflowDepth + 1;
+            while (cursor.TraceId != rootTraceId && guard-- > 0)
+            {
+                path.Add(cursor.WorkflowKey);
+                if (cursor.ParentTraceId is not Guid parentId
+                    || !byTrace.TryGetValue(parentId, out var parent))
+                {
+                    break;
+                }
+                cursor = parent;
+            }
+
+            path.Reverse();
+            result[saga.TraceId] = path;
+        }
+
+        return result;
+    }
 
     private static async Task<int> DeleteTracesAsync(
         CodeFlowDbContext dbContext,

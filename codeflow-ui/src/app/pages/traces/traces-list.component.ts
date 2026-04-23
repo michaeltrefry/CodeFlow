@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe, SlicePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -53,14 +53,27 @@ import { TraceSummary } from '../../core/models';
     } @else if (traces().length === 0) {
       <p class="tag">No traces yet.</p>
     } @else {
+      <div class="list-toolbar">
+        <label class="checkbox">
+          <input type="checkbox" [checked]="hideSubflowChildren()"
+                 (change)="hideSubflowChildren.set($any($event.target).checked)" />
+          <span>Hide subflow children</span>
+        </label>
+        <span class="muted small">{{ visibleTraces().length }} of {{ traces().length }} shown</span>
+      </div>
       <table class="trace-table card">
         <thead>
           <tr><th>Trace ID</th><th>Workflow</th><th>Current agent</th><th>State</th><th>Round</th><th>Updated</th><th>Actions</th></tr>
         </thead>
         <tbody>
-          @for (trace of traces(); track trace.traceId) {
+          @for (trace of visibleTraces(); track trace.traceId) {
             <tr>
-              <td><a [routerLink]="['/traces', trace.traceId]" class="monospace">{{ trace.traceId | slice:0:8 }}</a></td>
+              <td>
+                <a [routerLink]="['/traces', trace.traceId]" class="monospace">{{ trace.traceId | slice:0:8 }}</a>
+                @if (trace.parentTraceId) {
+                  <span class="tag small subflow" title="This trace is a subflow child of another trace.">child</span>
+                }
+              </td>
               <td>{{ trace.workflowKey }} <span class="muted small">v{{ trace.workflowVersion }}</span></td>
               <td>{{ trace.currentAgentKey }}</td>
               <td><span class="tag" [class.ok]="trace.currentState === 'Completed'" [class.warn]="trace.currentState === 'Running'" [class.error]="trace.currentState === 'Failed' || trace.currentState === 'Escalated'">{{ trace.currentState }}</span></td>
@@ -146,6 +159,28 @@ import { TraceSummary } from '../../core/models';
     }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
+    .list-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.25rem 0 0.75rem;
+    }
+    .checkbox {
+      display: inline-flex;
+      gap: 0.4rem;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--color-muted);
+    }
+    .tag.subflow {
+      background: rgba(46, 163, 242, 0.2);
+      color: #2ea3f2;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      margin-left: 0.4rem;
+      font-size: 0.7rem;
+    }
   `]
 })
 export class TracesListComponent {
@@ -157,6 +192,12 @@ export class TracesListComponent {
   readonly busyTraceId = signal<string | null>(null);
   readonly bulkBusy = signal(false);
   readonly bulkResult = signal<string | null>(null);
+  readonly hideSubflowChildren = signal(false);
+
+  readonly visibleTraces = computed<TraceSummary[]>(() => {
+    const all = this.traces();
+    return this.hideSubflowChildren() ? all.filter(t => !t.parentTraceId) : all;
+  });
 
   readonly bulkStateOptions = BULK_STATE_OPTIONS;
   readonly bulkAgeOptions = BULK_AGE_OPTIONS;

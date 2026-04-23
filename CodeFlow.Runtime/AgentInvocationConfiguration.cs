@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CodeFlow.Runtime;
 
 public sealed record AgentInvocationConfiguration(
@@ -12,4 +14,7 @@ public sealed record AgentInvocationConfiguration(
     int? MaxTokens = null,
     double? Temperature = null,
     IReadOnlyDictionary<string, AgentInvocationConfiguration>? SubAgents = null,
-    RetryContext? RetryContext = null);
+    RetryContext? RetryContext = null,
+    // Runtime-only: populated by AgentInvocationConsumer from AgentConfig.Outputs. Not persisted
+    // to avoid duplicate storage with the top-level `outputs` field in the stored config JSON.
+    [property: JsonIgnore] IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null);

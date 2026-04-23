@@ -49,16 +49,29 @@ public sealed class LogicNodeScriptHost
             return o;
         }
         var __contextUpdates = Object.create(null);
+        var __globalUpdates = Object.create(null);
         function setContext(key, value) {
             if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
                 throw new TypeError('setContext(key, value) requires a non-empty string key.');
             }
             __contextUpdates[key] = value;
         }
+        function setGlobal(key, value) {
+            if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
+                throw new TypeError('setGlobal(key, value) requires a non-empty string key.');
+            }
+            __globalUpdates[key] = value;
+        }
         function __readContextUpdates() {
             try { return JSON.stringify(__contextUpdates); }
             catch (e) {
                 throw new TypeError('setContext value is not JSON-serializable: ' + e.message);
+            }
+        }
+        function __readGlobalUpdates() {
+            try { return JSON.stringify(__globalUpdates); }
+            catch (e) {
+                throw new TypeError('setGlobal value is not JSON-serializable: ' + e.message);
             }
         }
         """;
@@ -78,12 +91,14 @@ public sealed class LogicNodeScriptHost
         IReadOnlyCollection<string> declaredPorts,
         JsonElement input,
         IReadOnlyDictionary<string, JsonElement> context,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, JsonElement>? global = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(script);
         ArgumentNullException.ThrowIfNull(declaredPorts);
         ArgumentNullException.ThrowIfNull(context);
+        var globalSnapshot = global ?? LogicNodeEvaluationResult.EmptyContextUpdates;
 
         var logs = new List<string>();
         var stopwatch = Stopwatch.StartNew();
@@ -152,9 +167,11 @@ public sealed class LogicNodeScriptHost
             engine.Execute(BootstrapScript);
             engine.Execute($"var input = {input.GetRawText()};");
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
+            engine.Execute($"var global = __deepFreeze({SerializeContext(globalSnapshot)});");
             engine.Execute(prepared);
 
             var updatesJson = engine.Evaluate("__readContextUpdates()").AsString();
+            var globalUpdatesJson = engine.Evaluate("__readGlobalUpdates()").AsString();
 
             stopwatch.Stop();
 
@@ -167,7 +184,17 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
+            if (globalUpdatesJson.Length > MaxContextUpdatesChars)
+            {
+                return LogicNodeEvaluationResult.Fail(
+                    LogicNodeFailureKind.ContextBudgetExceeded,
+                    $"setGlobal payload exceeded {MaxContextUpdatesChars} characters when serialized.",
+                    logs,
+                    stopwatch.Elapsed);
+            }
+
             var contextUpdates = ParseContextUpdates(updatesJson);
+            var globalUpdates = ParseContextUpdates(globalUpdatesJson);
 
             if (chosenPort is null)
             {
@@ -187,7 +214,7 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
-            return LogicNodeEvaluationResult.Success(chosenPort, logs, stopwatch.Elapsed, contextUpdates);
+            return LogicNodeEvaluationResult.Success(chosenPort, logs, stopwatch.Elapsed, contextUpdates, globalUpdates);
         }
         catch (TimeoutException)
         {

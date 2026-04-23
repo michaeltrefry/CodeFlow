@@ -488,6 +488,101 @@ public sealed class LogicNodeScriptHostTests
         result.OutputPortName.Should().Be("original");
     }
 
+    [Fact]
+    public void Evaluate_ReadsGlobalValues_FromSnapshotBag()
+    {
+        var host = BuildHost();
+        const string script = """
+            if (global.feature === 'on') { setNodePath('Enabled'); }
+            else { setNodePath('Disabled'); }
+            """;
+        var global = new Dictionary<string, JsonElement>
+        {
+            ["feature"] = ParseJson("\"on\"")
+        };
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Enabled", "Disabled" },
+            ParseJson("{}"),
+            EmptyContext,
+            cancellationToken: default,
+            global: global);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputPortName.Should().Be("Enabled");
+    }
+
+    [Fact]
+    public void Evaluate_SetGlobal_CapturesUpdatesSeparatelyFromContext()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('local', 'L');
+            setGlobal('shared', { hello: 'world' });
+            setGlobal('count', 42);
+            setNodePath('Out');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Out" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ContextUpdates.Should().HaveCount(1);
+        result.ContextUpdates["local"].GetString().Should().Be("L");
+        result.GlobalUpdates.Should().HaveCount(2);
+        result.GlobalUpdates["shared"].GetProperty("hello").GetString().Should().Be("world");
+        result.GlobalUpdates["count"].GetInt32().Should().Be(42);
+    }
+
+    [Fact]
+    public void Evaluate_SetGlobal_RejectsNonStringKey()
+    {
+        var host = BuildHost();
+        const string script = """
+            setGlobal('', 'oops');
+            setNodePath('Out');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Out" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("setGlobal(key, value) requires a non-empty string key.");
+    }
+
+    [Fact]
+    public void Evaluate_GlobalIsFrozen_DirectAssignmentIgnoredInStrictMode()
+    {
+        var host = BuildHost();
+        const string script = """
+            try { global.feature = 'mutated'; } catch (e) { /* expected */ }
+            setNodePath(global.feature);
+            """;
+        var global = new Dictionary<string, JsonElement>
+        {
+            ["feature"] = ParseJson("\"on\"")
+        };
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "on" },
+            ParseJson("{}"),
+            EmptyContext,
+            cancellationToken: default,
+            global: global);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputPortName.Should().Be("on", "deep-frozen global rejects direct assignment");
+    }
+
     private static LogicNodeScriptHost BuildHost()
     {
         return new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions()));

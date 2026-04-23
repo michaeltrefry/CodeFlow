@@ -4,7 +4,7 @@ Workflows describe how a trace moves between agents and logic checks to get a jo
 
 ## Node kinds
 
-Every workflow is composed of nodes. The canvas palette exposes five kinds:
+Every workflow is composed of nodes. The canvas palette exposes six kinds:
 
 | Kind | Purpose | Has agent | Has script |
 |---|---|---|---|
@@ -13,6 +13,7 @@ Every workflow is composed of nodes. The canvas palette exposes five kinds:
 | `Hitl` | Dispatches a human-in-the-loop agent that pauses the saga until a human submits a decision via `/api/traces/:id/hitl-decision`. | Yes | No |
 | `Logic` | In-process JavaScript router. Does not dispatch an agent; evaluates a script that picks an output port. | No | Yes |
 | `Escalation` | Fallback when a round count overflows. At most one per workflow. | Yes | No |
+| `Subflow` | Invokes another workflow as a reusable building block and waits for its terminal state. | No | No |
 
 Every node has a stable `Id` (GUID) that persists across saves, a set of named **output ports**, and layout coordinates `(LayoutX, LayoutY)`.
 
@@ -29,7 +30,36 @@ An edge is `(FromNodeId, FromPort) → (ToNodeId, ToPort)` plus a `RotatesRound`
 
 If the runtime follows an edge that would push the round count past `MaxRoundsPerRound` (and the edge does not rotate), it routes to the Escalation node instead of the intended target. If no Escalation node is configured, the trace terminates as `Failed`.
 
-## Workflow inputs (global context)
+## Context: local (`context`) vs. shared (`global`)
+
+Every saga carries **two** context bags that are exposed to Logic-node scripts and to agent prompt templates:
+
+| Name | Scope | Lifetime | Writable from inside? |
+|---|---|---|---|
+| `context` | Current workflow's **local** state (the saga's `inputs_json`). | Per saga (top-level or a single subflow invocation). | Yes — `setContext('foo', x)` |
+| `global` | **Shared** bag inherited between parent and descendant subflows. | Snapshot taken when a Subflow node fires; the child's final `global` is shallow-merged back into the parent's `global` on completion. | Yes — `setGlobal('foo', x)`; writes bubble up on subflow completion only. |
+
+For a **top-level** workflow:
+
+- `context` is the workflow's input bag (see below) — this is the current behaviour used by every existing workflow.
+- `global` starts empty (or is seeded by whatever initial values the API caller supplies when launching the trace).
+
+For a **subflow** invocation:
+
+- `context` is local to the child saga — it starts empty and is discarded when the child terminates.
+- `global` is a **snapshot** of the parent's `global` taken at the moment the Subflow node fires; `setGlobal` writes land on that snapshot and are shallow-merged (last-write-wins per top-level key) back into the parent's `global` when the child completes. Effects only become visible to the parent on completion — there is no live shared store.
+
+Agent prompt templates can reference both namespaces: `{{context.repoType}}` reads the current saga's local context, `{{global.resolvedSpec.engine}}` reads the shared bag.
+
+```js
+// Logic node example using both scopes
+log('Attempt ' + ((context.attempt || 0) + 1));
+setContext('attempt', (context.attempt || 0) + 1);   // local to this saga
+setGlobal('lastResult', input.summary);              // visible to ancestors on completion
+setNodePath('Continue');
+```
+
+## Workflow inputs (local context)
 
 A workflow can declare an ordered list of typed **inputs**:
 
@@ -47,7 +77,7 @@ A workflow can declare an ordered list of typed **inputs**:
 
 `Kind` is `Text` or `Json`. At trace launch, the UI renders a form from the schema and posts concrete values on `CreateTraceRequest.inputs`. The resolved map is frozen onto the saga state for the duration of the run; every `AgentInvokeRequested` published during the trace includes it as `ContextInputs`. Logic-node scripts read it through a frozen `context` object, and agent prompt templates can reference it through a reserved flattened variable namespace such as `{{context.gitRepo}}` or `{{context.target.path}}`.
 
-Initial inputs are seeded once at trace launch. Agent and HITL nodes cannot mutate context. Logic nodes can write top-level keys via `setContext` (see below) so loops and multi-turn flows can accumulate state across iterations.
+Initial inputs are seeded once at trace launch. Agent and HITL nodes cannot mutate context. Logic nodes can write top-level keys via `setContext` (local) or `setGlobal` (shared) — see above.
 
 ## Logic nodes
 
@@ -164,6 +194,108 @@ The interviewer's prompt template can reference `{{context.transcript}}` on ever
 
 Evaluations of agent-attached scripts record a `LogicEvaluationRecord` against the source node id, so they appear in the trace detail alongside Logic node evaluations.
 
+## Subflows (composing workflows)
+
+A **Subflow** node invokes another workflow as a reusable building block. The composing parent treats it like an agent node: one input artifact in, one output artifact + decision out. See [subflows.md](subflows.md) for the full design.
+
+**Defining a Subflow node.** In the canvas, drag the Subflow node onto your workflow and fill in the inspector:
+- **Workflow** — the child workflow's key (must already exist; save-time validation rejects unknowns).
+- **Version** — either a specific pinned version or "Latest at save" (null), which is resolved to the current latest at parent-workflow save time, just like agent node versions.
+- **Output ports** — always `Completed`, `Failed`, `Escalated`. Route each to its downstream handler as you would an agent decision.
+
+**What happens at runtime:**
+1. The parent saga reaches the Subflow node and publishes `SubflowInvokeRequested` carrying the parent's current `global` snapshot, the input artifact, and a fresh `ChildTraceId`.
+2. A **child saga** is created with `TraceId = ChildTraceId`. The child has its own local `context` (starts empty) and its own copy of `global` (the snapshot from the parent). It runs its workflow to completion as a normal trace.
+3. Inside the child, any `setGlobal('key', value)` writes land on the child's working `global`.
+4. When the child reaches a terminal state (`Completed`, `Failed`, or `Escalated`) it emits `SubflowCompleted` carrying its final `global` and its last output artifact.
+5. The parent saga **shallow-merges** (last-write-wins per top-level key) the child's `global` into its own, appends a synthetic decision to its history, and routes from the Subflow node's matching output port.
+
+**Entry: the child's Start node.** A subflow workflow must declare exactly one `Start` node (same rule as any other workflow — enforced by the save-time validator and by `Workflow.StartNode`). The child Start receives:
+
+| Surface | Value at child Start |
+|---|---|
+| Input artifact (`input` in scripts, `{{input}}` / `{{input.*}}` in agent prompts) | The artifact the parent's Subflow node received as *its* input — i.e. the upstream parent node's output. |
+| `context` / `{{context.*}}` | **Empty.** The child's local context starts at `{}`. |
+| `global` / `{{global.*}}` | The parent's `global` snapshot taken at the moment the Subflow node fired. |
+
+**The child workflow's declared `inputs` schema is ignored in subflow mode.** The launch form rendered from `WorkflowInput[]` only applies to top-level trace kickoffs via `POST /api/traces`. A subflow invocation bypasses it entirely — no form, no defaults, no required-input checks. If you want structured, named values visible inside the child, either:
+
+- Populate `global.*` before the Subflow node fires (via `setGlobal` on an upstream Logic or agent-attached script), or
+- Structure them into the input artifact's JSON so the child can read them as `input.foo`, `input.foo.bar`, etc.
+
+A consequence: **a workflow designed to be callable both top-level and as a subflow shouldn't rely on its declared `inputs`** — or it needs a Start-adjacent Logic node that defensively seeds `context.*` from either `input` or `global.*` depending on which call path populated them.
+
+**Recursion cap: depth 3.** Top-level workflows run at depth 0; each nested Subflow increments by 1. A chain is legal up to root → A → B → C (depth 3). If a Subflow spawn would push depth to 4, the parent saga fails immediately with `FailureReason` starting with `SubflowDepthExceeded:` and no child is spawned.
+
+**HITL inside a subflow.** Pending HITL tasks anywhere in a trace's subtree are surfaced on every ancestor trace's `pendingHitl` list. Each entry includes an `originTraceId` and a `subflowPath` (ordered list of workflow keys from root → owning saga) so the UI can group and label them. Answering a HITL uses the existing global-by-task-id endpoint — no changes needed.
+
+### Exiting a subflow
+
+There is no explicit "exit node" marker — a child saga terminates as soon as it walks off the graph, i.e. reaches a node whose chosen output port has no outgoing edge. Which port gets chosen determines which of the parent's Subflow ports fires:
+
+| Child terminates on | Parent routes from |
+|---|---|
+| Any node's `Completed` port with no outgoing edge | `Subflow.Completed` |
+| Any node's `Failed` port with no outgoing edge (or any non-`Completed` port that has no wired edge) | `Subflow.Failed` |
+| The child's Escalation node emits `Rejected` (the escalation-recovery flow) | `Subflow.Escalated` |
+
+The child's **last output artifact** — the artifact produced by the final agent before termination — becomes the input to whatever the parent routes to next. The child's final `global` is shallow-merged back into the parent's `global` regardless of which port fired.
+
+**Common patterns:**
+
+- **Single happy exit.** Route every success path to one final agent, and leave its `Completed` port unwired. That node becomes the de-facto exit — when it completes, the child terminates `Completed` and the parent continues from `Subflow.Completed`.
+- **Multi-exit.** Any node with an unwired `Completed` port is a legal exit. The first one the saga reaches terminates the subflow; there is no priority mechanism beyond execution order.
+- **Explicit failure exit.** Wire the error-handling branch to an agent whose `Failed` port (or any non-`Completed` port) is left open. That terminates the child `Failed`, routing the parent from `Subflow.Failed`.
+- **Use Escalation for recoverable failures only.** A child `Escalated` terminal is specifically the Escalation node resolving with `Rejected`. Reserve it for cases where the child truly couldn't recover despite escalation — for ordinary failure, use `Failed`.
+
+**Gotchas:**
+
+- If a node emits a non-`Completed` port and you *don't* want that to fail the subflow, wire it somewhere. An unwired non-`Completed` port always terminates as `Failed`.
+- The save-time validator rejects unknown Subflow output ports on the parent (only `Completed`, `Failed`, `Escalated` are allowed on the Subflow node itself), but doesn't verify the child workflow's exit shape — a child with only unwired `Failed` ports will always return `Failed` to the parent.
+
+### Example: shared review subflow
+
+Define a small reusable review workflow `quick-review-v1`:
+
+```
+Start(reviewer-agent)  → Completed → [terminal]
+```
+
+Now compose a larger `publish-flow`:
+
+```
+Start(writer-agent)  → Completed → Subflow(key="quick-review-v1", version=null)
+                                    Completed → Publish(publisher-agent) → [terminal]
+                                    Failed    → HandleFailure(fallback-agent) → [terminal]
+                                    Escalated → Escalation(editor-in-chief) → [terminal]
+```
+
+At save time, `publish-flow`'s Subflow node has its `SubflowVersion` rewritten from `null` to the latest `quick-review-v1` version (e.g. `3`), so re-running a saved parent version is reproducible even if the child workflow gains new versions later.
+
+Re-save the parent workflow (creating `publish-flow` v2) and the null-version slot re-resolves to whatever is then-latest — same behaviour as agent versions.
+
+### `setGlobal` propagation example
+
+```
+root-flow (depth 0)
+  └─ Subflow  → child-flow (depth 1)
+                  ├─ Logic[setGlobal('sharedFact', 'learned')]
+                  └─ terminal(Completed)
+```
+
+- While `child-flow` runs, its working `global` gets `{ sharedFact: 'learned' }`.
+- On terminal, `SubflowCompleted.SharedContext = { sharedFact: 'learned' }`.
+- The parent saga in `root-flow` shallow-merges that into its own `global` before routing onward. Downstream nodes in `root-flow` see `global.sharedFact === 'learned'`.
+
+### Tips for designing reusable subflows
+
+- **Keep the shared surface small.** Prefer reading the input artifact and returning an output artifact over reaching into `global`. A narrow interface makes the subflow easier to reuse.
+- **Don't rely on parent `context`** — a subflow starts with an empty `context`. If you need something from the parent, it must flow in as the input artifact or live on `global`.
+- **Treat `setGlobal` as an output**, not an event. Writes only become visible on completion, and only once. Parallel subflows would race; don't design around mid-run shared state.
+- **Stay under depth 3.** If you find yourself wanting a fourth level, flatten the deepest composition into the caller instead.
+- **Version pins should be explicit for anything production-critical.** Leave `null` ("latest at save") for subflows you iterate on often; pin an integer when you need reproducibility across re-saves.
+- **Self-references are rejected at save time.** A workflow can't have a Subflow node that points at itself; use an Escalation node for guarded self-invocation patterns if you need them.
+
 ## Workflow versions
 
 Workflows are immutable by version. Every Save creates a new `(key, version)` row; in-flight traces continue running against the version they launched with. The editor opens the latest version by default; older versions remain available via `/api/workflows/{key}/versions` and the detail page's version picker.
@@ -177,8 +309,11 @@ At a glance:
 - `WorkflowEdge` — `{ FromNodeId, FromPort, ToNodeId, ToPort, RotatesRound, SortOrder }`.
 - `WorkflowInput` — `{ Key, DisplayName, Kind, Required, DefaultValueJson?, Description?, Ordinal }`.
 - `WorkflowSagaStateEntity` — carries `CurrentNodeId`, `CurrentAgentKey`, `EscalatedFromNodeId`, `InputsJson`, and append-only `DecisionHistoryJson` + `LogicEvaluationHistoryJson`.
-- `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext? }`.
+- `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext?, GlobalContext? }`.
 - `AgentInvocationCompleted` — `{ TraceId, RoundId, FromNodeId, AgentKey, AgentVersion, OutputPortName, OutputRef, Decision, DecisionPayload, Duration, TokenUsage }`.
+- `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth }`.
+- `SubflowCompleted` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, OutputPortName, OutputRef, SharedContext }`.
+- `WorkflowSagaStateEntity` (subflow fields) — `ParentTraceId?`, `ParentNodeId?`, `ParentRoundId?`, `SubflowDepth`, `GlobalInputsJson?`.
 
 ## Useful endpoints
 

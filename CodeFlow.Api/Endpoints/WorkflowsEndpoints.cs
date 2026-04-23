@@ -146,7 +146,8 @@ public static class WorkflowsEndpoints
             return Results.Conflict(new { error = $"Workflow '{normalizedKey}' already exists. Use PUT to add a version." });
         }
 
-        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, request.Nodes!, request.Edges!, request.Inputs);
+        var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
+        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, resolvedNodes, request.Edges!, request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -187,10 +188,58 @@ public static class WorkflowsEndpoints
             return Results.NotFound(new { error = $"Workflow '{normalizedKey}' does not exist. Use POST to create." });
         }
 
-        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, request.Nodes!, request.Edges!, request.Inputs);
+        var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
+        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, resolvedNodes, request.Edges!, request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
+    }
+
+    /// <summary>
+    /// Rewrites every Subflow node with a null <c>SubflowVersion</c> ("latest at save") to the
+    /// current latest version of the referenced workflow, so the saved parent row is
+    /// reproducible. Validation has already confirmed each referenced key exists.
+    /// </summary>
+    private static async Task<IReadOnlyList<WorkflowNodeDto>> ResolveSubflowLatestVersionsAsync(
+        IReadOnlyList<WorkflowNodeDto> nodes,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var needsResolution = nodes
+            .Where(n => n.Kind == WorkflowNodeKind.Subflow
+                && !string.IsNullOrWhiteSpace(n.SubflowKey)
+                && n.SubflowVersion is null)
+            .Select(n => n.SubflowKey!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (needsResolution.Length == 0)
+        {
+            return nodes;
+        }
+
+        var latestByKey = await dbContext.Workflows
+            .AsNoTracking()
+            .Where(w => needsResolution.Contains(w.Key))
+            .GroupBy(w => w.Key)
+            .Select(g => new { Key = g.Key, Latest = g.Max(w => w.Version) })
+            .ToDictionaryAsync(x => x.Key, x => x.Latest, StringComparer.Ordinal, cancellationToken);
+
+        return nodes
+            .Select(n =>
+            {
+                if (n.Kind != WorkflowNodeKind.Subflow
+                    || string.IsNullOrWhiteSpace(n.SubflowKey)
+                    || n.SubflowVersion is not null)
+                {
+                    return n;
+                }
+
+                return latestByKey.TryGetValue(n.SubflowKey!.Trim(), out var latest)
+                    ? n with { SubflowVersion = latest }
+                    : n;
+            })
+            .ToArray();
     }
 
     private static WorkflowDraft ToDraft(
@@ -214,7 +263,9 @@ public static class WorkflowsEndpoints
                     Script: node.Script,
                     OutputPorts: node.OutputPorts ?? Array.Empty<string>(),
                     LayoutX: node.LayoutX,
-                    LayoutY: node.LayoutY))
+                    LayoutY: node.LayoutY,
+                    SubflowKey: node.SubflowKey,
+                    SubflowVersion: node.SubflowVersion))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -263,7 +314,9 @@ public static class WorkflowsEndpoints
                 Script: node.Script,
                 OutputPorts: node.OutputPorts,
                 LayoutX: node.LayoutX,
-                LayoutY: node.LayoutY))
+                LayoutY: node.LayoutY,
+                SubflowKey: node.SubflowKey,
+                SubflowVersion: node.SubflowVersion))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

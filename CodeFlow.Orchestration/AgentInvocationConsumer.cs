@@ -81,7 +81,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 Variables = MergeVariables(
                     agentConfig.Configuration.Variables,
                     BuildContextTemplateVariables(message.ContextInputs),
-                    BuildInputTemplateVariables(input))
+                    BuildGlobalTemplateVariables(message.GlobalContext),
+                    BuildInputTemplateVariables(input)),
+                DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
+                    ? agentConfig.DeclaredOutputs
+                    : null
             };
             if (message.RetryContext is { } retryContext)
             {
@@ -263,10 +267,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private static IReadOnlyDictionary<string, string?>? MergeVariables(
         IReadOnlyDictionary<string, string?>? configured,
         IReadOnlyDictionary<string, string?> contextVariables,
+        IReadOnlyDictionary<string, string?> globalVariables,
         IReadOnlyDictionary<string, string?> inputVariables)
     {
         if ((configured is null || configured.Count == 0)
             && contextVariables.Count == 0
+            && globalVariables.Count == 0
             && inputVariables.Count == 0)
         {
             return configured;
@@ -282,6 +288,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         foreach (var entry in contextVariables)
+        {
+            merged[entry.Key] = entry.Value;
+        }
+
+        foreach (var entry in globalVariables)
         {
             merged[entry.Key] = entry.Value;
         }
@@ -306,6 +317,28 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             }
 
             AddContextTemplateVariables(variables, $"context.{key}", value);
+        }
+
+        return variables;
+    }
+
+    private static IReadOnlyDictionary<string, string?> BuildGlobalTemplateVariables(
+        IReadOnlyDictionary<string, JsonElement>? globalContext)
+    {
+        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (globalContext is null)
+        {
+            return variables;
+        }
+
+        foreach (var (key, value) in globalContext)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            AddContextTemplateVariables(variables, $"global.{key}", value);
         }
 
         return variables;

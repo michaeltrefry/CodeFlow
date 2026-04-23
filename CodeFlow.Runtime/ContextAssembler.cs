@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace CodeFlow.Runtime;
@@ -17,8 +18,9 @@ public sealed class ContextAssembler
 
         var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input);
         var skillsBlock = BuildSkillsBlock(request.Skills, request.Variables, request.Input);
+        var outputFormatBlock = BuildOutputFormatBlock(request.DeclaredOutputs);
 
-        var systemContent = Combine(renderedSystemPrompt, skillsBlock);
+        var systemContent = Combine(renderedSystemPrompt, skillsBlock, outputFormatBlock);
         if (!string.IsNullOrWhiteSpace(systemContent))
         {
             messages.Add(new ChatMessage(ChatMessageRole.System, systemContent));
@@ -134,19 +136,74 @@ public sealed class ContextAssembler
         return builder.ToString();
     }
 
-    private static string? Combine(string? systemPrompt, string? skillsBlock)
+    private static string? Combine(params string?[] sections)
     {
-        if (string.IsNullOrWhiteSpace(systemPrompt))
+        var nonEmpty = sections
+            .Where(section => !string.IsNullOrWhiteSpace(section))
+            .ToArray();
+
+        if (nonEmpty.Length == 0)
         {
-            return skillsBlock;
+            return null;
         }
 
-        if (string.IsNullOrWhiteSpace(skillsBlock))
+        var separator = $"{Environment.NewLine}{Environment.NewLine}";
+        return string.Join(separator, nonEmpty);
+    }
+
+    private static string? BuildOutputFormatBlock(IReadOnlyList<AgentOutputDeclaration>? declaredOutputs)
+    {
+        if (declaredOutputs is null || declaredOutputs.Count == 0)
         {
-            return systemPrompt;
+            return null;
         }
 
-        return $"{systemPrompt}{Environment.NewLine}{Environment.NewLine}{skillsBlock}";
+        var withExamples = declaredOutputs
+            .Where(output => output.PayloadExample is not null
+                && !string.IsNullOrWhiteSpace(output.Kind))
+            .ToArray();
+
+        if (withExamples.Length == 0)
+        {
+            return null;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append("## Response format").Append(Environment.NewLine);
+        builder.Append(
+            "Your final response must be valid JSON. Match the shape listed below for the decision "
+            + "kind you emit. Kinds not listed here have no required shape.");
+
+        foreach (var output in withExamples)
+        {
+            var example = FormatPayloadExample(output.PayloadExample!.Value);
+            builder.Append(Environment.NewLine).Append(Environment.NewLine);
+            builder.Append("### ").Append(output.Kind.Trim());
+            if (!string.IsNullOrWhiteSpace(output.Description))
+            {
+                builder.Append(" — ").Append(output.Description!.Trim());
+            }
+            builder.Append(Environment.NewLine);
+            builder.Append("```json").Append(Environment.NewLine);
+            builder.Append(example).Append(Environment.NewLine);
+            builder.Append("```");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatPayloadExample(JsonElement example)
+    {
+        try
+        {
+            return JsonSerializer.Serialize(
+                example,
+                new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return example.GetRawText();
+        }
     }
 
     private static string? BuildRetryNote(RetryContext? retryContext)

@@ -118,6 +118,7 @@ import { WorkflowReadonlyCanvasComponent } from './editor/workflow-readonly-canv
     .kind-logic { background: rgba(210, 153, 34, 0.2); color: #d29922; }
     .kind-hitl { background: rgba(188, 140, 255, 0.2); color: #bc8cff; }
     .kind-escalation { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+    .kind-subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; }
   `]
 })
 export class WorkflowDetailComponent implements OnInit {
@@ -139,6 +140,7 @@ export class WorkflowDetailComponent implements OnInit {
       case 'Logic': return 'Logic';
       case 'Hitl': return 'HITL';
       case 'Escalation': return 'Esc';
+      case 'Subflow': return `Subflow → ${node.subflowKey ?? '?'}`;
     }
   }
 

@@ -53,6 +53,13 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("layout_y")
             .IsRequired();
 
+        builder.Property(node => node.SubflowKey)
+            .HasColumnName("subflow_key")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.SubflowVersion)
+            .HasColumnName("subflow_version");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

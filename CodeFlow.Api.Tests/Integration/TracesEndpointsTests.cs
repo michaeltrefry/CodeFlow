@@ -248,6 +248,148 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         await db.SaveChangesAsync();
     }
 
+    [Fact]
+    public async Task GetTrace_ShouldAggregatePendingHitlFromSubflowDescendants()
+    {
+        // S7: pending HITL tasks from descendant child sagas (those with ParentTraceId pointing
+        // to this or any ancestor) are surfaced on the root trace's PendingHitl, each decorated
+        // with OriginTraceId and SubflowPath so the UI can label them.
+        var rootTraceId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+        var grandchildTraceId = Guid.NewGuid();
+        var rootCorrelationId = Guid.NewGuid();
+        var childCorrelationId = Guid.NewGuid();
+        var grandchildCorrelationId = Guid.NewGuid();
+        var sharedRoundId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+
+            db.WorkflowSagas.AddRange(
+                NewSaga(rootCorrelationId, rootTraceId, "parent-wf", parentTraceId: null, subflowDepth: 0),
+                NewSaga(childCorrelationId, childTraceId, "shared-utility", parentTraceId: rootTraceId, subflowDepth: 1),
+                NewSaga(grandchildCorrelationId, grandchildTraceId, "leaf-utility", parentTraceId: childTraceId, subflowDepth: 2));
+
+            db.HitlTasks.AddRange(
+                NewHitl(rootTraceId, sharedRoundId, "parent-human", "parent-wf", 1),
+                NewHitl(childTraceId, sharedRoundId, "child-human", "shared-utility", 2),
+                NewHitl(grandchildTraceId, sharedRoundId, "grandchild-human", "leaf-utility", 3));
+
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var detail = await client.GetFromJsonAsync<TraceDetailPayload>($"/api/traces/{rootTraceId}");
+        detail.Should().NotBeNull();
+        detail!.PendingHitl.Should().HaveCount(3);
+
+        var rootHitl = detail.PendingHitl.Single(h => h.AgentKey == "parent-human");
+        rootHitl.TraceId.Should().Be(rootTraceId);
+        rootHitl.OriginTraceId.Should().Be(rootTraceId);
+        rootHitl.SubflowPath.Should().BeEmpty("root HITL has no subflow path");
+
+        var childHitl = detail.PendingHitl.Single(h => h.AgentKey == "child-human");
+        childHitl.TraceId.Should().Be(childTraceId);
+        childHitl.OriginTraceId.Should().Be(childTraceId);
+        childHitl.SubflowPath.Should().Equal("shared-utility");
+
+        var grandchildHitl = detail.PendingHitl.Single(h => h.AgentKey == "grandchild-human");
+        grandchildHitl.TraceId.Should().Be(grandchildTraceId);
+        grandchildHitl.OriginTraceId.Should().Be(grandchildTraceId);
+        grandchildHitl.SubflowPath.Should().Equal("shared-utility", "leaf-utility");
+    }
+
+    [Fact]
+    public async Task GetTrace_ShouldIncludeHitlAtDepth3()
+    {
+        // S7: the max legal subflow depth is 3, so a chain root→A→B→C should aggregate the
+        // HITL in C onto the root.
+        var rootTraceId = Guid.NewGuid();
+        var aTraceId = Guid.NewGuid();
+        var bTraceId = Guid.NewGuid();
+        var cTraceId = Guid.NewGuid();
+        var cRoundId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.AddRange(
+                NewSaga(Guid.NewGuid(), rootTraceId, "root-wf", parentTraceId: null, subflowDepth: 0),
+                NewSaga(Guid.NewGuid(), aTraceId, "A", parentTraceId: rootTraceId, subflowDepth: 1),
+                NewSaga(Guid.NewGuid(), bTraceId, "B", parentTraceId: aTraceId, subflowDepth: 2),
+                NewSaga(Guid.NewGuid(), cTraceId, "C", parentTraceId: bTraceId, subflowDepth: 3));
+            db.HitlTasks.Add(NewHitl(cTraceId, cRoundId, "c-human", "C", 1));
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var detail = await client.GetFromJsonAsync<TraceDetailPayload>($"/api/traces/{rootTraceId}");
+        detail.Should().NotBeNull();
+        detail!.PendingHitl.Should().HaveCount(1);
+        var hitl = detail.PendingHitl.Single();
+        hitl.OriginTraceId.Should().Be(cTraceId);
+        hitl.SubflowPath.Should().Equal("A", "B", "C");
+    }
+
+    private static WorkflowSagaStateEntity NewSaga(
+        Guid correlationId,
+        Guid traceId,
+        string workflowKey,
+        Guid? parentTraceId,
+        int subflowDepth)
+    {
+        var now = DateTime.UtcNow;
+        return new WorkflowSagaStateEntity
+        {
+            CorrelationId = correlationId,
+            TraceId = traceId,
+            CurrentState = "Running",
+            CurrentNodeId = Guid.NewGuid(),
+            CurrentAgentKey = "agent",
+            CurrentRoundId = Guid.NewGuid(),
+            RoundCount = 0,
+            AgentVersionsJson = "{}",
+            DecisionHistoryJson = "[]",
+            LogicEvaluationHistoryJson = "[]",
+            DecisionCount = 0,
+            LogicEvaluationCount = 0,
+            WorkflowKey = workflowKey,
+            WorkflowVersion = 1,
+            InputsJson = "{}",
+            ParentTraceId = parentTraceId,
+            ParentNodeId = parentTraceId is null ? null : Guid.NewGuid(),
+            ParentRoundId = parentTraceId is null ? null : Guid.NewGuid(),
+            SubflowDepth = subflowDepth,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            Version = 1,
+        };
+    }
+
+    private static HitlTaskEntity NewHitl(
+        Guid traceId,
+        Guid roundId,
+        string agentKey,
+        string workflowKey,
+        long inputRefSalt)
+    {
+        return new HitlTaskEntity
+        {
+            TraceId = traceId,
+            RoundId = roundId,
+            NodeId = Guid.NewGuid(),
+            AgentKey = agentKey,
+            AgentVersion = 1,
+            WorkflowKey = workflowKey,
+            WorkflowVersion = 1,
+            InputRef = $"file:///tmp/hitl-{inputRefSalt}.bin",
+            InputPreview = "preview",
+            State = HitlTaskState.Pending,
+            CreatedAtUtc = DateTime.UtcNow,
+        };
+    }
+
     private sealed record TraceDetailPayload(
         Guid TraceId,
         string CurrentState,
@@ -255,5 +397,10 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
     private sealed record BulkDeleteResponsePayload(int DeletedCount);
 
-    private sealed record HitlTaskPayload(long Id);
+    private sealed record HitlTaskPayload(
+        long Id,
+        Guid TraceId,
+        string AgentKey,
+        Guid? OriginTraceId,
+        IReadOnlyList<string>? SubflowPath);
 }

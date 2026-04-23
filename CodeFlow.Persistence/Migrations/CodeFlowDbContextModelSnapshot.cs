@@ -732,6 +732,15 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("script");
 
+                    b.Property<string>("SubflowKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("subflow_key");
+
+                    b.Property<int?>("SubflowVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("subflow_version");
+
                     b.Property<long>("WorkflowId")
                         .HasColumnType("bigint")
                         .HasColumnName("workflow_id");
@@ -930,6 +939,10 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("varchar(512)")
                         .HasColumnName("failure_reason");
 
+                    b.Property<string>("GlobalInputsJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("global_inputs_json");
+
                     b.Property<string>("InputsJson")
                         .IsRequired()
                         .HasColumnType("longtext")
@@ -946,9 +959,27 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("logic_evaluation_history_json");
 
+                    b.Property<Guid?>("ParentNodeId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("parent_node_id");
+
+                    b.Property<Guid?>("ParentRoundId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("parent_round_id");
+
+                    b.Property<Guid?>("ParentTraceId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("parent_trace_id");
+
                     b.Property<int>("RoundCount")
                         .HasColumnType("int")
                         .HasColumnName("round_count");
+
+                    b.Property<int>("SubflowDepth")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0)
+                        .HasColumnName("subflow_depth");
 
                     b.Property<Guid>("TraceId")
                         .HasColumnType("char(36)")
@@ -974,6 +1005,8 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnName("workflow_version");
 
                     b.HasKey("CorrelationId");
+
+                    b.HasIndex("ParentTraceId");
 
                     b.HasIndex("WorkflowKey", "WorkflowVersion");
 

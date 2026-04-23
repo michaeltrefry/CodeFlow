@@ -60,7 +60,8 @@ public sealed class Agent : IAgentInvoker
             configuration.History,
             configuration.Variables,
             configuration.RetryContext,
-            tools.GrantedSkills));
+            tools.GrantedSkills,
+            configuration.DeclaredOutputs));
 
         var toolAccessPolicy = MergeToolAccessPolicy(configuration.ToolAccessPolicy, tools, configuration);
 
