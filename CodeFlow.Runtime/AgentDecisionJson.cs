@@ -15,12 +15,6 @@ internal static class AgentDecisionJson
 
         switch (decision)
         {
-            case ApprovedWithActionsDecision approvedWithActions:
-                json["actions"] = new JsonArray(approvedWithActions.Actions
-                    .Select(static action => (JsonNode?)JsonValue.Create(action))
-                    .ToArray());
-                break;
-
             case RejectedDecision rejected:
                 json["reasons"] = new JsonArray(rejected.Reasons
                     .Select(static reason => (JsonNode?)JsonValue.Create(reason))

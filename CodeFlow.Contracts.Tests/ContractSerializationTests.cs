@@ -189,7 +189,6 @@ public sealed class ContractSerializationTests
     {
         AgentDecisionPorts.ToPortName(AgentDecisionKind.Completed).Should().Be("Completed");
         AgentDecisionPorts.ToPortName(AgentDecisionKind.Approved).Should().Be("Approved");
-        AgentDecisionPorts.ToPortName(AgentDecisionKind.ApprovedWithActions).Should().Be("ApprovedWithActions");
         AgentDecisionPorts.ToPortName(AgentDecisionKind.Rejected).Should().Be("Rejected");
         AgentDecisionPorts.ToPortName(AgentDecisionKind.Failed).Should().Be("Failed");
     }

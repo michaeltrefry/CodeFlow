@@ -281,7 +281,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
             Kind = kind,
             AgentKey = agentKey,
             AgentVersion = 1,
-            OutputPortsJson = """["Completed","Approved","ApprovedWithActions","Rejected","Failed"]""",
+            OutputPortsJson = """["Completed","Approved","Rejected","Failed"]""",
             LayoutX = 0,
             LayoutY = 0
         };

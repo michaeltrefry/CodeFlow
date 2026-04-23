@@ -324,9 +324,6 @@ public sealed class InvocationLoop
         {
             "completed" => new CompletedDecision(payload),
             "approved" => new ApprovedDecision(payload),
-            "approved_with_actions" => new ApprovedWithActionsDecision(
-                GetRequiredStringArray(payload, "actions"),
-                payload),
             "rejected" => new RejectedDecision(
                 GetRequiredStringArray(payload, "reasons"),
                 payload),

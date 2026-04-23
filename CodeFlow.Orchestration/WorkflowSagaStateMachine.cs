@@ -995,7 +995,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         switch (decision)
         {
             case Runtime.AgentDecisionKind.Approved:
-            case Runtime.AgentDecisionKind.ApprovedWithActions:
                 var resumeNode = workflow.FindNode(resumeFromNodeId)
                     ?? throw new InvalidOperationException(
                         $"Escalation recovery target node {resumeFromNodeId} is missing from workflow {workflow.Key} v{workflow.Version}.");
@@ -1227,7 +1226,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         {
             AgentDecisionKind.Completed => Runtime.AgentDecisionKind.Completed,
             AgentDecisionKind.Approved => Runtime.AgentDecisionKind.Approved,
-            AgentDecisionKind.ApprovedWithActions => Runtime.AgentDecisionKind.ApprovedWithActions,
             AgentDecisionKind.Rejected => Runtime.AgentDecisionKind.Rejected,
             AgentDecisionKind.Failed => Runtime.AgentDecisionKind.Failed,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported decision kind.")
