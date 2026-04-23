@@ -207,7 +207,7 @@ export interface GitHostVerifyResponse {
   error?: string | null;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow' | 'ReviewLoop';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -222,6 +222,7 @@ export interface WorkflowNode {
   layoutY: number;
   subflowKey?: string | null;
   subflowVersion?: number | null;
+  reviewMaxRounds?: number | null;
 }
 
 export interface WorkflowEdge {

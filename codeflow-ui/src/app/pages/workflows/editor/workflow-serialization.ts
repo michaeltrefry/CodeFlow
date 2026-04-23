@@ -18,6 +18,8 @@ import { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, Workfl
  */
 export const DEFAULT_AGENT_OUTPUT_PORTS = ['Completed', 'Failed'];
 export const SUBFLOW_OUTPUT_PORTS = ['Completed', 'Failed', 'Escalated'];
+export const REVIEW_LOOP_OUTPUT_PORTS = ['Approved', 'Exhausted', 'Failed'];
+export const DEFAULT_REVIEW_LOOP_MAX_ROUNDS = 3;
 
 export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
   switch (kind) {
@@ -31,6 +33,8 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       return ['A', 'B'];
     case 'Subflow':
       return [...SUBFLOW_OUTPUT_PORTS];
+    case 'ReviewLoop':
+      return [...REVIEW_LOOP_OUTPUT_PORTS];
   }
 }
 
@@ -82,7 +86,8 @@ export async function loadIntoEditor(
       script: node.script,
       outputPorts: node.outputPorts,
       subflowKey: node.subflowKey,
-      subflowVersion: node.subflowVersion
+      subflowVersion: node.subflowVersion,
+      reviewMaxRounds: node.reviewMaxRounds
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -103,7 +108,7 @@ export async function loadIntoEditor(
   return idToNode;
 }
 
-export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion'>): string {
+export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
@@ -114,6 +119,11 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
       const key = node.subflowKey ?? '(pick workflow)';
       const version = node.subflowVersion ? `v${node.subflowVersion}` : 'latest';
       return `Subflow — ${key} ${version}`;
+    }
+    case 'ReviewLoop': {
+      const key = node.subflowKey ?? '(pick workflow)';
+      const rounds = node.reviewMaxRounds ? `×${node.reviewMaxRounds}` : '×?';
+      return `ReviewLoop ${rounds} — ${key}`;
     }
   }
 }
@@ -135,7 +145,8 @@ export function serializeEditor(
       layoutX: position.x,
       layoutY: position.y,
       subflowKey: node.subflowKey,
-      subflowVersion: node.subflowVersion
+      subflowVersion: node.subflowVersion,
+      reviewMaxRounds: node.reviewMaxRounds
     };
   });
 
