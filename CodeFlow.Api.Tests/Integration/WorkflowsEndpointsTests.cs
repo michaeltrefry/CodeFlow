@@ -268,6 +268,345 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         body.Errors.Should().NotBeEmpty();
     }
 
+    [Fact]
+    public async Task Post_Rejects_WhenSubflowKeyIsMissing()
+    {
+        // S10: Subflow node must reference a SubflowKey.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-kickoff");
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "bad-subflow-missing-key",
+            name = "No subflow key",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-kickoff",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = (string?)null,
+                    subflowVersion = (int?)null
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Rejects_WhenSubflowReferencesUnknownWorkflow()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-kickoff-unknown");
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "bad-subflow-unknown",
+            name = "Unknown subflow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-kickoff-unknown",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "does-not-exist",
+                    subflowVersion = (int?)null
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Rejects_WhenSubflowPinsMissingVersion()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-kickoff-pinned");
+        await SeedAgentAsync(client, "wf-child-start");
+
+        // Create a child workflow at v1 so the key exists but v99 doesn't.
+        var childStartId = Guid.NewGuid();
+        var childResponse = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "child-for-pinning",
+            name = "Child",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = childStartId,
+                    kind = "Start",
+                    agentKey = "wf-child-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        childResponse.EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "bad-subflow-pinned-missing",
+            name = "Pinned missing version",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-kickoff-pinned",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "child-for-pinning",
+                    subflowVersion = 99
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Rejects_WhenSubflowReferencesItself()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-kickoff-selfref");
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "self-ref-flow",
+            name = "Self-referential",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-kickoff-selfref",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "self-ref-flow",
+                    subflowVersion = (int?)null
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Rejects_WhenSubflowEdgeUsesInvalidPortName()
+    {
+        // The only runtime ports a Subflow node can emit are Completed / Failed / Escalated.
+        // Saving a parent that wires an edge from a Subflow on any other port would never
+        // match at runtime, so the save must be rejected.
+        using var client = testclient();
+        HttpClient testclient() => factory.CreateClient();
+
+        await SeedAgentAsync(client, "wf-parent-invalid-port");
+        await SeedAgentAsync(client, "wf-child-invalid-port-start");
+        await SeedAgentAsync(client, "wf-parent-invalid-port-downstream");
+
+        var childStartId = Guid.NewGuid();
+        var childResponse = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "child-for-invalid-port",
+            name = "Child",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = childStartId,
+                    kind = "Start",
+                    agentKey = "wf-child-invalid-port-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        childResponse.EnsureSuccessStatusCode();
+
+        var parentStartId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+        var downstreamId = Guid.NewGuid();
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "parent-invalid-subflow-port",
+            name = "Invalid subflow port",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = parentStartId,
+                    kind = "Start",
+                    agentKey = "wf-parent-invalid-port",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = subflowNodeId,
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "child-for-invalid-port",
+                    subflowVersion = 1
+                },
+                new
+                {
+                    id = downstreamId,
+                    kind = "Agent",
+                    agentKey = "wf-parent-invalid-port-downstream",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 500,
+                    layoutY = 0
+                }
+            },
+            edges = new object[]
+            {
+                new { fromNodeId = parentStartId, fromPort = "Completed", toNodeId = subflowNodeId, toPort = "in", rotatesRound = false },
+                // "Done" is not one of the fixed Subflow ports — must be rejected.
+                new { fromNodeId = subflowNodeId, fromPort = "Done", toNodeId = downstreamId, toPort = "in", rotatesRound = false }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Accepts_ValidSubflowNodeReferencingExistingWorkflow()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-parent-start");
+        await SeedAgentAsync(client, "wf-valid-child-start");
+
+        var childStartId = Guid.NewGuid();
+        var childResponse = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "valid-child-flow",
+            name = "Valid child",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = childStartId,
+                    kind = "Start",
+                    agentKey = "wf-valid-child-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        childResponse.EnsureSuccessStatusCode();
+
+        var parentStartId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "valid-parent-flow",
+            name = "Valid parent",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = parentStartId,
+                    kind = "Start",
+                    agentKey = "wf-parent-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = subflowNodeId,
+                    kind = "Subflow",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "valid-child-flow",
+                    subflowVersion = 1
+                }
+            },
+            edges = new object[]
+            {
+                new { fromNodeId = parentStartId, fromPort = "Completed", toNodeId = subflowNodeId, toPort = "in", rotatesRound = false }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
     private sealed record ValidateScriptResponseShape(bool Ok, IReadOnlyList<ValidateScriptErrorShape> Errors);
     private sealed record ValidateScriptErrorShape(int Line, int Column, string Message);
 }

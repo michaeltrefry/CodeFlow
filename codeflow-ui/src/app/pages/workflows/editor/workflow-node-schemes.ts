@@ -10,6 +10,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   agentKey: string | null;
   agentVersion: number | null;
   script: string | null;
+  subflowKey: string | null;
+  subflowVersion: number | null;
   traceState: WorkflowNodeTraceState = null;
 
   constructor(params: {
@@ -20,6 +22,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     agentVersion?: number | null;
     script?: string | null;
     outputPorts: string[];
+    subflowKey?: string | null;
+    subflowVersion?: number | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -27,6 +31,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.agentKey = params.agentKey ?? null;
     this.agentVersion = params.agentVersion ?? null;
     this.script = params.script ?? null;
+    this.subflowKey = params.subflowKey ?? null;
+    this.subflowVersion = params.subflowVersion ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));
@@ -48,6 +54,8 @@ export class WorkflowEditorConnection
   extends ClassicPreset.Connection<WorkflowEditorNode, WorkflowEditorNode> {
   rotatesRound = false;
   sortOrder = 0;
+  isSelected = false;
+  onPick: (() => void) | null = null;
 }
 
 export type WorkflowSchemes = GetSchemes<WorkflowEditorNode, WorkflowEditorConnection>;

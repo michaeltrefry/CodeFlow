@@ -19,7 +19,7 @@ import { AreaExtensions, AreaPlugin } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
 import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20';
 import { AgentsApi } from '../../../core/agents.api';
-import { AgentSummary, WorkflowInput, WorkflowNodeKind } from '../../../core/models';
+import { AgentSummary, WorkflowInput, WorkflowNodeKind, WorkflowSummary } from '../../../core/models';
 import { WorkflowsApi } from '../../../core/workflows.api';
 import {
   WorkflowAreaExtra,
@@ -41,6 +41,10 @@ import { MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-edito
 
 interface SelectedNode {
   editor: WorkflowEditorNode;
+}
+
+interface SelectedConnection {
+  editor: WorkflowEditorConnection;
 }
 
 const DEFAULT_INPUT_KEY = 'input';
@@ -106,6 +110,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item logic" (click)="addPaletteNode('Logic')">Logic</button>
             <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
             <button type="button" class="palette-item escalation" (click)="addPaletteNode('Escalation')">Escalation</button>
+            <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
           </div>
         </div>
 
@@ -170,6 +175,52 @@ function defaultStartInput(): WorkflowInput {
               </div>
             }
 
+            @if (sel.editor.kind === 'Subflow') {
+              <div class="inspector-section">
+                <label class="field">
+                  <span>Workflow <span class="muted xsmall">(the subflow to invoke)</span></span>
+                  <select [ngModel]="sel.editor.subflowKey ?? ''"
+                          (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
+                    <option value="">(pick workflow)</option>
+                    @for (wf of availableSubflowTargets(); track wf.key) {
+                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                    }
+                  </select>
+                  @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
+                    <span class="tag error xsmall">Self-reference — save will be rejected.</span>
+                  }
+                </label>
+                <label class="field">
+                  <span>Version <span class="muted xsmall">(blank = latest at save)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.subflowVersion ?? null"
+                         (ngModelChange)="onSubflowVersionChanged(sel.editor, $event)" />
+                  <span class="muted xsmall">
+                    Leave blank to pin to the then-current latest when this workflow is saved. Re-saving re-resolves it. Enter a specific integer to pin permanently.
+                  </span>
+                </label>
+                @if (selectedSubflowDetail(); as detail) {
+                  <div class="field">
+                    <span class="field-label">Child workflow outline</span>
+                    <div class="subflow-outline">
+                      <div class="row-spread">
+                        <strong class="mono small">{{ detail.name }}</strong>
+                        <span class="muted xsmall">v{{ detail.version }} · {{ detail.nodes.length }} nodes</span>
+                      </div>
+                      <ul class="subflow-nodes">
+                        @for (n of detail.nodes; track n.id) {
+                          <li><span class="tag small">{{ n.kind }}</span> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
+                        }
+                      </ul>
+                    </div>
+                  </div>
+                }
+                <p class="muted xsmall">
+                  Subflow nodes always have the fixed output ports <code>Completed</code>, <code>Failed</code>, <code>Escalated</code>. Route each downstream to determine how the parent continues after the child terminates.
+                </p>
+              </div>
+            }
+
             @if (sel.editor.kind === 'Logic') {
               <div class="inspector-section">
                 <div class="field">
@@ -197,10 +248,20 @@ function defaultStartInput(): WorkflowInput {
                 </label>
               </div>
             }
+          } @else if (selectedConnection(); as sel) {
+            <div class="inspector-section">
+              <div class="row-spread">
+                <div class="inspector-kind connection">Wire</div>
+                <button type="button" class="danger small" (click)="removeSelectedConnection()">Delete wire</button>
+              </div>
+              <div class="muted xsmall">
+                <code class="mono">{{ connectionSummary(sel.editor) }}</code>
+              </div>
+            </div>
           } @else {
             <div class="inspector-section">
               <p class="muted xsmall">
-                Select a node to edit its settings. Drag between port handles to wire nodes. Press Delete or use the Delete button to remove a node.
+                Select a node to edit its settings. Drag between port handles to wire nodes. Select a wire and press Delete or Backspace to remove it.
               </p>
             </div>
 
@@ -351,6 +412,7 @@ function defaultStartInput(): WorkflowInput {
     .palette-item.logic { border-left: 4px solid #d29922; }
     .palette-item.hitl { border-left: 4px solid #bc8cff; }
     .palette-item.escalation { border-left: 4px solid #f85149; }
+    .palette-item.subflow { border-left: 4px solid #2ea3f2; }
     .panel-title {
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -427,6 +489,23 @@ function defaultStartInput(): WorkflowInput {
     .inspector-kind.logic { background: rgba(210, 153, 34, 0.2); color: #d29922; }
     .inspector-kind.hitl { background: rgba(188, 140, 255, 0.2); color: #bc8cff; }
     .inspector-kind.escalation { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+    .inspector-kind.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; }
+    .inspector-kind.connection { background: rgba(255, 209, 102, 0.16); color: #ffd166; }
+    .subflow-outline {
+      padding: 0.5rem;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .subflow-nodes {
+      list-style: none;
+      padding: 0;
+      margin: 0.4rem 0 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .subflow-nodes li { display: flex; gap: 0.4rem; align-items: center; }
     .row-spread { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
@@ -466,10 +545,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
   private editor?: NodeEditor<WorkflowSchemes>;
   private area?: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>;
+  private readonly connectionElements = new Map<string, { element: HTMLElement; onClick: (event: MouseEvent) => void }>();
   private readonly selectedNodeId = signal<string | null>(null);
+  private readonly selectedConnectionId = signal<string | null>(null);
   private readonly portsRevision = signal(0);
 
   readonly agents = signal<AgentSummary[]>([]);
+  readonly workflows = signal<WorkflowSummary[]>([]);
   readonly workflowKey = signal<string>('');
   readonly workflowName = signal<string>('');
   readonly maxRoundsPerRound = signal<number>(3);
@@ -481,12 +563,25 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly scriptValidationError = signal<string | null>(null);
   readonly scriptValidationOk = signal(false);
   readonly scriptMarkers = signal<MonacoMarker[]>([]);
+  readonly selectedSubflowDetail = signal<import('../../../core/models').WorkflowDetail | null>(null);
+
+  readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
+    const currentKey = this.workflowKey().trim();
+    return this.workflows().filter(w => w.key !== currentKey);
+  });
 
   readonly selectedNode = computed<SelectedNode | null>(() => {
     const id = this.selectedNodeId();
     if (!id || !this.editor) return null;
     const node = this.editor.getNode(id) as WorkflowEditorNode | undefined;
     return node ? { editor: node } : null;
+  });
+
+  readonly selectedConnection = computed<SelectedConnection | null>(() => {
+    const id = this.selectedConnectionId();
+    if (!id || !this.editor) return null;
+    const connection = this.editor.getConnection(id) as WorkflowEditorConnection | undefined;
+    return connection ? { editor: connection } : null;
   });
 
   readonly outputPortsText = computed(() => {
@@ -501,6 +596,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.agentsApi.list().subscribe({
       next: agents => this.agents.set(agents),
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
+    });
+    this.api.list().subscribe({
+      next: workflows => this.workflows.set(workflows),
+      error: err => this.error.set(`Failed to load workflows: ${err.message ?? err}`)
     });
 
     const editor = new NodeEditor<WorkflowSchemes>();
@@ -525,10 +624,25 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     area.addPipe(context => {
       if (context.type === 'nodepicked') {
+        this.selectConnection(null);
         this.selectedNodeId.set(context.data.id);
         this.scriptValidationError.set(null);
         this.scriptValidationOk.set(false);
         this.scriptMarkers.set([]);
+        this.selectedSubflowDetail.set(null);
+        const picked = this.editor?.getNode(context.data.id) as WorkflowEditorNode | undefined;
+        if (picked?.kind === 'Subflow' && picked.subflowKey) {
+          this.api.getLatest(picked.subflowKey).subscribe({
+            next: detail => this.selectedSubflowDetail.set(detail),
+            error: () => this.selectedSubflowDetail.set(null)
+          });
+        }
+      }
+      if (context.type === 'render' && context.data.type === 'connection') {
+        this.bindConnectionElement(context.data.payload as WorkflowEditorConnection, context.data.element);
+      }
+      if (context.type === 'unmount') {
+        this.releaseConnectionElement(context.data.element);
       }
       return context;
     });
@@ -542,10 +656,16 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         if (existing) {
           return undefined;
         }
+        this.bindConnectionInteraction(data);
       }
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
           this.selectedNodeId.set(null);
+        }
+      }
+      if (context.type === 'connectionremoved') {
+        if (this.selectedConnectionId() === context.data.id) {
+          this.selectedConnectionId.set(null);
         }
       }
       return context;
@@ -578,6 +698,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    for (const { element, onClick } of this.connectionElements.values()) {
+      element.removeEventListener('click', onClick);
+    }
+    this.connectionElements.clear();
     this.area?.destroy();
   }
 
@@ -591,8 +715,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         return;
       }
     }
-    if (!this.selectedNodeId()) return;
+    if (!this.selectedConnectionId() && !this.selectedNodeId()) return;
     event.preventDefault();
+    if (this.selectedConnectionId()) {
+      void this.removeSelectedConnection();
+      return;
+    }
     void this.removeSelectedNode();
   }
 
@@ -646,6 +774,47 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.selectedNodeId.set(null);
   }
 
+  async removeSelectedConnection(): Promise<void> {
+    if (!this.editor) return;
+    const id = this.selectedConnectionId();
+    if (!id) return;
+
+    await this.editor.removeConnection(id);
+    this.selectedConnectionId.set(null);
+  }
+
+  onSubflowKeyChanged(node: WorkflowEditorNode, value: string): void {
+    node.subflowKey = value || null;
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+    this.selectedNodeId.set(this.selectedNodeId());
+
+    if (!value) {
+      this.selectedSubflowDetail.set(null);
+      return;
+    }
+
+    this.api.getLatest(value).subscribe({
+      next: detail => this.selectedSubflowDetail.set(detail),
+      error: () => this.selectedSubflowDetail.set(null)
+    });
+  }
+
+  onSubflowVersionChanged(node: WorkflowEditorNode, value: number | null): void {
+    node.subflowVersion = value && value > 0 ? value : null;
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  labelForOutline(node: { kind: string; agentKey?: string | null; subflowKey?: string | null }): string {
+    if (node.kind === 'Subflow') return `→ ${node.subflowKey ?? '?'}`;
+    return node.agentKey ?? '';
+  }
+
+  connectionSummary(connection: WorkflowEditorConnection): string {
+    return `${this.connectionEndpointLabel(connection.source, connection.sourceOutput)} -> ${this.connectionEndpointLabel(connection.target, connection.targetInput)}`;
+  }
+
   onAgentChanged(node: WorkflowEditorNode, value: string): void {
     node.agentKey = value || null;
     node.label = labelFor(node);
@@ -694,6 +863,88 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     this.area?.update('node', node.id);
     this.portsRevision.update(v => v + 1);
+  }
+
+  private bindConnectionInteraction(connection: WorkflowEditorConnection): void {
+    connection.onPick = () => this.selectConnection(connection.id);
+  }
+
+  private bindConnectionElement(connection: WorkflowEditorConnection, element: HTMLElement): void {
+    const existing = this.connectionElements.get(connection.id);
+    if (existing?.element !== element) {
+      existing?.element.removeEventListener('click', existing.onClick);
+      this.connectionElements.delete(connection.id);
+    }
+
+    if (!this.connectionElements.has(connection.id)) {
+      const onClick = (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        connection.onPick?.();
+      };
+      element.addEventListener('click', onClick);
+      this.connectionElements.set(connection.id, { element, onClick });
+    }
+
+    requestAnimationFrame(() => this.applyConnectionStyles(connection.id));
+  }
+
+  private connectionEndpointLabel(nodeId: string, portKey?: string): string {
+    const label = (this.editor?.getNode(nodeId) as WorkflowEditorNode | undefined)?.label ?? nodeId;
+    return portKey ? `${label}.${portKey}` : label;
+  }
+
+  private selectConnection(connectionId: string | null): void {
+    const previousId = this.selectedConnectionId();
+    if (previousId === connectionId) return;
+
+    if (previousId) {
+      const previous = this.editor?.getConnection(previousId) as WorkflowEditorConnection | undefined;
+      if (previous) {
+        previous.isSelected = false;
+        this.applyConnectionStyles(previous.id);
+      }
+    }
+
+    this.selectedConnectionId.set(connectionId);
+
+    if (!connectionId) return;
+
+    const next = this.editor?.getConnection(connectionId) as WorkflowEditorConnection | undefined;
+    if (!next) return;
+
+    next.isSelected = true;
+    this.selectedNodeId.set(null);
+    this.scriptValidationError.set(null);
+    this.scriptValidationOk.set(false);
+    this.scriptMarkers.set([]);
+    this.selectedSubflowDetail.set(null);
+    this.applyConnectionStyles(next.id);
+  }
+
+  private applyConnectionStyles(connectionId: string): void {
+    const registered = this.connectionElements.get(connectionId);
+    const connection = this.editor?.getConnection(connectionId) as WorkflowEditorConnection | undefined;
+    if (!registered || !connection) return;
+
+    const path = registered.element.querySelector('path') as SVGPathElement | null;
+    if (!path) return;
+
+    path.style.cursor = 'pointer';
+    path.style.pointerEvents = 'auto';
+    path.style.transition = 'stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease';
+    path.style.stroke = connection.isSelected ? '#ffd166' : '#4682b4';
+    path.style.strokeWidth = connection.isSelected ? '7px' : '5px';
+    path.style.filter = connection.isSelected ? 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))' : '';
+  }
+
+  private releaseConnectionElement(element: HTMLElement): void {
+    for (const [id, registered] of this.connectionElements.entries()) {
+      if (registered.element !== element) continue;
+      registered.element.removeEventListener('click', registered.onClick);
+      this.connectionElements.delete(id);
+      return;
+    }
   }
 
   addInput(): void {

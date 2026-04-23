@@ -216,6 +216,63 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         reloadedAccept.Script.Should().BeNull("unscripted agent nodes must round-trip with null Script");
     }
 
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripSubflowNodeWithKeyAndVersion()
+    {
+        // Covers Slice S1 of the Subworkflow Composition epic: a Subflow node carries a
+        // SubflowKey + nullable SubflowVersion that survive persistence round-trip. Both an
+        // explicit-version and a "latest at save" (null version) variant are checked.
+        var workflowKey = $"composer-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var pinnedSubflowNodeId = Guid.NewGuid();
+        var latestSubflowNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Composer",
+            MaxRoundsPerRound: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(pinnedSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
+                    AgentVersion: null, Script: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    LayoutX: 250, LayoutY: 0, SubflowKey: "child-flow", SubflowVersion: 7),
+                new WorkflowNodeDraft(latestSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
+                    AgentVersion: null, Script: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    LayoutX: 500, LayoutY: 0, SubflowKey: "shared-utility", SubflowVersion: null)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", pinnedSubflowNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(pinnedSubflowNodeId, "Completed", latestSubflowNodeId, WorkflowEdge.DefaultInputPort, false, 1)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var pinned = reloaded.Nodes.Single(n => n.Id == pinnedSubflowNodeId);
+        pinned.Kind.Should().Be(WorkflowNodeKind.Subflow);
+        pinned.SubflowKey.Should().Be("child-flow");
+        pinned.SubflowVersion.Should().Be(7);
+        pinned.AgentKey.Should().BeNull();
+        pinned.OutputPorts.Should().Equal("Completed", "Failed", "Escalated");
+
+        var latest = reloaded.Nodes.Single(n => n.Id == latestSubflowNodeId);
+        latest.Kind.Should().Be(WorkflowNodeKind.Subflow);
+        latest.SubflowKey.Should().Be("shared-utility");
+        latest.SubflowVersion.Should().BeNull("null SubflowVersion encodes 'latest at save' until S9 resolution");
+
+        var nonSubflowStart = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        nonSubflowStart.SubflowKey.Should().BeNull("non-Subflow nodes must round-trip with null SubflowKey");
+        nonSubflowStart.SubflowVersion.Should().BeNull();
+    }
+
     private static WorkflowNodeEntity NodeEntity(Guid nodeId, WorkflowNodeKind kind, string agentKey)
     {
         return new WorkflowNodeEntity

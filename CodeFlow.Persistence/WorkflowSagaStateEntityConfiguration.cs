@@ -106,6 +106,26 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("failure_reason")
             .HasMaxLength(512);
 
+        builder.Property(saga => saga.ParentTraceId)
+            .HasColumnName("parent_trace_id");
+
+        builder.Property(saga => saga.ParentNodeId)
+            .HasColumnName("parent_node_id");
+
+        builder.Property(saga => saga.ParentRoundId)
+            .HasColumnName("parent_round_id");
+
+        builder.Property(saga => saga.SubflowDepth)
+            .HasColumnName("subflow_depth")
+            .HasDefaultValue(0)
+            .IsRequired();
+
+        builder.Property(saga => saga.GlobalInputsJson)
+            .HasColumnName("global_inputs_json")
+            .HasColumnType("longtext");
+
+        builder.HasIndex(saga => saga.ParentTraceId);
+
         builder.Ignore(saga => saga.PendingTransition);
 
         builder.HasIndex(saga => new { saga.WorkflowKey, saga.WorkflowVersion });

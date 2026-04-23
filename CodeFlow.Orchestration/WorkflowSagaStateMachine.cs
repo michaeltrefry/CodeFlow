@@ -17,6 +17,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     private const int MaxLogicChainHops = 32;
 
+    /// <summary>
+    /// Cap on subflow nesting depth. Top-level workflow runs at depth 0; a Subflow node spawns a
+    /// child at <c>parent.SubflowDepth + 1</c>. A child whose depth would exceed this value is
+    /// not spawned — the parent saga fails fast with reason <c>SubflowDepthExceeded</c>.
+    /// </summary>
+    public const int MaxSubflowDepth = 3;
+
     public State Running { get; } = null!;
 
     public State Completed { get; } = null!;
@@ -28,6 +35,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     public Event<AgentInvokeRequested> AgentInvokeRequestedEvent { get; } = null!;
 
     public Event<AgentInvocationCompleted> AgentInvocationCompletedEvent { get; } = null!;
+
+    public Event<SubflowInvokeRequested> SubflowInvokeRequestedEvent { get; } = null!;
+
+    public Event<SubflowCompleted> SubflowCompletedEvent { get; } = null!;
 
     public WorkflowSagaStateMachine()
     {
@@ -43,16 +54,32 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             config.CorrelateById(context => context.Message.TraceId);
         });
 
+        Event(() => SubflowInvokeRequestedEvent, config =>
+        {
+            // Child saga's CorrelationId is the ChildTraceId carried on the message.
+            config.CorrelateById(context => context.Message.ChildTraceId);
+        });
+
+        Event(() => SubflowCompletedEvent, config =>
+        {
+            // Routed back to the parent saga, which is correlated by ParentTraceId.
+            config.CorrelateById(context => context.Message.ParentTraceId);
+        });
+
         Initially(
             When(AgentInvokeRequestedEvent)
                 .Then(context => ApplyInitialRequest(context.Saga, context.Message))
+                .TransitionTo(Running),
+            When(SubflowInvokeRequestedEvent)
+                .ThenAsync(context => ApplyInitialSubflowAsync(context))
                 .TransitionTo(Running));
 
         DuringAny(Ignore(AgentInvokeRequestedEvent));
+        DuringAny(Ignore(SubflowInvokeRequestedEvent));
 
-        During(Completed, Ignore(AgentInvocationCompletedEvent));
-        During(Failed, Ignore(AgentInvocationCompletedEvent));
-        During(Escalated, Ignore(AgentInvocationCompletedEvent));
+        During(Completed, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
+        During(Failed, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
+        During(Escalated, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
 
         During(Running,
             When(AgentInvocationCompletedEvent)
@@ -73,7 +100,30 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                                     context => context.Saga.PendingTransition == PendingTransitionEscalated,
                                     escalateBinder => escalateBinder
                                         .Then(ClearPendingTransition)
+                                        .TransitionTo(Escalated)))),
+            When(SubflowCompletedEvent)
+                .ThenAsync(context => RouteSubflowCompletionAsync(context))
+                .IfElse(
+                    context => context.Saga.PendingTransition == PendingTransitionCompleted,
+                    completeBinder => completeBinder
+                        .Then(ClearPendingTransition)
+                        .TransitionTo(Completed),
+                    continueBinder => continueBinder
+                        .IfElse(
+                            context => context.Saga.PendingTransition == PendingTransitionFailed,
+                            failBinder => failBinder
+                                .Then(ClearPendingTransition)
+                                .TransitionTo(Failed),
+                            continueElseBinder => continueElseBinder
+                                .If(
+                                    context => context.Saga.PendingTransition == PendingTransitionEscalated,
+                                    escalateBinder => escalateBinder
+                                        .Then(ClearPendingTransition)
                                         .TransitionTo(Escalated)))));
+
+        WhenEnter(Completed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Completed")));
+        WhenEnter(Failed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Failed")));
+        WhenEnter(Escalated, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Escalated")));
     }
 
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)
@@ -99,6 +149,305 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     private static void ClearPendingTransition(BehaviorContext<WorkflowSagaStateEntity> context)
     {
         context.Saga.PendingTransition = null;
+    }
+
+    /// <summary>
+    /// Initialize a child saga from a <see cref="SubflowInvokeRequested"/>. Loads the child
+    /// workflow, copies parent linkage + global snapshot onto the saga, pins the child Start's
+    /// agent version, and publishes an <see cref="AgentInvokeRequested"/> for the child Start
+    /// node so the existing agent invocation pipeline picks it up. The published
+    /// AgentInvokeRequested is correlated by <c>ChildTraceId</c> — the saga is already in
+    /// <c>Running</c> by the time it arrives, so it falls into the <c>DuringAny(Ignore(...))</c>
+    /// guard rather than re-running the initial transition.
+    /// </summary>
+    private static async Task ApplyInitialSubflowAsync(
+        BehaviorContext<WorkflowSagaStateEntity, SubflowInvokeRequested> context)
+    {
+        var saga = context.Saga;
+        var message = context.Message;
+
+        var services = context.GetPayload<IServiceProvider>();
+        var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
+        var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
+
+        var workflow = await workflowRepo.GetAsync(
+            message.SubflowKey,
+            message.SubflowVersion,
+            context.CancellationToken);
+
+        var startNode = workflow.StartNode;
+        if (string.IsNullOrWhiteSpace(startNode.AgentKey))
+        {
+            throw new InvalidOperationException(
+                $"Subflow {workflow.Key} v{workflow.Version} has no AgentKey on its Start node.");
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var childRoundId = Guid.NewGuid();
+
+        saga.TraceId = message.ChildTraceId;
+        saga.WorkflowKey = message.SubflowKey;
+        saga.WorkflowVersion = message.SubflowVersion;
+        saga.CurrentNodeId = startNode.Id;
+        saga.CurrentAgentKey = startNode.AgentKey;
+        saga.CurrentRoundId = childRoundId;
+        saga.RoundCount = 0;
+        saga.InputsJson = "{}";
+        saga.GlobalInputsJson = SerializeContextInputs(message.SharedContext);
+        saga.CurrentInputRef = message.InputRef.ToString();
+        saga.ParentTraceId = message.ParentTraceId;
+        saga.ParentNodeId = message.ParentNodeId;
+        saga.ParentRoundId = message.ParentRoundId;
+        saga.SubflowDepth = message.Depth;
+        if (saga.CreatedAtUtc == default)
+        {
+            saga.CreatedAtUtc = nowUtc;
+        }
+        saga.UpdatedAtUtc = nowUtc;
+
+        var startAgentVersion = startNode.AgentVersion
+            ?? await agentConfigRepo.GetLatestVersionAsync(startNode.AgentKey, context.CancellationToken);
+        saga.PinAgentVersion(startNode.AgentKey, startAgentVersion);
+
+        // The child's local `context` starts empty — the parent's shared snapshot belongs on
+        // `global`, not on the child's local inputs. Publishing SharedContext as ContextInputs
+        // would make parent keys show up under {{context.*}} on the child Start, and
+        // {{global.*}} would be empty — the opposite of the documented semantics.
+        await context.Publish(new AgentInvokeRequested(
+            TraceId: message.ChildTraceId,
+            RoundId: childRoundId,
+            WorkflowKey: workflow.Key,
+            WorkflowVersion: workflow.Version,
+            NodeId: startNode.Id,
+            AgentKey: startNode.AgentKey,
+            AgentVersion: startAgentVersion,
+            InputRef: message.InputRef,
+            ContextInputs: EmptyInputs,
+            CorrelationHeaders: null,
+            RetryContext: null,
+            ToolExecutionContext: null,
+            GlobalContext: message.SharedContext));
+    }
+
+    /// <summary>
+    /// Fires whenever a child saga (one with parent linkage) enters a terminal state. Publishes
+    /// <see cref="SubflowCompleted"/> back to the parent saga carrying the child's final
+    /// <c>global</c> bag and last-known output ref. The OutputPortName matches the terminal
+    /// state name (Completed/Failed/Escalated).
+    /// </summary>
+    private static async Task PublishSubflowCompletedIfChildAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        string terminalPortName)
+    {
+        var saga = context.Saga;
+        if (saga.ParentTraceId is null
+            || saga.ParentNodeId is null
+            || saga.ParentRoundId is null)
+        {
+            return;
+        }
+
+        var lastDecision = saga.GetDecisionHistory().LastOrDefault();
+        var outputRefStr = lastDecision?.OutputRef ?? saga.CurrentInputRef;
+        if (string.IsNullOrWhiteSpace(outputRefStr))
+        {
+            // Should not happen — child sagas always have at least one decision before terminal,
+            // and CurrentInputRef is set at saga init. Bail rather than publish a malformed event.
+            return;
+        }
+
+        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+
+        await context.Publish(new SubflowCompleted(
+            ParentTraceId: saga.ParentTraceId.Value,
+            ParentNodeId: saga.ParentNodeId.Value,
+            ParentRoundId: saga.ParentRoundId.Value,
+            ChildTraceId: saga.TraceId,
+            OutputPortName: terminalPortName,
+            OutputRef: new Uri(outputRefStr),
+            SharedContext: sharedContext));
+    }
+
+    /// <summary>
+    /// Parent-side handler for <see cref="SubflowCompleted"/>. Validates the round, shallow-merges
+    /// the child's final <c>global</c> into the parent's <c>global</c> (last-write-wins per
+    /// top-level key), records a synthetic decision for the Subflow node, then routes from the
+    /// matching output port using the same logic as agent completions.
+    /// </summary>
+    private static async Task RouteSubflowCompletionAsync(
+        BehaviorContext<WorkflowSagaStateEntity, SubflowCompleted> context)
+    {
+        var saga = context.Saga;
+        var message = context.Message;
+
+        using var activity = CodeFlowActivity.StartWorkflowRoot(
+            "workflow.saga.route_subflow",
+            saga.TraceId);
+        activity?.SetTag(CodeFlowActivity.TagNames.RoundId, saga.CurrentRoundId);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowKey, saga.WorkflowKey);
+        activity?.SetTag(CodeFlowActivity.TagNames.WorkflowVersion, saga.WorkflowVersion);
+
+        // Stale-round rejection — same rationale as RouteCompletionAsync.
+        if (message.ParentRoundId != saga.CurrentRoundId)
+        {
+            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, "StaleRound_Ignored");
+            activity?.SetTag("codeflow.saga.message_round_id", message.ParentRoundId);
+            return;
+        }
+
+        // Shallow merge: last-write-wins per top-level key. Child's working `global` may have
+        // accumulated setGlobal writes during its run; flush them into the parent's bag so
+        // downstream parent nodes see them.
+        if (message.SharedContext.Count > 0)
+        {
+            var parentGlobal = new Dictionary<string, JsonElement>(
+                DeserializeContextInputs(saga.GlobalInputsJson),
+                StringComparer.Ordinal);
+            foreach (var (key, value) in message.SharedContext)
+            {
+                parentGlobal[key] = value.Clone();
+            }
+            saga.GlobalInputsJson = SerializeContextInputs(parentGlobal);
+        }
+
+        var services = context.GetPayload<IServiceProvider>();
+        var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
+        var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
+        var artifactStore = services.GetRequiredService<IArtifactStore>();
+        var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
+
+        // Synthetic decision record so the parent's history shows the subflow returned a
+        // result. Decision kind is Completed for the Completed/Escalated ports and Failed for
+        // the Failed port — best-effort mapping for analytics.
+        var syntheticDecisionKind = string.Equals(message.OutputPortName, "Failed", StringComparison.Ordinal)
+            ? Runtime.AgentDecisionKind.Failed
+            : Runtime.AgentDecisionKind.Completed;
+
+        saga.AppendDecision(new DecisionRecord(
+            AgentKey: string.Empty,
+            AgentVersion: 0,
+            Decision: syntheticDecisionKind,
+            DecisionPayload: null,
+            RoundId: saga.CurrentRoundId,
+            RecordedAtUtc: DateTime.UtcNow,
+            NodeId: message.ParentNodeId,
+            OutputPortName: message.OutputPortName,
+            InputRef: saga.CurrentInputRef,
+            OutputRef: message.OutputRef.ToString()));
+
+        var workflow = await workflowRepo.GetAsync(
+            saga.WorkflowKey,
+            saga.WorkflowVersion,
+            context.CancellationToken);
+
+        var edge = workflow.FindNext(message.ParentNodeId, message.OutputPortName);
+
+        if (edge is null)
+        {
+            // No edge wired from this port — terminate the parent based on the port name.
+            switch (message.OutputPortName)
+            {
+                case "Completed":
+                    saga.PendingTransition = PendingTransitionCompleted;
+                    break;
+                case "Escalated":
+                    saga.PendingTransition = PendingTransitionEscalated;
+                    break;
+                default:
+                    saga.PendingTransition = PendingTransitionFailed;
+                    saga.FailureReason ??=
+                        $"No outgoing edge from Subflow node {message.ParentNodeId} port '{message.OutputPortName}'.";
+                    break;
+            }
+
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var resolution = await ResolveTargetThroughLogicChainAsync(
+            context,
+            workflow,
+            saga,
+            scriptHost,
+            artifactStore,
+            edge,
+            upstreamOutputRef: message.OutputRef);
+
+        if (resolution is { FailureTerminal: true })
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason ??= BuildLogicChainFailureReason(saga);
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (resolution is null)
+        {
+            throw new InvalidOperationException("Logic chain resolver returned no outcome.");
+        }
+
+        var targetNode = resolution.TerminalNode!;
+        var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
+        var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
+
+        if (targetNode.Kind == WorkflowNodeKind.Subflow
+            && saga.SubflowDepth + 1 > MaxSubflowDepth)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason =
+                $"SubflowDepthExceeded: spawning Subflow node {targetNode.Id} would yield depth "
+                + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
+        {
+            var escalationNode = workflow.EscalationNode;
+            if (escalationNode is not null)
+            {
+                await PublishHandoffAsync(
+                    context,
+                    agentConfigRepo,
+                    saga,
+                    workflow,
+                    escalationNode,
+                    inputRef: message.OutputRef,
+                    roundId: saga.CurrentRoundId,
+                    retryContext: null);
+
+                saga.EscalatedFromNodeId = message.ParentNodeId;
+                saga.CurrentNodeId = escalationNode.Id;
+                saga.CurrentAgentKey = escalationNode.AgentKey ?? string.Empty;
+            }
+            else
+            {
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason =
+                    $"Round limit {workflow.MaxRoundsPerRound} exceeded and no escalation node is configured.";
+            }
+
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        await DispatchToNodeAsync(
+            context,
+            agentConfigRepo,
+            saga,
+            workflow,
+            targetNode,
+            inputRef: message.OutputRef,
+            roundId: targetRoundId,
+            retryContext: null);
+
+        saga.CurrentNodeId = targetNode.Id;
+        saga.CurrentAgentKey = targetNode.AgentKey ?? string.Empty;
+        saga.CurrentRoundId = targetRoundId;
+        saga.RoundCount = targetRoundCount;
+        saga.UpdatedAtUtc = DateTime.UtcNow;
+
+        activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }
 
     private static async Task RouteCompletionAsync(
@@ -248,6 +597,17 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
+        if (targetNode.Kind == WorkflowNodeKind.Subflow
+            && saga.SubflowDepth + 1 > MaxSubflowDepth)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason =
+                $"SubflowDepthExceeded: spawning Subflow node {targetNode.Id} would yield depth "
+                + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
         await DispatchToNodeAsync(
             context,
             agentConfigRepo,
@@ -300,6 +660,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
         var artifactJson = await ReadArtifactAsJsonAsync(
             artifactStore,
             message.OutputRef,
@@ -314,7 +675,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             declaredPorts: fromNode.OutputPorts,
             input: scriptInput,
             context: contextInputs,
-            cancellationToken: context.CancellationToken);
+            cancellationToken: context.CancellationToken,
+            global: globalInputs);
 
         saga.AppendLogicEvaluation(new LogicEvaluationRecord(
             NodeId: fromNode.Id,
@@ -326,17 +688,36 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             FailureMessage: eval.FailureMessage,
             RecordedAtUtc: DateTime.UtcNow));
 
-        if (eval.ContextUpdates.Count > 0)
-        {
-            var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
-            foreach (var (key, value) in eval.ContextUpdates)
-            {
-                merged[key] = value;
-            }
-            saga.InputsJson = SerializeContextInputs(merged);
-        }
+        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
 
         return eval.IsSuccess ? eval.OutputPortName! : fallbackPort;
+    }
+
+    private static void ApplyScriptUpdates(
+        WorkflowSagaStateEntity saga,
+        IReadOnlyDictionary<string, JsonElement> currentLocal,
+        IReadOnlyDictionary<string, JsonElement> currentGlobal,
+        LogicNodeEvaluationResult eval)
+    {
+        if (eval.ContextUpdates.Count > 0)
+        {
+            var mergedLocal = new Dictionary<string, JsonElement>(currentLocal, StringComparer.Ordinal);
+            foreach (var (key, value) in eval.ContextUpdates)
+            {
+                mergedLocal[key] = value;
+            }
+            saga.InputsJson = SerializeContextInputs(mergedLocal);
+        }
+
+        if (eval.GlobalUpdates.Count > 0)
+        {
+            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
+            foreach (var (key, value) in eval.GlobalUpdates)
+            {
+                mergedGlobal[key] = value;
+            }
+            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+        }
     }
 
     private static JsonElement ComposeAgentScriptInput(
@@ -411,7 +792,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     }
 
     private static async Task<LogicChainResolution?> ResolveTargetThroughLogicChainAsync(
-        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        BehaviorContext<WorkflowSagaStateEntity> context,
         Workflow workflow,
         WorkflowSagaStateEntity saga,
         LogicNodeScriptHost scriptHost,
@@ -432,6 +813,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         JsonElement inputJson = default;
         var inputLoaded = false;
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
 
         for (var hops = 0; hops < MaxLogicChainHops; hops++)
         {
@@ -463,7 +845,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 declaredPorts: currentNode.OutputPorts,
                 input: inputJson,
                 context: contextInputs,
-                cancellationToken: context.CancellationToken);
+                cancellationToken: context.CancellationToken,
+                global: globalInputs);
 
             saga.AppendLogicEvaluation(new LogicEvaluationRecord(
                 NodeId: currentNode.Id,
@@ -475,6 +858,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 FailureMessage: eval.FailureMessage,
                 RecordedAtUtc: DateTime.UtcNow));
 
+            ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
             if (eval.ContextUpdates.Count > 0)
             {
                 var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
@@ -483,7 +867,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     merged[key] = value;
                 }
                 contextInputs = merged;
-                saga.InputsJson = SerializeContextInputs(merged);
+            }
+            if (eval.GlobalUpdates.Count > 0)
+            {
+                var merged = new Dictionary<string, JsonElement>(globalInputs, StringComparer.Ordinal);
+                foreach (var (key, value) in eval.GlobalUpdates)
+                {
+                    merged[key] = value;
+                }
+                globalInputs = merged;
             }
 
             var chosenPort = eval.IsSuccess
@@ -641,7 +1033,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     }
 
     private static Task DispatchToNodeAsync(
-        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
         WorkflowSagaStateEntity saga,
         Workflow workflow,
@@ -654,6 +1046,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         {
             WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation or WorkflowNodeKind.Start =>
                 PublishHandoffAsync(context, agentConfigRepo, saga, workflow, node, inputRef, roundId, retryContext),
+            WorkflowNodeKind.Subflow =>
+                PublishSubflowDispatchAsync(context, saga, workflow, node, inputRef, roundId),
             WorkflowNodeKind.Logic =>
                 throw new InvalidOperationException(
                     "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),
@@ -662,8 +1056,47 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         };
     }
 
+    private static Task PublishSubflowDispatchAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode subflowNode,
+        Uri inputRef,
+        Guid roundId)
+    {
+        if (string.IsNullOrWhiteSpace(subflowNode.SubflowKey))
+        {
+            throw new InvalidOperationException(
+                $"Subflow node {subflowNode.Id} in workflow {workflow.Key} v{workflow.Version} "
+                + "has no SubflowKey configured.");
+        }
+
+        if (subflowNode.SubflowVersion is not int subflowVersion)
+        {
+            throw new InvalidOperationException(
+                $"Subflow node {subflowNode.Id} in workflow {workflow.Key} v{workflow.Version} "
+                + "has no pinned SubflowVersion. Latest-version resolution must happen at "
+                + "parent-workflow save time, not at saga dispatch.");
+        }
+
+        saga.CurrentInputRef = inputRef.ToString();
+
+        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+
+        return context.Publish(new SubflowInvokeRequested(
+            ParentTraceId: saga.TraceId,
+            ParentNodeId: subflowNode.Id,
+            ParentRoundId: roundId,
+            ChildTraceId: Guid.NewGuid(),
+            SubflowKey: subflowNode.SubflowKey,
+            SubflowVersion: subflowVersion,
+            InputRef: inputRef,
+            SharedContext: sharedContext,
+            Depth: saga.SubflowDepth + 1));
+    }
+
     private static async Task PublishHandoffAsync(
-        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
         WorkflowSagaStateEntity saga,
         Workflow workflow,
@@ -703,7 +1136,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             AgentVersion: pinnedVersion.Value,
             InputRef: inputRef,
             ContextInputs: DeserializeContextInputs(saga.InputsJson),
-            RetryContext: retryContext));
+            RetryContext: retryContext,
+            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson)));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(

@@ -19,7 +19,9 @@ public sealed record WorkflowNodeDto(
     string? Script,
     IReadOnlyList<string> OutputPorts,
     double LayoutX,
-    double LayoutY);
+    double LayoutY,
+    string? SubflowKey = null,
+    int? SubflowVersion = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,

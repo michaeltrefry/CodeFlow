@@ -35,6 +35,13 @@ interface ArtifactLoadState {
   error?: string;
 }
 
+interface PendingHitlGroup {
+  traceId: string;
+  isSubflow: boolean;
+  subflowPathLabel: string;
+  tasks: import('../../core/models').HitlTask[];
+}
+
 @Component({
   selector: 'cf-trace-detail',
   standalone: true,
@@ -154,8 +161,23 @@ interface ArtifactLoadState {
       @if (d.pendingHitl.length > 0) {
         <section class="card">
           <h3>Awaiting human review</h3>
-          @for (task of d.pendingHitl; track task.id) {
-            <cf-hitl-review [task]="task" (decided)="reload()" />
+          @for (group of pendingHitlGroups(); track group.traceId) {
+            @if (group.isSubflow) {
+              <div class="hitl-group-header">
+                <span class="tag small subflow">Subflow</span>
+                <span class="mono small">{{ group.subflowPathLabel }}</span>
+                @if (group.traceId !== d.traceId) {
+                  <a class="small"
+                     [routerLink]="['/traces', group.traceId]"
+                     title="Open the child trace that owns this HITL">
+                    open child trace ↗
+                  </a>
+                }
+              </div>
+            }
+            @for (task of group.tasks; track task.id) {
+              <cf-hitl-review [task]="task" (decided)="reload()" />
+            }
           }
         </section>
       }
@@ -265,6 +287,16 @@ interface ArtifactLoadState {
       color: #fff5f5;
     }
     .graph-host { height: 460px; margin-top: 0.5rem; }
+    .hitl-group-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0;
+      margin-top: 0.75rem;
+      border-top: 1px solid var(--color-border);
+    }
+    .hitl-group-header:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+    .tag.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; padding: 0.15rem 0.4rem; border-radius: 3px; }
     .logic-table { width: 100%; border-collapse: collapse; }
     .logic-table th, .logic-table td { padding: 0.4rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
     .logic-table th { color: var(--color-muted); text-transform: uppercase; font-size: 0.75rem; }
@@ -390,6 +422,54 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       ids.add(evaluation.nodeId);
     }
     return ids.size > 0 ? Array.from(ids) : [];
+  });
+
+  /**
+   * Groups pending HITL tasks by the trace that actually owns them. Tasks owned by the current
+   * trace (or with no origin/path metadata) go into a single "root" group that renders as a flat
+   * list — matching the pre-subflow UI. Tasks from descendant subflows are grouped together
+   * under a header showing the subflow path and a deep link to the owning trace.
+   */
+  readonly pendingHitlGroups = computed<PendingHitlGroup[]>(() => {
+    const d = this.detail();
+    if (!d || d.pendingHitl.length === 0) return [];
+
+    const rootGroup: PendingHitlGroup = {
+      traceId: d.traceId,
+      isSubflow: false,
+      subflowPathLabel: '',
+      tasks: [],
+    };
+    const byOrigin = new Map<string, PendingHitlGroup>();
+    byOrigin.set(d.traceId, rootGroup);
+
+    for (const task of d.pendingHitl) {
+      const origin = task.originTraceId ?? task.traceId;
+      const path = task.subflowPath ?? [];
+      if (origin === d.traceId || path.length === 0) {
+        rootGroup.tasks.push(task);
+        continue;
+      }
+
+      let group = byOrigin.get(origin);
+      if (!group) {
+        group = {
+          traceId: origin,
+          isSubflow: true,
+          subflowPathLabel: path.join(' › '),
+          tasks: [],
+        };
+        byOrigin.set(origin, group);
+      }
+      group.tasks.push(task);
+    }
+
+    const ordered: PendingHitlGroup[] = [];
+    if (rootGroup.tasks.length > 0) ordered.push(rootGroup);
+    for (const group of byOrigin.values()) {
+      if (group !== rootGroup) ordered.push(group);
+    }
+    return ordered;
   });
 
   readonly failureHttpDiagnosticsRef = computed<string | null>(() => {

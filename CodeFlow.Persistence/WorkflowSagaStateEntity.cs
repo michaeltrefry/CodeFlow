@@ -69,6 +69,33 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? FailureReason { get; set; }
 
     /// <summary>
+    /// When set, this saga is a child invocation spawned by a Subflow node on another saga.
+    /// Identifies the parent saga's trace, the Subflow node id, and the parent's round at the
+    /// moment of dispatch — used to publish <c>SubflowCompleted</c> back to the parent and to
+    /// surface descendant HITL on the parent trace. Null for top-level sagas.
+    /// </summary>
+    public Guid? ParentTraceId { get; set; }
+
+    public Guid? ParentNodeId { get; set; }
+
+    public Guid? ParentRoundId { get; set; }
+
+    /// <summary>
+    /// Subflow nesting depth: 0 for top-level sagas; +1 per nested Subflow invocation. Capped at
+    /// the configured maximum (3) to prevent runaway recursion.
+    /// </summary>
+    public int SubflowDepth { get; set; }
+
+    /// <summary>
+    /// JSON-serialized "global" context bag shared with descendant subflows. Treated as <c>{}</c>
+    /// when null. Distinct from <see cref="InputsJson"/>, which holds the local context exposed
+    /// to scripts as <c>context</c>; <c>global</c> is exposed as a separate object and may be
+    /// mutated by <c>setGlobal</c> in scripts. On subflow completion the child's final global is
+    /// shallow-merged into the parent's global before routing.
+    /// </summary>
+    public string? GlobalInputsJson { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

@@ -1349,6 +1349,442 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task SubflowNode_ShouldPublishSubflowInvokeRequestedWithParentLinkageAndDepth()
+    {
+        // S3: parent saga reaches a Subflow node and emits SubflowInvokeRequested with the
+        // parent linkage populated. Depth=1 because the parent saga is at the top level.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithSubflow(
+            workflowKey: "parent-with-subflow",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            subflowNodeId: subflowNodeId,
+            subflowKey: "shared-utility",
+            subflowVersion: 7);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+
+            var dispatches = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+            dispatches.Should().HaveCount(1);
+
+            var dispatched = dispatches[0].Context.Message;
+            dispatched.ParentTraceId.Should().Be(traceId);
+            dispatched.ParentNodeId.Should().Be(subflowNodeId);
+            dispatched.ParentRoundId.Should().Be(roundId, "non-rotating edge keeps the parent's round id");
+            dispatched.ChildTraceId.Should().NotBeEmpty();
+            dispatched.ChildTraceId.Should().NotBe(traceId, "child saga gets a fresh trace id");
+            dispatched.SubflowKey.Should().Be("shared-utility");
+            dispatched.SubflowVersion.Should().Be(7);
+            dispatched.Depth.Should().Be(1, "top-level saga has SubflowDepth=0, child = 0 + 1");
+            dispatched.SharedContext.Should().BeEmpty(
+                "no setGlobal writes have occurred and no API caller seeded global at start");
+
+            var saga = sagaHarness.Sagas.Contains(traceId);
+            saga.Should().NotBeNull();
+            saga!.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running),
+                "parent saga stays Running while child executes");
+            saga.CurrentNodeId.Should().Be(subflowNodeId);
+            saga.SubflowDepth.Should().Be(0, "parent's own depth is unchanged by spawning a child");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task SubflowNode_AtMaxDepthShouldFailParentSagaWithoutPublishing()
+    {
+        // S3 depth-cap: when spawning a child would exceed MaxSubflowDepth (3), the parent saga
+        // transitions to Failed with reason "SubflowDepthExceeded" and emits no
+        // SubflowInvokeRequested. Seeded by mutating the parent's SubflowDepth to 3 after the
+        // saga is created (S4 will provide the natural mechanism to seed via SubflowInvokeRequested).
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithSubflow(
+            workflowKey: "depth-cap",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            subflowNodeId: subflowNodeId,
+            subflowKey: "shared-utility",
+            subflowVersion: 7);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            // Seed SubflowDepth = MaxSubflowDepth so the next spawn would be at depth 4.
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.SubflowDepth = WorkflowSagaStateMachine.MaxSubflowDepth;
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var failed = sagaHarness.Sagas.Contains(traceId)!;
+            failed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Failed));
+            failed.FailureReason.Should().NotBeNullOrWhiteSpace();
+            failed.FailureReason!.Should().Contain("SubflowDepthExceeded");
+            failed.FailureReason.Should().Contain(WorkflowSagaStateMachine.MaxSubflowDepth.ToString());
+
+            (await harness.Published.Any<SubflowInvokeRequested>()).Should().BeFalse(
+                "depth-cap rejection must not publish a child dispatch");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task SubflowCompleted_ShouldMergeGlobalAndTerminateParentWhenNoDownstreamEdge()
+    {
+        // S5: a SubflowCompleted with port "Completed" and no downstream edge from the Subflow
+        // node terminates the parent in the Completed state. The child's final SharedContext is
+        // shallow-merged into the parent's global before routing, and a synthetic decision is
+        // appended to the parent's history.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithSubflow(
+            workflowKey: "parent-resume",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            subflowNodeId: subflowNodeId,
+            subflowKey: "shared-utility",
+            subflowVersion: 7);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            // Drive the parent to dispatch the Subflow (round id stays = parentRoundId because
+            // the edge does not rotate).
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+
+            // Sanity: parent is now sitting on the Subflow node.
+            var parent = sagaHarness.Sagas.Contains(traceId)!;
+            parent.CurrentNodeId.Should().Be(subflowNodeId);
+            parent.CurrentRoundId.Should().Be(parentRoundId);
+
+            // Synthesize the child's completion with a SharedContext that should propagate.
+            var childGlobal = new Dictionary<string, JsonElement>
+            {
+                ["resolvedSpec"] = JsonDocument.Parse("""{"engine":"markdown"}""").RootElement.Clone(),
+                ["fromChild"] = JsonDocument.Parse("\"yes\"").RootElement.Clone(),
+            };
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: subflowNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: Guid.NewGuid(),
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/child-final.bin"),
+                SharedContext: childGlobal));
+
+            await sagaHarness.Exists(traceId, x => x.Completed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
+            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.GlobalInputsJson!.Should().Contain("resolvedSpec");
+            resumed.GlobalInputsJson.Should().Contain("fromChild");
+
+            // Decision history should include the synthetic Subflow completion record.
+            var decisions = resumed.GetDecisionHistory();
+            decisions.Should().Contain(d =>
+                d.NodeId == subflowNodeId
+                && d.OutputPortName == "Completed"
+                && d.OutputRef == "file:///tmp/child-final.bin");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task SubflowCompleted_FailedPortShouldTerminateParentWithFailureReason()
+    {
+        // S5: a SubflowCompleted with port "Failed" and no Failed-edge from the Subflow node
+        // terminates the parent saga in Failed with a clear FailureReason.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithSubflow(
+            workflowKey: "parent-failed-resume",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            subflowNodeId: subflowNodeId,
+            subflowKey: "shared-utility",
+            subflowVersion: 7);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: subflowNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: Guid.NewGuid(),
+                OutputPortName: "Failed",
+                OutputRef: new Uri("file:///tmp/child-failed.bin"),
+                SharedContext: new Dictionary<string, JsonElement>()));
+
+            await sagaHarness.Exists(traceId, x => x.Failed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Failed));
+            resumed.FailureReason.Should().NotBeNullOrWhiteSpace();
+            resumed.FailureReason!.Should().Contain("Failed");
+            resumed.FailureReason.Should().Contain(subflowNodeId.ToString());
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task SubflowCompleted_StaleParentRoundShouldBeIgnored()
+    {
+        // S5 stale-round defense: a SubflowCompleted whose ParentRoundId no longer matches the
+        // parent saga's CurrentRoundId is ignored — no state change, no transition, no merge.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithSubflow(
+            workflowKey: "parent-stale-round",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            subflowNodeId: subflowNodeId,
+            subflowKey: "shared-utility",
+            subflowVersion: 7);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: subflowNodeId,
+                ParentRoundId: Guid.NewGuid(), // intentionally wrong round
+                ChildTraceId: Guid.NewGuid(),
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/stale.bin"),
+                SharedContext: new Dictionary<string, JsonElement>
+                {
+                    ["shouldNotMerge"] = JsonDocument.Parse("\"true\"").RootElement.Clone(),
+                }));
+
+            // Give the bus a moment to process; saga must remain in Running.
+            await Task.Delay(500);
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
+            (saga.GlobalInputsJson ?? string.Empty).Should().NotContain("shouldNotMerge",
+                "stale-round messages must not mutate the parent's global");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task SubflowInvokeRequested_ShouldCreateChildSagaWithLinkageAndDispatchStart()
+    {
+        // S4: a SubflowInvokeRequested directly creates a child saga in Running state with the
+        // parent linkage populated from the message, the global snapshot stored as the child's
+        // global_inputs_json (via SerializeContextInputs), and an AgentInvokeRequested published
+        // for the child workflow's Start node.
+        var parentTraceId = Guid.NewGuid();
+        var parentNodeId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+
+        // Child workflow: just a Start node so we can observe the dispatch without running real
+        // routing logic.
+        var childStartNodeId = Guid.NewGuid();
+        var childWorkflow = new Workflow(
+            Key: "child-flow",
+            Version: 3,
+            Name: "child",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "child-start-agent",
+                    AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var harness = BuildHarness(childWorkflow, new Dictionary<string, int> { ["child-start-agent"] = 11 });
+        await harness.Start();
+        try
+        {
+            var sharedContext = new Dictionary<string, JsonElement>
+            {
+                ["sharedFlag"] = JsonDocument.Parse("\"on\"").RootElement.Clone(),
+            };
+
+            await harness.Bus.Publish(new SubflowInvokeRequested(
+                ParentTraceId: parentTraceId,
+                ParentNodeId: parentNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: childTraceId,
+                SubflowKey: "child-flow",
+                SubflowVersion: 3,
+                InputRef: new Uri("file:///tmp/child-input.bin"),
+                SharedContext: sharedContext,
+                Depth: 1));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            var sagaInstance = await sagaHarness.Exists(childTraceId, x => x.Running);
+            sagaInstance.Should().NotBeNull();
+
+            var childInvocations = await WaitForPublishedAsync<AgentInvokeRequested>(
+                harness,
+                expectedCount: 1,
+                timeout: TimeSpan.FromSeconds(5));
+            childInvocations.Should().HaveCount(1);
+
+            var dispatch = childInvocations[0].Context.Message;
+            dispatch.TraceId.Should().Be(childTraceId, "child saga uses ChildTraceId as its TraceId");
+            dispatch.NodeId.Should().Be(childStartNodeId);
+            dispatch.AgentKey.Should().Be("child-start-agent");
+            dispatch.AgentVersion.Should().Be(11, "Start node's AgentVersion was null so latest pinned via repo (=11)");
+            dispatch.WorkflowKey.Should().Be("child-flow");
+            dispatch.WorkflowVersion.Should().Be(3);
+            dispatch.InputRef.Should().Be(new Uri("file:///tmp/child-input.bin"));
+            dispatch.ContextInputs.Should().BeEmpty(
+                "inherited parent state belongs on GlobalContext, not ContextInputs — the child's local context starts empty");
+            dispatch.GlobalContext.Should().NotBeNull();
+            dispatch.GlobalContext!.Should().ContainKey("sharedFlag",
+                "child Start must see inherited state under {{global.*}} from the first node onward");
+
+            var saga = sagaHarness.Sagas.Contains(childTraceId)!;
+            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
+            saga.TraceId.Should().Be(childTraceId);
+            saga.WorkflowKey.Should().Be("child-flow");
+            saga.WorkflowVersion.Should().Be(3);
+            saga.CurrentNodeId.Should().Be(childStartNodeId);
+            saga.CurrentAgentKey.Should().Be("child-start-agent");
+            saga.ParentTraceId.Should().Be(parentTraceId);
+            saga.ParentNodeId.Should().Be(parentNodeId);
+            saga.ParentRoundId.Should().Be(parentRoundId);
+            saga.SubflowDepth.Should().Be(1);
+            saga.GetPinnedVersion("child-start-agent").Should().Be(11);
+            saga.CurrentInputRef.Should().Be("file:///tmp/child-input.bin");
+            saga.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
+            saga.GlobalInputsJson!.Should().Contain("sharedFlag");
+            saga.InputsJson.Should().Be("{}", "child's local context starts empty");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    private static Workflow BuildWorkflowWithSubflow(
+        string workflowKey,
+        Guid startNodeId,
+        string startAgentKey,
+        Guid subflowNodeId,
+        string subflowKey,
+        int? subflowVersion)
+    {
+        var nodes = new List<WorkflowNode>
+        {
+            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, Script: null,
+                OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            new(subflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null, Script: null,
+                OutputPorts: new[] { "Completed", "Failed", "Escalated" }, LayoutX: 250, LayoutY: 0,
+                SubflowKey: subflowKey, SubflowVersion: subflowVersion),
+        };
+
+        var edges = new[]
+        {
+            new WorkflowEdge(startNodeId, "Completed", subflowNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+        };
+
+        return new Workflow(
+            Key: workflowKey,
+            Version: 1,
+            Name: workflowKey,
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: edges,
+            Inputs: Array.Empty<WorkflowInput>());
+    }
+
+    private static async Task<IReadOnlyList<MassTransit.Testing.IPublishedMessage<T>>> WaitForPublishedAsync<T>(
+        ITestHarness harness,
+        int expectedCount,
+        TimeSpan? timeout = null)
+        where T : class
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        while (DateTime.UtcNow < deadline)
+        {
+            var found = harness.Published.Select<T>().ToList();
+            if (found.Count >= expectedCount)
+            {
+                return found;
+            }
+
+            await Task.Delay(25);
+        }
+
+        return harness.Published.Select<T>().ToList();
+    }
+
     private static ITestHarness BuildHarness(
         Workflow workflow,
         IReadOnlyDictionary<string, int> agentVersions,

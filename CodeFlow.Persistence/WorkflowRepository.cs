@@ -144,7 +144,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         Script = node.Script,
                         OutputPortsJson = WorkflowJson.SerializePorts(node.OutputPorts),
                         LayoutX = node.LayoutX,
-                        LayoutY = node.LayoutY
+                        LayoutY = node.LayoutY,
+                        SubflowKey = NormalizeOptionalString(node.SubflowKey),
+                        SubflowVersion = node.SubflowVersion
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -224,7 +226,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.Script,
             WorkflowJson.DeserializePorts(entity.OutputPortsJson),
             entity.LayoutX,
-            entity.LayoutY);
+            entity.LayoutY,
+            entity.SubflowKey,
+            entity.SubflowVersion);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

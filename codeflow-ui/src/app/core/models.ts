@@ -207,7 +207,7 @@ export interface GitHostVerifyResponse {
   error?: string | null;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -220,6 +220,8 @@ export interface WorkflowNode {
   outputPorts: string[];
   layoutX: number;
   layoutY: number;
+  subflowKey?: string | null;
+  subflowVersion?: number | null;
 }
 
 export interface WorkflowEdge {
@@ -271,6 +273,8 @@ export interface TraceSummary {
   roundCount: number;
   createdAtUtc: string;
   updatedAtUtc: string;
+  /** Non-null when this saga was spawned as a subflow child of another trace. */
+  parentTraceId?: string | null;
 }
 
 export interface TraceDecision {
@@ -310,6 +314,10 @@ export interface HitlTask {
   decision?: AgentDecisionKind | null;
   decidedAtUtc?: string | null;
   deciderId?: string | null;
+  /** Set when this HITL lives on a descendant saga — the trace that actually owns it. */
+  originTraceId?: string | null;
+  /** Ordered list of workflow keys from the immediate child of the root down to the owning saga. Empty for root-owned HITLs. */
+  subflowPath?: string[] | null;
 }
 
 export interface TraceDetail {

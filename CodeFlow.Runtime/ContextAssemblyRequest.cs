@@ -7,4 +7,5 @@ public sealed record ContextAssemblyRequest(
     IReadOnlyList<ChatMessage>? History = null,
     IReadOnlyDictionary<string, string?>? Variables = null,
     RetryContext? RetryContext = null,
-    IReadOnlyList<ResolvedSkill>? Skills = null);
+    IReadOnlyList<ResolvedSkill>? Skills = null,
+    IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null);

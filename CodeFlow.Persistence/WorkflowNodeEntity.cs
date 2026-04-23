@@ -23,4 +23,8 @@ public sealed class WorkflowNodeEntity
     public double LayoutX { get; set; }
 
     public double LayoutY { get; set; }
+
+    public string? SubflowKey { get; set; }
+
+    public int? SubflowVersion { get; set; }
 }

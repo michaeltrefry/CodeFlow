@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 
 namespace CodeFlow.Runtime.Tests;
@@ -190,6 +191,108 @@ public sealed class ContextAssemblerTests
         messages[0].Content.Should().StartWith("## Skills");
         messages[0].Content.Should().Contain("### s");
         messages[0].Content.Should().Contain("body");
+    }
+
+    [Fact]
+    public void Assemble_ShouldAppendOutputFormatBlock_WhenDeclaredOutputsHavePayloadExamples()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are a release reviewer.",
+            PromptTemplate: null,
+            Input: null,
+            DeclaredOutputs: new[]
+            {
+                new AgentOutputDeclaration(
+                    "Rejected",
+                    "Draft cannot ship",
+                    ParseJson("""{"reasons":["..."]}""")),
+                new AgentOutputDeclaration(
+                    "Completed",
+                    null,
+                    ParseJson("""{"summary":"..."}"""))
+            }));
+
+        messages.Should().ContainSingle();
+        var system = messages[0];
+        system.Role.Should().Be(ChatMessageRole.System);
+        system.Content.Should().StartWith("You are a release reviewer.");
+        system.Content.Should().Contain("## Response format");
+        system.Content.Should().Contain("### Rejected — Draft cannot ship");
+        system.Content.Should().Contain("### Completed");
+        system.Content.Should().Contain("\"reasons\"");
+        system.Content.Should().Contain("\"summary\"");
+        system.Content.Should().Contain("```json");
+    }
+
+    [Fact]
+    public void Assemble_ShouldOmitOutputsWithoutPayloadExample_FromFormatBlock()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "x",
+            PromptTemplate: null,
+            Input: null,
+            DeclaredOutputs: new[]
+            {
+                new AgentOutputDeclaration("Completed", null, ParseJson("""{"ok":true}""")),
+                new AgentOutputDeclaration("Failed", null, null)
+            }));
+
+        messages[0].Content.Should().Contain("### Completed");
+        messages[0].Content.Should().NotContain("### Failed");
+    }
+
+    [Fact]
+    public void Assemble_ShouldNotEmitFormatBlock_WhenNoDeclaredOutputHasPayloadExample()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are helpful.",
+            PromptTemplate: null,
+            Input: null,
+            DeclaredOutputs: new[]
+            {
+                new AgentOutputDeclaration("Completed", null, null),
+                new AgentOutputDeclaration("Failed", null, null)
+            }));
+
+        messages.Should().ContainSingle();
+        messages[0].Content.Should().NotContain("## Response format");
+    }
+
+    [Fact]
+    public void Assemble_ShouldNotEmitFormatBlock_WhenDeclaredOutputsIsNull()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are helpful.",
+            PromptTemplate: null,
+            Input: null));
+
+        messages[0].Content.Should().NotContain("## Response format");
+    }
+
+    [Fact]
+    public void Assemble_ShouldEmitFormatBlockAfterSkillsBlock_WhenBothPresent()
+    {
+        var messages = assembler.Assemble(new ContextAssemblyRequest(
+            SystemPrompt: "You are a reviewer.",
+            PromptTemplate: null,
+            Input: null,
+            Skills: new[] { new ResolvedSkill("guide", "Body text.") },
+            DeclaredOutputs: new[]
+            {
+                new AgentOutputDeclaration("Completed", null, ParseJson("""{"ok":true}"""))
+            }));
+
+        var content = messages[0].Content;
+        var skillsIndex = content.IndexOf("## Skills", StringComparison.Ordinal);
+        var formatIndex = content.IndexOf("## Response format", StringComparison.Ordinal);
+        skillsIndex.Should().BeGreaterThan(0);
+        formatIndex.Should().BeGreaterThan(skillsIndex);
+    }
+
+    private static JsonElement ParseJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     [Fact]

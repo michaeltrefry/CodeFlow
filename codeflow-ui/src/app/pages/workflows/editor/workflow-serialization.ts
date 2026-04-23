@@ -17,6 +17,7 @@ import { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, Workfl
  * decision kinds.
  */
 export const DEFAULT_AGENT_OUTPUT_PORTS = ['Completed', 'Failed'];
+export const SUBFLOW_OUTPUT_PORTS = ['Completed', 'Failed', 'Escalated'];
 
 export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
   switch (kind) {
@@ -28,6 +29,8 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       return [];
     case 'Logic':
       return ['A', 'B'];
+    case 'Subflow':
+      return [...SUBFLOW_OUTPUT_PORTS];
   }
 }
 
@@ -77,7 +80,9 @@ export async function loadIntoEditor(
       agentKey: node.agentKey,
       agentVersion: node.agentVersion,
       script: node.script,
-      outputPorts: node.outputPorts
+      outputPorts: node.outputPorts,
+      subflowKey: node.subflowKey,
+      subflowVersion: node.subflowVersion
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -98,13 +103,18 @@ export async function loadIntoEditor(
   return idToNode;
 }
 
-export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey'>): string {
+export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
     case 'Hitl': return `HITL — ${node.agentKey ?? '(pick agent)'}`;
     case 'Escalation': return `Escalation — ${node.agentKey ?? '(pick agent)'}`;
     case 'Logic': return 'Logic';
+    case 'Subflow': {
+      const key = node.subflowKey ?? '(pick workflow)';
+      const version = node.subflowVersion ? `v${node.subflowVersion}` : 'latest';
+      return `Subflow — ${key} ${version}`;
+    }
   }
 }
 
@@ -123,7 +133,9 @@ export function serializeEditor(
       script: node.script,
       outputPorts: node.outputPortNames,
       layoutX: position.x,
-      layoutY: position.y
+      layoutY: position.y,
+      subflowKey: node.subflowKey,
+      subflowVersion: node.subflowVersion
     };
   });
 

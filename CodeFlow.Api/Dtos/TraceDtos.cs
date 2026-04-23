@@ -26,7 +26,8 @@ public sealed record TraceSummaryDto(
     string CurrentAgentKey,
     int RoundCount,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    Guid? ParentTraceId = null);
 
 public sealed record TraceDecisionDto(
     string AgentKey,
@@ -79,7 +80,9 @@ public sealed record HitlTaskDto(
     string State,
     AgentDecisionKind? Decision,
     DateTime? DecidedAtUtc,
-    string? DeciderId);
+    string? DeciderId,
+    Guid? OriginTraceId = null,
+    IReadOnlyList<string>? SubflowPath = null);
 
 public sealed record HitlDecisionRequest(
     AgentDecisionKind Decision,

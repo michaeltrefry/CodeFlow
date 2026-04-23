@@ -6,5 +6,6 @@ public enum WorkflowNodeKind
     Agent = 1,
     Logic = 2,
     Hitl = 3,
-    Escalation = 4
+    Escalation = 4,
+    Subflow = 5
 }

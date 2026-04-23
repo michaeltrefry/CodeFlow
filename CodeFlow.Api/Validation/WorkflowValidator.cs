@@ -92,6 +92,71 @@ public static class WorkflowValidator
                         return ValidationResult.Fail($"Logic node {node.Id} must declare at least one output port.");
                     }
                     break;
+
+                case WorkflowNodeKind.Subflow:
+                    if (string.IsNullOrWhiteSpace(node.SubflowKey))
+                    {
+                        return ValidationResult.Fail(
+                            $"Subflow node {node.Id} must reference a SubflowKey.");
+                    }
+                    if (string.Equals(node.SubflowKey!.Trim(), key.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        return ValidationResult.Fail(
+                            $"Subflow node {node.Id} points at its own workflow key '{key}'. "
+                            + "Self-referential subflows are rejected at save time.");
+                    }
+                    break;
+            }
+        }
+
+        // Validate that referenced Subflow workflows exist (and the pinned version, if any).
+        var subflowNodes = nodes
+            .Where(n => n.Kind == WorkflowNodeKind.Subflow && !string.IsNullOrWhiteSpace(n.SubflowKey))
+            .ToArray();
+
+        if (subflowNodes.Length > 0)
+        {
+            var referencedKeys = subflowNodes
+                .Select(n => n.SubflowKey!.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            var existingKeys = await dbContext.Workflows
+                .AsNoTracking()
+                .Where(w => referencedKeys.Contains(w.Key))
+                .Select(w => w.Key)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+
+            var missingKeys = referencedKeys
+                .Where(k => !existingKeys.Contains(k, StringComparer.Ordinal))
+                .ToArray();
+
+            if (missingKeys.Length > 0)
+            {
+                return ValidationResult.Fail(
+                    $"Subflow node(s) reference unknown workflow key(s): {string.Join(", ", missingKeys)}.");
+            }
+
+            foreach (var node in subflowNodes)
+            {
+                if (node.SubflowVersion is not int pinnedVersion)
+                {
+                    continue; // null = "latest at save"; upstream resolver pins before persistence.
+                }
+
+                var versionExists = await dbContext.Workflows
+                    .AsNoTracking()
+                    .AnyAsync(
+                        w => w.Key == node.SubflowKey!.Trim() && w.Version == pinnedVersion,
+                        cancellationToken);
+
+                if (!versionExists)
+                {
+                    return ValidationResult.Fail(
+                        $"Subflow node {node.Id} pins version {pinnedVersion} of workflow "
+                        + $"'{node.SubflowKey}', but no such version exists.");
+                }
             }
         }
 
@@ -209,6 +274,14 @@ public static class WorkflowValidator
         return ValidationResult.Ok();
     }
 
+    /// <summary>
+    /// The only port names a runtime Subflow node can emit. The child saga's terminal state is
+    /// mapped 1:1 to one of these three ports by <c>RouteSubflowCompletionAsync</c>; edges
+    /// wired from any other port name would never match at runtime, so we reject them at save.
+    /// </summary>
+    internal static readonly IReadOnlyCollection<string> SubflowAllowedPorts =
+        new[] { "Completed", "Failed", "Escalated" };
+
     private static IReadOnlyCollection<string>? AllowedOutputPorts(WorkflowNodeDto node)
     {
         return node.Kind switch
@@ -218,6 +291,7 @@ public static class WorkflowValidator
                 node.OutputPorts is { Count: > 0 } declared
                     ? declared.ToArray()
                     : null,
+            WorkflowNodeKind.Subflow => SubflowAllowedPorts,
             _ => null
         };
     }

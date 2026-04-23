@@ -553,6 +553,84 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
+    public async Task Consumer_ShouldExposeGlobalContextAlongsideContext()
+    {
+        // S6: AgentInvokeRequested may carry a `GlobalContext` dict (the saga's `global` bag).
+        // The consumer should flatten it into template variables under the `global.` namespace,
+        // alongside the existing `context.` namespace from `ContextInputs`.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "global-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>
+            {
+                ["localKey"] = Json("\"local-value\"")
+            },
+            GlobalContext: new Dictionary<string, JsonElement>
+            {
+                ["sharedFlag"] = Json("\"on\""),
+                ["sharedNumber"] = Json("42"),
+                ["sharedObj"] = Json("""{"nested":"value"}""")
+            });
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai",
+                "gpt-5.4",
+                PromptTemplate: "Local={{context.localKey}} Global={{global.sharedFlag}} Nested={{global.sharedObj.nested}}"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-global-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!["context.localKey"].Should().Be("local-value");
+            variables["global.sharedFlag"].Should().Be("on");
+            variables["global.sharedNumber"].Should().Be("42");
+            variables["global.sharedObj.nested"].Should().Be("value");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Consumer_ShouldFlattenJsonInputIntoPromptTemplateVariables()
     {
         var request = new AgentInvokeRequested(
