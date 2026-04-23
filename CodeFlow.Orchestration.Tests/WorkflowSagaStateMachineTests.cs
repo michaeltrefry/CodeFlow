@@ -1636,6 +1636,106 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task ReviewLoopCompleted_ShouldCarryGlobalAcrossRoundsAndMergeIntoParentOnExit()
+    {
+        // Slice 4: a child's setGlobal writes during round N must be visible to round N+1 (via
+        // SharedContext on the next SubflowInvokeRequested) and must survive into the parent's
+        // global bag after the loop exits.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            workflowKey: "review-loop-merge",
+            startNodeId: startNodeId,
+            startAgentKey: "kickoff",
+            reviewLoopNodeId: reviewLoopNodeId,
+            subflowKey: "critique-revise",
+            subflowVersion: 1,
+            maxRounds: 2);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            // Drive Start → ReviewLoop; round 1 SubflowInvokeRequested fires.
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+
+            var round1Requests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
+            round1Requests.Should().HaveCount(1);
+            var round1 = round1Requests[0].Context.Message;
+            round1.ReviewRound.Should().Be(1);
+            round1.ReviewMaxRounds.Should().Be(2);
+
+            // Child round 1 finishes Rejected with setGlobal('counter', 1).
+            var round1Global = new Dictionary<string, JsonElement>
+            {
+                ["counter"] = JsonDocument.Parse("1").RootElement.Clone(),
+            };
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: reviewLoopNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/round1-out.bin"),
+                SharedContext: round1Global,
+                Decision: AgentDecisionKind.Rejected,
+                ReviewRound: 1));
+
+            // Parent must not terminate — it should spawn round 2 instead.
+            var round2Requests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
+            round2Requests.Should().HaveCount(2);
+            var round2 = round2Requests[1].Context.Message;
+            round2.ReviewRound.Should().Be(2, "Rejected with rounds remaining advances the round counter");
+            round2.ReviewMaxRounds.Should().Be(2);
+            round2.InputRef.Should().Be(new Uri("file:///tmp/round1-out.bin"),
+                "round N+1 input = round N's output artifact");
+            round2.SharedContext.Should().ContainKey("counter");
+            round2.SharedContext["counter"].GetInt32().Should().Be(1,
+                "round 2 must see round 1's setGlobal writes through its SharedContext snapshot");
+
+            // Child round 2 approves with an additional global write.
+            var round2Global = new Dictionary<string, JsonElement>
+            {
+                ["counter"] = JsonDocument.Parse("2").RootElement.Clone(),
+                ["done"] = JsonDocument.Parse("true").RootElement.Clone(),
+            };
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId,
+                ParentNodeId: reviewLoopNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/round2-out.bin"),
+                SharedContext: round2Global,
+                Decision: AgentDecisionKind.Approved,
+                ReviewRound: 2));
+
+            // Approved port has no outgoing edge in this workflow, so the parent falls through
+            // to the Completed terminal state.
+            await sagaHarness.Exists(traceId, x => x.Completed);
+
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
+            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.GlobalInputsJson!.Should().Contain("\"counter\":2",
+                "the parent's final global must reflect the last round's write");
+            resumed.GlobalInputsJson.Should().Contain("done",
+                "keys added only in the final round must also be merged up");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task SubflowInvokeRequested_ShouldCreateChildSagaWithLinkageAndDispatchStart()
     {
         // S4: a SubflowInvokeRequested directly creates a child saga in Running state with the
@@ -1751,6 +1851,40 @@ public sealed class WorkflowSagaStateMachineTests
         var edges = new[]
         {
             new WorkflowEdge(startNodeId, "Completed", subflowNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+        };
+
+        return new Workflow(
+            Key: workflowKey,
+            Version: 1,
+            Name: workflowKey,
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: edges,
+            Inputs: Array.Empty<WorkflowInput>());
+    }
+
+    private static Workflow BuildWorkflowWithReviewLoop(
+        string workflowKey,
+        Guid startNodeId,
+        string startAgentKey,
+        Guid reviewLoopNodeId,
+        string subflowKey,
+        int subflowVersion,
+        int maxRounds)
+    {
+        var nodes = new List<WorkflowNode>
+        {
+            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, Script: null,
+                OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, Script: null,
+                OutputPorts: new[] { "Approved", "Exhausted", "Failed" }, LayoutX: 250, LayoutY: 0,
+                SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds),
+        };
+
+        var edges = new[]
+        {
+            new WorkflowEdge(startNodeId, "Completed", reviewLoopNodeId, WorkflowEdge.DefaultInputPort, false, 0),
         };
 
         return new Workflow(
