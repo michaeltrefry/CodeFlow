@@ -107,7 +107,6 @@ import {
           <label>Decision</label>
           <select [(ngModel)]="decision" name="decision-{{ task().id }}">
             <option value="Approved">Approve</option>
-            <option value="ApprovedWithActions">Approve with actions</option>
             <option value="Rejected">Reject</option>
             <option value="Completed">Mark completed</option>
             <option value="Failed">Mark failed</option>
@@ -118,13 +117,6 @@ import {
           <div class="form-field">
             <label>Reasons (one per line)</label>
             <textarea [(ngModel)]="reasonText" name="reasons-{{ task().id }}" rows="3"></textarea>
-          </div>
-        }
-
-        @if (decision() === 'ApprovedWithActions') {
-          <div class="form-field">
-            <label>Actions (one per line)</label>
-            <textarea [(ngModel)]="reasonText" name="actions-{{ task().id }}" rows="3"></textarea>
           </div>
         }
 
@@ -379,7 +371,6 @@ export class HitlReviewComponent implements OnInit {
     this.api.submitHitlDecision(this.task().traceId, {
       decision: this.decision(),
       reasons: this.decision() === 'Rejected' ? lines : undefined,
-      actions: this.decision() === 'ApprovedWithActions' ? lines : undefined,
       outputText: this.outputText() || undefined
     }).subscribe({
       next: () => {

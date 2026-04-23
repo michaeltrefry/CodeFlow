@@ -1,4 +1,4 @@
-export type AgentDecisionKind = 'Completed' | 'Approved' | 'ApprovedWithActions' | 'Rejected' | 'Failed';
+export type AgentDecisionKind = 'Completed' | 'Approved' | 'Rejected' | 'Failed';
 
 export interface AgentSummary {
   key: string;

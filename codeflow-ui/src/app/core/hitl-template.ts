@@ -3,7 +3,6 @@ import { AgentDecisionKind } from './models';
 export const ALL_DECISION_KINDS: AgentDecisionKind[] = [
   'Completed',
   'Approved',
-  'ApprovedWithActions',
   'Rejected',
   'Failed'
 ];
