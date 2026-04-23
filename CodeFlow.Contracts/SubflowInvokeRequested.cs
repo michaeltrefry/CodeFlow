@@ -19,6 +19,11 @@ namespace CodeFlow.Contracts;
 ///   dispatch. Becomes the child's working <c>global</c>.</param>
 /// <param name="Depth">Subflow nesting depth assigned to the child (parent depth + 1). Capped
 ///   by the orchestration layer at the configured maximum to prevent runaway recursion.</param>
+/// <param name="ReviewRound">1-indexed round number when this invocation is an iteration of a
+///   ReviewLoop parent node. Null for plain Subflow invocations. Drives <c>{{round}}</c> /
+///   <c>{{isLastRound}}</c> bindings exposed to the child workflow.</param>
+/// <param name="ReviewMaxRounds">Snapshot of the ReviewLoop parent's <c>MaxRounds</c> setting at
+///   dispatch. Null for plain Subflow invocations. Paired with <see cref="ReviewRound"/>.</param>
 public sealed record SubflowInvokeRequested(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -28,4 +33,6 @@ public sealed record SubflowInvokeRequested(
     int SubflowVersion,
     Uri InputRef,
     IReadOnlyDictionary<string, JsonElement> SharedContext,
-    int Depth);
+    int Depth,
+    int? ReviewRound = null,
+    int? ReviewMaxRounds = null);

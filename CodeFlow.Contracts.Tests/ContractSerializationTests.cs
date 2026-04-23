@@ -185,6 +185,96 @@ public sealed class ContractSerializationTests
     }
 
     [Fact]
+    public void SubflowInvokeRequested_ShouldRoundTripReviewLoopRoundFields()
+    {
+        // ReviewLoop parent populates ReviewRound + ReviewMaxRounds on dispatch; plain
+        // Subflow invocations leave them null. Both shapes must survive JSON round-trip.
+        var message = new SubflowInvokeRequested(
+            ParentTraceId: Guid.NewGuid(),
+            ParentNodeId: Guid.NewGuid(),
+            ParentRoundId: Guid.NewGuid(),
+            ChildTraceId: Guid.NewGuid(),
+            SubflowKey: "draft-critique-revise",
+            SubflowVersion: 2,
+            InputRef: new Uri("file:///tmp/codeflow/parent/output.bin"),
+            SharedContext: new Dictionary<string, JsonElement>(),
+            Depth: 1,
+            ReviewRound: 2,
+            ReviewMaxRounds: 3);
+
+        var json = JsonSerializer.Serialize(message, SerializerOptions);
+        var roundTripped = JsonSerializer.Deserialize<SubflowInvokeRequested>(json, SerializerOptions);
+
+        roundTripped!.ReviewRound.Should().Be(2);
+        roundTripped.ReviewMaxRounds.Should().Be(3);
+    }
+
+    [Fact]
+    public void SubflowInvokeRequested_ShouldDefaultReviewLoopFieldsToNullForPlainSubflow()
+    {
+        var message = new SubflowInvokeRequested(
+            ParentTraceId: Guid.NewGuid(),
+            ParentNodeId: Guid.NewGuid(),
+            ParentRoundId: Guid.NewGuid(),
+            ChildTraceId: Guid.NewGuid(),
+            SubflowKey: "shared-utility",
+            SubflowVersion: 7,
+            InputRef: new Uri("file:///tmp/codeflow/parent/output.bin"),
+            SharedContext: new Dictionary<string, JsonElement>(),
+            Depth: 1);
+
+        var json = JsonSerializer.Serialize(message, SerializerOptions);
+        var roundTripped = JsonSerializer.Deserialize<SubflowInvokeRequested>(json, SerializerOptions);
+
+        roundTripped!.ReviewRound.Should().BeNull("plain Subflow invocations must leave ReviewRound null");
+        roundTripped.ReviewMaxRounds.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(AgentDecisionKind.Approved)]
+    [InlineData(AgentDecisionKind.Rejected)]
+    [InlineData(AgentDecisionKind.Completed)]
+    [InlineData(AgentDecisionKind.Failed)]
+    public void SubflowCompleted_ShouldRoundTripTerminalDecisionKind(AgentDecisionKind decision)
+    {
+        // ReviewLoop parents need the child's terminal decision on SubflowCompleted so they can
+        // drive their outcome mapping without re-reading saga state. Plain Subflow completions
+        // omit the field, which must deserialize to null.
+        var message = new SubflowCompleted(
+            ParentTraceId: Guid.NewGuid(),
+            ParentNodeId: Guid.NewGuid(),
+            ParentRoundId: Guid.NewGuid(),
+            ChildTraceId: Guid.NewGuid(),
+            OutputPortName: decision.ToString(),
+            OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
+            SharedContext: new Dictionary<string, JsonElement>(),
+            Decision: decision);
+
+        var json = JsonSerializer.Serialize(message, SerializerOptions);
+        var roundTripped = JsonSerializer.Deserialize<SubflowCompleted>(json, SerializerOptions);
+
+        roundTripped!.Decision.Should().Be(decision);
+    }
+
+    [Fact]
+    public void SubflowCompleted_ShouldDefaultDecisionToNullWhenOmitted()
+    {
+        var message = new SubflowCompleted(
+            ParentTraceId: Guid.NewGuid(),
+            ParentNodeId: Guid.NewGuid(),
+            ParentRoundId: Guid.NewGuid(),
+            ChildTraceId: Guid.NewGuid(),
+            OutputPortName: "Completed",
+            OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
+            SharedContext: new Dictionary<string, JsonElement>());
+
+        var json = JsonSerializer.Serialize(message, SerializerOptions);
+        var roundTripped = JsonSerializer.Deserialize<SubflowCompleted>(json, SerializerOptions);
+
+        roundTripped!.Decision.Should().BeNull("plain Subflow completions leave Decision unset");
+    }
+
+    [Fact]
     public void AgentDecisionPorts_ToPortName_UsesDecisionKindString()
     {
         AgentDecisionPorts.ToPortName(AgentDecisionKind.Completed).Should().Be("Completed");
