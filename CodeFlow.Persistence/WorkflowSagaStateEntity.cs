@@ -96,6 +96,20 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? GlobalInputsJson { get; set; }
 
     /// <summary>
+    /// Set when this saga is a ReviewLoop iteration: 1-indexed round number within the parent's
+    /// ReviewLoop node. Null for plain subflow invocations and top-level sagas. Used by script/
+    /// template binding to expose <c>round</c> and <c>isLastRound</c> to the child workflow.
+    /// </summary>
+    public int? ParentReviewRound { get; set; }
+
+    /// <summary>
+    /// Snapshot of the parent ReviewLoop node's <c>MaxRounds</c> setting at the moment the child
+    /// was spawned, so the child can compute <c>isLastRound</c> without re-reading the parent
+    /// workflow. Null for non-ReviewLoop sagas.
+    /// </summary>
+    public int? ParentReviewMaxRounds { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

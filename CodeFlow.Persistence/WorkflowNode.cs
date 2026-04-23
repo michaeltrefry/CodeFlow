@@ -10,4 +10,5 @@ public sealed record WorkflowNode(
     double LayoutX,
     double LayoutY,
     string? SubflowKey = null,
-    int? SubflowVersion = null);
+    int? SubflowVersion = null,
+    int? ReviewMaxRounds = null);

@@ -27,4 +27,6 @@ public sealed class WorkflowNodeEntity
     public string? SubflowKey { get; set; }
 
     public int? SubflowVersion { get; set; }
+
+    public int? ReviewMaxRounds { get; set; }
 }

@@ -40,7 +40,8 @@ public sealed record WorkflowNodeDraft(
     double LayoutX,
     double LayoutY,
     string? SubflowKey = null,
-    int? SubflowVersion = null);
+    int? SubflowVersion = null,
+    int? ReviewMaxRounds = null);
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,

@@ -273,6 +273,67 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         nonSubflowStart.SubflowVersion.Should().BeNull();
     }
 
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripReviewLoopNodeWithMaxRounds()
+    {
+        // Covers Slice 1 of the ReviewLoop Node epic: a ReviewLoop node reuses the
+        // SubflowKey + SubflowVersion columns from Subflow and adds a ReviewMaxRounds
+        // setting. All three fields must survive a persistence round-trip, and non-
+        // ReviewLoop nodes must keep ReviewMaxRounds null.
+        var workflowKey = $"review-loop-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+        var plainSubflowNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Review-loop composer",
+            MaxRoundsPerRound: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null,
+                    AgentVersion: null, Script: null,
+                    OutputPorts: new[] { "Approved", "Exhausted", "Failed" },
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "draft-critique-revise", SubflowVersion: 2,
+                    ReviewMaxRounds: 3),
+                new WorkflowNodeDraft(plainSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
+                    AgentVersion: null, Script: null,
+                    OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    LayoutX: 500, LayoutY: 0,
+                    SubflowKey: "follow-up", SubflowVersion: null)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", reviewLoopNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(reviewLoopNodeId, "Approved", plainSubflowNodeId, WorkflowEdge.DefaultInputPort, false, 1)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var reviewLoop = reloaded.Nodes.Single(n => n.Id == reviewLoopNodeId);
+        reviewLoop.Kind.Should().Be(WorkflowNodeKind.ReviewLoop);
+        reviewLoop.SubflowKey.Should().Be("draft-critique-revise");
+        reviewLoop.SubflowVersion.Should().Be(2);
+        reviewLoop.ReviewMaxRounds.Should().Be(3);
+        reviewLoop.OutputPorts.Should().Equal("Approved", "Exhausted", "Failed");
+
+        var plainSubflow = reloaded.Nodes.Single(n => n.Id == plainSubflowNodeId);
+        plainSubflow.Kind.Should().Be(WorkflowNodeKind.Subflow);
+        plainSubflow.ReviewMaxRounds.Should().BeNull("non-ReviewLoop nodes must round-trip with null ReviewMaxRounds");
+
+        var nonReviewStart = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        nonReviewStart.ReviewMaxRounds.Should().BeNull();
+    }
+
     private static WorkflowNodeEntity NodeEntity(Guid nodeId, WorkflowNodeKind kind, string agentKey)
     {
         return new WorkflowNodeEntity

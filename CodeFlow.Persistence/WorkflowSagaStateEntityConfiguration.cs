@@ -124,6 +124,12 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("global_inputs_json")
             .HasColumnType("longtext");
 
+        builder.Property(saga => saga.ParentReviewRound)
+            .HasColumnName("parent_review_round");
+
+        builder.Property(saga => saga.ParentReviewMaxRounds)
+            .HasColumnName("parent_review_max_rounds");
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);
