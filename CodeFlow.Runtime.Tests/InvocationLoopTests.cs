@@ -67,6 +67,33 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldAdvertiseSubmitToolSchemaWithoutApprovedWithActions()
+    {
+        IReadOnlyList<ToolSchema>? advertisedTools = null;
+        var modelClient = new ScriptedModelClient(
+        [
+            request =>
+            {
+                advertisedTools = request.Tools;
+                return new InvocationResponse(
+                    new ChatMessage(ChatMessageRole.Assistant, "done."),
+                    InvocationStopReason.EndTurn);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Anything.")],
+            "gpt-5"));
+
+        advertisedTools.Should().NotBeNull();
+        var submitTool = advertisedTools!.Should().ContainSingle(tool => tool.Name == "submit").Subject;
+        var decisionEnum = submitTool.Parameters!["properties"]!["decision"]!["enum"]!.AsArray();
+        decisionEnum.Select(node => node!.GetValue<string>())
+            .Should().Equal("completed", "approved", "rejected");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldPropagateToolErrorsBackToTheModel()
     {
         var provider = new FakeToolProvider(
