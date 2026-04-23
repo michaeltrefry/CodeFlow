@@ -2001,6 +2001,199 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task ReviewLoopCompleted_CustomLoopDecision_ShouldIterateOnMatchingTerminalPort()
+    {
+        // Configurable loop decision: when LoopDecision = "Answered", a child whose terminal
+        // effective port is "Answered" triggers another iteration. Default "Rejected" is
+        // overridden on the ReviewLoop node; Rejected alone no longer triggers iteration.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-custom-loop-decision", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "socratic-interview", subflowVersion: 1, maxRounds: 3,
+            loopDecision: "Answered");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Spawned SubflowInvokeRequested must carry the configured LoopDecision so the
+            // child saga can recognize "Answered" as a legal clean-exit port.
+            round1.LoopDecision.Should().Be("Answered");
+
+            // Child completion with TerminalPort = "Answered" — the script picked a custom port.
+            // Decision kind is Completed (the agent's underlying decision); the LoopDecision
+            // match on TerminalPort should drive iteration regardless of Decision.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r1.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Completed,
+                ReviewRound: 1,
+                TerminalPort: "Answered"));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+            round2.ReviewRound.Should().Be(2, "TerminalPort = LoopDecision triggers iteration");
+            round2.LoopDecision.Should().Be("Answered");
+
+            // Round 2: child emits Decision=Approved (someone hit approve instead of another
+            // answer) — under custom LoopDecision, that's a Decision-Approved path → Approved.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r2.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Approved,
+                ReviewRound: 2,
+                TerminalPort: "Approved"));
+
+            await sagaHarness.Exists(traceId, x => x.Completed);
+            var resumed = sagaHarness.Sagas.Contains(traceId)!;
+            resumed.GetDecisionHistory().Should()
+                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Approved",
+                    "Approved Decision on a custom-LoopDecision loop still exits Approved");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_DefaultLoopDecision_RejectedTerminalPort_ShouldIterate()
+    {
+        // Regression: the default LoopDecision = "Rejected" keeps backward-compat behaviour.
+        // A child whose TerminalPort = "Rejected" iterates; Decision-kind Rejected also works
+        // (since the default effective-port-derivation maps Decision=Rejected to port "Rejected").
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-default-loop-decision", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3,
+            loopDecision: null); // default = "Rejected"
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            round1.LoopDecision.Should().Be("Rejected", "default LoopDecision is propagated as Rejected");
+
+            // Simulate the standard case: reviewer Decision = Rejected with TerminalPort = "Rejected".
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/r1.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Decision: AgentDecisionKind.Rejected,
+                ReviewRound: 1,
+                TerminalPort: "Rejected"));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+            round2.ReviewRound.Should().Be(2);
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ChildSaga_UnwiredPortMatchingParentLoopDecision_ShouldTerminateCompleted()
+    {
+        // The child saga's unwired-port allowlist includes not just Completed/Approved/Rejected
+        // but also any port name matching the parent's configured LoopDecision. This lets a
+        // socratic-style routing script pick a custom port name (e.g. "Answered") and have the
+        // child saga exit cleanly — without that rule, the child would fail with "no outgoing
+        // edge" every time the loop signal fired.
+        var parentTraceId = Guid.NewGuid();
+        var parentNodeId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+
+        var childStartNodeId = Guid.NewGuid();
+        var childWorkflow = new Workflow(
+            Key: "custom-port-child",
+            Version: 1,
+            Name: "custom-port-child",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "interviewer-agent",
+                    AgentVersion: null,
+                    Script: "setNodePath('Answered');",
+                    OutputPorts: new[] { "Completed", "Answered", "Failed" },
+                    LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var harness = BuildHarness(childWorkflow, new Dictionary<string, int> { ["interviewer-agent"] = 1 });
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new SubflowInvokeRequested(
+                ParentTraceId: parentTraceId,
+                ParentNodeId: parentNodeId,
+                ParentRoundId: parentRoundId,
+                ChildTraceId: childTraceId,
+                SubflowKey: "custom-port-child",
+                SubflowVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                SharedContext: new Dictionary<string, JsonElement>(),
+                Depth: 1,
+                LoopDecision: "Answered"));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(childTraceId, x => x.Running);
+
+            var invocations = await WaitForPublishedAsync<AgentInvokeRequested>(harness, expectedCount: 1);
+            var invocation = invocations[0].Context.Message;
+
+            // Agent returns Completed; routing script will pick "Answered" which is unwired.
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: childTraceId,
+                RoundId: invocation.RoundId,
+                FromNodeId: childStartNodeId,
+                AgentKey: "interviewer-agent",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/out.bin"),
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: JsonDocument.Parse("{\"kind\":\"Completed\"}").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            await sagaHarness.Exists(childTraceId, x => x.Completed);
+
+            var terminal = sagaHarness.Sagas.Contains(childTraceId)!;
+            terminal.LastEffectivePort.Should().Be("Answered");
+            terminal.ParentLoopDecision.Should().Be("Answered");
+            terminal.FailureReason.Should().BeNull();
+
+            var completions = await WaitForPublishedAsync<SubflowCompleted>(harness, expectedCount: 1);
+            completions[0].Context.Message.TerminalPort.Should().Be("Answered",
+                "TerminalPort rides up to the parent so ReviewLoop can compare against LoopDecision");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
     public async Task ReviewLoopNode_ShouldFailFast_WhenSpawningWouldExceedSubflowDepth()
     {
         // Slice 10 scenario 8: ReviewLoop nodes count toward MaxSubflowDepth the same way
@@ -2270,7 +2463,8 @@ public sealed class WorkflowSagaStateMachineTests
         Guid reviewLoopNodeId,
         string subflowKey,
         int subflowVersion,
-        int maxRounds)
+        int maxRounds,
+        string? loopDecision = null)
     {
         var nodes = new List<WorkflowNode>
         {
@@ -2278,7 +2472,8 @@ public sealed class WorkflowSagaStateMachineTests
                 OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
             new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, Script: null,
                 OutputPorts: new[] { "Approved", "Exhausted", "Failed" }, LayoutX: 250, LayoutY: 0,
-                SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds),
+                SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds,
+                LoopDecision: loopDecision),
         };
 
         var edges = new[]

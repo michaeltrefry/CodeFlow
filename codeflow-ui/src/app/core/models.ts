@@ -223,6 +223,7 @@ export interface WorkflowNode {
   subflowKey?: string | null;
   subflowVersion?: number | null;
   reviewMaxRounds?: number | null;
+  loopDecision?: string | null;
 }
 
 export interface WorkflowEdge {

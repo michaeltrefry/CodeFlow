@@ -24,6 +24,11 @@ namespace CodeFlow.Contracts;
 ///   <c>{{isLastRound}}</c> bindings exposed to the child workflow.</param>
 /// <param name="ReviewMaxRounds">Snapshot of the ReviewLoop parent's <c>MaxRounds</c> setting at
 ///   dispatch. Null for plain Subflow invocations. Paired with <see cref="ReviewRound"/>.</param>
+/// <param name="LoopDecision">Snapshot of the ReviewLoop parent's <c>LoopDecision</c> setting at
+///   dispatch — the port name that should trigger another iteration when the child's effective
+///   terminal port matches. Also lets the child saga recognize this custom port name as a legal
+///   clean exit alongside the standard Completed/Approved/Rejected allowlist. Null for plain
+///   Subflow invocations.</param>
 public sealed record SubflowInvokeRequested(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -35,4 +40,5 @@ public sealed record SubflowInvokeRequested(
     IReadOnlyDictionary<string, JsonElement> SharedContext,
     int Depth,
     int? ReviewRound = null,
-    int? ReviewMaxRounds = null);
+    int? ReviewMaxRounds = null,
+    string? LoopDecision = null);

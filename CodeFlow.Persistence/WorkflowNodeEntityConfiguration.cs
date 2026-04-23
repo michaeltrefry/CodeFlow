@@ -63,6 +63,10 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
         builder.Property(node => node.ReviewMaxRounds)
             .HasColumnName("review_max_rounds");
 
+        builder.Property(node => node.LoopDecision)
+            .HasColumnName("loop_decision")
+            .HasMaxLength(64);
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

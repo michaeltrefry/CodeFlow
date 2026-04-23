@@ -130,6 +130,14 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
         builder.Property(saga => saga.ParentReviewMaxRounds)
             .HasColumnName("parent_review_max_rounds");
 
+        builder.Property(saga => saga.LastEffectivePort)
+            .HasColumnName("last_effective_port")
+            .HasMaxLength(128);
+
+        builder.Property(saga => saga.ParentLoopDecision)
+            .HasColumnName("parent_loop_decision")
+            .HasMaxLength(64);
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);
