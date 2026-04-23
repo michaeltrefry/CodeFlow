@@ -435,7 +435,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             .FirstOrDefaultAsync(
                 task => task.TraceId == message.TraceId
                     && task.RoundId == message.RoundId
-                    && task.AgentKey == message.AgentKey,
+                    && task.NodeId == message.NodeId
+                    && task.InputRef == message.InputRef.ToString(),
                 cancellationToken);
 
         if (existing is not null)

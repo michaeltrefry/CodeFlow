@@ -155,14 +155,22 @@ public static class HostExtensions
                 o.UseBusOutbox();
             });
 
-            x.AddConfigureEndpointsCallback((context, _, cfg) =>
+            x.AddConfigureEndpointsCallback((context, endpointName, cfg) =>
             {
                 cfg.UseMessageRetry(r => r.Exponential(
                     retryLimit: 8,
                     minInterval: TimeSpan.FromMilliseconds(200),
                     maxInterval: TimeSpan.FromSeconds(5),
                     intervalDelta: TimeSpan.FromMilliseconds(500)));
-                cfg.UseEntityFrameworkOutbox<CodeFlowDbContext>(context);
+
+                // The API's temporary trace observer queues only fan events out to in-memory SSE
+                // listeners and do not publish follow-up bus messages. Skipping the EF outbox
+                // there avoids unnecessary InboxState/OutboxMessage contention with the real
+                // workflow endpoints during trace startup.
+                if (!IsTraceObserverEndpoint(endpointName))
+                {
+                    cfg.UseEntityFrameworkOutbox<CodeFlowDbContext>(context);
+                }
 
                 if (rabbitMqOptions.ConsumerConcurrencyLimit is int concurrencyLimit)
                 {
@@ -343,5 +351,11 @@ public static class HostExtensions
         }
 
         return new Uri(fallback);
+    }
+
+    private static bool IsTraceObserverEndpoint(string? endpointName)
+    {
+        return !string.IsNullOrWhiteSpace(endpointName)
+            && endpointName.StartsWith("api-trace-observer-", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -92,6 +92,8 @@ services:
       RabbitMq__VirtualHost: codeflow
       RabbitMq__Username: codeflow
       RabbitMq__Password: codeflow_dev
+      RabbitMq__PrefetchCount: "1"
+      RabbitMq__ConsumerConcurrencyLimit: "1"
       Observability__OtlpEndpoint: http://jaeger:4317
       Observability__EnableConsoleExporter: "false"
       Auth__DevelopmentBypass: "true"
@@ -138,6 +140,8 @@ services:
       RabbitMq__VirtualHost: codeflow
       RabbitMq__Username: codeflow
       RabbitMq__Password: codeflow_dev
+      RabbitMq__PrefetchCount: "1"
+      RabbitMq__ConsumerConcurrencyLimit: "1"
       Observability__OtlpEndpoint: http://jaeger:4317
       Observability__EnableConsoleExporter: "false"
       Artifacts__RootDirectory: /app/artifacts

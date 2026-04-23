@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { Subscription, retry, timer } from 'rxjs';
 import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
@@ -52,7 +52,20 @@ interface ArtifactLoadState {
         <h1>Trace</h1>
         <p class="muted monospace">{{ id() }}</p>
       </div>
-      <a routerLink="/traces"><button class="secondary">Back</button></a>
+      <div class="header-actions">
+        @if (detail(); as d) {
+          @if (d.currentState === 'Running') {
+            <button class="secondary danger" (click)="terminate()" [disabled]="actionBusy()">
+              {{ actionBusy() ? 'Terminating…' : 'Terminate trace' }}
+            </button>
+          } @else {
+            <button class="secondary danger" (click)="deleteTrace()" [disabled]="actionBusy()">
+              {{ actionBusy() ? 'Deleting…' : 'Delete trace' }}
+            </button>
+          }
+        }
+        <a routerLink="/traces"><button class="secondary" [disabled]="actionBusy()">Back</button></a>
+      </div>
     </header>
 
     @if (detail(); as d) {
@@ -212,6 +225,16 @@ interface ArtifactLoadState {
         <h3>Pinned agent versions</h3>
         <pre class="monospace">{{ d.pinnedAgentVersions | json }}</pre>
       </section>
+
+      <section class="card">
+        <h3>Context inputs</h3>
+        <p class="muted small">Current saga context available to workflow scripts and agent templates.</p>
+        <pre class="monospace">{{ d.contextInputs | json }}</pre>
+      </section>
+
+      @if (actionError()) {
+        <p class="tag error">{{ actionError() }}</p>
+      }
     } @else {
       <p>Loading trace&hellip;</p>
     }
@@ -223,10 +246,24 @@ interface ArtifactLoadState {
       align-items: flex-start;
       margin-bottom: 1.5rem;
     }
+    .header-actions {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
     .xsmall { font-size: 0.72rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    button.secondary.danger {
+      background: rgba(248, 81, 73, 0.12);
+      border: 1px solid #f87171;
+      color: #fecaca;
+    }
+    button.secondary.danger:hover {
+      background: rgba(248, 81, 73, 0.22);
+      color: #fff5f5;
+    }
     .graph-host { height: 460px; margin-top: 0.5rem; }
     .logic-table { width: 100%; border-collapse: collapse; }
     .logic-table th, .logic-table td { padding: 0.4rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
@@ -331,12 +368,15 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private readonly api = inject(TracesApi);
   private readonly workflowsApi = inject(WorkflowsApi);
   private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
 
   readonly id = input.required<string>();
   readonly detail = signal<TraceDetail | null>(null);
   readonly workflow = signal<WorkflowDetail | null>(null);
   readonly timeline = signal<TimelineEntry[]>([]);
   readonly expandedEntries = signal<Set<string>>(new Set());
+  readonly actionBusy = signal(false);
+  readonly actionError = signal<string | null>(null);
   private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
 
   readonly highlightedNodeIds = computed<string[] | null>(() => {
@@ -445,6 +485,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   reload(): void {
+    this.actionError.set(null);
     this.api.get(this.id()).pipe(
       retry({
         count: 10,
@@ -469,6 +510,54 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
         }));
         this.timeline.set(baseline);
         this.loadWorkflowForTrace(detail);
+      }
+    });
+  }
+
+  terminate(): void {
+    const detail = this.detail();
+    if (!detail || detail.currentState !== 'Running') {
+      return;
+    }
+
+    if (!window.confirm(`Terminate trace ${detail.traceId}?`)) {
+      return;
+    }
+
+    this.actionBusy.set(true);
+    this.actionError.set(null);
+    this.api.terminate(detail.traceId).subscribe({
+      next: () => {
+        this.actionBusy.set(false);
+        this.reload();
+      },
+      error: err => {
+        this.actionBusy.set(false);
+        this.actionError.set(err?.error?.error ?? err?.message ?? 'Failed to terminate trace');
+      }
+    });
+  }
+
+  deleteTrace(): void {
+    const detail = this.detail();
+    if (!detail || detail.currentState === 'Running') {
+      return;
+    }
+
+    if (!window.confirm(`Delete trace ${detail.traceId}? This removes its history.`)) {
+      return;
+    }
+
+    this.actionBusy.set(true);
+    this.actionError.set(null);
+    this.api.delete(detail.traceId).subscribe({
+      next: () => {
+        this.actionBusy.set(false);
+        this.router.navigate(['/traces']);
+      },
+      error: err => {
+        this.actionBusy.set(false);
+        this.actionError.set(err?.error?.error ?? err?.message ?? 'Failed to delete trace');
       }
     });
   }
@@ -514,6 +603,12 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     const existing = this.timeline();
     if (existing.some(e => e.id === entry.id)) { return; }
     this.timeline.set([...existing, entry]);
+
+    if (evt.kind === 'Requested') {
+      // HITL tasks are created after the invoke request is observed, so schedule
+      // a follow-up reload to surface newly pending human-review work.
+      setTimeout(() => this.reload(), 400);
+    }
 
     if (evt.kind === 'Completed') {
       this.reload();

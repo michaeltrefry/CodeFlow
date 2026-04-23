@@ -2,6 +2,8 @@ import { Component, OnInit, computed, inject, input, signal } from '@angular/cor
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { HttpErrorResponse } from '@angular/common/http';
+import { map, retry, switchMap, timer } from 'rxjs';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowDetail, WorkflowInput, WorkflowSummary } from '../../core/models';
@@ -232,7 +234,20 @@ export class TraceSubmitComponent implements OnInit {
       workflowVersion: this.workflowVersion() ?? null,
       input: startInput,
       inputs: Object.keys(inputs).length > 0 ? inputs : undefined
-    }).subscribe({
+    }).pipe(
+      switchMap(response =>
+        this.tracesApi.get(response.traceId).pipe(
+          retry({
+            count: 10,
+            delay: (err, attempt) =>
+              err instanceof HttpErrorResponse && err.status === 404
+                ? timer(500 * Math.min(attempt, 4))
+                : (() => { throw err; })()
+          }),
+          map(() => response)
+        )
+      )
+    ).subscribe({
       next: response => {
         this.submitting.set(false);
         this.router.navigate(['/traces', response.traceId]);

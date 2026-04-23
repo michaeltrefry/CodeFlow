@@ -1108,6 +1108,85 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task ScriptedHitl_RoutesOnCustomOutputPortDecision()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        const string script = """
+            if (input.decision === 'Answered') { setNodePath('Answer'); }
+            else { setNodePath('Exit'); }
+            """;
+        var workflow = BuildHitlScriptedWorkflow(
+            key: "scripted-hitl-custom-port",
+            startAgentKey: "interviewer",
+            hitlAgentKey: "interviewee",
+            hitlScript: script,
+            hitlOutputPorts: new[] { "Answer", "Exit" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Answer"] = "continueFlow",
+                ["Exit"] = "exitFlow"
+            });
+
+        var artifactStore = new StubArtifactStore(defaultJson: "{}");
+        var harness = BuildHarness(workflow, new Dictionary<string, int>
+        {
+            ["continueFlow"] = 1,
+            ["exitFlow"] = 1
+        }, artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "interviewer"),
+                AgentKey: "interviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: new Uri("file:///tmp/interviewer-out.bin"),
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "interviewee"));
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "interviewee"),
+                AgentKey: "interviewee",
+                AgentVersion: 1,
+                OutputPortName: "Answered",
+                OutputRef: new Uri("file:///tmp/hitl-out.bin"),
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: JsonDocument.Parse("""{"answer":"yes","outputPortName":"Answered"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "continueFlow"));
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("continueFlow");
+
+            var logicHistory = saga.GetLogicEvaluationHistory();
+            logicHistory.Should().ContainSingle()
+                .Which.OutputPortName.Should().Be("Answer");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     private static Workflow BuildWorkflowWithScriptedSource(
         string key,
         string sourceAgentKey,

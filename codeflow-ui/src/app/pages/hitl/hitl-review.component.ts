@@ -6,7 +6,6 @@ import { AgentDecisionKind, HitlTask } from '../../core/models';
 import {
   ALL_DECISION_KINDS,
   HitlPlaceholder,
-  getDecisionOptions,
   getDecisionPlaceholder,
   parseHitlTemplate,
   renderHitlTemplate
@@ -41,40 +40,68 @@ import {
       } @else if (hasTemplate()) {
         <p class="muted small">Fill in each field. The output below will be sent to the next agent — change a value to see it update.</p>
 
-        @for (ph of placeholders(); track ph.name) {
-          <div class="form-field">
-            <label>
-              <code class="placeholder">{{ formatVar(ph.name) }}</code>
-              @if (ph.kind === 'decision') {
-                <span class="muted small"> — sets decision kind</span>
+        @if (displayPlaceholders().length > 0) {
+          <section class="template-section display-section">
+            <div class="section-header">
+              <h4>Provided Context</h4>
+              <p class="muted small">Read-only values coming from the workflow context or the previous agent output.</p>
+            </div>
+
+            <div class="display-grid">
+              @for (ph of displayPlaceholders(); track ph.name) {
+                <div class="form-field display-field">
+                  <label class="field-label">{{ placeholderLabel(ph.name) }}</label>
+                  <pre class="monospace preview readonly-value">{{ displayValue(ph.name) }}</pre>
+                </div>
               }
-            </label>
-            @if (ph.kind === 'decision') {
-              <select [ngModel]="fieldValues()[ph.name]" (ngModelChange)="setField(ph.name, $event)" [name]="'field-' + task().id + '-' + ph.name">
-                @for (opt of decisionOptions(); track opt) {
-                  <option [value]="opt">{{ opt }}</option>
-                }
-              </select>
-            } @else if (ph.kind === 'select') {
-              <select [ngModel]="fieldValues()[ph.name]" (ngModelChange)="setField(ph.name, $event)" [name]="'field-' + task().id + '-' + ph.name">
-                @for (opt of ph.options ?? []; track opt) {
-                  <option [value]="opt">{{ opt }}</option>
-                }
-              </select>
-            } @else {
-              <textarea
-                [ngModel]="fieldValues()[ph.name]"
-                (ngModelChange)="setField(ph.name, $event)"
-                [name]="'field-' + task().id + '-' + ph.name"
-                rows="3"></textarea>
-            }
-          </div>
+            </div>
+          </section>
         }
 
-        <div class="form-field">
-          <label>Output preview</label>
+        <section class="template-section input-section">
+          <div class="section-header">
+            <h4>Your Response</h4>
+            <p class="muted small">These fields shape the output artifact that will be handed to the next step.</p>
+          </div>
+
+          @for (ph of editablePlaceholders(); track ph.name) {
+            <div class="form-field">
+              <label class="field-label">
+                {{ placeholderLabel(ph.name) }}
+                @if (ph.kind === 'decision') {
+                  <span class="muted small"> — sets decision kind</span>
+                }
+              </label>
+              @if (ph.kind === 'decision' || ph.kind === 'select') {
+                <div class="choice-group" [attr.aria-label]="placeholderLabel(ph.name)">
+                  @for (opt of optionsFor(ph); track opt) {
+                    <button
+                      type="button"
+                      class="choice-chip"
+                      [class.selected]="fieldValues()[ph.name] === opt"
+                      (click)="setField(ph.name, opt)">
+                      {{ opt }}
+                    </button>
+                  }
+                </div>
+              } @else {
+                <textarea
+                  [ngModel]="fieldValues()[ph.name]"
+                  (ngModelChange)="setField(ph.name, $event)"
+                  [name]="'field-' + task().id + '-' + ph.name"
+                  rows="3"></textarea>
+              }
+            </div>
+          }
+        </section>
+
+        <section class="template-section preview-section">
+          <div class="section-header">
+            <h4>Output Preview</h4>
+            <p class="muted small">This is the exact content that will be submitted for the next node to consume.</p>
+          </div>
           <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
-        </div>
+        </section>
       } @else {
         <div class="form-field">
           <label>Decision</label>
@@ -125,6 +152,42 @@ import {
       padding: 1rem;
       margin-bottom: 1rem;
     }
+    .template-section {
+      margin-top: 1rem;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      padding: 0.9rem;
+    }
+    .display-section {
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--color-surface-alt) 90%, #8fb7ff 10%), var(--color-surface-alt));
+      border-left: 4px solid color-mix(in srgb, var(--color-accent) 45%, #8fb7ff 55%);
+    }
+    .input-section {
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 94%, #66d9a3 6%), var(--color-surface));
+      border-left: 4px solid color-mix(in srgb, var(--color-accent) 25%, #66d9a3 75%);
+    }
+    .preview-section {
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 94%, #ffd36a 6%), var(--color-surface));
+      border-left: 4px solid #ffd36a;
+    }
+    .section-header {
+      margin-bottom: 0.75rem;
+    }
+    .section-header h4 {
+      margin: 0 0 0.2rem;
+      font-size: 0.95rem;
+      letter-spacing: 0.02em;
+    }
+    .section-header p {
+      margin: 0;
+    }
+    .display-grid {
+      display: grid;
+      gap: 0.75rem;
+    }
     .preview {
       white-space: pre-wrap;
       background: var(--color-surface-alt);
@@ -136,16 +199,37 @@ import {
     .preview-output {
       border-left: 3px solid var(--color-accent);
     }
-    .artifact-link-row {
-      margin: 0.5rem 0 0.75rem;
-      font-size: 0.9rem;
+    .readonly-value {
+      margin: 0;
+      max-height: none;
+      border: 1px solid color-mix(in srgb, var(--color-border) 88%, #8fb7ff 12%);
+      background: color-mix(in srgb, var(--color-surface-alt) 88%, #8fb7ff 12%);
     }
-    .placeholder {
-      font-size: 0.8rem;
+    .artifact-link-row { margin: 0.5rem 0 0.75rem; font-size: 0.9rem; }
+    .field-label { display: block; margin-bottom: 0.35rem; }
+    .choice-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .choice-chip {
+      border: 1px solid var(--color-border);
       background: var(--color-surface-alt);
-      padding: 0.15rem 0.4rem;
-      border-radius: 3px;
-      color: var(--color-accent);
+      color: inherit;
+      padding: 0.5rem 0.8rem;
+      border-radius: 999px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .choice-chip.selected {
+      border-color: var(--color-accent);
+      background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-alt));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent);
+    }
+    @media (min-width: 860px) {
+      .display-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
     .muted { color: var(--color-muted); }
     .small { font-size: 0.8rem; }
@@ -162,17 +246,28 @@ export class HitlReviewComponent implements OnInit {
   readonly configLoading = signal(true);
   readonly template = signal<string | null>(null);
   readonly fieldValues = signal<Record<string, string>>({});
+  readonly resolvedTemplateValues = signal<Record<string, unknown>>({});
 
   readonly parsedTemplate = computed(() => parseHitlTemplate(this.template()));
   readonly placeholders = computed<HitlPlaceholder[]>(() => this.parsedTemplate().placeholders);
-  readonly hasTemplate = computed(() => this.placeholders().length > 0);
-  readonly decisionOptions = computed<AgentDecisionKind[]>(() =>
-    getDecisionOptions(getDecisionPlaceholder(this.parsedTemplate()))
+  readonly displayPlaceholders = computed<HitlPlaceholder[]>(() =>
+    this.placeholders().filter(ph => isDisplayOnlyPlaceholder(ph.name))
   );
+  readonly editablePlaceholders = computed<HitlPlaceholder[]>(() =>
+    this.placeholders().filter(ph => !isDisplayOnlyPlaceholder(ph.name))
+  );
+  readonly hasTemplate = computed(() => this.placeholders().length > 0);
+  readonly decisionOptions = computed<string[]>(() =>
+    getDecisionOptionsForPlaceholder(getDecisionPlaceholder(this.parsedTemplate()))
+  );
+  readonly mergedTemplateValues = computed<Record<string, unknown>>(() => ({
+    ...this.resolvedTemplateValues(),
+    ...this.fieldValues()
+  }));
   readonly renderedOutput = computed(() => {
     const tpl = this.template();
     if (!tpl) { return ''; }
-    return renderHitlTemplate(tpl, this.fieldValues());
+    return renderHitlTemplate(tpl, this.mergedTemplateValues());
   });
 
   // Legacy (no-template) state
@@ -185,6 +280,10 @@ export class HitlReviewComponent implements OnInit {
 
   ngOnInit(): void {
     const task = this.task();
+    this.seedResolvedTemplateValues(task.inputPreview);
+    this.loadResolvedTemplateValues(task);
+    this.loadResolvedContextValues(task.traceId);
+
     this.agentsApi.getVersion(task.agentKey, task.agentVersion).subscribe({
       next: version => {
         const tpl = version.config?.['outputTemplate'] as string | undefined;
@@ -199,19 +298,31 @@ export class HitlReviewComponent implements OnInit {
     });
   }
 
-  formatVar(name: string): string {
-    return `{{${name}}}`;
+  placeholderLabel(name: string): string {
+    return humanizePlaceholderLabel(name);
+  }
+
+  displayValue(name: string): string {
+    return formatDisplayValue(this.mergedTemplateValues()[name]);
   }
 
   setField(name: string, value: string): void {
     this.fieldValues.set({ ...this.fieldValues(), [name]: value });
   }
 
+  optionsFor(placeholder: HitlPlaceholder): string[] {
+    if (placeholder.kind === 'decision') {
+      return this.decisionOptions();
+    }
+
+    return placeholder.options ?? [];
+  }
+
   private seedDefaults(): void {
     const next: Record<string, string> = {};
-    for (const ph of this.placeholders()) {
+    for (const ph of this.editablePlaceholders()) {
       if (ph.kind === 'decision') {
-        next[ph.name] = this.decisionOptions()[0] ?? 'Approved';
+        next[ph.name] = this.decisionOptions()[0] ?? 'Completed';
       } else if (ph.kind === 'select') {
         next[ph.name] = ph.options?.[0] ?? '';
       } else {
@@ -235,19 +346,17 @@ export class HitlReviewComponent implements OnInit {
   private submitTemplated(): void {
     const parsed = this.parsedTemplate();
     const decisionPh = getDecisionPlaceholder(parsed);
-    const values = this.fieldValues();
     const rendered = this.renderedOutput();
-
-    let decision: AgentDecisionKind = 'Completed';
-    if (decisionPh) {
-      const raw = values[decisionPh.name];
-      if (raw && (ALL_DECISION_KINDS as string[]).includes(raw)) {
-        decision = raw as AgentDecisionKind;
-      }
-    }
+    const rawDecisionValue = decisionPh ? this.mergedTemplateValues()[decisionPh.name] : '';
+    const rawDecisionChoice = typeof rawDecisionValue === 'string' ? rawDecisionValue : '';
+    const decision = getCanonicalDecision(rawDecisionChoice);
+    const outputPortName = !isBuiltInDecisionKind(rawDecisionChoice) && rawDecisionChoice
+      ? rawDecisionChoice
+      : undefined;
 
     this.api.submitHitlDecision(this.task().traceId, {
       decision,
+      outputPortName,
       outputText: rendered
     }).subscribe({
       next: () => {
@@ -307,6 +416,50 @@ export class HitlReviewComponent implements OnInit {
     });
   }
 
+  private seedResolvedTemplateValues(raw: string | null | undefined): void {
+    if (!raw) {
+      return;
+    }
+
+    const extracted = extractTemplateInputValues(raw);
+    if (Object.keys(extracted).length === 0) {
+      return;
+    }
+
+    this.resolvedTemplateValues.set({
+      ...this.resolvedTemplateValues(),
+      ...extracted
+    });
+  }
+
+  private loadResolvedTemplateValues(task: HitlTask): void {
+    this.api.getArtifact(task.traceId, task.inputRef).subscribe({
+      next: content => this.seedResolvedTemplateValues(content),
+      error: () => {
+        // The preview usually contains enough for the form; don't block on artifact fetch failures.
+      }
+    });
+  }
+
+  private loadResolvedContextValues(traceId: string): void {
+    this.api.get(traceId).subscribe({
+      next: detail => {
+        const contextValues = extractScopedTemplateValues('context', detail.contextInputs);
+        if (Object.keys(contextValues).length === 0) {
+          return;
+        }
+
+        this.resolvedTemplateValues.set({
+          ...this.resolvedTemplateValues(),
+          ...contextValues
+        });
+      },
+      error: () => {
+        // Context values are optional for the form; keep rendering even if unavailable.
+      }
+    });
+  }
+
   private fileNameForArtifact(uri: string): string {
     try {
       const parsed = new URL(uri);
@@ -325,4 +478,106 @@ export class HitlReviewComponent implements OnInit {
     const match = /filename=\"?([^\";]+)\"?/i.exec(contentDisposition);
     return match?.[1] ?? null;
   }
+}
+
+function getDecisionOptionsForPlaceholder(placeholder: HitlPlaceholder | undefined): string[] {
+  if (!placeholder || !placeholder.options || placeholder.options.length === 0) {
+    return [...ALL_DECISION_KINDS];
+  }
+
+  return placeholder.options;
+}
+
+function isTemplateInputReference(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized === 'input' || normalized.startsWith('input.');
+}
+
+function isTemplateContextReference(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized === 'context' || normalized.startsWith('context.');
+}
+
+function isDisplayOnlyPlaceholder(name: string): boolean {
+  return isTemplateInputReference(name) || isTemplateContextReference(name);
+}
+
+function isBuiltInDecisionKind(value: string): value is AgentDecisionKind {
+  return (ALL_DECISION_KINDS as string[]).includes(value);
+}
+
+function getCanonicalDecision(choice: string): AgentDecisionKind {
+  return isBuiltInDecisionKind(choice) ? choice : 'Completed';
+}
+
+function humanizePlaceholderLabel(name: string): string {
+  const normalized = name.toLowerCase();
+  const base = normalized === 'input'
+    ? 'input'
+    : normalized === 'context'
+      ? 'context'
+      : isTemplateInputReference(name)
+        ? name.slice('input.'.length)
+        : isTemplateContextReference(name)
+          ? name.slice('context.'.length)
+          : name;
+
+  return base
+    .split(/[._-]+/)
+    .filter(part => part.length > 0)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Value';
+}
+
+function extractTemplateInputValues(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return extractScopedTemplateValues('input', parsed);
+  } catch {
+    return {
+      input: trimmed
+    };
+  }
+}
+
+function extractScopedTemplateValues(scope: string, value: unknown): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  addTemplateValue(values, scope, value);
+  return values;
+}
+
+function addTemplateValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  target[key] = value;
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => addTemplateValue(target, `${key}.${index}`, item));
+    return;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  for (const [childKey, childValue] of Object.entries(value)) {
+    addTemplateValue(target, `${key}.${childKey}`, childValue);
+  }
+}
+
+function formatDisplayValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  return typeof value === 'object'
+    ? JSON.stringify(value, null, 2)
+    : String(value);
 }
