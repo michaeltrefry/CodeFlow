@@ -206,7 +206,7 @@ public static class WorkflowsEndpoints
         CancellationToken cancellationToken)
     {
         var needsResolution = nodes
-            .Where(n => n.Kind == WorkflowNodeKind.Subflow
+            .Where(n => (n.Kind == WorkflowNodeKind.Subflow || n.Kind == WorkflowNodeKind.ReviewLoop)
                 && !string.IsNullOrWhiteSpace(n.SubflowKey)
                 && n.SubflowVersion is null)
             .Select(n => n.SubflowKey!.Trim())
@@ -228,7 +228,7 @@ public static class WorkflowsEndpoints
         return nodes
             .Select(n =>
             {
-                if (n.Kind != WorkflowNodeKind.Subflow
+                if ((n.Kind != WorkflowNodeKind.Subflow && n.Kind != WorkflowNodeKind.ReviewLoop)
                     || string.IsNullOrWhiteSpace(n.SubflowKey)
                     || n.SubflowVersion is not null)
                 {
@@ -265,7 +265,8 @@ public static class WorkflowsEndpoints
                     LayoutX: node.LayoutX,
                     LayoutY: node.LayoutY,
                     SubflowKey: node.SubflowKey,
-                    SubflowVersion: node.SubflowVersion))
+                    SubflowVersion: node.SubflowVersion,
+                    ReviewMaxRounds: node.ReviewMaxRounds))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -316,7 +317,8 @@ public static class WorkflowsEndpoints
                 LayoutX: node.LayoutX,
                 LayoutY: node.LayoutY,
                 SubflowKey: node.SubflowKey,
-                SubflowVersion: node.SubflowVersion))
+                SubflowVersion: node.SubflowVersion,
+                ReviewMaxRounds: node.ReviewMaxRounds))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(
