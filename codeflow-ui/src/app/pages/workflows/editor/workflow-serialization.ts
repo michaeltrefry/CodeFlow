@@ -87,7 +87,8 @@ export async function loadIntoEditor(
       outputPorts: node.outputPorts,
       subflowKey: node.subflowKey,
       subflowVersion: node.subflowVersion,
-      reviewMaxRounds: node.reviewMaxRounds
+      reviewMaxRounds: node.reviewMaxRounds,
+      loopDecision: node.loopDecision
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -146,7 +147,8 @@ export function serializeEditor(
       layoutY: position.y,
       subflowKey: node.subflowKey,
       subflowVersion: node.subflowVersion,
-      reviewMaxRounds: node.reviewMaxRounds
+      reviewMaxRounds: node.reviewMaxRounds,
+      loopDecision: node.loopDecision
     };
   });
 

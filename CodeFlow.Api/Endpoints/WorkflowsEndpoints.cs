@@ -266,7 +266,8 @@ public static class WorkflowsEndpoints
                     LayoutY: node.LayoutY,
                     SubflowKey: node.SubflowKey,
                     SubflowVersion: node.SubflowVersion,
-                    ReviewMaxRounds: node.ReviewMaxRounds))
+                    ReviewMaxRounds: node.ReviewMaxRounds,
+                    LoopDecision: node.LoopDecision))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -318,7 +319,8 @@ public static class WorkflowsEndpoints
                 LayoutY: node.LayoutY,
                 SubflowKey: node.SubflowKey,
                 SubflowVersion: node.SubflowVersion,
-                ReviewMaxRounds: node.ReviewMaxRounds))
+                ReviewMaxRounds: node.ReviewMaxRounds,
+                LoopDecision: node.LoopDecision))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

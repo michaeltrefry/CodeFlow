@@ -22,7 +22,8 @@ public sealed record WorkflowNodeDto(
     double LayoutY,
     string? SubflowKey = null,
     int? SubflowVersion = null,
-    int? ReviewMaxRounds = null);
+    int? ReviewMaxRounds = null,
+    string? LoopDecision = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,

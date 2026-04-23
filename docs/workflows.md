@@ -304,17 +304,19 @@ root-flow (depth 0)
 
 ## Review Loops (bounded iterate-until-approved subflows)
 
-A **ReviewLoop** node is a specialized subflow that re-invokes a child workflow up to `MaxRounds` times. Each round runs the child end-to-end; the child's terminal decision drives the loop:
+A **ReviewLoop** node is a specialized subflow that re-invokes a child workflow up to `MaxRounds` times. Each round runs the child end-to-end; the child's terminal effective port name drives the loop. The comparison is against a configurable **`LoopDecision`** (default `"Rejected"`):
 
-| Child terminal decision | Rounds remaining | Outcome |
+| Child terminal signal | Rounds remaining | Outcome |
 |---|---|---|
-| `Approved` | any | Exit the `Approved` port with the round's output artifact |
-| `Completed` | any | Same as `Approved` (permissive mapping — existing workflows drop in unchanged) |
-| `Rejected` | > 0 | **Advance to the next round.** Round N's output becomes Round N+1's input artifact |
-| `Rejected` | 0 (last round) | Exit the `Exhausted` port |
-| `Failed` / `Escalated` | any | Exit the `Failed` port |
+| Effective port equals `LoopDecision` | > 0 | **Advance to the next round.** Round N's output becomes Round N+1's input artifact |
+| Effective port equals `LoopDecision` | 0 (last round) | Exit the `Exhausted` port |
+| `Decision` is `Approved` / `Completed` (and port didn't match `LoopDecision`) | any | Exit the `Approved` port |
+| `Decision` is `Failed`, or port is `Failed` / `Escalated` | any | Exit the `Failed` port |
+| `Decision` is `Rejected` and `LoopDecision` ≠ `"Rejected"` | any | Exit the `Failed` port (bare Rejected with a custom LoopDecision is a terminal verdict, not an iterate) |
 
 A ReviewLoop node's **output ports are fixed**: `Approved`, `Exhausted`, `Failed`. The canvas editor enforces that.
+
+**Effective port** means: the port the child saga actually picked when terminating. If the terminal node had a routing script, that's the script's `setNodePath(...)` choice; otherwise it's the port name derived from the agent's `AgentDecisionKind`. This lets routing-script patterns like a socratic-interview loop drive iteration off any port name without the underlying agent decision kind needing to match.
 
 ### Round variables
 
@@ -334,13 +336,16 @@ Each round's child saga starts with a **fresh local `context`** but inherits the
 
 ### Configuration
 
-A ReviewLoop node has three settings:
+A ReviewLoop node has four settings:
 
 - `SubflowKey` — child workflow key (required).
 - `SubflowVersion` — pinned child version, or `null` for "latest at save" (resolved identically to plain Subflow nodes at save time).
 - `MaxRounds` — integer in `[1, 10]`. Required.
+- `LoopDecision` — port name that triggers another iteration when the child's effective terminal port matches. Defaults to `"Rejected"`. Case-sensitive, 1–64 chars, cannot be `"Failed"` or `"Escalated"` (those are reserved for error propagation). Use a custom value like `"Answered"` for socratic-style loops where the routing script picks a non-standard port name.
 
 Self-references are rejected at save time, same rule as Subflow.
+
+**When to override `LoopDecision`:** keep the default when the child workflow's last agent emits `Rejected` directly via the submit tool (the common case for structured reviewer agents). Override it when the child uses a routing script to select a non-standard port name as the loop signal — e.g. a HITL interviewee that picks `setNodePath('Answered')` for "I answered, ask me another question."
 
 ### Depth
 
@@ -393,15 +398,15 @@ Workflows are immutable by version. Every Save creates a new `(key, version)` ro
 At a glance:
 
 - `Workflow` — `{ Key, Version, Name, MaxRoundsPerRound, Nodes[], Edges[], Inputs[] }`.
-- `WorkflowNode` — `{ Id, Kind, AgentKey?, AgentVersion?, Script?, OutputPorts[], LayoutX, LayoutY, SubflowKey?, SubflowVersion?, ReviewMaxRounds? }`.
+- `WorkflowNode` — `{ Id, Kind, AgentKey?, AgentVersion?, Script?, OutputPorts[], LayoutX, LayoutY, SubflowKey?, SubflowVersion?, ReviewMaxRounds?, LoopDecision? }`.
 - `WorkflowEdge` — `{ FromNodeId, FromPort, ToNodeId, ToPort, RotatesRound, SortOrder }`.
 - `WorkflowInput` — `{ Key, DisplayName, Kind, Required, DefaultValueJson?, Description?, Ordinal }`.
 - `WorkflowSagaStateEntity` — carries `CurrentNodeId`, `CurrentAgentKey`, `EscalatedFromNodeId`, `InputsJson`, and append-only `DecisionHistoryJson` + `LogicEvaluationHistoryJson`.
 - `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext?, GlobalContext?, ReviewRound?, ReviewMaxRounds? }`.
 - `AgentInvocationCompleted` — `{ TraceId, RoundId, FromNodeId, AgentKey, AgentVersion, OutputPortName, OutputRef, Decision, DecisionPayload, Duration, TokenUsage }`.
-- `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth, ReviewRound?, ReviewMaxRounds? }`.
-- `SubflowCompleted` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, OutputPortName, OutputRef, SharedContext, Decision?, ReviewRound? }`.
-- `WorkflowSagaStateEntity` (subflow fields) — `ParentTraceId?`, `ParentNodeId?`, `ParentRoundId?`, `SubflowDepth`, `GlobalInputsJson?`, `ParentReviewRound?`, `ParentReviewMaxRounds?`.
+- `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth, ReviewRound?, ReviewMaxRounds?, LoopDecision? }`.
+- `SubflowCompleted` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, OutputPortName, OutputRef, SharedContext, Decision?, ReviewRound?, TerminalPort? }`.
+- `WorkflowSagaStateEntity` (subflow fields) — `ParentTraceId?`, `ParentNodeId?`, `ParentRoundId?`, `SubflowDepth`, `GlobalInputsJson?`, `ParentReviewRound?`, `ParentReviewMaxRounds?`, `LastEffectivePort?`, `ParentLoopDecision?`.
 
 ## Useful endpoints
 

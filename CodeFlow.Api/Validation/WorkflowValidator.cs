@@ -136,6 +136,27 @@ public static class WorkflowValidator
                             $"ReviewLoop node {node.Id} has ReviewMaxRounds = {maxRounds}, "
                             + $"which must be between {MinReviewLoopMaxRounds} and {MaxReviewLoopMaxRounds}.");
                     }
+                    if (node.LoopDecision is not null)
+                    {
+                        var loopDecision = node.LoopDecision.Trim();
+                        if (string.IsNullOrEmpty(loopDecision))
+                        {
+                            return ValidationResult.Fail(
+                                $"ReviewLoop node {node.Id} LoopDecision, when set, must be a non-empty port name.");
+                        }
+                        if (loopDecision.Length > 64)
+                        {
+                            return ValidationResult.Fail(
+                                $"ReviewLoop node {node.Id} LoopDecision '{loopDecision}' exceeds 64 characters.");
+                        }
+                        if (string.Equals(loopDecision, "Failed", StringComparison.Ordinal)
+                            || string.Equals(loopDecision, "Escalated", StringComparison.Ordinal))
+                        {
+                            return ValidationResult.Fail(
+                                $"ReviewLoop node {node.Id} LoopDecision cannot be '{loopDecision}' — "
+                                + "that port name is reserved for error propagation.");
+                        }
+                    }
                     break;
             }
         }

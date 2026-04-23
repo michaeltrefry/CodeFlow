@@ -27,6 +27,13 @@ namespace CodeFlow.Contracts;
 /// <param name="ReviewRound">1-indexed round number when the completing child was spawned by a
 ///   ReviewLoop parent. Tells the parent which round just finished so it can compute whether
 ///   rounds remain before mapping to the Exhausted port. Null for plain Subflow completions.</param>
+/// <param name="TerminalPort">The effective terminal port of the child saga's last routed
+///   source node — i.e. the port the saga picked when it decided to terminate. If the source
+///   had a routing script, this is the script's <c>setNodePath(...)</c> choice; otherwise the
+///   decision-kind-derived port name. Used by a ReviewLoop parent to compare against its
+///   configured <c>LoopDecision</c> so authors can drive iteration off any port name they
+///   choose (including routing-script-specified names like <c>Rejected</c> even when the
+///   underlying agent Decision was <c>Completed</c>). Null for legacy completions.</param>
 public sealed record SubflowCompleted(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -36,4 +43,5 @@ public sealed record SubflowCompleted(
     Uri OutputRef,
     IReadOnlyDictionary<string, JsonElement> SharedContext,
     AgentDecisionKind? Decision = null,
-    int? ReviewRound = null);
+    int? ReviewRound = null,
+    string? TerminalPort = null);

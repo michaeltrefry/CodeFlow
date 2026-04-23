@@ -110,6 +110,27 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public int? ParentReviewMaxRounds { get; set; }
 
     /// <summary>
+    /// The effective terminal port of the last-routed source node — i.e. the port the saga
+    /// actually picked when dispatching the next hop. When the source node had a routing
+    /// script, this is the script's <c>setNodePath(...)</c> choice; otherwise it equals the
+    /// decision-kind-derived port. Persisted so <see cref="SubflowCompleted.TerminalPort"/>
+    /// can be populated on terminal, which a ReviewLoop parent compares against its
+    /// configured <c>LoopDecision</c> to decide whether to iterate.
+    /// </summary>
+    public string? LastEffectivePort { get; set; }
+
+    /// <summary>
+    /// Propagated from the parent ReviewLoop node's <c>LoopDecision</c> setting at spawn time.
+    /// When an unwired port on a child saga matches this value (case-sensitive), the port is
+    /// treated as a legal clean exit — the child saga terminates <c>Completed</c> and the
+    /// effective port rides up on <see cref="SubflowCompleted.TerminalPort"/> so the parent
+    /// can route accordingly. Null for plain Subflow children and top-level sagas; the
+    /// existing Completed/Approved/Rejected clean-exit allowlist still applies in those
+    /// cases.
+    /// </summary>
+    public string? ParentLoopDecision { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

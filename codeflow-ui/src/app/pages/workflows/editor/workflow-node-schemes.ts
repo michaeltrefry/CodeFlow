@@ -13,6 +13,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   subflowKey: string | null;
   subflowVersion: number | null;
   reviewMaxRounds: number | null;
+  loopDecision: string | null;
   traceState: WorkflowNodeTraceState = null;
 
   constructor(params: {
@@ -26,6 +27,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     subflowKey?: string | null;
     subflowVersion?: number | null;
     reviewMaxRounds?: number | null;
+    loopDecision?: string | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -36,6 +38,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.subflowKey = params.subflowKey ?? null;
     this.subflowVersion = params.subflowVersion ?? null;
     this.reviewMaxRounds = params.reviewMaxRounds ?? null;
+    this.loopDecision = params.loopDecision ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));
