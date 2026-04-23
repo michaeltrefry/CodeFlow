@@ -10,6 +10,12 @@ public static class WorkflowValidator
     public const int MinRoundsPerRound = 1;
     public const int MaxRoundsPerRoundUpperBound = 50;
 
+    /// <summary>Inclusive lower bound for a ReviewLoop node's MaxRounds.</summary>
+    public const int MinReviewLoopMaxRounds = 1;
+    /// <summary>Inclusive upper bound for a ReviewLoop node's MaxRounds. Picked to keep runaway
+    /// loops from burning through a lot of LLM budget before the author notices.</summary>
+    public const int MaxReviewLoopMaxRounds = 10;
+
     public static async Task<ValidationResult> ValidateAsync(
         string key,
         string? name,
@@ -106,17 +112,44 @@ public static class WorkflowValidator
                             + "Self-referential subflows are rejected at save time.");
                     }
                     break;
+
+                case WorkflowNodeKind.ReviewLoop:
+                    if (string.IsNullOrWhiteSpace(node.SubflowKey))
+                    {
+                        return ValidationResult.Fail(
+                            $"ReviewLoop node {node.Id} must reference a SubflowKey.");
+                    }
+                    if (string.Equals(node.SubflowKey!.Trim(), key.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        return ValidationResult.Fail(
+                            $"ReviewLoop node {node.Id} points at its own workflow key '{key}'. "
+                            + "Self-referential ReviewLoops are rejected at save time.");
+                    }
+                    if (node.ReviewMaxRounds is not int maxRounds)
+                    {
+                        return ValidationResult.Fail(
+                            $"ReviewLoop node {node.Id} must set ReviewMaxRounds.");
+                    }
+                    if (maxRounds < MinReviewLoopMaxRounds || maxRounds > MaxReviewLoopMaxRounds)
+                    {
+                        return ValidationResult.Fail(
+                            $"ReviewLoop node {node.Id} has ReviewMaxRounds = {maxRounds}, "
+                            + $"which must be between {MinReviewLoopMaxRounds} and {MaxReviewLoopMaxRounds}.");
+                    }
+                    break;
             }
         }
 
-        // Validate that referenced Subflow workflows exist (and the pinned version, if any).
-        var subflowNodes = nodes
-            .Where(n => n.Kind == WorkflowNodeKind.Subflow && !string.IsNullOrWhiteSpace(n.SubflowKey))
+        // Validate that referenced Subflow / ReviewLoop workflows exist (and the pinned version,
+        // if any). Both node kinds point at another workflow via SubflowKey/SubflowVersion.
+        var subflowReferenceNodes = nodes
+            .Where(n => (n.Kind == WorkflowNodeKind.Subflow || n.Kind == WorkflowNodeKind.ReviewLoop)
+                && !string.IsNullOrWhiteSpace(n.SubflowKey))
             .ToArray();
 
-        if (subflowNodes.Length > 0)
+        if (subflowReferenceNodes.Length > 0)
         {
-            var referencedKeys = subflowNodes
+            var referencedKeys = subflowReferenceNodes
                 .Select(n => n.SubflowKey!.Trim())
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
@@ -135,10 +168,10 @@ public static class WorkflowValidator
             if (missingKeys.Length > 0)
             {
                 return ValidationResult.Fail(
-                    $"Subflow node(s) reference unknown workflow key(s): {string.Join(", ", missingKeys)}.");
+                    $"Subflow/ReviewLoop node(s) reference unknown workflow key(s): {string.Join(", ", missingKeys)}.");
             }
 
-            foreach (var node in subflowNodes)
+            foreach (var node in subflowReferenceNodes)
             {
                 if (node.SubflowVersion is not int pinnedVersion)
                 {
@@ -154,7 +187,7 @@ public static class WorkflowValidator
                 if (!versionExists)
                 {
                     return ValidationResult.Fail(
-                        $"Subflow node {node.Id} pins version {pinnedVersion} of workflow "
+                        $"{node.Kind} node {node.Id} pins version {pinnedVersion} of workflow "
                         + $"'{node.SubflowKey}', but no such version exists.");
                 }
             }
@@ -282,6 +315,14 @@ public static class WorkflowValidator
     internal static readonly IReadOnlyCollection<string> SubflowAllowedPorts =
         new[] { "Completed", "Failed", "Escalated" };
 
+    /// <summary>
+    /// The only port names a runtime ReviewLoop node can emit. The child saga's terminal decision
+    /// is mapped to one of these by <c>ResolveReviewLoopOutcome</c>; edges wired from any other
+    /// port name would never match at runtime, so we reject them at save.
+    /// </summary>
+    internal static readonly IReadOnlyCollection<string> ReviewLoopAllowedPorts =
+        new[] { "Approved", "Exhausted", "Failed" };
+
     private static IReadOnlyCollection<string>? AllowedOutputPorts(WorkflowNodeDto node)
     {
         return node.Kind switch
@@ -292,6 +333,7 @@ public static class WorkflowValidator
                     ? declared.ToArray()
                     : null,
             WorkflowNodeKind.Subflow => SubflowAllowedPorts,
+            WorkflowNodeKind.ReviewLoop => ReviewLoopAllowedPorts,
             _ => null
         };
     }

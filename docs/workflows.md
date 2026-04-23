@@ -4,7 +4,7 @@ Workflows describe how a trace moves between agents and logic checks to get a jo
 
 ## Node kinds
 
-Every workflow is composed of nodes. The canvas palette exposes six kinds:
+Every workflow is composed of nodes. The canvas palette exposes seven kinds:
 
 | Kind | Purpose | Has agent | Has script |
 |---|---|---|---|
@@ -14,6 +14,7 @@ Every workflow is composed of nodes. The canvas palette exposes six kinds:
 | `Logic` | In-process JavaScript router. Does not dispatch an agent; evaluates a script that picks an output port. | No | Yes |
 | `Escalation` | Fallback when a round count overflows. At most one per workflow. | Yes | No |
 | `Subflow` | Invokes another workflow as a reusable building block and waits for its terminal state. | No | No |
+| `ReviewLoop` | Invokes another workflow up to `MaxRounds` times; each round's output becomes the next round's input until the child returns `Approved` (or rounds run out). | No | No |
 
 Every node has a stable `Id` (GUID) that persists across saves, a set of named **output ports**, and layout coordinates `(LayoutX, LayoutY)`.
 
@@ -296,6 +297,88 @@ root-flow (depth 0)
 - **Version pins should be explicit for anything production-critical.** Leave `null` ("latest at save") for subflows you iterate on often; pin an integer when you need reproducibility across re-saves.
 - **Self-references are rejected at save time.** A workflow can't have a Subflow node that points at itself; use an Escalation node for guarded self-invocation patterns if you need them.
 
+## Review Loops (bounded iterate-until-approved subflows)
+
+A **ReviewLoop** node is a specialized subflow that re-invokes a child workflow up to `MaxRounds` times. Each round runs the child end-to-end; the child's terminal decision drives the loop:
+
+| Child terminal decision | Rounds remaining | Outcome |
+|---|---|---|
+| `Approved` | any | Exit the `Approved` port with the round's output artifact |
+| `Completed` | any | Same as `Approved` (permissive mapping — existing workflows drop in unchanged) |
+| `Rejected` | > 0 | **Advance to the next round.** Round N's output becomes Round N+1's input artifact |
+| `Rejected` | 0 (last round) | Exit the `Exhausted` port |
+| `Failed` / `Escalated` | any | Exit the `Failed` port |
+
+A ReviewLoop node's **output ports are fixed**: `Approved`, `Exhausted`, `Failed`. The canvas editor enforces that.
+
+### Round variables
+
+Every agent prompt and logic script in the child workflow can reference three additional template variables / Jint bindings:
+
+| Name | Scope | Meaning |
+|---|---|---|
+| `{{round}}` / `round` | Prompt template + JS | 1-indexed round number (1 on the first pass). |
+| `{{maxRounds}}` / `maxRounds` | Prompt template + JS | The configured `MaxRounds` on the parent ReviewLoop node. |
+| `{{isLastRound}}` / `isLastRound` | Prompt template + JS | Boolean; true when `round === maxRounds`. |
+
+Outside a ReviewLoop, JS bindings default to `round = 0`, `maxRounds = 0`, `isLastRound = false` (so scripts shared between ReviewLoop and non-ReviewLoop children don't hit `ReferenceError`). The prompt-template variables are simply unresolved when not in a ReviewLoop.
+
+### Global context across rounds
+
+Each round's child saga starts with a **fresh local `context`** but inherits the carried `global` bag from the prior round (plus the parent's snapshot at node entry). `setGlobal` writes from round N are visible to round N+1's prompts and scripts via `global.*`. On loop exit, the accumulated global is shallow-merged back into the parent saga.
+
+### Configuration
+
+A ReviewLoop node has three settings:
+
+- `SubflowKey` — child workflow key (required).
+- `SubflowVersion` — pinned child version, or `null` for "latest at save" (resolved identically to plain Subflow nodes at save time).
+- `MaxRounds` — integer in `[1, 10]`. Required.
+
+Self-references are rejected at save time, same rule as Subflow.
+
+### Depth
+
+A ReviewLoop node counts toward `MaxSubflowDepth = 3` (the same limit as Subflow). All rounds of a single ReviewLoop run at the same nesting depth — iterating doesn't accumulate depth. A ReviewLoop inside a Subflow inside a ReviewLoop is legal as long as nesting ≤ 3.
+
+### Example: draft → critique → revise with `{{isLastRound}}`
+
+Child workflow `critique-revise` (pseudocode for clarity):
+
+```
+Start ─▶ Writer (agent) ─▶ Reviewer (agent)
+                           │
+                           │  Reviewer prompt:
+                           │    You are reviewing a draft.
+                           │    {{#if isLastRound}}
+                           │    This is round {{round}} of {{maxRounds}} — the last one.
+                           │    You must Approve or Reject; do not ask for more revisions.
+                           │    {{/if}}
+                           │    Draft: {{input}}
+                           ▼
+                  emits Approved / Rejected / Failed
+```
+
+Parent workflow that uses it:
+
+```
+Start ─▶ ReviewLoop(critique-revise, MaxRounds=3)
+            ├─ Approved  ─▶ Publish
+            ├─ Exhausted ─▶ Human Editor (Hitl)
+            └─ Failed    ─▶ Escalation
+```
+
+With `MaxRounds = 3`, the reviewer agent sees `isLastRound === true` only on round 3. Authors can use that to change tone, skip low-priority nits, or force a terminal decision.
+
+### Trace UI
+
+Each round is a separate child saga with its own `TraceId`, so every round's agent invocations, logic evaluations, and HITL tasks show up in its own trace detail. The parent trace's **Review loops** section lists each round with a deep link and a `Rejected` badge on the rounds that looped. The final round's outcome is visible on the parent's decision history (synthetic record on the ReviewLoop node showing the mapped port).
+
+### When to use ReviewLoop vs. a cyclic Subflow
+
+- Prefer **ReviewLoop** whenever the loop's termination condition is "reviewer approved or gave up." The node handles the round cap and feeds round N's output as round N+1's input for free, and prompts get `{{isLastRound}}` without any wiring.
+- Prefer a plain **Subflow** inside a cyclic edge when you need custom per-round logic that isn't just "retry with feedback" — e.g. N-queens backtracking, or work that fans out in parallel.
+
 ## Workflow versions
 
 Workflows are immutable by version. Every Save creates a new `(key, version)` row; in-flight traces continue running against the version they launched with. The editor opens the latest version by default; older versions remain available via `/api/workflows/{key}/versions` and the detail page's version picker.
@@ -305,15 +388,15 @@ Workflows are immutable by version. Every Save creates a new `(key, version)` ro
 At a glance:
 
 - `Workflow` — `{ Key, Version, Name, MaxRoundsPerRound, Nodes[], Edges[], Inputs[] }`.
-- `WorkflowNode` — `{ Id, Kind, AgentKey?, AgentVersion?, Script?, OutputPorts[], LayoutX, LayoutY }`.
+- `WorkflowNode` — `{ Id, Kind, AgentKey?, AgentVersion?, Script?, OutputPorts[], LayoutX, LayoutY, SubflowKey?, SubflowVersion?, ReviewMaxRounds? }`.
 - `WorkflowEdge` — `{ FromNodeId, FromPort, ToNodeId, ToPort, RotatesRound, SortOrder }`.
 - `WorkflowInput` — `{ Key, DisplayName, Kind, Required, DefaultValueJson?, Description?, Ordinal }`.
 - `WorkflowSagaStateEntity` — carries `CurrentNodeId`, `CurrentAgentKey`, `EscalatedFromNodeId`, `InputsJson`, and append-only `DecisionHistoryJson` + `LogicEvaluationHistoryJson`.
-- `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext?, GlobalContext? }`.
+- `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext?, GlobalContext?, ReviewRound?, ReviewMaxRounds? }`.
 - `AgentInvocationCompleted` — `{ TraceId, RoundId, FromNodeId, AgentKey, AgentVersion, OutputPortName, OutputRef, Decision, DecisionPayload, Duration, TokenUsage }`.
-- `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth }`.
-- `SubflowCompleted` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, OutputPortName, OutputRef, SharedContext }`.
-- `WorkflowSagaStateEntity` (subflow fields) — `ParentTraceId?`, `ParentNodeId?`, `ParentRoundId?`, `SubflowDepth`, `GlobalInputsJson?`.
+- `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth, ReviewRound?, ReviewMaxRounds? }`.
+- `SubflowCompleted` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, OutputPortName, OutputRef, SharedContext, Decision?, ReviewRound? }`.
+- `WorkflowSagaStateEntity` (subflow fields) — `ParentTraceId?`, `ParentNodeId?`, `ParentRoundId?`, `SubflowDepth`, `GlobalInputsJson?`, `ParentReviewRound?`, `ParentReviewMaxRounds?`.
 
 ## Useful endpoints
 

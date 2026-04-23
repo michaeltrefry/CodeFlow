@@ -207,7 +207,7 @@ export interface GitHostVerifyResponse {
   error?: string | null;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow' | 'ReviewLoop';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -222,6 +222,7 @@ export interface WorkflowNode {
   layoutY: number;
   subflowKey?: string | null;
   subflowVersion?: number | null;
+  reviewMaxRounds?: number | null;
 }
 
 export interface WorkflowEdge {
@@ -275,6 +276,12 @@ export interface TraceSummary {
   updatedAtUtc: string;
   /** Non-null when this saga was spawned as a subflow child of another trace. */
   parentTraceId?: string | null;
+  /** Id of the parent Subflow or ReviewLoop node that spawned this child saga. */
+  parentNodeId?: string | null;
+  /** 1-indexed round number when this saga was spawned by a ReviewLoop parent. Null for plain Subflow children and top-level sagas. */
+  parentReviewRound?: number | null;
+  /** Snapshot of the parent ReviewLoop's MaxRounds at spawn. Null for plain Subflow children and top-level sagas. */
+  parentReviewMaxRounds?: number | null;
 }
 
 export interface TraceDecision {

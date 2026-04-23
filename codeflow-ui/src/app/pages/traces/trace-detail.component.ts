@@ -10,7 +10,9 @@ import {
   TraceDetail,
   TraceLogicEvaluation,
   TraceStreamEvent,
-  WorkflowDetail
+  TraceSummary,
+  WorkflowDetail,
+  WorkflowNode
 } from '../../core/models';
 import { streamTrace } from '../../core/trace-stream';
 import { AuthService } from '../../auth/auth.service';
@@ -40,6 +42,21 @@ interface PendingHitlGroup {
   isSubflow: boolean;
   subflowPathLabel: string;
   tasks: import('../../core/models').HitlTask[];
+}
+
+interface ReviewLoopRoundEntry {
+  traceId: string;
+  round: number;
+  maxRounds: number;
+  currentState: string;
+  isLastRoundSeen: boolean;
+}
+
+interface ReviewLoopGroup {
+  nodeId: string;
+  nodeLabel: string;
+  subflowKey: string | null;
+  rounds: ReviewLoopRoundEntry[];
 }
 
 @Component({
@@ -155,6 +172,37 @@ interface PendingHitlGroup {
               }
             </tbody>
           </table>
+        </section>
+      }
+
+      @if (reviewLoopGroups().length > 0) {
+        <section class="card">
+          <h3>Review loops</h3>
+          <p class="muted xsmall">
+            Each round is a separate child saga. Rounds before the last one returned
+            <code>Rejected</code> (that's what triggered the next iteration). The last round
+            shows the outcome — see its trace for the terminal decision.
+          </p>
+          @for (group of reviewLoopGroups(); track group.nodeId) {
+            <div class="review-loop-group">
+              <div class="row-spread">
+                <strong class="mono small">{{ group.nodeLabel }}</strong>
+              </div>
+              <ul class="review-loop-rounds">
+                @for (round of group.rounds; track round.traceId) {
+                  <li>
+                    <a [routerLink]="['/traces', round.traceId]" class="small">
+                      Round {{ round.round }} of {{ round.maxRounds }} ↗
+                    </a>
+                    <span class="tag xsmall">{{ round.currentState }}</span>
+                    @if (!round.isLastRoundSeen) {
+                      <span class="tag xsmall rejected" title="Child returned Rejected, triggering the next round">Rejected</span>
+                    }
+                  </li>
+                }
+              </ul>
+            </div>
+          }
         </section>
       }
 
@@ -297,6 +345,11 @@ interface PendingHitlGroup {
     }
     .hitl-group-header:first-child { border-top: none; margin-top: 0; padding-top: 0; }
     .tag.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; padding: 0.15rem 0.4rem; border-radius: 3px; }
+    .tag.rejected { background: rgba(248, 81, 73, 0.18); color: #fca5a5; padding: 0.15rem 0.4rem; border-radius: 3px; }
+    .review-loop-group { padding: 0.5rem 0; }
+    .review-loop-group + .review-loop-group { border-top: 1px solid rgba(255, 255, 255, 0.06); margin-top: 0.5rem; padding-top: 0.75rem; }
+    .review-loop-rounds { list-style: none; padding: 0.25rem 0 0 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+    .review-loop-rounds li { display: flex; gap: 0.5rem; align-items: center; }
     .logic-table { width: 100%; border-collapse: collapse; }
     .logic-table th, .logic-table td { padding: 0.4rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
     .logic-table th { color: var(--color-muted); text-transform: uppercase; font-size: 0.75rem; }
@@ -409,7 +462,58 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly expandedEntries = signal<Set<string>>(new Set());
   readonly actionBusy = signal(false);
   readonly actionError = signal<string | null>(null);
+  readonly childTraces = signal<TraceSummary[]>([]);
   private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
+
+  /**
+   * For each ReviewLoop node in the current workflow, group the child sagas it spawned (ordered
+   * by their 1-indexed parent_review_round) so the trace detail can show "Round N of M" with
+   * deep links into each round's child trace. The last round in the list is the outcome round;
+   * any earlier round necessarily returned Rejected (that's what caused the next iteration), so
+   * we badge it accordingly.
+   */
+  readonly reviewLoopGroups = computed<ReviewLoopGroup[]>(() => {
+    const detail = this.detail();
+    const workflow = this.workflow();
+    if (!detail || !workflow) return [];
+
+    const reviewLoopNodes = workflow.nodes.filter(n => n.kind === 'ReviewLoop');
+    if (reviewLoopNodes.length === 0) return [];
+
+    const children = this.childTraces()
+      .filter(c => c.parentTraceId === detail.traceId && c.parentReviewRound != null);
+
+    const groups: ReviewLoopGroup[] = [];
+    for (const node of reviewLoopNodes) {
+      const forNode = children
+        .filter(c => c.parentNodeId === node.id)
+        .sort((a, b) => (a.parentReviewRound ?? 0) - (b.parentReviewRound ?? 0));
+
+      if (forNode.length === 0) continue;
+
+      const rounds: ReviewLoopRoundEntry[] = forNode.map((c, idx) => ({
+        traceId: c.traceId,
+        round: c.parentReviewRound ?? 0,
+        maxRounds: c.parentReviewMaxRounds ?? node.reviewMaxRounds ?? 0,
+        currentState: c.currentState,
+        isLastRoundSeen: idx === forNode.length - 1
+      }));
+
+      groups.push({
+        nodeId: node.id,
+        nodeLabel: this.labelForReviewLoopNode(node),
+        subflowKey: node.subflowKey ?? null,
+        rounds
+      });
+    }
+    return groups;
+  });
+
+  private labelForReviewLoopNode(node: WorkflowNode): string {
+    const key = node.subflowKey ?? '(pick workflow)';
+    const rounds = node.reviewMaxRounds ? `×${node.reviewMaxRounds}` : '×?';
+    return `ReviewLoop ${rounds} — ${key}`;
+  }
 
   readonly highlightedNodeIds = computed<string[] | null>(() => {
     const d = this.detail();
@@ -590,7 +694,18 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
         }));
         this.timeline.set(baseline);
         this.loadWorkflowForTrace(detail);
+        this.loadChildTracesFor(detail.traceId);
       }
+    });
+  }
+
+  private loadChildTracesFor(traceId: string): void {
+    // ReviewLoop iterations produce child sagas keyed by parent_trace_id + parent_node_id +
+    // parent_review_round. We list and filter client-side — good enough until the trace count
+    // justifies a server-side filter.
+    this.api.list().subscribe({
+      next: all => this.childTraces.set(all.filter(t => t.parentTraceId === traceId)),
+      error: () => this.childTraces.set([])
     });
   }
 

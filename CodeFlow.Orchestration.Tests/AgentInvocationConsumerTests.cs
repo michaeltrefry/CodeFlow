@@ -760,6 +760,74 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
+    public async Task Consumer_ShouldExposeReviewLoopRoundVariablesToThePromptTemplate()
+    {
+        // Slice 5: when a child saga is dispatched by a ReviewLoop parent, the agent's prompt
+        // template gets {{round}}, {{maxRounds}}, {{isLastRound}} populated so the author can
+        // branch the prompt (e.g. "this is your last round — approve or reject").
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "review-loop-child",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 3,
+            ReviewMaxRounds: 3);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", PromptTemplate: "p"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("draft payload", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new CompletedDecision(),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-review-loop-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!.Should().ContainKey("round").WhoseValue.Should().Be("3");
+            variables.Should().ContainKey("maxRounds").WhoseValue.Should().Be("3");
+            variables.Should().ContainKey("isLastRound").WhoseValue.Should().Be("true",
+                "round equals maxRounds on the final iteration");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Consumer_WhenHitlAgentReenteredSameRoundWithDifferentInputRef_ShouldCreateAnotherTask()
     {
         var traceId = Guid.NewGuid();

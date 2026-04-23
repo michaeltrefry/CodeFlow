@@ -111,6 +111,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
             <button type="button" class="palette-item escalation" (click)="addPaletteNode('Escalation')">Escalation</button>
             <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
+            <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
           </div>
         </div>
 
@@ -217,6 +218,58 @@ function defaultStartInput(): WorkflowInput {
                 }
                 <p class="muted xsmall">
                   Subflow nodes always have the fixed output ports <code>Completed</code>, <code>Failed</code>, <code>Escalated</code>. Route each downstream to determine how the parent continues after the child terminates.
+                </p>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'ReviewLoop') {
+              <div class="inspector-section">
+                <label class="field">
+                  <span>Child workflow <span class="muted xsmall">(re-invoked every round)</span></span>
+                  <select [ngModel]="sel.editor.subflowKey ?? ''"
+                          (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
+                    <option value="">(pick workflow)</option>
+                    @for (wf of availableSubflowTargets(); track wf.key) {
+                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                    }
+                  </select>
+                  @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
+                    <span class="tag error xsmall">Self-reference — save will be rejected.</span>
+                  }
+                </label>
+                <label class="field">
+                  <span>Version <span class="muted xsmall">(blank = latest at save)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.subflowVersion ?? null"
+                         (ngModelChange)="onSubflowVersionChanged(sel.editor, $event)" />
+                </label>
+                <label class="field">
+                  <span>Max rounds <span class="muted xsmall">(1–10)</span></span>
+                  <input type="number" min="1" max="10"
+                         [ngModel]="sel.editor.reviewMaxRounds ?? null"
+                         (ngModelChange)="onReviewMaxRoundsChanged(sel.editor, $event)" />
+                  <span class="muted xsmall">
+                    Number of produce→review→revise iterations before the loop gives up. If the child returns <code>Rejected</code> on the final round, the loop exits the <code>Exhausted</code> port.
+                  </span>
+                </label>
+                @if (selectedSubflowDetail(); as detail) {
+                  <div class="field">
+                    <span class="field-label">Child workflow outline</span>
+                    <div class="subflow-outline">
+                      <div class="row-spread">
+                        <strong class="mono small">{{ detail.name }}</strong>
+                        <span class="muted xsmall">v{{ detail.version }} · {{ detail.nodes.length }} nodes</span>
+                      </div>
+                      <ul class="subflow-nodes">
+                        @for (n of detail.nodes; track n.id) {
+                          <li><span class="tag small">{{ n.kind }}</span> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
+                        }
+                      </ul>
+                    </div>
+                  </div>
+                }
+                <p class="muted xsmall">
+                  Review loop output ports: <code>Approved</code> · <code>Exhausted</code> · <code>Failed</code>. The child workflow can read <code>{{ '{{round}}' }}</code>, <code>{{ '{{maxRounds}}' }}</code>, <code>{{ '{{isLastRound}}' }}</code> from prompts and scripts.
                 </p>
               </div>
             }
@@ -413,6 +466,7 @@ function defaultStartInput(): WorkflowInput {
     .palette-item.hitl { border-left: 4px solid #bc8cff; }
     .palette-item.escalation { border-left: 4px solid #f85149; }
     .palette-item.subflow { border-left: 4px solid #2ea3f2; }
+    .palette-item.reviewloop { border-left: 4px solid #f5a623; }
     .panel-title {
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -631,7 +685,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.scriptMarkers.set([]);
         this.selectedSubflowDetail.set(null);
         const picked = this.editor?.getNode(context.data.id) as WorkflowEditorNode | undefined;
-        if (picked?.kind === 'Subflow' && picked.subflowKey) {
+        if ((picked?.kind === 'Subflow' || picked?.kind === 'ReviewLoop') && picked.subflowKey) {
           this.api.getLatest(picked.subflowKey).subscribe({
             next: detail => this.selectedSubflowDetail.set(detail),
             error: () => this.selectedSubflowDetail.set(null)
@@ -806,8 +860,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.area?.update('node', node.id);
   }
 
-  labelForOutline(node: { kind: string; agentKey?: string | null; subflowKey?: string | null }): string {
+  onReviewMaxRoundsChanged(node: WorkflowEditorNode, value: number | null): void {
+    // Clamp to the validator-enforced [1, 10] range so the UI can't silently desync from the
+    // save-time error. `null` leaves it unset so the user sees the required-field warning.
+    if (value === null || value === undefined) {
+      node.reviewMaxRounds = null;
+    } else {
+      node.reviewMaxRounds = Math.max(1, Math.min(10, Math.floor(value)));
+    }
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  labelForOutline(node: { kind: string; agentKey?: string | null; subflowKey?: string | null; reviewMaxRounds?: number | null }): string {
     if (node.kind === 'Subflow') return `→ ${node.subflowKey ?? '?'}`;
+    if (node.kind === 'ReviewLoop') return `×${node.reviewMaxRounds ?? '?'} → ${node.subflowKey ?? '?'}`;
     return node.agentKey ?? '';
   }
 

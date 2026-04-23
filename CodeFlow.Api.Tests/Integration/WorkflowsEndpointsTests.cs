@@ -607,6 +607,213 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }
 
+    [Fact]
+    public async Task Post_Rejects_WhenReviewLoopMissingMaxRounds()
+    {
+        // Slice 6: ReviewLoop node must declare ReviewMaxRounds.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-rl-missing-max-rounds");
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "rl-missing-max-rounds",
+            name = "Missing max rounds",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-rl-missing-max-rounds",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "ReviewLoop",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "any-child",
+                    subflowVersion = (int?)null,
+                    reviewMaxRounds = (int?)null
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(11)]
+    public async Task Post_Rejects_WhenReviewLoopMaxRoundsOutOfBounds(int maxRounds)
+    {
+        // Slice 6: ReviewMaxRounds must be in [1, 10].
+        using var client = factory.CreateClient();
+        var agentKey = $"wf-rl-oob-{maxRounds}";
+        await SeedAgentAsync(client, agentKey);
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = $"rl-oob-{maxRounds}",
+            name = $"Out of bounds {maxRounds}",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "ReviewLoop",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "any-child",
+                    subflowVersion = (int?)null,
+                    reviewMaxRounds = maxRounds
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Rejects_WhenReviewLoopReferencesItself()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-rl-selfref-start");
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "rl-self-ref",
+            name = "Self ref",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "Start",
+                    agentKey = "wf-rl-selfref-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = Guid.NewGuid(),
+                    kind = "ReviewLoop",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "rl-self-ref",
+                    subflowVersion = (int?)null,
+                    reviewMaxRounds = 3
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Post_Accepts_ValidReviewLoopNode_ReferencingExistingChild_WithNullVersion()
+    {
+        // Slice 6 happy path: a valid ReviewLoop with a child reference (null version = latest
+        // at save) saves successfully and the stored version is resolved to the child's latest.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-rl-parent-start");
+        await SeedAgentAsync(client, "wf-rl-child-start");
+
+        var childStartId = Guid.NewGuid();
+        var childResponse = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "rl-valid-child",
+            name = "RL valid child",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = childStartId,
+                    kind = "Start",
+                    agentKey = "wf-rl-child-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        childResponse.EnsureSuccessStatusCode();
+
+        var parentStartId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "rl-valid-parent",
+            name = "RL valid parent",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = parentStartId,
+                    kind = "Start",
+                    agentKey = "wf-rl-parent-start",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = reviewLoopNodeId,
+                    kind = "ReviewLoop",
+                    agentKey = (string?)null,
+                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    layoutX = 250,
+                    layoutY = 0,
+                    subflowKey = "rl-valid-child",
+                    subflowVersion = (int?)null,
+                    reviewMaxRounds = 3
+                }
+            },
+            edges = new object[]
+            {
+                new { fromNodeId = parentStartId, fromPort = "Completed", toNodeId = reviewLoopNodeId, toPort = "in", rotatesRound = false }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Verify the null version got resolved to 1 (the child's only version).
+        var detail = await client.GetFromJsonAsync<System.Text.Json.JsonDocument>("/api/workflows/rl-valid-parent/1");
+        detail.Should().NotBeNull();
+        var node = detail!.RootElement.GetProperty("nodes").EnumerateArray()
+            .Single(n => n.GetProperty("kind").GetString() == "ReviewLoop");
+        node.GetProperty("subflowVersion").GetInt32().Should().Be(1);
+        node.GetProperty("reviewMaxRounds").GetInt32().Should().Be(3);
+    }
+
     private sealed record ValidateScriptResponseShape(bool Ok, IReadOnlyList<ValidateScriptErrorShape> Errors);
     private sealed record ValidateScriptErrorShape(int Line, int Column, string Message);
 }

@@ -228,7 +228,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             CorrelationHeaders: null,
             RetryContext: null,
             ToolExecutionContext: null,
-            GlobalContext: message.SharedContext));
+            GlobalContext: message.SharedContext,
+            ReviewRound: message.ReviewRound,
+            ReviewMaxRounds: message.ReviewMaxRounds));
     }
 
     /// <summary>
@@ -793,7 +795,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             input: scriptInput,
             context: contextInputs,
             cancellationToken: context.CancellationToken,
-            global: globalInputs);
+            global: globalInputs,
+            reviewRound: saga.ParentReviewRound,
+            reviewMaxRounds: saga.ParentReviewMaxRounds);
 
         saga.AppendLogicEvaluation(new LogicEvaluationRecord(
             NodeId: fromNode.Id,
@@ -963,7 +967,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 input: inputJson,
                 context: contextInputs,
                 cancellationToken: context.CancellationToken,
-                global: globalInputs);
+                global: globalInputs,
+                reviewRound: saga.ParentReviewRound,
+                reviewMaxRounds: saga.ParentReviewMaxRounds);
 
             saga.AppendLogicEvaluation(new LogicEvaluationRecord(
                 NodeId: currentNode.Id,
@@ -1269,7 +1275,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             InputRef: inputRef,
             ContextInputs: DeserializeContextInputs(saga.InputsJson),
             RetryContext: retryContext,
-            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson)));
+            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
+            ReviewRound: saga.ParentReviewRound,
+            ReviewMaxRounds: saga.ParentReviewMaxRounds));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
