@@ -92,7 +92,9 @@ public sealed class LogicNodeScriptHost
         JsonElement input,
         IReadOnlyDictionary<string, JsonElement> context,
         CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, JsonElement>? global = null)
+        IReadOnlyDictionary<string, JsonElement>? global = null,
+        int? reviewRound = null,
+        int? reviewMaxRounds = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(script);
@@ -164,10 +166,19 @@ public sealed class LogicNodeScriptHost
                 totalLogChars += text.Length;
             }));
 
+            // Sentinel defaults outside a ReviewLoop so scripts that reference these bindings
+            // from shared workflows don't crash on plain invocations.
+            var scriptRound = reviewRound ?? 0;
+            var scriptMaxRounds = reviewMaxRounds ?? 0;
+            var scriptIsLast = reviewRound is int r && reviewMaxRounds is int m && m > 0 && r >= m;
+
             engine.Execute(BootstrapScript);
             engine.Execute($"var input = {input.GetRawText()};");
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
             engine.Execute($"var global = __deepFreeze({SerializeContext(globalSnapshot)});");
+            engine.Execute($"var round = {scriptRound};");
+            engine.Execute($"var maxRounds = {scriptMaxRounds};");
+            engine.Execute($"var isLastRound = {(scriptIsLast ? "true" : "false")};");
             engine.Execute(prepared);
 
             var updatesJson = engine.Evaluate("__readContextUpdates()").AsString();

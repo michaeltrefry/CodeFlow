@@ -583,6 +583,57 @@ public sealed class LogicNodeScriptHostTests
         result.OutputPortName.Should().Be("on", "deep-frozen global rejects direct assignment");
     }
 
+    [Fact]
+    public void Evaluate_ExposesReviewLoopRoundBindings_WhenProvided()
+    {
+        // Slice 5: inside a ReviewLoop child, scripts can read round/maxRounds/isLastRound and
+        // route differently on the final round.
+        var host = BuildHost();
+        const string script = """
+            if (isLastRound) { setNodePath('LastRound'); }
+            else if (round === 1) { setNodePath('FirstRound'); }
+            else { setNodePath('MiddleRound'); }
+            """;
+        var ports = new[] { "FirstRound", "MiddleRound", "LastRound" };
+
+        var firstRound = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
+            cancellationToken: default, global: null, reviewRound: 1, reviewMaxRounds: 3);
+        firstRound.OutputPortName.Should().Be("FirstRound");
+
+        var middleRound = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
+            cancellationToken: default, global: null, reviewRound: 2, reviewMaxRounds: 3);
+        middleRound.OutputPortName.Should().Be("MiddleRound");
+
+        var lastRound = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
+            cancellationToken: default, global: null, reviewRound: 3, reviewMaxRounds: 3);
+        lastRound.OutputPortName.Should().Be("LastRound");
+    }
+
+    [Fact]
+    public void Evaluate_ReviewLoopBindings_DefaultOutsideALoop()
+    {
+        // Scripts shared between ReviewLoop and non-ReviewLoop callers must see safe sentinels
+        // (round = 0, isLastRound = false) so they don't crash on plain invocations.
+        var host = BuildHost();
+        const string script = """
+            if (round === 0 && !isLastRound && maxRounds === 0) {
+                setNodePath('OutsideLoop');
+            } else {
+                setNodePath('InsideLoop');
+            }
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "OutsideLoop", "InsideLoop" },
+            ParseJson("{}"), EmptyContext);
+
+        result.OutputPortName.Should().Be("OutsideLoop");
+    }
+
     private static LogicNodeScriptHost BuildHost()
     {
         return new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions()));

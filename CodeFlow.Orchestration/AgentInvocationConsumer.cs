@@ -82,6 +82,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     agentConfig.Configuration.Variables,
                     BuildContextTemplateVariables(message.ContextInputs),
                     BuildGlobalTemplateVariables(message.GlobalContext),
+                    BuildReviewLoopTemplateVariables(message.ReviewRound, message.ReviewMaxRounds),
                     BuildInputTemplateVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
@@ -268,11 +269,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         IReadOnlyDictionary<string, string?>? configured,
         IReadOnlyDictionary<string, string?> contextVariables,
         IReadOnlyDictionary<string, string?> globalVariables,
+        IReadOnlyDictionary<string, string?> reviewLoopVariables,
         IReadOnlyDictionary<string, string?> inputVariables)
     {
         if ((configured is null || configured.Count == 0)
             && contextVariables.Count == 0
             && globalVariables.Count == 0
+            && reviewLoopVariables.Count == 0
             && inputVariables.Count == 0)
         {
             return configured;
@@ -293,6 +296,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         foreach (var entry in globalVariables)
+        {
+            merged[entry.Key] = entry.Value;
+        }
+
+        foreach (var entry in reviewLoopVariables)
         {
             merged[entry.Key] = entry.Value;
         }
@@ -341,6 +349,29 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             AddContextTemplateVariables(variables, $"global.{key}", value);
         }
 
+        return variables;
+    }
+
+    private static IReadOnlyDictionary<string, string?> BuildReviewLoopTemplateVariables(
+        int? reviewRound,
+        int? reviewMaxRounds)
+    {
+        // Outside a ReviewLoop, emit no template variables — an unused {{round}} placeholder in
+        // a prompt will render as the literal unresolved token, matching the documented "child
+        // saga not spawned by a ReviewLoop does not see these bindings" rule.
+        // (Jint bindings still default to round=0/maxRounds=0/isLastRound=false so shared scripts
+        // can reference them without a ReferenceError — that lives in LogicNodeScriptHost.)
+        if (reviewRound is not int round || reviewMaxRounds is not int maxRounds)
+        {
+            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["maxRounds"] = maxRounds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["isLastRound"] = maxRounds > 0 && round >= maxRounds ? "true" : "false"
+        };
         return variables;
     }
 
