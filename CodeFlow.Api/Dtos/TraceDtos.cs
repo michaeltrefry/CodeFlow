@@ -27,7 +27,10 @@ public sealed record TraceSummaryDto(
     int RoundCount,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc,
-    Guid? ParentTraceId = null);
+    Guid? ParentTraceId = null,
+    Guid? ParentNodeId = null,
+    int? ParentReviewRound = null,
+    int? ParentReviewMaxRounds = null);
 
 public sealed record TraceDecisionDto(
     string AgentKey,

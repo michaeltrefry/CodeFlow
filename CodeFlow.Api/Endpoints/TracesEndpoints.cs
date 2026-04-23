@@ -734,7 +734,10 @@ public static class TracesEndpoints
         RoundCount: saga.RoundCount,
         CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
         UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
-        ParentTraceId: saga.ParentTraceId);
+        ParentTraceId: saga.ParentTraceId,
+        ParentNodeId: saga.ParentNodeId,
+        ParentReviewRound: saga.ParentReviewRound,
+        ParentReviewMaxRounds: saga.ParentReviewMaxRounds);
 
     private static HitlTaskDto MapHitl(HitlTaskEntity task) =>
         MapHitl(task, originTraceId: null, subflowPath: null);
