@@ -55,3 +55,6 @@ nunit-*.xml
 
 .env
 .claude/
+.docker-data/
+.playwright-mcp/
+playwright-agent-*

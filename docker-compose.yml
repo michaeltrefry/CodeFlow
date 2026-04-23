@@ -6,6 +6,7 @@ services:
     image: mariadb:11.4
     container_name: codeflow-mariadb
     restart: unless-stopped
+    command: --lower-case-table-names=1
     environment:
       MARIADB_ROOT_PASSWORD: codeflow_root
       MARIADB_DATABASE: codeflow
@@ -14,7 +15,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - codeflow-mariadb-data:/var/lib/mysql
+      - ./.docker-data/mariadb:/var/lib/mysql
     healthcheck:
       test:
         - CMD-SHELL
@@ -48,17 +49,16 @@ services:
       retries: 12
       start_period: 20s
 
-  jaeger:
-    image: jaegertracing/jaeger:2.17.0
-    container_name: codeflow-jaeger
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: codeflow-aspire-dashboard
     restart: unless-stopped
-    command:
-      - --set=receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
-      - --set=receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+    environment:
+      DASHBOARD__FRONTEND__AUTHMODE: Unsecured
+      DASHBOARD__OTLP__AUTHMODE: Unsecured
     ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      - "18888:18888"
+      - "4317:18889"
 
   codeflow-artifacts-init:
     image: alpine:3.20
@@ -94,8 +94,10 @@ services:
       RabbitMq__Password: codeflow_dev
       RabbitMq__PrefetchCount: "1"
       RabbitMq__ConsumerConcurrencyLimit: "1"
-      Observability__OtlpEndpoint: http://jaeger:4317
+      Observability__OtlpEndpoint: http://aspire-dashboard:18889
       Observability__EnableConsoleExporter: "false"
+#      Observability__OtlpEndpoint: https://otlp-gateway-<region>.grafana.net/otlp
+#      Observability__OtlpHeaders__Authorization: "Basic <base64(instanceId:token)>"
       Auth__DevelopmentBypass: "true"
       Auth__RequireHttpsMetadata: "false"
       Cors__AllowedOrigins__0: http://localhost:4200
@@ -142,8 +144,10 @@ services:
       RabbitMq__Password: codeflow_dev
       RabbitMq__PrefetchCount: "1"
       RabbitMq__ConsumerConcurrencyLimit: "1"
-      Observability__OtlpEndpoint: http://jaeger:4317
+      Observability__OtlpEndpoint: http://aspire-dashboard:18889
       Observability__EnableConsoleExporter: "false"
+#      Observability__OtlpEndpoint: https://otlp-gateway-<region>.grafana.net/otlp
+#      Observability__OtlpHeaders__Authorization: "Basic <base64(instanceId:token)>"
       Artifacts__RootDirectory: /app/artifacts
       Secrets__MasterKey: ${Secrets__MasterKey:-}
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
@@ -166,6 +170,5 @@ services:
       - "4200:80"
 
 volumes:
-  codeflow-mariadb-data:
   codeflow-rabbitmq-data:
   codeflow-artifacts:

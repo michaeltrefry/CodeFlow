@@ -27,6 +27,13 @@ To stop the services and remove persisted local volumes:
 docker compose down -v
 ```
 
+To stop the services and also remove the MariaDB bind-mounted data directory:
+
+```bash
+docker compose down
+rm -rf .docker-data/mariadb
+```
+
 ## Services
 
 ### MariaDB
@@ -52,7 +59,7 @@ Example ADO.NET / EF Core connection string:
 Server=127.0.0.1;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
 ```
 
-The service uses a named Docker volume so local schema and data survive container restarts during development.
+The service uses a repo-local bind mount at `.docker-data/mariadb`, so schema and data survive container restarts and Docker Desktop volume cleanup. Because the files live in the working tree, `docker compose down -v` does not remove the MariaDB data directory.
 
 ### RabbitMQ
 

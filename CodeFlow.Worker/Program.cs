@@ -6,5 +6,4 @@ builder.Services.AddCodeFlowObservability(builder.Configuration, serviceName: "c
 builder.Services.AddCodeFlowHost(builder.Configuration);
 
 using var host = builder.Build();
-await host.ApplyDatabaseMigrationsAsync();
 await host.RunAsync();

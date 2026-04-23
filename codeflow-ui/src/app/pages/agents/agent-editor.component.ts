@@ -73,7 +73,7 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
           </div>
           <div class="form-field">
             <label>Model</label>
-            <input [(ngModel)]="model" name="model" placeholder="gpt-5" />
+            <input [(ngModel)]="model" name="model" placeholder="gpt-5.4" />
           </div>
         </div>
 
@@ -95,11 +95,25 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
         <div class="grid-two">
           <div class="form-field">
             <label>Max tokens</label>
-            <input type="number" [(ngModel)]="maxTokens" name="maxTokens" min="1" />
+            <input
+              type="number"
+              [ngModel]="maxTokens() ?? null"
+              (ngModelChange)="maxTokens.set(coerceOptionalNumber($event))"
+              name="maxTokens"
+              min="1"
+              autocomplete="off" />
           </div>
           <div class="form-field">
             <label>Temperature</label>
-            <input type="number" [(ngModel)]="temperature" name="temperature" step="0.1" min="0" max="2" />
+            <input
+              type="number"
+              [ngModel]="temperature() ?? null"
+              (ngModelChange)="temperature.set(coerceOptionalNumber($event))"
+              name="temperature"
+              step="0.1"
+              min="0"
+              max="2"
+              autocomplete="off" />
           </div>
         </div>
       }
@@ -132,7 +146,7 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
             </div>
             <div class="form-field">
               <label>Payload example <span class="muted small">(optional JSON)</span></label>
-              <textarea rows="2" class="mono"
+              <textarea rows="10" class="mono"
                         [ngModel]="payloadExampleText(output)"
                         (ngModelChange)="updatePayloadExample(i, $event)"
                         [name]="'output_example_' + i"
@@ -195,7 +209,7 @@ export class AgentEditorComponent implements OnInit {
   readonly name = signal('');
   readonly description = signal('');
   readonly provider = signal<'openai' | 'anthropic' | 'lmstudio'>('openai');
-  readonly model = signal('gpt-5');
+  readonly model = signal('gpt-5.4');
   readonly systemPrompt = signal('');
   readonly promptTemplate = signal('');
   readonly outputTemplate = signal('');
@@ -220,7 +234,7 @@ export class AgentEditorComponent implements OnInit {
           this.name.set((config['name'] as string) ?? '');
           this.description.set((config['description'] as string) ?? '');
           this.provider.set((config['provider'] as 'openai' | 'anthropic' | 'lmstudio') ?? 'openai');
-          this.model.set((config['model'] as string) ?? 'gpt-5');
+          this.model.set((config['model'] as string) ?? 'gpt-5.4');
           this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
           this.promptTemplate.set((config['promptTemplate'] as string) ?? '');
           this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
@@ -341,6 +355,28 @@ export class AgentEditorComponent implements OnInit {
       }
     }
     return 'Save failed';
+  }
+
+  protected coerceOptionalNumber(value: unknown): number | undefined {
+    if (value === null || value === undefined || value === '') {
+      return undefined;
+    }
+
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : undefined;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+
+    return undefined;
   }
 }
 
