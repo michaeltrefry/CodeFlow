@@ -1,5 +1,6 @@
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Host;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
@@ -48,6 +49,7 @@ public static class ApiServiceCollectionExtensions
         services.Configure<McpEndpointPolicyOptions>(
             configuration.GetSection(McpEndpointPolicyOptions.SectionName));
         services.AddSingleton<IMcpEndpointPolicy, McpEndpointPolicy>();
+        services.AddScoped<IWorkflowPackageResolver, WorkflowPackageResolver>();
 
         return services;
     }

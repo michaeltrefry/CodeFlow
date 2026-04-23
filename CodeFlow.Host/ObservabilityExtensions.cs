@@ -22,11 +22,15 @@ public static class ObservabilityExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         var section = configuration.GetSection(ObservabilitySectionName);
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        section.GetSection("OtlpHeaders").Bind(headers);
+
         var options = new ObservabilityOptions
         {
             ServiceName = serviceName ?? section["ServiceName"] ?? DefaultServiceName,
             EnableConsoleExporter = ParseBool(section["EnableConsoleExporter"], defaultValue: true),
-            OtlpEndpoint = section["OtlpEndpoint"]
+            OtlpEndpoint = section["OtlpEndpoint"],
+            OtlpHeaders = headers
         };
 
         services.AddSingleton(options);
@@ -47,9 +51,16 @@ public static class ObservabilityExtensions
                 if (!string.IsNullOrWhiteSpace(options.OtlpEndpoint))
                 {
                     var endpoint = options.OtlpEndpoint;
+                    var headerString = options.OtlpHeaders.Count == 0
+                        ? null
+                        : string.Join(",", options.OtlpHeaders.Select(kv => $"{kv.Key}={kv.Value}"));
                     tracing.AddOtlpExporter(exporter =>
                     {
                         exporter.Endpoint = new Uri(endpoint);
+                        if (headerString is not null)
+                        {
+                            exporter.Headers = headerString;
+                        }
                     });
                 }
 
@@ -72,4 +83,7 @@ public sealed class ObservabilityOptions
     public bool EnableConsoleExporter { get; init; } = true;
 
     public string? OtlpEndpoint { get; init; }
+
+    public IReadOnlyDictionary<string, string> OtlpHeaders { get; init; } =
+        new Dictionary<string, string>();
 }
