@@ -400,6 +400,7 @@ export interface HitlDecisionRequest {
   actions?: string[];
   reasons?: string[];
   outputText?: string;
+  fieldValues?: Record<string, unknown>;
 }
 
 export type TraceStreamEventKind = 'requested' | 'completed';
