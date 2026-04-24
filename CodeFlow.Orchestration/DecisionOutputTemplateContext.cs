@@ -8,7 +8,7 @@ namespace CodeFlow.Orchestration;
 /// Kept separate from <c>ContextAssembler</c> because prompt templates flatten to dotted
 /// string keys, while decision templates receive structured JSON directly.
 /// </summary>
-internal static class DecisionOutputTemplateContext
+public static class DecisionOutputTemplateContext
 {
     public static ScriptObject Build(
         string decision,
@@ -34,6 +34,47 @@ internal static class DecisionOutputTemplateContext
         scope["global"] = BuildNamespace(globalInputs);
 
         return scope;
+    }
+
+    /// <summary>
+    /// Build the render scope for a HITL submission. Form-field values land under
+    /// <c>input.*</c> (each field keyed by its name). HITL-only extras from the decision payload
+    /// — <c>reason</c>, <c>reasons</c>, <c>actions</c> — sit at the top level so templates can
+    /// reference them directly.
+    /// </summary>
+    public static ScriptObject BuildForHitl(
+        string decision,
+        string outputPortName,
+        IReadOnlyDictionary<string, JsonElement> fieldValues,
+        string? reason,
+        IReadOnlyList<string>? reasons,
+        IReadOnlyList<string>? actions,
+        IReadOnlyDictionary<string, JsonElement> contextInputs,
+        IReadOnlyDictionary<string, JsonElement> globalInputs)
+    {
+        var scope = new ScriptObject
+        {
+            ["decision"] = decision,
+            ["outputPortName"] = outputPortName,
+            ["input"] = BuildNamespace(fieldValues),
+            ["reason"] = reason ?? string.Empty,
+            ["reasons"] = reasons is null ? new ScriptArray() : ToScriptArray(reasons),
+            ["actions"] = actions is null ? new ScriptArray() : ToScriptArray(actions),
+            ["context"] = BuildNamespace(contextInputs),
+            ["global"] = BuildNamespace(globalInputs)
+        };
+
+        return scope;
+    }
+
+    private static ScriptArray ToScriptArray(IReadOnlyList<string> values)
+    {
+        var array = new ScriptArray();
+        foreach (var value in values)
+        {
+            array.Add(value);
+        }
+        return array;
     }
 
     private static ScriptObject BuildNamespace(IReadOnlyDictionary<string, JsonElement> entries)

@@ -557,6 +557,8 @@ public static class TracesEndpoints
         CodeFlowDbContext dbContext,
         IArtifactStore artifactStore,
         IPublishEndpoint publishEndpoint,
+        IAgentConfigRepository agentConfigRepo,
+        CodeFlow.Runtime.IScribanTemplateRenderer templateRenderer,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -571,7 +573,33 @@ public static class TracesEndpoints
         }
 
         var startedAt = DateTimeOffset.UtcNow;
-        var outputText = request.OutputText ?? BuildDefaultOutput(request);
+
+        var contractsDecision = (Contracts.AgentDecisionKind)(int)request.Decision;
+        var outputPortName = string.IsNullOrWhiteSpace(request.OutputPortName)
+            ? AgentDecisionPorts.ToPortName(contractsDecision)
+            : request.OutputPortName.Trim();
+        var decisionPayload = BuildDecisionPayload(request);
+
+        // Resolve a per-decision output template (if the agent declares one) and render server-side.
+        // Fall back to the client-rendered OutputText / BuildDefaultOutput when no template matches,
+        // preserving existing HITL flows.
+        var renderedOutput = await RenderHitlDecisionOutputAsync(
+            agentConfigRepo,
+            templateRenderer,
+            dbContext,
+            task,
+            request,
+            outputPortName,
+            cancellationToken);
+
+        if (renderedOutput.Failure is not null)
+        {
+            return Results.UnprocessableEntity(new { error = renderedOutput.Failure });
+        }
+
+        var outputText = renderedOutput.Text
+            ?? request.OutputText
+            ?? BuildDefaultOutput(request);
 
         await using var outputStream = new MemoryStream(Encoding.UTF8.GetBytes(outputText));
         var outputRef = await artifactStore.WriteAsync(
@@ -583,12 +611,6 @@ public static class TracesEndpoints
                 ContentType: "text/plain",
                 FileName: $"{task.AgentKey}-hitl-output.txt"),
             cancellationToken);
-
-        var contractsDecision = (Contracts.AgentDecisionKind)(int)request.Decision;
-        var outputPortName = string.IsNullOrWhiteSpace(request.OutputPortName)
-            ? AgentDecisionPorts.ToPortName(contractsDecision)
-            : request.OutputPortName.Trim();
-        var decisionPayload = BuildDecisionPayload(request);
 
         task.State = HitlTaskState.Decided;
         task.Decision = request.Decision;
@@ -614,6 +636,122 @@ public static class TracesEndpoints
         await dbContext.SaveChangesAsync(cancellationToken);
 
         return Results.Ok(new { taskId = task.Id });
+    }
+
+    private record struct HitlRenderResult(string? Text, string? Failure);
+
+    private static async Task<HitlRenderResult> RenderHitlDecisionOutputAsync(
+        IAgentConfigRepository agentConfigRepo,
+        CodeFlow.Runtime.IScribanTemplateRenderer templateRenderer,
+        CodeFlowDbContext dbContext,
+        HitlTaskEntity task,
+        HitlDecisionRequest request,
+        string outputPortName,
+        CancellationToken cancellationToken)
+    {
+        CodeFlow.Persistence.AgentConfig agentConfig;
+        try
+        {
+            agentConfig = await agentConfigRepo.GetAsync(task.AgentKey, task.AgentVersion, cancellationToken);
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            return new HitlRenderResult(null, null);
+        }
+
+        var templates = agentConfig.Configuration.DecisionOutputTemplates;
+        if (templates is null || templates.Count == 0)
+        {
+            return new HitlRenderResult(null, null);
+        }
+
+        string? template = null;
+        foreach (var entry in templates)
+        {
+            if (string.Equals(entry.Key, outputPortName, StringComparison.OrdinalIgnoreCase))
+            {
+                template = entry.Value;
+                break;
+            }
+        }
+        if (template is null)
+        {
+            templates.TryGetValue("*", out template);
+        }
+        if (template is null)
+        {
+            return new HitlRenderResult(null, null);
+        }
+
+        var saga = await dbContext.WorkflowSagas
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.TraceId == task.TraceId, cancellationToken);
+        var contextInputs = DeserializeInputsJson(saga?.InputsJson);
+        var globalInputs = DeserializeInputsJson(saga?.GlobalInputsJson);
+
+        var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (request.FieldValues is not null)
+        {
+            foreach (var (key, value) in request.FieldValues)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    fields[key] = value;
+                }
+            }
+        }
+
+        var decisionName = string.IsNullOrWhiteSpace(request.OutputPortName)
+            ? request.Decision.ToString()
+            : request.OutputPortName!.Trim();
+
+        var scope = CodeFlow.Orchestration.DecisionOutputTemplateContext.BuildForHitl(
+            decision: decisionName,
+            outputPortName: outputPortName,
+            fieldValues: fields,
+            reason: request.Reason,
+            reasons: request.Reasons,
+            actions: request.Actions,
+            contextInputs: contextInputs,
+            globalInputs: globalInputs);
+
+        try
+        {
+            var rendered = templateRenderer.Render(template, scope, cancellationToken);
+            return new HitlRenderResult(rendered, null);
+        }
+        catch (CodeFlow.Runtime.PromptTemplateException ex)
+        {
+            return new HitlRenderResult(null, $"Decision output template failed: {ex.Message}");
+        }
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> DeserializeInputsJson(string? inputsJson)
+    {
+        if (string.IsNullOrWhiteSpace(inputsJson))
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(inputsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            }
+
+            var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                result[property.Name] = property.Value.Clone();
+            }
+            return result;
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
     }
 
     private static string BuildDefaultOutput(HitlDecisionRequest request)

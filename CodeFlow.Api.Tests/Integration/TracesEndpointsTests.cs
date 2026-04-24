@@ -190,6 +190,271 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         (await db.WorkflowSagas.AnyAsync(s => s.TraceId == oldFailedTraceId)).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task SubmitHitlDecision_ShouldRenderDecisionOutputTemplateServerSide()
+    {
+        // An agent with a matching DecisionOutputTemplate renders server-side using FieldValues
+        // and context from the saga — the client-supplied OutputText is ignored.
+        var agentKey = $"hitl-render-{Guid.NewGuid():N}";
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Running",
+                CurrentNodeId = nodeId,
+                CurrentAgentKey = agentKey,
+                CurrentRoundId = roundId,
+                RoundCount = 1,
+                AgentVersionsJson = $"{{\"{agentKey}\":1}}",
+                DecisionHistoryJson = "[]",
+                LogicEvaluationHistoryJson = "[]",
+                DecisionCount = 0,
+                LogicEvaluationCount = 0,
+                WorkflowKey = "hitl-template-flow",
+                WorkflowVersion = 1,
+                InputsJson = """{"headline":"Ship it"}""",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Version = 1
+            });
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = agentKey,
+                Version = 1,
+                IsActive = true,
+                ConfigJson = """
+                {
+                    "type": "hitl",
+                    "decisionOutputTemplates": {
+                        "Approved": "[{{ decision }}] {{ input.feedback }} // ctx={{ context.headline }}"
+                    }
+                }
+                """,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            db.HitlTasks.Add(new HitlTaskEntity
+            {
+                TraceId = traceId,
+                RoundId = roundId,
+                NodeId = nodeId,
+                AgentKey = agentKey,
+                AgentVersion = 1,
+                WorkflowKey = "hitl-template-flow",
+                WorkflowVersion = 1,
+                InputRef = "file:///tmp/hitl-input.bin",
+                InputPreview = "review this",
+                State = HitlTaskState.Pending,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var body = new
+        {
+            decision = "Approved",
+            outputPortName = "Approved",
+            outputText = "client-rendered content that must be ignored",
+            fieldValues = new Dictionary<string, object>
+            {
+                ["feedback"] = "looks good"
+            }
+        };
+
+        var response = await client.PostAsJsonAsync($"/api/traces/{traceId}/hitl-decision", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Artifacts are stored as {root}/{traceId:N}/{roundId:N}/{artifactId:N}.bin
+        var content = await ReadSoleArtifactAsync(traceId);
+        content.Should().Be("[Approved] looks good // ctx=Ship it");
+    }
+
+    [Fact]
+    public async Task SubmitHitlDecision_ShouldFallBackToClientOutputText_WhenNoTemplateMatches()
+    {
+        // An agent with no DecisionOutputTemplates keeps legacy behavior: the client-rendered
+        // OutputText is written as the artifact.
+        var agentKey = $"hitl-legacy-{Guid.NewGuid():N}";
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Running",
+                CurrentNodeId = nodeId,
+                CurrentAgentKey = agentKey,
+                CurrentRoundId = roundId,
+                RoundCount = 1,
+                AgentVersionsJson = $"{{\"{agentKey}\":1}}",
+                DecisionHistoryJson = "[]",
+                LogicEvaluationHistoryJson = "[]",
+                DecisionCount = 0,
+                LogicEvaluationCount = 0,
+                WorkflowKey = "hitl-legacy-flow",
+                WorkflowVersion = 1,
+                InputsJson = "{}",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Version = 1
+            });
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = agentKey,
+                Version = 1,
+                IsActive = true,
+                ConfigJson = """{ "type": "hitl" }""",
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            db.HitlTasks.Add(new HitlTaskEntity
+            {
+                TraceId = traceId,
+                RoundId = roundId,
+                NodeId = nodeId,
+                AgentKey = agentKey,
+                AgentVersion = 1,
+                WorkflowKey = "hitl-legacy-flow",
+                WorkflowVersion = 1,
+                InputRef = "file:///tmp/hitl-input.bin",
+                InputPreview = "review this",
+                State = HitlTaskState.Pending,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var body = new
+        {
+            decision = "Approved",
+            outputPortName = "Approved",
+            outputText = "legacy client-rendered body"
+        };
+
+        var response = await client.PostAsJsonAsync($"/api/traces/{traceId}/hitl-decision", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var content = await ReadSoleArtifactAsync(traceId);
+        content.Should().Be("legacy client-rendered body");
+    }
+
+    [Fact]
+    public async Task SubmitHitlDecision_ShouldReturn422_WhenTemplateFailsToRender()
+    {
+        var agentKey = $"hitl-fail-{Guid.NewGuid():N}";
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Running",
+                CurrentNodeId = nodeId,
+                CurrentAgentKey = agentKey,
+                CurrentRoundId = roundId,
+                RoundCount = 1,
+                AgentVersionsJson = $"{{\"{agentKey}\":1}}",
+                DecisionHistoryJson = "[]",
+                LogicEvaluationHistoryJson = "[]",
+                DecisionCount = 0,
+                LogicEvaluationCount = 0,
+                WorkflowKey = "hitl-bad-template",
+                WorkflowVersion = 1,
+                InputsJson = "{}",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Version = 1
+            });
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = agentKey,
+                Version = 1,
+                IsActive = true,
+                ConfigJson = """
+                {
+                    "type": "hitl",
+                    "decisionOutputTemplates": {
+                        "Approved": "{{ if unterminated"
+                    }
+                }
+                """,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            db.HitlTasks.Add(new HitlTaskEntity
+            {
+                TraceId = traceId,
+                RoundId = roundId,
+                NodeId = nodeId,
+                AgentKey = agentKey,
+                AgentVersion = 1,
+                WorkflowKey = "hitl-bad-template",
+                WorkflowVersion = 1,
+                InputRef = "file:///tmp/hitl-input.bin",
+                InputPreview = "preview",
+                State = HitlTaskState.Pending,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var body = new
+        {
+            decision = "Approved",
+            outputPortName = "Approved"
+        };
+
+        var response = await client.PostAsJsonAsync($"/api/traces/{traceId}/hitl-decision", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+
+        // Pending task must remain Pending — the failed render did not consume it.
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var task = await verifyDb.HitlTasks.SingleAsync(t => t.TraceId == traceId);
+        task.State.Should().Be(HitlTaskState.Pending);
+    }
+
+    private async Task<string> ReadSoleArtifactAsync(Guid traceId)
+    {
+        // The running host canonicalizes the artifact root via Path.GetFullPath, which on macOS
+        // resolves /tmp through /private/tmp — diverging from factory.ArtifactRoot. Reach into the
+        // live IArtifactStore to get the effective root.
+        using var scope = factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IArtifactStore>();
+        var rootField = store.GetType().GetField(
+            "rootDirectory",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var root = rootField?.GetValue(store) as string
+            ?? throw new InvalidOperationException("Unable to resolve artifact store root directory.");
+
+        var traceRoot = Path.Combine(root, traceId.ToString("N"));
+        Directory.Exists(traceRoot).Should().BeTrue(
+            $"hitl submit should have written an artifact under '{traceRoot}'");
+        var files = Directory.GetFiles(traceRoot, "*.bin", SearchOption.AllDirectories);
+        files.Should().HaveCount(1);
+        return await File.ReadAllTextAsync(files[0]);
+    }
+
     private async Task SeedTraceAsync(
         Guid traceId,
         Guid correlationId,
