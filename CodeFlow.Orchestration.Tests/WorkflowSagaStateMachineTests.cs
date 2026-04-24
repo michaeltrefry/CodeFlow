@@ -1187,6 +1187,89 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task ScriptedAgent_SetOutput_SubstitutesDownstreamInputRefAndPreservesOriginal()
+    {
+        // Agent emits a raw JSON submission; the routing script builds a markdown summary and
+        // calls setOutput(md). The next dispatched agent must receive the markdown as its
+        // InputRef artifact; the original submission must still be in the store and referenced
+        // from the decision record prior to the override.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        const string script = """
+            var md = '# Summary\n- answer: ' + input.answer;
+            setOutput(md);
+            setNodePath('Completed');
+            """;
+        var workflow = BuildWorkflowWithScriptedSource(
+            key: "scripted-setOutput",
+            sourceAgentKey: "interviewer",
+            sourceScript: script,
+            sourceOutputPorts: new[] { "Completed" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Completed"] = "publisher"
+            });
+
+        var originalOutputRef = new Uri("file:///tmp/interviewer-out.bin");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"answer":"forty-two"}""");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>
+        {
+            ["publisher"] = 1
+        }, artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "interviewer"),
+                AgentKey: "interviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstream = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+
+            // Downstream agent's InputRef must point at the newly written override artifact,
+            // not the original submission.
+            var downstreamInputRef = downstream.Context.Message.InputRef!;
+            downstreamInputRef.Should().NotBe(originalOutputRef);
+            artifactStore.ReadWrittenContent(downstreamInputRef)
+                .Should().Be("# Summary\n- answer: forty-two");
+
+            // Original submission is still readable — the script host must never mutate it.
+            artifactStore.SeededReads.Should().ContainKey(originalOutputRef);
+
+            // DecisionRecord for the source node carries the overridden OutputRef so the trace
+            // UI renders the rendered markdown rather than the raw submission.
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            var decisions = saga.GetDecisionHistory();
+            var interviewerDecision = decisions
+                .Single(d => d.AgentKey == "interviewer" && d.RoundId == roundId);
+            interviewerDecision.OutputRef.Should().Be(downstreamInputRef.ToString());
+            interviewerDecision.OutputRef.Should().NotBe(originalOutputRef.ToString());
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     private static Workflow BuildWorkflowWithScriptedSource(
         string key,
         string sourceAgentKey,
@@ -2555,6 +2638,49 @@ public sealed class WorkflowSagaStateMachineTests
 
         public Task<Uri> WriteAsync(Stream content, ArtifactMetadata metadata, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Artifact store that records every write and preserves seeded reads. Used by tests that
+    /// verify setOutput()-generated artifacts land in the store and that the original agent
+    /// submission is never clobbered.
+    /// </summary>
+    private sealed class RecordingArtifactStore : IArtifactStore
+    {
+        private readonly Dictionary<Uri, byte[]> writes = new();
+        public Dictionary<Uri, string> SeededReads { get; } = new();
+
+        public void SeedRead(Uri uri, string content) => SeededReads[uri] = content;
+
+        public string ReadWrittenContent(Uri uri) =>
+            writes.TryGetValue(uri, out var bytes)
+                ? Encoding.UTF8.GetString(bytes)
+                : throw new InvalidOperationException($"No write recorded for {uri}");
+
+        public Task<ArtifactMetadata> GetMetadataAsync(Uri uri, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Stream> ReadAsync(Uri uri, CancellationToken cancellationToken = default)
+        {
+            if (writes.TryGetValue(uri, out var recorded))
+            {
+                return Task.FromResult<Stream>(new MemoryStream(recorded));
+            }
+            if (SeededReads.TryGetValue(uri, out var seeded))
+            {
+                return Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(seeded)));
+            }
+            return Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes("{}")));
+        }
+
+        public Task<Uri> WriteAsync(Stream content, ArtifactMetadata metadata, CancellationToken cancellationToken = default)
+        {
+            using var buffer = new MemoryStream();
+            content.CopyTo(buffer);
+            var uri = new Uri($"file:///recorded/{metadata.ArtifactId:N}");
+            writes[uri] = buffer.ToArray();
+            return Task.FromResult(uri);
+        }
     }
 
     private sealed record EdgeSpec(

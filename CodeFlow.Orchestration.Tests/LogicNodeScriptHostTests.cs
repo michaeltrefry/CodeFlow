@@ -634,6 +634,177 @@ public sealed class LogicNodeScriptHostTests
         result.OutputPortName.Should().Be("OutsideLoop");
     }
 
+    [Fact]
+    public void Evaluate_ShouldCaptureOutputOverride_WhenSetOutputIsCalled()
+    {
+        var host = BuildHost();
+        const string script = """
+            setOutput('# Interview Summary\n- Q1: a\n- Q2: b');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputOverride.Should().Be("# Interview Summary\n- Q1: a\n- Q2: b");
+    }
+
+    [Fact]
+    public void Evaluate_OutputOverride_ShouldBeNullWhenSetOutputNotCalled()
+    {
+        var host = BuildHost();
+        const string script = "setNodePath('Completed');";
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputOverride.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldRejectNonStringArgs()
+    {
+        var host = BuildHost();
+        const string script = """
+            setOutput(42);
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("setOutput");
+        result.FailureMessage.Should().Contain("string");
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldRejectObjectArgs()
+    {
+        var host = BuildHost();
+        const string script = """
+            setOutput({ x: 1 });
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldRejectEmptyString()
+    {
+        var host = BuildHost();
+        const string script = """
+            setOutput('');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldRejectOversizedStrings()
+    {
+        var host = BuildHost();
+        // 1 MiB cap (1,048,576 chars). Build a single ~1.1 MiB literal in one allocation — a
+        // tight concat loop risks tripping the 4 MB Jint memory limit instead.
+        const string script = """
+            setOutput('x'.repeat(1200000));
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.OutputOverrideBudgetExceeded);
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldCoexistWithSetNodePathAndSetContext()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('stage', 'final');
+            setOutput('rendered markdown');
+            setGlobal('shared', true);
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputPortName.Should().Be("Completed");
+        result.OutputOverride.Should().Be("rendered markdown");
+        result.ContextUpdates.Should().ContainKey("stage");
+        result.ContextUpdates["stage"].GetString().Should().Be("final");
+        result.GlobalUpdates.Should().ContainKey("shared");
+        result.GlobalUpdates["shared"].GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_ShouldFailScript_WhenNotAllowed()
+    {
+        // Default (allowOutputOverride: false) — setOutput must throw so authors get a clear
+        // error rather than silently losing the override on Logic-node scripts where the concept
+        // of an "output artifact" isn't well defined.
+        var host = BuildHost();
+        const string script = """
+            setOutput('ignored');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("agent-attached");
+    }
+
     private static LogicNodeScriptHost BuildHost()
     {
         return new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions()));
