@@ -17,4 +17,5 @@ public sealed record AgentInvocationConfiguration(
     RetryContext? RetryContext = null,
     // Runtime-only: populated by AgentInvocationConsumer from AgentConfig.Outputs. Not persisted
     // to avoid duplicate storage with the top-level `outputs` field in the stored config JSON.
-    [property: JsonIgnore] IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null);
+    [property: JsonIgnore] IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null,
+    IReadOnlyDictionary<string, string>? DecisionOutputTemplates = null);

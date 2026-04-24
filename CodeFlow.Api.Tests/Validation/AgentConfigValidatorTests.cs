@@ -66,4 +66,99 @@ public sealed class AgentConfigValidatorTests
         var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
         result.IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public void ValidateConfig_AcceptsDecisionOutputTemplates()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "provider": "openai",
+            "model": "gpt-5",
+            "decisionOutputTemplates": {
+                "Approved": "shipped {{ decision }}",
+                "Rejected": "blocked {{ decision }}",
+                "*": "fallback {{ decision }}"
+            }
+        }
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonObjectDecisionOutputTemplates()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","decisionOutputTemplates":"nope"}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("decisionOutputTemplates");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsInvalidPortName()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","decisionOutputTemplates":{"bad port":"tpl"}}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("bad port");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonStringTemplateValue()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","decisionOutputTemplates":{"Approved":42}}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("Approved");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsTooManyEntries()
+    {
+        var pairs = Enumerable.Range(0, 33)
+            .Select(i => $"\"port{i}\":\"tpl\"")
+            .ToArray();
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"decisionOutputTemplates\":{"
+            + string.Join(",", pairs)
+            + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("at most");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsOversizeTemplate()
+    {
+        var oversize = new string('x', 16 * 1024 + 1);
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"decisionOutputTemplates\":{\"Approved\":\""
+            + oversize
+            + "\"}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("Approved");
+    }
+
+    [Fact]
+    public void ValidateConfig_AllowsWildcardOnly()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","decisionOutputTemplates":{"*":"fallback {{ decision }}"}}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
 }
