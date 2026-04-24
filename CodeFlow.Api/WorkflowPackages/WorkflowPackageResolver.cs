@@ -90,7 +90,9 @@ public sealed class WorkflowPackageResolver(
                 LayoutX: node.LayoutX,
                 LayoutY: node.LayoutY,
                 SubflowKey: NormalizeOptional(node.SubflowKey),
-                SubflowVersion: resolvedSubflowVersion));
+                SubflowVersion: resolvedSubflowVersion,
+                ReviewMaxRounds: node.ReviewMaxRounds,
+                LoopDecision: NormalizeOptional(node.LoopDecision)));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(
@@ -98,6 +100,8 @@ public sealed class WorkflowPackageResolver(
             Version: workflow.Version,
             Name: workflow.Name,
             MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+            Category: workflow.Category,
+            Tags: workflow.TagsOrEmpty.ToArray(),
             CreatedAtUtc: workflow.CreatedAtUtc,
             Nodes: nodes,
             Edges: workflow.Edges

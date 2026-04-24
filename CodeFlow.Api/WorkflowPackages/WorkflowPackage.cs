@@ -33,6 +33,8 @@ public sealed record WorkflowPackageWorkflow(
     int Version,
     string Name,
     int MaxRoundsPerRound,
+    WorkflowCategory Category,
+    IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowPackageWorkflowNode> Nodes,
     IReadOnlyList<WorkflowPackageWorkflowEdge> Edges,
@@ -48,7 +50,9 @@ public sealed record WorkflowPackageWorkflowNode(
     double LayoutX,
     double LayoutY,
     string? SubflowKey = null,
-    int? SubflowVersion = null);
+    int? SubflowVersion = null,
+    int? ReviewMaxRounds = null,
+    string? LoopDecision = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

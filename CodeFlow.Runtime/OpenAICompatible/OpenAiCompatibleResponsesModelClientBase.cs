@@ -10,23 +10,14 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient httpClient;
-    private readonly Uri responsesEndpoint;
-    private readonly string? apiKey;
-    private readonly int maxRetryAttempts;
-    private readonly TimeSpan initialRetryDelay;
+    private readonly Func<OpenAiCompatibleResponsesRuntimeOptions> optionsResolver;
 
     protected OpenAiCompatibleResponsesModelClientBase(
         HttpClient httpClient,
-        Uri responsesEndpoint,
-        string? apiKey,
-        int maxRetryAttempts,
-        TimeSpan initialRetryDelay)
+        Func<OpenAiCompatibleResponsesRuntimeOptions> optionsResolver)
     {
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        this.responsesEndpoint = responsesEndpoint ?? throw new ArgumentNullException(nameof(responsesEndpoint));
-        this.apiKey = apiKey;
-        this.maxRetryAttempts = maxRetryAttempts;
-        this.initialRetryDelay = initialRetryDelay;
+        this.optionsResolver = optionsResolver ?? throw new ArgumentNullException(nameof(optionsResolver));
     }
 
     public async Task<InvocationResponse> InvokeAsync(
@@ -35,9 +26,13 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var runtimeOptions = optionsResolver()
+            ?? throw new InvalidOperationException("Options resolver returned null.");
+        EnsureUsable(runtimeOptions);
+
         var toolNameMap = ProviderToolNameMap.Create(request.Tools);
-        using var httpRequest = BuildHttpRequest(request, toolNameMap);
-        using var response = await SendWithRetryAsync(httpRequest, cancellationToken);
+        using var httpRequest = BuildHttpRequest(request, runtimeOptions, toolNameMap);
+        using var response = await SendWithRetryAsync(httpRequest, runtimeOptions, cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
 
@@ -47,15 +42,22 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         return ParseInvocationResponse(document.RootElement, toolNameMap);
     }
 
-    protected virtual void ApplyHeaders(HttpRequestMessage httpRequest)
+    protected virtual void ApplyHeaders(HttpRequestMessage httpRequest, OpenAiCompatibleResponsesRuntimeOptions runtimeOptions)
     {
-        if (!string.IsNullOrWhiteSpace(apiKey))
+        if (!string.IsNullOrWhiteSpace(runtimeOptions.ApiKey))
         {
-            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", runtimeOptions.ApiKey);
         }
     }
 
-    private HttpRequestMessage BuildHttpRequest(InvocationRequest request, ProviderToolNameMap toolNameMap)
+    protected virtual void EnsureUsable(OpenAiCompatibleResponsesRuntimeOptions runtimeOptions)
+    {
+    }
+
+    private HttpRequestMessage BuildHttpRequest(
+        InvocationRequest request,
+        OpenAiCompatibleResponsesRuntimeOptions runtimeOptions,
+        ProviderToolNameMap toolNameMap)
     {
         var payload = new JsonObject
         {
@@ -79,20 +81,22 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
             payload["temperature"] = temperature;
         }
 
-        var httpRequest = new HttpRequestMessage(HttpMethod.Post, responsesEndpoint)
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, runtimeOptions.ResponsesEndpoint)
         {
             Content = new StringContent(payload.ToJsonString(SerializerOptions), Encoding.UTF8, "application/json")
         };
 
-        ApplyHeaders(httpRequest);
+        ApplyHeaders(httpRequest, runtimeOptions);
         return httpRequest;
     }
 
     private async Task<HttpResponseMessage> SendWithRetryAsync(
         HttpRequestMessage request,
+        OpenAiCompatibleResponsesRuntimeOptions runtimeOptions,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
+        var maxRetryAttempts = runtimeOptions.MaxRetryAttempts;
 
         while (true)
         {
@@ -109,13 +113,13 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
                     return response;
                 }
 
-                var delay = GetRetryDelay(response, attempt);
+                var delay = GetRetryDelay(response, runtimeOptions, attempt);
                 response.Dispose();
                 await Task.Delay(delay, cancellationToken);
             }
             catch (HttpRequestException) when (attempt < maxRetryAttempts)
             {
-                await Task.Delay(GetRetryDelay(response: null, attempt), cancellationToken);
+                await Task.Delay(GetRetryDelay(response: null, runtimeOptions, attempt), cancellationToken);
             }
         }
     }
@@ -130,7 +134,10 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
             || (int)statusCode >= 500;
     }
 
-    private TimeSpan GetRetryDelay(HttpResponseMessage? response, int attempt)
+    private static TimeSpan GetRetryDelay(
+        HttpResponseMessage? response,
+        OpenAiCompatibleResponsesRuntimeOptions runtimeOptions,
+        int attempt)
     {
         if (response?.Headers.RetryAfter?.Delta is TimeSpan retryAfterDelta)
         {
@@ -144,7 +151,7 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         }
 
         var multiplier = Math.Pow(2, Math.Max(0, attempt - 1));
-        var calculatedDelay = TimeSpan.FromMilliseconds(initialRetryDelay.TotalMilliseconds * multiplier);
+        var calculatedDelay = TimeSpan.FromMilliseconds(runtimeOptions.InitialRetryDelay.TotalMilliseconds * multiplier);
 
         return calculatedDelay > TimeSpan.Zero ? calculatedDelay : TimeSpan.Zero;
     }

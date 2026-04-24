@@ -39,6 +39,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<GitHostSettingsEntity> GitHostSettings => Set<GitHostSettingsEntity>();
 
+    public DbSet<LlmProviderSettingsEntity> LlmProviders => Set<LlmProviderSettingsEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

@@ -50,6 +50,7 @@ public static class ApiServiceCollectionExtensions
             configuration.GetSection(McpEndpointPolicyOptions.SectionName));
         services.AddSingleton<IMcpEndpointPolicy, McpEndpointPolicy>();
         services.AddScoped<IWorkflowPackageResolver, WorkflowPackageResolver>();
+        services.AddScoped<IWorkflowPackageImporter, WorkflowPackageImporter>();
 
         return services;
     }

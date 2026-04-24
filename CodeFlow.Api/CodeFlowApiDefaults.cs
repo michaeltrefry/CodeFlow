@@ -25,6 +25,8 @@ public static class CodeFlowApiDefaults
         public const string SkillsWrite = "SkillsWrite";
         public const string GitHostRead = "GitHostRead";
         public const string GitHostWrite = "GitHostWrite";
+        public const string LlmProvidersRead = "LlmProvidersRead";
+        public const string LlmProvidersWrite = "LlmProvidersWrite";
     }
 
     public static class Permissions
@@ -46,6 +48,8 @@ public static class CodeFlowApiDefaults
         public const string SkillsWrite = "skills:write";
         public const string GitHostRead = "git_host:read";
         public const string GitHostWrite = "git_host:write";
+        public const string LlmProvidersRead = "llm_providers:read";
+        public const string LlmProvidersWrite = "llm_providers:write";
     }
 
     public static class Roles
@@ -81,5 +85,7 @@ public static class CodeFlowApiDefaults
             [Permissions.SkillsWrite] = new[] { Roles.Author, Roles.Admin },
             [Permissions.GitHostRead] = new[] { Roles.Admin },
             [Permissions.GitHostWrite] = new[] { Roles.Admin },
+            [Permissions.LlmProvidersRead] = new[] { Roles.Admin },
+            [Permissions.LlmProvidersWrite] = new[] { Roles.Admin },
         };
 }

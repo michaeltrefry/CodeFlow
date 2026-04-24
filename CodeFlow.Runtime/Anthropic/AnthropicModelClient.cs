@@ -10,22 +10,18 @@ public sealed class AnthropicModelClient : IModelClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient httpClient;
-    private readonly AnthropicModelClientOptions options;
+    private readonly Func<AnthropicModelClientOptions> optionsResolver;
 
-    public AnthropicModelClient(HttpClient httpClient, AnthropicModelClientOptions options)
+    public AnthropicModelClient(HttpClient httpClient, Func<AnthropicModelClientOptions> optionsResolver)
     {
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        this.options = options ?? throw new ArgumentNullException(nameof(options));
+        this.optionsResolver = optionsResolver ?? throw new ArgumentNullException(nameof(optionsResolver));
+    }
 
-        if (string.IsNullOrWhiteSpace(options.ApiKey))
-        {
-            throw new ArgumentException("An Anthropic API key is required.", nameof(options));
-        }
-
-        if (string.IsNullOrWhiteSpace(options.ApiVersion))
-        {
-            throw new ArgumentException("An Anthropic API version is required.", nameof(options));
-        }
+    // Convenience ctor for tests and for fixed-options call sites.
+    public AnthropicModelClient(HttpClient httpClient, AnthropicModelClientOptions options)
+        : this(httpClient, () => options ?? throw new ArgumentNullException(nameof(options)))
+    {
     }
 
     public async Task<InvocationResponse> InvokeAsync(
@@ -34,9 +30,22 @@ public sealed class AnthropicModelClient : IModelClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var options = optionsResolver()
+            ?? throw new InvalidOperationException("AnthropicModelClientOptions resolver returned null.");
+        if (string.IsNullOrWhiteSpace(options.ApiKey))
+        {
+            throw new InvalidOperationException(
+                "An Anthropic API key has not been configured. Set it via the LLM providers settings page or the "
+                + "'Anthropic:ApiKey' configuration value before invoking an Anthropic agent.");
+        }
+        if (string.IsNullOrWhiteSpace(options.ApiVersion))
+        {
+            throw new InvalidOperationException("An Anthropic API version is required.");
+        }
+
         var toolNameMap = ProviderToolNameMap.Create(request.Tools);
-        using var httpRequest = BuildHttpRequest(request, toolNameMap);
-        using var response = await SendWithRetryAsync(httpRequest, cancellationToken);
+        using var httpRequest = BuildHttpRequest(request, options, toolNameMap);
+        using var response = await SendWithRetryAsync(httpRequest, options, cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
 
@@ -46,7 +55,10 @@ public sealed class AnthropicModelClient : IModelClient
         return ParseInvocationResponse(document.RootElement, toolNameMap);
     }
 
-    private HttpRequestMessage BuildHttpRequest(InvocationRequest request, ProviderToolNameMap toolNameMap)
+    private static HttpRequestMessage BuildHttpRequest(
+        InvocationRequest request,
+        AnthropicModelClientOptions options,
+        ProviderToolNameMap toolNameMap)
     {
         var payload = new JsonObject
         {
@@ -103,6 +115,7 @@ public sealed class AnthropicModelClient : IModelClient
 
     private async Task<HttpResponseMessage> SendWithRetryAsync(
         HttpRequestMessage request,
+        AnthropicModelClientOptions options,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
@@ -122,13 +135,13 @@ public sealed class AnthropicModelClient : IModelClient
                     return response;
                 }
 
-                var delay = GetRetryDelay(response, attempt);
+                var delay = GetRetryDelay(response, options, attempt);
                 response.Dispose();
                 await Task.Delay(delay, cancellationToken);
             }
             catch (HttpRequestException) when (attempt < options.MaxRetryAttempts)
             {
-                await Task.Delay(GetRetryDelay(response: null, attempt), cancellationToken);
+                await Task.Delay(GetRetryDelay(response: null, options, attempt), cancellationToken);
             }
         }
     }
@@ -144,7 +157,10 @@ public sealed class AnthropicModelClient : IModelClient
             || (int)statusCode >= 500;
     }
 
-    private TimeSpan GetRetryDelay(HttpResponseMessage? response, int attempt)
+    private static TimeSpan GetRetryDelay(
+        HttpResponseMessage? response,
+        AnthropicModelClientOptions options,
+        int attempt)
     {
         if (response?.Headers.RetryAfter?.Delta is TimeSpan retryAfterDelta)
         {

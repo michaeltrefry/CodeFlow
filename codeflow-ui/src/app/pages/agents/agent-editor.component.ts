@@ -14,7 +14,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
-import { AgentConfig, AgentOutputDeclaration, DecisionOutputTemplateMode } from '../../core/models';
+import { LlmProvidersApi } from '../../core/llm-providers.api';
+import { AgentConfig, AgentOutputDeclaration, DecisionOutputTemplateMode, LlmProviderKey, LlmProviderModelOption } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
@@ -188,7 +189,29 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                 </label>
                 <label class="field">
                   <span class="field-label">Model</span>
-                  <input class="input mono" [(ngModel)]="model" name="model" placeholder="gpt-5.4" />
+                  @if (availableModels().length > 0) {
+                    <select class="select mono" [ngModel]="model()" (ngModelChange)="model.set($event)" name="model">
+                      @for (option of modelOptions(); track option.value) {
+                        <option [value]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                    @if (modelNotConfigured()) {
+                      <span class="field-hint">
+                        Current value <code>{{ model() }}</code> isn't in the configured list. Add it on the
+                        <a routerLink="/settings/llm-providers" class="mono-link">LLM providers page ↗</a> to keep it as a canonical choice.
+                      </span>
+                    } @else {
+                      <span class="field-hint">
+                        Manage the choices on the <a routerLink="/settings/llm-providers" class="mono-link">LLM providers page ↗</a>.
+                      </span>
+                    }
+                  } @else {
+                    <input class="input mono" [(ngModel)]="model" name="model" placeholder="gpt-5.4" />
+                    <span class="field-hint">
+                      No models configured for {{ provider() }} yet — add some on the
+                      <a routerLink="/settings/llm-providers" class="mono-link">LLM providers page ↗</a> to get a dropdown.
+                    </span>
+                  }
                 </label>
                 <label class="field">
                   <span class="field-label">Temperature</span>
@@ -448,6 +471,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
 })
 export class AgentEditorComponent implements OnInit {
   private readonly agentsApi = inject(AgentsApi);
+  private readonly llmProvidersApi = inject(LlmProvidersApi);
   private readonly router = inject(Router);
 
   readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
@@ -482,6 +506,26 @@ export class AgentEditorComponent implements OnInit {
 
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
+
+  readonly configuredModels = signal<LlmProviderModelOption[]>([]);
+  readonly availableModels = computed(() => {
+    const all = this.configuredModels();
+    const current = this.provider();
+    return all.filter(o => o.provider === current).map(o => o.model);
+  });
+  readonly modelNotConfigured = computed(() => {
+    const current = this.model();
+    if (!current) return false;
+    return !this.availableModels().includes(current);
+  });
+  readonly modelOptions = computed(() => {
+    const options = this.availableModels().map(value => ({ value, label: value }));
+    const current = this.model();
+    if (current && !options.some(o => o.value === current)) {
+      options.unshift({ value: current, label: `${current} (unconfigured)` });
+    }
+    return options;
+  });
 
   readonly tab = signal<EditorTab>('identity');
   readonly tabs = computed<TabItem[]>(() => [
@@ -546,6 +590,10 @@ export class AgentEditorComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.llmProvidersApi.listModels().subscribe({
+      next: options => this.configuredModels.set(options),
+      error: () => this.configuredModels.set([]),
+    });
     if (this.embedded()) {
       const existing = this.existingKey();
       if (existing) this.key.set(existing);

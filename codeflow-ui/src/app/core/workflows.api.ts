@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { WorkflowCategory, WorkflowDetail, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowSummary } from './models';
@@ -29,6 +29,49 @@ export interface ValidateScriptResponse {
   errors: ValidateScriptError[];
 }
 
+export type WorkflowPackageImportAction = 'Create' | 'Reuse' | 'Conflict';
+export type WorkflowPackageImportResourceKind =
+  | 'Workflow'
+  | 'Agent'
+  | 'AgentRoleAssignment'
+  | 'Role'
+  | 'Skill'
+  | 'McpServer';
+
+export interface WorkflowPackageReference {
+  key: string;
+  version: number;
+}
+
+export interface WorkflowPackageImportItem {
+  kind: WorkflowPackageImportResourceKind;
+  key: string;
+  version?: number | null;
+  action: WorkflowPackageImportAction;
+  message: string;
+}
+
+export interface WorkflowPackageImportPreview {
+  entryPoint: WorkflowPackageReference;
+  items: WorkflowPackageImportItem[];
+  warnings: string[];
+  createCount: number;
+  reuseCount: number;
+  conflictCount: number;
+  warningCount: number;
+  canApply: boolean;
+}
+
+export interface WorkflowPackageImportApplyResult {
+  entryPoint: WorkflowPackageReference;
+  items: WorkflowPackageImportItem[];
+  warnings: string[];
+  createCount: number;
+  reuseCount: number;
+  conflictCount: number;
+  warningCount: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class WorkflowsApi {
   private readonly http = inject(HttpClient);
@@ -47,6 +90,21 @@ export class WorkflowsApi {
 
   listVersions(key: string): Observable<WorkflowDetail[]> {
     return this.http.get<WorkflowDetail[]>(`/api/workflows/${encodeURIComponent(key)}/versions`);
+  }
+
+  downloadPackage(key: string, version: number): Observable<HttpResponse<Blob>> {
+    return this.http.get(`/api/workflows/${encodeURIComponent(key)}/${version}/package`, {
+      observe: 'response',
+      responseType: 'blob'
+    });
+  }
+
+  previewPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportPreview> {
+    return this.http.post<WorkflowPackageImportPreview>('/api/workflows/package/preview', workflowPackage);
+  }
+
+  applyPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportApplyResult> {
+    return this.http.post<WorkflowPackageImportApplyResult>('/api/workflows/package/apply', workflowPackage);
   }
 
   create(payload: WorkflowPayload): Observable<{ key: string; version: number }> {

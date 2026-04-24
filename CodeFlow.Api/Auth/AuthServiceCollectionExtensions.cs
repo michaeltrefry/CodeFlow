@@ -155,7 +155,13 @@ public static class AuthServiceCollectionExtensions
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.GitHostRead)))
             .AddPolicy(CodeFlowApiDefaults.Policies.GitHostWrite, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.GitHostWrite)));
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.GitHostWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.LlmProvidersRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.LlmProvidersRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.LlmProvidersWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.LlmProvidersWrite)));
 
         return services;
     }

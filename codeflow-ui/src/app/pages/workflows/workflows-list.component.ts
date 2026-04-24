@@ -2,7 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
-import { WorkflowsApi } from '../../core/workflows.api';
+import { WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowsApi } from '../../core/workflows.api';
 import { WORKFLOW_CATEGORIES, WorkflowCategory, WorkflowSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
@@ -43,10 +43,92 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
       <cf-page-header
         title="Workflows"
         subtitle="Versioned graphs of agents, logic, and human checkpoints.">
+        <input
+          #packageInput
+          class="file-input"
+          type="file"
+          accept="application/json,.json"
+          (change)="previewPackageImport($event)" />
+        <button type="button" cf-button [disabled]="importLoading()" (click)="packageInput.click()">Import JSON</button>
         <a routerLink="/workflows/new">
           <button type="button" cf-button variant="primary" icon="plus">New workflow</button>
         </a>
       </cf-page-header>
+
+      @if (importError()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ importError() }}</cf-chip></div></div>
+      }
+
+      @if (importPreview(); as preview) {
+        <div class="card import-preview">
+          <div class="card-body">
+            <div class="import-preview-head">
+              <div>
+                <h2>Import preview</h2>
+                <div class="muted small">
+                  {{ preview.entryPoint.key }} v{{ preview.entryPoint.version }}
+                </div>
+              </div>
+              <div class="preview-actions">
+                <div class="preview-counts">
+                  <cf-chip variant="ok">{{ preview.createCount }} create</cf-chip>
+                  <cf-chip>{{ preview.reuseCount }} reuse</cf-chip>
+                  <cf-chip [variant]="preview.conflictCount > 0 ? 'err' : 'default'">{{ preview.conflictCount }} conflict</cf-chip>
+                  @if (preview.warningCount > 0) {
+                    <cf-chip variant="warn">{{ preview.warningCount }} warning</cf-chip>
+                  }
+                </div>
+                <button
+                  type="button"
+                  cf-button
+                  variant="primary"
+                  size="sm"
+                  [disabled]="!preview.canApply || importApplyLoading()"
+                  (click)="applyPackageImport()">
+                  Apply import
+                </button>
+              </div>
+            </div>
+
+            @if (importSuccess()) {
+              <div class="success-message">
+                {{ importSuccess() }}
+              </div>
+            }
+
+            @if (!preview.canApply) {
+              <div class="warning-list">
+                Resolve conflicts before applying this import.
+              </div>
+            }
+
+            @if (preview.warnings.length > 0) {
+              <div class="warning-list">
+                @for (warning of preview.warnings; track warning) {
+                  <div>{{ warning }}</div>
+                }
+              </div>
+            }
+
+            <table class="table import-table">
+              <thead>
+                <tr><th>Action</th><th>Kind</th><th>Key</th><th>Version</th><th>Message</th></tr>
+              </thead>
+              <tbody>
+                @for (item of preview.items; track item.kind + ':' + item.key + ':' + (item.version ?? '')) {
+                  <tr>
+                    <td><cf-chip [variant]="importActionVariant(item.action)">{{ item.action }}</cf-chip></td>
+                    <td>{{ item.kind }}</td>
+                    <td class="mono">{{ item.key }}</td>
+                    <td class="mono muted">{{ item.version ?? '—' }}</td>
+                    <td class="small muted">{{ item.message }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
 
       @if (loading()) {
         <div class="card"><div class="card-body muted">Loading workflows…</div></div>
@@ -55,6 +137,10 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
       } @else if (workflows().length === 0) {
         <div class="card"><div class="card-body muted">No workflows yet. Create one to get started.</div></div>
       } @else {
+        @if (exportError()) {
+          <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ exportError() }}</cf-chip></div></div>
+        }
+
         <div class="filters-bar">
           <label class="filter">
             <span>Category</span>
@@ -137,6 +223,14 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
                     <td class="mono muted">{{ wf.inputCount }}</td>
                     <td class="muted small">{{ wf.createdAtUtc | date:'medium' }}</td>
                     <td class="actions">
+                      <button
+                        type="button"
+                        cf-button
+                        size="sm"
+                        variant="ghost"
+                        (click)="downloadPackage($event, wf)">
+                        Export
+                      </button>
                       <a [routerLink]="['/workflows', wf.key, 'edit']" (click)="$event.stopPropagation()">
                         <button type="button" cf-button size="sm">Edit</button>
                       </a>
@@ -177,6 +271,51 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
       min-width: 180px;
     }
     .filter-count { align-self: center; }
+    .file-input { display: none; }
+    .import-preview { margin-bottom: 1rem; }
+    .import-preview-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+    }
+    .import-preview h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+    .preview-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .preview-counts {
+      display: flex;
+      gap: 0.375rem;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .success-message {
+      border: 1px solid color-mix(in oklab, var(--sem-green) 35%, var(--border));
+      background: color-mix(in oklab, var(--sem-green) 10%, transparent);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+    }
+    .warning-list {
+      border: 1px solid color-mix(in oklab, var(--sem-amber) 40%, var(--border));
+      background: var(--warn-bg);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+    }
+    .import-table { margin-top: 0.25rem; }
     th.sortable { cursor: pointer; user-select: none; }
     th.sortable:hover { color: var(--accent); }
     .tag-chip-row { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -203,6 +342,13 @@ export class WorkflowsListComponent {
   readonly workflows = signal<WorkflowSummary[]>([]);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
+  readonly exportError = signal<string | null>(null);
+  readonly importError = signal<string | null>(null);
+  readonly importLoading = signal(false);
+  readonly importApplyLoading = signal(false);
+  readonly importSuccess = signal<string | null>(null);
+  readonly importPreview = signal<WorkflowPackageImportPreview | null>(null);
+  private pendingImportPackage: unknown = null;
 
   readonly categoryOptions = WORKFLOW_CATEGORIES;
   readonly categoryFilter = signal<CategoryFilter>('All');
@@ -260,6 +406,136 @@ export class WorkflowsListComponent {
 
   open(key: string): void {
     this.router.navigate(['/workflows', key]);
+  }
+
+  downloadPackage(event: Event, workflow: WorkflowSummary): void {
+    event.stopPropagation();
+    this.exportError.set(null);
+
+    this.api.downloadPackage(workflow.key, workflow.latestVersion).subscribe({
+      next: response => this.saveBlob(
+        response.body,
+        this.fileNameFromResponse(response.headers.get('content-disposition'))
+          ?? `${workflow.key}-v${workflow.latestVersion}-package.json`),
+      error: err => this.exportError.set(err?.message ?? 'Failed to export workflow package.')
+    });
+  }
+
+  previewPackageImport(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    this.importError.set(null);
+    this.importSuccess.set(null);
+    this.importPreview.set(null);
+    this.pendingImportPackage = null;
+    this.importLoading.set(true);
+
+    file.text()
+      .then(text => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          this.importError.set('Selected file is not valid JSON.');
+          this.importLoading.set(false);
+          return;
+        }
+
+        this.api.previewPackageImport(parsed).subscribe({
+          next: preview => {
+            this.importPreview.set(preview);
+            this.pendingImportPackage = parsed;
+            this.importLoading.set(false);
+          },
+          error: err => {
+            this.importError.set(this.errorMessage(err, 'Failed to preview workflow package.'));
+            this.importLoading.set(false);
+          }
+        });
+      })
+      .catch(() => {
+        this.importError.set('Failed to read selected file.');
+        this.importLoading.set(false);
+      });
+  }
+
+  applyPackageImport(): void {
+    if (!this.pendingImportPackage || !this.importPreview()?.canApply) {
+      return;
+    }
+
+    if (!window.confirm('Apply this workflow package import?')) {
+      return;
+    }
+
+    this.importError.set(null);
+    this.importSuccess.set(null);
+    this.importApplyLoading.set(true);
+
+    this.api.applyPackageImport(this.pendingImportPackage).subscribe({
+      next: result => {
+        this.importSuccess.set(
+          `Import applied: ${result.createCount} created, ${result.reuseCount} reused.`
+        );
+        this.importApplyLoading.set(false);
+        this.api.list().subscribe({
+          next: workflows => this.workflows.set(workflows)
+        });
+      },
+      error: err => {
+        this.importError.set(this.errorMessage(err, 'Failed to apply workflow package.'));
+        this.importApplyLoading.set(false);
+      }
+    });
+  }
+
+  importActionVariant(action: WorkflowPackageImportAction): ChipVariant {
+    switch (action) {
+      case 'Create': return 'ok';
+      case 'Reuse': return 'default';
+      case 'Conflict': return 'err';
+    }
+  }
+
+  private saveBlob(blob: Blob | null, fileName: string): void {
+    if (!blob) {
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private fileNameFromResponse(disposition: string | null): string | null {
+    if (!disposition) {
+      return null;
+    }
+
+    const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  private errorMessage(err: unknown, fallback: string): string {
+    const error = err as { error?: unknown; message?: string };
+    if (error?.error && typeof error.error === 'object' && 'errors' in error.error) {
+      const validation = error.error as { errors?: Record<string, string[]> };
+      const first = Object.values(validation.errors ?? {}).flat()[0];
+      if (first) {
+        return first;
+      }
+    }
+
+    return error?.message ?? fallback;
   }
 
   clearFilters(): void {

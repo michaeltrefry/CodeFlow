@@ -83,9 +83,15 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
             })
             .Build();
 
+        var endpointsReady = new EndpointReadinessTracker(
+            expectedEndpoints: ["agent-invocations", "workflow-saga"]);
+
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Configuration.AddConfiguration(configuration);
-        builder.Services.AddCodeFlowHost(builder.Configuration);
+        builder.Services.AddCodeFlowHost(
+            builder.Configuration,
+            bus => bus.AddConfigureEndpointsCallback((_, _, cfg) =>
+                cfg.ConnectReceiveEndpointObserver(endpointsReady)));
         builder.Services.AddSingleton<IAgentInvoker>(scriptedInvoker);
 
         using var host = builder.Build();
@@ -93,6 +99,7 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
         await SeedAgentsAsync(host.Services);
         var workflowKey = await SeedWorkflowAsync(host.Services);
         await host.StartAsync();
+        await endpointsReady.WaitAsync(TimeSpan.FromSeconds(30));
 
         try
         {
@@ -113,16 +120,10 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 InputRef: inputRef,
                 ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>());
 
-            // MassTransit's generic-host wiring returns from StartAsync when the bus has
-            // connected to RabbitMQ but before every receive endpoint has finished binding
-            // its queue to the fanout exchange. A Publish that slips through that window
-            // lands on an exchange with zero bound queues and is silently dropped. Republish
-            // until the saga endpoint actually creates the saga instance — the MessageId is
-            // sticky so inbox dedup swallows the duplicates.
-            var saga = await PublishAndWaitForTerminalStateAsync(
-                bus,
+            await bus.Publish(request);
+
+            var saga = await WaitForTerminalStateAsync(
                 host.Services,
-                request,
                 traceId,
                 timeout: TimeSpan.FromSeconds(120));
 
@@ -284,20 +285,13 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 FileName: "input.txt"));
     }
 
-    private static async Task<WorkflowSagaStateEntity> PublishAndWaitForTerminalStateAsync(
-        IBus bus,
+    private static async Task<WorkflowSagaStateEntity> WaitForTerminalStateAsync(
         IServiceProvider services,
-        AgentInvokeRequested request,
         Guid traceId,
         TimeSpan timeout)
     {
-        var messageId = Guid.NewGuid();
         var deadline = DateTime.UtcNow + timeout;
-        var nextPublishAt = DateTime.UtcNow;
         WorkflowSagaStateEntity? saga = null;
-
-        await bus.Publish(request, ctx => ctx.MessageId = messageId);
-        nextPublishAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
 
         while (DateTime.UtcNow < deadline)
         {
@@ -316,17 +310,80 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 return saga;
             }
 
-            if (saga is null && DateTime.UtcNow >= nextPublishAt)
-            {
-                await bus.Publish(request, ctx => ctx.MessageId = messageId);
-                nextPublishAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-            }
-
             await Task.Delay(250);
         }
 
         throw new TimeoutException(
             $"Saga for trace {traceId} did not reach a terminal state within {timeout}. Last state: {saga?.CurrentState ?? "<missing>"}");
+    }
+
+    // Tracks `Ready` events from the receive endpoints so the test can wait for every expected
+    // queue to finish binding its exchange subscriptions before publishing. Without this,
+    // `host.StartAsync()` returns as soon as the RabbitMQ connection is up — queue/exchange
+    // declaration continues in the background, and any publish that slips into that window
+    // lands on an exchange with no bound queues and is silently dropped by RabbitMQ (producing
+    // a saga-never-initializes / saga-stuck-in-Running timeout).
+    private sealed class EndpointReadinessTracker : IReceiveEndpointObserver
+    {
+        private readonly HashSet<string> expected;
+        private readonly HashSet<string> ready = [];
+        private readonly TaskCompletionSource allReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly object gate = new();
+
+        public EndpointReadinessTracker(IEnumerable<string> expectedEndpoints)
+        {
+            expected = new HashSet<string>(expectedEndpoints, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public async Task WaitAsync(TimeSpan timeout)
+        {
+            var completed = await Task.WhenAny(allReady.Task, Task.Delay(timeout));
+            if (completed != allReady.Task)
+            {
+                string missing;
+                lock (gate)
+                {
+                    missing = string.Join(", ", expected.Except(ready, StringComparer.OrdinalIgnoreCase));
+                }
+                throw new TimeoutException(
+                    $"Timed out waiting for receive endpoints to become ready. Missing: {missing}");
+            }
+        }
+
+        public Task Ready(ReceiveEndpointReady ready)
+        {
+            ArgumentNullException.ThrowIfNull(ready);
+
+            var name = ExtractQueueName(ready.InputAddress);
+            lock (gate)
+            {
+                if (expected.Contains(name))
+                {
+                    this.ready.Add(name);
+                    if (expected.IsSubsetOf(this.ready))
+                    {
+                        allReady.TrySetResult();
+                    }
+                }
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task Stopping(ReceiveEndpointStopping stopping) => Task.CompletedTask;
+        public Task Completed(ReceiveEndpointCompleted completed) => Task.CompletedTask;
+        public Task Faulted(ReceiveEndpointFaulted faulted) => Task.CompletedTask;
+
+        private static string ExtractQueueName(Uri? inputAddress)
+        {
+            if (inputAddress is null)
+            {
+                return string.Empty;
+            }
+
+            var path = inputAddress.AbsolutePath.TrimStart('/');
+            var slash = path.IndexOf('/');
+            return slash < 0 ? path : path[(slash + 1)..];
+        }
     }
 
     private sealed class ScriptedAgentInvoker : IAgentInvoker

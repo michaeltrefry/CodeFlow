@@ -8,6 +8,7 @@ using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Mcp;
 using CodeFlow.Runtime.OpenAI;
 using CodeFlow.Runtime.Workspace;
+using LlmProviderKeys = CodeFlow.Persistence.LlmProviderKeys;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -100,18 +101,29 @@ public static class HostExtensions
         services.AddScoped<ISkillRepository, SkillRepository>();
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
         services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
+        services.AddScoped<ILlmProviderSettingsRepository, LlmProviderSettingsRepository>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
         });
 
+        services.AddSingleton<DbBackedLlmProviderConfigResolver>();
+        services.AddSingleton<ILlmProviderConfigResolver>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());
+        services.AddSingleton<ILlmProviderConfigInvalidator>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());
+
         // Route model clients through IHttpClientFactory so DNS rotation and handler-lifetime
         // rotation actually happens. Typed clients are transient; ModelClientRegistry's Resolve
         // factories invoke GetRequiredService on every agent invocation so each call sees a
         // fresh HttpClient (sharing a pooled-and-rotated HttpMessageHandler).
-        services.AddHttpClient<OpenAIModelClient>();
-        services.AddHttpClient<AnthropicModelClient>();
-        services.AddHttpClient<LMStudioModelClient>();
+        services.AddHttpClient<OpenAIModelClient>()
+            .AddTypedClient<OpenAIModelClient>((http, sp) =>
+                new OpenAIModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveOpenAI()));
+        services.AddHttpClient<AnthropicModelClient>()
+            .AddTypedClient<AnthropicModelClient>((http, sp) =>
+                new AnthropicModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveAnthropic()));
+        services.AddHttpClient<LMStudioModelClient>()
+            .AddTypedClient<LMStudioModelClient>((http, sp) =>
+                new LMStudioModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveLMStudio()));
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<IScribanTemplateRenderer, ScribanTemplateRenderer>();
@@ -234,28 +246,20 @@ public static class HostExtensions
 
     private static ModelClientRegistry BuildModelClientRegistry(IServiceProvider rootProvider)
     {
-        var factories = new List<KeyValuePair<string, Func<IModelClient>>>();
-        var openAiOptions = rootProvider.GetRequiredService<OpenAIModelClientOptions>();
-        var anthropicOptions = rootProvider.GetRequiredService<AnthropicModelClientOptions>();
-        _ = rootProvider.GetRequiredService<LMStudioModelClientOptions>();
-
-        if (!string.IsNullOrWhiteSpace(openAiOptions.ApiKey))
+        // Always register all three providers; missing credentials surface as an actionable
+        // InvalidOperationException at invocation time rather than silently hiding the provider.
+        var factories = new[]
         {
-            factories.Add(new KeyValuePair<string, Func<IModelClient>>(
-                "openai",
-                () => rootProvider.GetRequiredService<OpenAIModelClient>()));
-        }
-
-        if (!string.IsNullOrWhiteSpace(anthropicOptions.ApiKey))
-        {
-            factories.Add(new KeyValuePair<string, Func<IModelClient>>(
-                "anthropic",
-                () => rootProvider.GetRequiredService<AnthropicModelClient>()));
-        }
-
-        factories.Add(new KeyValuePair<string, Func<IModelClient>>(
-            "lmstudio",
-            () => rootProvider.GetRequiredService<LMStudioModelClient>()));
+            new KeyValuePair<string, Func<IModelClient>>(
+                LlmProviderKeys.OpenAi,
+                () => rootProvider.GetRequiredService<OpenAIModelClient>()),
+            new KeyValuePair<string, Func<IModelClient>>(
+                LlmProviderKeys.Anthropic,
+                () => rootProvider.GetRequiredService<AnthropicModelClient>()),
+            new KeyValuePair<string, Func<IModelClient>>(
+                LlmProviderKeys.LmStudio,
+                () => rootProvider.GetRequiredService<LMStudioModelClient>()),
+        };
 
         return new ModelClientRegistry(factories);
     }
