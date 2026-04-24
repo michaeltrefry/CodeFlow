@@ -109,8 +109,10 @@ export class WorkflowNodeComponent implements OnChanges {
   }
 
   get hasScript(): boolean {
-    const script = this.data.script;
-    return typeof script === 'string' && script.trim().length > 0;
+    const out = this.data.outputScript;
+    const inp = this.data.inputScript;
+    return (typeof out === 'string' && out.trim().length > 0)
+      || (typeof inp === 'string' && inp.trim().length > 0);
   }
 
   get isFork(): boolean {

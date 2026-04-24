@@ -34,6 +34,7 @@ public sealed class LogicNodeScriptHost
     private const int MaxTotalLogChars = 256 * 1024; // 256 KB of UTF-16 (host-side, outside Jint accounting)
     private const int MaxContextUpdatesChars = 256 * 1024; // 256 KB of serialized JSON per evaluation
     private const int MaxOutputOverrideChars = 1 * 1024 * 1024; // 1 MiB of UTF-16 chars
+    private const int MaxInputOverrideChars = 1 * 1024 * 1024; // 1 MiB of UTF-16 chars
     private const string LogBudgetExceededMessage =
         "log() output exceeded the host budget and evaluation was aborted.";
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(250);
@@ -52,6 +53,7 @@ public sealed class LogicNodeScriptHost
         var __contextUpdates = Object.create(null);
         var __globalUpdates = Object.create(null);
         var __outputOverride = null;
+        var __inputOverride = null;
         function setContext(key, value) {
             if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
                 throw new TypeError('setContext(key, value) requires a non-empty string key.');
@@ -79,6 +81,9 @@ public sealed class LogicNodeScriptHost
         function __readOutputOverride() {
             return __outputOverride;
         }
+        function __readInputOverride() {
+            return __inputOverride;
+        }
         """;
 
     private const string BootstrapScriptSetOutputEnabled = """
@@ -96,6 +101,24 @@ public sealed class LogicNodeScriptHost
     private const string BootstrapScriptSetOutputDisabled = """
         function setOutput(text) {
             throw new TypeError('setOutput(text) is only available on agent-attached routing scripts, not on Logic nodes.');
+        }
+        """;
+
+    private const string BootstrapScriptSetInputEnabled = """
+        function setInput(text) {
+            if (typeof text !== 'string') {
+                throw new TypeError('setInput(text) requires a string argument.');
+            }
+            if (text.length === 0) {
+                throw new TypeError('setInput(text) requires a non-empty string.');
+            }
+            __inputOverride = text;
+        }
+        """;
+
+    private const string BootstrapScriptSetInputDisabled = """
+        function setInput(text) {
+            throw new TypeError('setInput(text) is only available on agent-attached input scripts, not on Logic nodes.');
         }
         """;
 
@@ -118,10 +141,14 @@ public sealed class LogicNodeScriptHost
         IReadOnlyDictionary<string, JsonElement>? global = null,
         int? reviewRound = null,
         int? reviewMaxRounds = null,
-        bool allowOutputOverride = false)
+        bool allowOutputOverride = false,
+        bool allowInputOverride = false,
+        string inputVariableName = "input",
+        bool requireSetNodePath = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(script);
+        ArgumentException.ThrowIfNullOrWhiteSpace(inputVariableName);
         ArgumentNullException.ThrowIfNull(declaredPorts);
         ArgumentNullException.ThrowIfNull(context);
         var globalSnapshot = global ?? LogicNodeEvaluationResult.EmptyContextUpdates;
@@ -200,7 +227,10 @@ public sealed class LogicNodeScriptHost
             engine.Execute(allowOutputOverride
                 ? BootstrapScriptSetOutputEnabled
                 : BootstrapScriptSetOutputDisabled);
-            engine.Execute($"var input = {input.GetRawText()};");
+            engine.Execute(allowInputOverride
+                ? BootstrapScriptSetInputEnabled
+                : BootstrapScriptSetInputDisabled);
+            engine.Execute($"var {inputVariableName} = {input.GetRawText()};");
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
             engine.Execute($"var global = __deepFreeze({SerializeContext(globalSnapshot)});");
             engine.Execute($"var round = {scriptRound};");
@@ -214,6 +244,10 @@ public sealed class LogicNodeScriptHost
             string? outputOverride = outputOverrideValue.IsNull() || outputOverrideValue.IsUndefined()
                 ? null
                 : outputOverrideValue.AsString();
+            var inputOverrideValue = engine.Evaluate("__readInputOverride()");
+            string? inputOverride = inputOverrideValue.IsNull() || inputOverrideValue.IsUndefined()
+                ? null
+                : inputOverrideValue.AsString();
 
             stopwatch.Stop();
 
@@ -244,16 +278,39 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
+            if (inputOverride is not null && inputOverride.Length > MaxInputOverrideChars)
+            {
+                return LogicNodeEvaluationResult.Fail(
+                    LogicNodeFailureKind.InputOverrideBudgetExceeded,
+                    $"setInput payload exceeded {MaxInputOverrideChars} characters.",
+                    logs,
+                    stopwatch.Elapsed);
+            }
+
             var contextUpdates = ParseContextUpdates(updatesJson);
             var globalUpdates = ParseContextUpdates(globalUpdatesJson);
 
             if (chosenPort is null)
             {
-                return LogicNodeEvaluationResult.Fail(
-                    LogicNodeFailureKind.MissingSetNodePath,
-                    "Script did not call setNodePath(portName).",
-                    logs,
-                    stopwatch.Elapsed);
+                if (requireSetNodePath)
+                {
+                    return LogicNodeEvaluationResult.Fail(
+                        LogicNodeFailureKind.MissingSetNodePath,
+                        "Script did not call setNodePath(portName).",
+                        logs,
+                        stopwatch.Elapsed);
+                }
+
+                return new LogicNodeEvaluationResult(
+                    OutputPortName: null,
+                    LogEntries: logs,
+                    Duration: stopwatch.Elapsed,
+                    Failure: null,
+                    FailureMessage: null,
+                    ContextUpdates: contextUpdates,
+                    GlobalUpdates: globalUpdates,
+                    OutputOverride: outputOverride,
+                    InputOverride: inputOverride);
             }
 
             if (!declaredPorts.Contains(chosenPort, StringComparer.Ordinal))
@@ -271,7 +328,8 @@ public sealed class LogicNodeScriptHost
                 stopwatch.Elapsed,
                 contextUpdates,
                 globalUpdates,
-                outputOverride);
+                outputOverride,
+                inputOverride);
         }
         catch (TimeoutException)
         {

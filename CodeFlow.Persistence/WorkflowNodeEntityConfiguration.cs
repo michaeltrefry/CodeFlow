@@ -36,8 +36,12 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
         builder.Property(node => node.AgentVersion)
             .HasColumnName("agent_version");
 
-        builder.Property(node => node.Script)
-            .HasColumnName("script")
+        builder.Property(node => node.OutputScript)
+            .HasColumnName("output_script")
+            .HasColumnType("longtext");
+
+        builder.Property(node => node.InputScript)
+            .HasColumnName("input_script")
             .HasColumnType("longtext");
 
         builder.Property(node => node.OutputPortsJson)

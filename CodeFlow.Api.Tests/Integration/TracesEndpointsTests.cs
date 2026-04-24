@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
+using System.Text.Json;
 
 namespace CodeFlow.Api.Tests.Integration;
 
@@ -696,6 +698,111 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
             CreatedAtUtc = DateTime.UtcNow,
         };
     }
+
+    [Fact]
+    public async Task CreateTrace_ShouldRunStartNodeInputScript_AndSubstituteInputArtifact()
+    {
+        // The Input/Output routing scripts epic intentionally left a gap on top-level Start nodes —
+        // mid-workflow dispatches run InputScript via the saga's TryEvaluateInputScriptAsync helper,
+        // but CreateTraceAsync had no saga yet at publish time. This regression test exercises the
+        // endpoint-side evaluation: a Start node's InputScript that calls setInput('normalized')
+        // must produce a second artifact whose content is the override, and that artifact (not the
+        // raw user input) becomes the dispatched InputRef.
+        var agentKey = $"input-script-writer-{Guid.NewGuid():N}";
+        var workflowKey = $"input-script-flow-{Guid.NewGuid():N}";
+
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, agentKey);
+
+        var startId = Guid.NewGuid();
+        var createWorkflow = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = workflowKey,
+            name = "Input script flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    inputScript = "setInput('normalized');",
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        createWorkflow.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var createTrace = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey,
+            input = "raw user input"
+        });
+        createTrace.StatusCode.Should().Be(HttpStatusCode.Created);
+        var tracePayload = await createTrace.Content.ReadFromJsonAsync<CreateTracePayload>();
+        tracePayload.Should().NotBeNull();
+
+        var artifacts = await ReadTraceArtifactsAsync(tracePayload!.TraceId);
+        artifacts.Should().HaveCount(2,
+            "the endpoint must persist both the raw user input and the script-overridden input");
+        artifacts.Should().Contain(a => a.FileName.EndsWith("scripted-input.txt", StringComparison.Ordinal)
+            && a.Content == "normalized",
+            "setInput('normalized') must be persisted as a *-scripted-input.txt artifact");
+        artifacts.Should().Contain(a => a.FileName == "input.txt" && a.Content == "raw user input",
+            "the original request body must still be persisted alongside the override");
+    }
+
+    private async Task<IReadOnlyList<(string FileName, string Content)>> ReadTraceArtifactsAsync(Guid traceId)
+    {
+        // The running host canonicalizes the artifact root via Path.GetFullPath, which on macOS
+        // resolves /tmp through /private/tmp — diverging from factory.ArtifactRoot. Reach into the
+        // live IArtifactStore to get the effective root (mirrors ReadSoleArtifactAsync above).
+        using var scope = factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IArtifactStore>();
+        var rootField = store.GetType().GetField(
+            "rootDirectory",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        var root = rootField?.GetValue(store) as string
+            ?? throw new InvalidOperationException("Unable to resolve artifact store root directory.");
+
+        var traceRoot = Path.Combine(root, traceId.ToString("N"));
+        Directory.Exists(traceRoot).Should().BeTrue(
+            $"create trace should have written at least one artifact under '{traceRoot}'");
+
+        var sidecarPaths = Directory.GetFiles(traceRoot, "*.bin.json", SearchOption.AllDirectories);
+        var artifacts = new List<(string FileName, string Content)>();
+        foreach (var sidecarPath in sidecarPaths)
+        {
+            var sidecarJson = await File.ReadAllTextAsync(sidecarPath);
+            using var document = JsonDocument.Parse(sidecarJson);
+            var fileName = document.RootElement.GetProperty("fileName").GetString()
+                ?? throw new InvalidOperationException($"Sidecar '{sidecarPath}' is missing fileName.");
+            var blobRelative = document.RootElement.GetProperty("blobRelativePath").GetString()
+                ?? throw new InvalidOperationException($"Sidecar '{sidecarPath}' is missing blobRelativePath.");
+            var blobPath = Path.GetFullPath(blobRelative, Path.GetDirectoryName(sidecarPath)!);
+            var content = await File.ReadAllTextAsync(blobPath);
+            artifacts.Add((fileName, content));
+        }
+        return artifacts;
+    }
+
+    private static async Task SeedAgentAsync(HttpClient client, string key)
+    {
+        var response = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Do work." }
+        });
+        response.EnsureSuccessStatusCode();
+    }
+
+    private sealed record CreateTracePayload(Guid TraceId);
 
     private sealed record TraceDetailPayload(
         Guid TraceId,

@@ -45,14 +45,15 @@ public sealed record WorkflowPackageWorkflowNode(
     WorkflowNodeKind Kind,
     string? AgentKey,
     int? AgentVersion,
-    string? Script,
+    string? OutputScript,
     IReadOnlyList<string> OutputPorts,
     double LayoutX,
     double LayoutY,
     string? SubflowKey = null,
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
-    string? LoopDecision = null);
+    string? LoopDecision = null,
+    string? InputScript = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

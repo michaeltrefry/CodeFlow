@@ -9,7 +9,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly kind: WorkflowNodeKind;
   agentKey: string | null;
   agentVersion: number | null;
-  script: string | null;
+  outputScript: string | null;
+  inputScript: string | null;
   subflowKey: string | null;
   subflowVersion: number | null;
   reviewMaxRounds: number | null;
@@ -22,7 +23,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     label: string;
     agentKey?: string | null;
     agentVersion?: number | null;
-    script?: string | null;
+    outputScript?: string | null;
+    inputScript?: string | null;
     outputPorts: string[];
     subflowKey?: string | null;
     subflowVersion?: number | null;
@@ -34,7 +36,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.kind = params.kind;
     this.agentKey = params.agentKey ?? null;
     this.agentVersion = params.agentVersion ?? null;
-    this.script = params.script ?? null;
+    this.outputScript = params.outputScript ?? null;
+    this.inputScript = params.inputScript ?? null;
     this.subflowKey = params.subflowKey ?? null;
     this.subflowVersion = params.subflowVersion ?? null;
     this.reviewMaxRounds = params.reviewMaxRounds ?? null;

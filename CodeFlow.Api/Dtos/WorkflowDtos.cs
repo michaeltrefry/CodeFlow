@@ -18,14 +18,15 @@ public sealed record WorkflowNodeDto(
     WorkflowNodeKind Kind,
     string? AgentKey,
     int? AgentVersion,
-    string? Script,
+    string? OutputScript,
     IReadOnlyList<string> OutputPorts,
     double LayoutX,
     double LayoutY,
     string? SubflowKey = null,
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
-    string? LoopDecision = null);
+    string? LoopDecision = null,
+    string? InputScript = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,
@@ -75,7 +76,15 @@ public sealed record UpdateWorkflowRequest(
     IReadOnlyList<WorkflowEdgeDto>? Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs);
 
-public sealed record ValidateScriptRequest(string? Script);
+public sealed record ValidateScriptRequest(
+    string? Script,
+    ValidateScriptDirection? Direction = null);
+
+public enum ValidateScriptDirection
+{
+    Input,
+    Output
+}
 
 public sealed record ValidateScriptResponse(bool Ok, IReadOnlyList<ValidateScriptError> Errors);
 

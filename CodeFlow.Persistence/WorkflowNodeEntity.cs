@@ -16,7 +16,9 @@ public sealed class WorkflowNodeEntity
 
     public int? AgentVersion { get; set; }
 
-    public string? Script { get; set; }
+    public string? OutputScript { get; set; }
+
+    public string? InputScript { get; set; }
 
     public string OutputPortsJson { get; set; } = "[]";
 

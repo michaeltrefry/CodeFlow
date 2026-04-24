@@ -42,9 +42,9 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Nodes: new[]
             {
                 new WorkflowNode(parentStartNodeId, WorkflowNodeKind.Start, "kickoff",
-                    AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
                 new WorkflowNode(parentSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
-                    AgentVersion: null, Script: null,
+                    AgentVersion: null, OutputScript: null,
                     OutputPorts: new[] { "Completed", "Failed", "Escalated" },
                     LayoutX: 250, LayoutY: 0,
                     SubflowKey: "child-e2e", SubflowVersion: 1),
@@ -66,7 +66,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Nodes: new[]
             {
                 new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "child-agent",
-                    AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
             },
             Edges: Array.Empty<WorkflowEdge>(),
             Inputs: Array.Empty<WorkflowInput>());
@@ -181,9 +181,9 @@ public sealed class WorkflowSagaSubflowEndToEndTests
                 Nodes: new[]
                 {
                     new WorkflowNode(startId, WorkflowNodeKind.Start, $"start-{key}",
-                        AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, 0, 0),
+                        AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, 0, 0),
                     new WorkflowNode(subflowId, WorkflowNodeKind.Subflow, AgentKey: null,
-                        AgentVersion: null, Script: null,
+                        AgentVersion: null, OutputScript: null,
                         OutputPorts: new[] { "Completed", "Failed", "Escalated" },
                         250, 0,
                         SubflowKey: next, SubflowVersion: 1),
@@ -209,7 +209,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Nodes: new[]
             {
                 new WorkflowNode(leafStartId, WorkflowNodeKind.Start, "start-leaf",
-                    AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, 0, 0),
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, 0, 0),
             },
             Edges: Array.Empty<WorkflowEdge>(),
             Inputs: Array.Empty<WorkflowInput>()));

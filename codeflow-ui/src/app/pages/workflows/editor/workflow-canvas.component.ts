@@ -20,6 +20,7 @@ import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-
 import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20';
 import { AgentsApi } from '../../../core/agents.api';
 import {
+  AgentConfig,
   AgentSummary,
   MAX_WORKFLOW_TAGS,
   WORKFLOW_CATEGORIES,
@@ -82,6 +83,19 @@ interface SelectedNode {
 
 interface SelectedConnection {
   editor: WorkflowEditorConnection;
+}
+
+interface SelectedAgentDocs {
+  nodeEditorId: string;
+  agentKey: string;
+  agentVersion: number;
+  config: AgentConfig;
+}
+
+interface PortReferenceRow {
+  port: string;
+  source: 'payload' | 'template' | 'blank';
+  content: string;
 }
 
 const DEFAULT_INPUT_KEY = 'input';
@@ -154,6 +168,44 @@ function defaultStartInput(): WorkflowInput {
           <div class="banner success">{{ statusMessage() }}</div>
         }
         <div #canvasHost class="canvas" (contextmenu)="onCanvasContextMenu($event)"></div>
+        <section class="port-reference-drawer" [class.open]="selectedNode()">
+          @if (selectedNode(); as sel) {
+            <div class="port-reference-head">
+              <div>
+                <div class="panel-title-inline">Port payload reference</div>
+                <div class="muted xsmall">
+                  <span class="mono">{{ sel.editor.label }}</span>
+                  @if (selectedAgentDocs(); as docs) {
+                    <span> · {{ docs.agentKey }} v{{ docs.agentVersion }}</span>
+                  }
+                </div>
+              </div>
+            </div>
+            <div class="port-reference-body">
+              @if (selectedAgentDocsLoading()) {
+                <div class="muted xsmall">Loading agent port examples…</div>
+              } @else if (selectedAgentDocsError()) {
+                <div class="tag error">{{ selectedAgentDocsError() }}</div>
+              } @else {
+                @for (row of selectedPortReferences(); track row.port) {
+                  <article class="port-reference-row" [class.blank]="row.source === 'blank'">
+                    <div class="port-reference-meta">
+                      <span class="mono port-name">{{ row.port }}</span>
+                      @if (row.source === 'payload') {
+                        <span class="tag small success">payload example</span>
+                      } @else if (row.source === 'template') {
+                        <span class="tag small">decision template</span>
+                      }
+                    </div>
+                    @if (row.content) {
+                      <pre>{{ row.content }}</pre>
+                    }
+                  </article>
+                }
+              }
+            </div>
+          }
+        </section>
       </main>
 
       <aside class="sidebar">
@@ -195,7 +247,7 @@ function defaultStartInput(): WorkflowInput {
                 <label class="field">
                   <span>Pin version <span class="muted xsmall">(blank = latest)</span></span>
                   <input type="number" [ngModel]="sel.editor.agentVersion ?? null"
-                         (ngModelChange)="sel.editor.agentVersion = $event" min="1" />
+                         (ngModelChange)="onAgentVersionChanged(sel.editor, $event)" min="1" />
                 </label>
                 <label class="field">
                   <span>Output ports <span class="muted xsmall">(one per line)</span></span>
@@ -210,18 +262,40 @@ function defaultStartInput(): WorkflowInput {
 
               <div class="inspector-section">
                 <div class="field">
-                  <span class="field-label">Routing script <span class="muted xsmall">(optional)</span></span>
+                  <span class="field-label">Input script <span class="muted xsmall">(optional)</span></span>
                   <p class="muted xsmall">
-                    If set, this script runs after the agent completes. It sees <code>input</code> (the agent's output with <code>input.decision</code> and <code>input.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
+                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>global</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
                   </p>
                   <cf-monaco-script-editor
                     class="script-editor"
-                    [value]="sel.editor.script ?? ''"
-                    [markers]="scriptMarkers()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor)">Validate</button>
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <span class="tag error">{{ inputScriptValidationError() }}</span>
+                  } @else if (inputScriptValidationOk()) {
+                    <span class="tag success">Script parses OK</span>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Output script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>after</em> the agent completes. Sees <code>output</code> (the agent's output with <code>output.decision</code> and <code>output.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setOutput('…')</code> to rewrite the downstream artifact, or <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
                   @if (scriptValidationError()) {
                     <span class="tag error">{{ scriptValidationError() }}</span>
                   } @else if (scriptValidationOk()) {
@@ -345,12 +419,12 @@ function defaultStartInput(): WorkflowInput {
                   <span class="field-label">Script (JavaScript)</span>
                   <cf-monaco-script-editor
                     class="script-editor"
-                    [value]="sel.editor.script ?? ''"
+                    [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor)">Validate</button>
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
                   @if (scriptValidationError()) {
                     <span class="tag error">{{ scriptValidationError() }}</span>
                   } @else if (scriptValidationOk()) {
@@ -509,6 +583,72 @@ function defaultStartInput(): WorkflowInput {
     }
     [data-theme="light"] .canvas {
       background-image: radial-gradient(circle at center, color-mix(in oklab, var(--muted) 25%, transparent) 1px, transparent 1.5px);
+    }
+    .port-reference-drawer {
+      max-height: 0;
+      overflow: hidden;
+      border-top: 1px solid transparent;
+      background: var(--surface);
+      transition: max-height 180ms ease, border-color 180ms ease;
+    }
+    .port-reference-drawer.open {
+      max-height: 260px;
+      border-top-color: var(--border);
+    }
+    .port-reference-head {
+      padding: 0.75rem 1rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .port-reference-body {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(240px, 1fr);
+      gap: 0.75rem;
+      overflow-x: auto;
+      padding: 0.75rem 1rem 1rem;
+      min-height: 132px;
+    }
+    .port-reference-row {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.02);
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .port-reference-row.blank {
+      background: transparent;
+      border-style: dashed;
+      opacity: 0.7;
+    }
+    .port-reference-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      min-height: 34px;
+      padding: 0.45rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .port-reference-row.blank .port-reference-meta { border-bottom: none; }
+    .port-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .port-reference-row pre {
+      margin: 0;
+      padding: 0.65rem;
+      max-height: 150px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      color: var(--text);
     }
     .toolbar {
       display: flex;
@@ -703,6 +843,13 @@ function defaultStartInput(): WorkflowInput {
       color: inherit;
     }
     .icon-button:hover { border-color: #f85149; color: #f85149; }
+    .tag {
+      background: rgba(88, 166, 255, 0.14);
+      color: #58a6ff;
+      padding: 0.2rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.75rem;
+    }
     .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.small { font-size: 0.7rem; }
@@ -758,11 +905,17 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly scriptValidationError = signal<string | null>(null);
   readonly scriptValidationOk = signal(false);
   readonly scriptMarkers = signal<MonacoMarker[]>([]);
+  readonly inputScriptValidationError = signal<string | null>(null);
+  readonly inputScriptValidationOk = signal(false);
+  readonly inputScriptMarkers = signal<MonacoMarker[]>([]);
   readonly selectedSubflowDetail = signal<import('../../../core/models').WorkflowDetail | null>(null);
   readonly contextMenu = signal<NodeContextMenuState | null>(null);
   readonly editTarget = signal<InPlaceEditTarget | null>(null);
   readonly warningSuppressed = signal(false);
   readonly publishTarget = signal<PublishForkTarget | null>(null);
+  readonly selectedAgentDocs = signal<SelectedAgentDocs | null>(null);
+  readonly selectedAgentDocsLoading = signal(false);
+  readonly selectedAgentDocsError = signal<string | null>(null);
 
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
@@ -790,6 +943,89 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (!sel) return '';
     return sel.editor.outputPortNames.join('\n');
   });
+
+  readonly selectedPortReferences = computed<PortReferenceRow[]>(() => {
+    // Read portsRevision so the computed recomputes when ports mutate.
+    this.portsRevision();
+    const sel = this.selectedNode();
+    if (!sel) return [];
+
+    const docs = this.selectedAgentDocs();
+    const outputs = Array.isArray(docs?.config.outputs) ? docs.config.outputs : [];
+    const templates = this.asTemplateMap(docs?.config.decisionOutputTemplates);
+
+    return sel.editor.outputPortNames.map(port => {
+      const output = outputs.find(o => o.kind === port);
+      if (output && output.payloadExample !== null && output.payloadExample !== undefined) {
+        const content = this.formatPayloadExample(output.payloadExample);
+        if (content.length > 0) return { port, source: 'payload', content };
+      }
+
+      const template = templates[port]?.trim();
+      if (template) return { port, source: 'template', content: template };
+
+      return { port, source: 'blank', content: '' };
+    });
+  });
+
+  private asTemplateMap(value: unknown): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, template]) => {
+      if (typeof template === 'string') acc[key] = template;
+      return acc;
+    }, {});
+  }
+
+  private formatPayloadExample(value: unknown): string {
+    if (typeof value === 'string') return value.trim();
+    return JSON.stringify(value, null, 2);
+  }
+
+  private clearSelectedAgentDocs(): void {
+    this.selectedAgentDocs.set(null);
+    this.selectedAgentDocsLoading.set(false);
+    this.selectedAgentDocsError.set(null);
+  }
+
+  private loadAgentDocsForNode(node: WorkflowEditorNode | null): void {
+    if (!node?.agentKey || !AGENT_BEARING_KINDS.has(node.kind)) {
+      this.clearSelectedAgentDocs();
+      return;
+    }
+
+    const nodeEditorId = node.id;
+    const agentKey = node.agentKey;
+    const request$ = node.agentVersion && node.agentVersion > 0
+      ? this.agentsApi.getVersion(agentKey, node.agentVersion)
+      : this.agentsApi.getLatest(agentKey);
+
+    this.selectedAgentDocs.set(null);
+    this.selectedAgentDocsLoading.set(true);
+    this.selectedAgentDocsError.set(null);
+
+    request$.subscribe({
+      next: version => {
+        const selected = this.selectedNode();
+        if (!selected || selected.editor.id !== nodeEditorId || selected.editor.agentKey !== agentKey) return;
+
+        this.selectedAgentDocs.set({
+          nodeEditorId,
+          agentKey: version.key,
+          agentVersion: version.version,
+          config: version.config ?? {}
+        });
+        this.selectedAgentDocsLoading.set(false);
+      },
+      error: err => {
+        const selected = this.selectedNode();
+        if (!selected || selected.editor.id !== nodeEditorId || selected.editor.agentKey !== agentKey) return;
+
+        this.selectedAgentDocs.set(null);
+        this.selectedAgentDocsLoading.set(false);
+        this.selectedAgentDocsError.set(`Failed to load agent examples: ${err?.message ?? err}`);
+      }
+    });
+  }
 
   async ngAfterViewInit(): Promise<void> {
     this.agentsApi.list().subscribe({
@@ -828,8 +1064,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.scriptValidationError.set(null);
         this.scriptValidationOk.set(false);
         this.scriptMarkers.set([]);
+        this.inputScriptValidationError.set(null);
+        this.inputScriptValidationOk.set(false);
+        this.inputScriptMarkers.set([]);
         this.selectedSubflowDetail.set(null);
         const picked = this.editor?.getNode(context.data.id) as WorkflowEditorNode | undefined;
+        this.loadAgentDocsForNode(picked ?? null);
         if ((picked?.kind === 'Subflow' || picked?.kind === 'ReviewLoop') && picked.subflowKey) {
           this.api.getLatest(picked.subflowKey).subscribe({
             next: detail => this.selectedSubflowDetail.set(detail),
@@ -860,6 +1100,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
           this.selectedNodeId.set(null);
+          this.clearSelectedAgentDocs();
         }
       }
       if (context.type === 'connectionremoved') {
@@ -973,6 +1214,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     event.preventDefault();
     this.selectedNodeId.set(nodeId);
+    this.loadAgentDocsForNode(node);
 
     const items: NodeContextMenuItem[] = [];
 
@@ -1073,6 +1315,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         node.label = labelFor(node);
         this.area?.update('node', node.id);
         this.selectedNodeId.set(this.selectedNodeId());
+        this.loadAgentDocsForNode(node);
       }
     }
     this.statusMessage.set(`Published ${result.publishedKey} v${result.publishedVersion}. Save the workflow to persist the re-link.`);
@@ -1106,6 +1349,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       this.area?.update('node', node.id);
       // Bump the signal so the inspector re-reads node fields.
       this.selectedNodeId.set(this.selectedNodeId());
+      this.loadAgentDocsForNode(node);
     }
 
     this.statusMessage.set(`Saved ${result.agentKey} v${result.agentVersion} (workflow-scoped fork). Save the workflow to persist.`);
@@ -1141,6 +1385,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
     await this.editor.removeNode(id);
     this.selectedNodeId.set(null);
+    this.clearSelectedAgentDocs();
   }
 
   async removeSelectedConnection(): Promise<void> {
@@ -1209,6 +1454,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     node.agentKey = value || null;
     node.label = labelFor(node);
     this.selectedNodeId.set(this.selectedNodeId());
+    this.loadAgentDocsForNode(node);
 
     if (!value) return;
 
@@ -1222,6 +1468,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       },
       error: () => { /* best-effort; leave existing ports in place */ }
     });
+  }
+
+  onAgentVersionChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    const version = typeof value === 'number' ? value : Number(value);
+    node.agentVersion = Number.isFinite(version) && version > 0 ? Math.floor(version) : null;
+    this.loadAgentDocsForNode(node);
   }
 
   onOutputPortsChanged(node: WorkflowEditorNode, value: string): void {
@@ -1305,9 +1557,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     next.isSelected = true;
     this.selectedNodeId.set(null);
+    this.clearSelectedAgentDocs();
     this.scriptValidationError.set(null);
     this.scriptValidationOk.set(false);
     this.scriptMarkers.set([]);
+    this.inputScriptValidationError.set(null);
+    this.inputScriptValidationOk.set(false);
+    this.inputScriptMarkers.set([]);
     this.selectedSubflowDetail.set(null);
     this.applyConnectionStyles(next.id);
   }
@@ -1377,32 +1633,46 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return input.key === DEFAULT_INPUT_KEY;
   }
 
-  onNodeScriptChanged(node: WorkflowEditorNode, value: string): void {
-    node.script = value;
-    // Clear stale markers/status while the user is typing.
-    if (this.scriptMarkers().length > 0) this.scriptMarkers.set([]);
-    if (this.scriptValidationError()) this.scriptValidationError.set(null);
-    if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
+  onNodeScriptChanged(node: WorkflowEditorNode, slot: 'input' | 'output', value: string): void {
+    if (slot === 'input') {
+      node.inputScript = value;
+      if (this.inputScriptMarkers().length > 0) this.inputScriptMarkers.set([]);
+      if (this.inputScriptValidationError()) this.inputScriptValidationError.set(null);
+      if (this.inputScriptValidationOk()) this.inputScriptValidationOk.set(false);
+    } else {
+      node.outputScript = value;
+      if (this.scriptMarkers().length > 0) this.scriptMarkers.set([]);
+      if (this.scriptValidationError()) this.scriptValidationError.set(null);
+      if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
+    }
   }
 
-  validateNodeScript(node: WorkflowEditorNode): void {
-    if (!node.script) {
-      this.scriptValidationError.set('Script is empty.');
-      this.scriptValidationOk.set(false);
-      this.scriptMarkers.set([]);
+  validateNodeScript(node: WorkflowEditorNode, slot: 'input' | 'output'): void {
+    const script = slot === 'input' ? node.inputScript : node.outputScript;
+    const errorSig = slot === 'input' ? this.inputScriptValidationError : this.scriptValidationError;
+    const okSig = slot === 'input' ? this.inputScriptValidationOk : this.scriptValidationOk;
+    const markersSig = slot === 'input' ? this.inputScriptMarkers : this.scriptMarkers;
+
+    if (!script) {
+      errorSig.set('Script is empty.');
+      okSig.set(false);
+      markersSig.set([]);
       return;
     }
 
-    this.api.validateScript({ script: node.script }).subscribe({
+    this.api.validateScript({
+      script,
+      direction: slot === 'input' ? 'Input' : 'Output'
+    }).subscribe({
       next: result => {
         if (result.ok) {
-          this.scriptValidationError.set(null);
-          this.scriptValidationOk.set(true);
-          this.scriptMarkers.set([]);
+          errorSig.set(null);
+          okSig.set(true);
+          markersSig.set([]);
         } else {
-          this.scriptValidationError.set(result.errors.map(e => e.message).join('; '));
-          this.scriptValidationOk.set(false);
-          this.scriptMarkers.set(result.errors.map(e => ({
+          errorSig.set(result.errors.map(e => e.message).join('; '));
+          okSig.set(false);
+          markersSig.set(result.errors.map(e => ({
             startLineNumber: Math.max(1, e.line || 1),
             startColumn: Math.max(1, e.column || 1),
             endLineNumber: Math.max(1, e.line || 1),
@@ -1413,9 +1683,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         }
       },
       error: err => {
-        this.scriptValidationError.set(`Validation failed: ${err.message ?? err}`);
-        this.scriptValidationOk.set(false);
-        this.scriptMarkers.set([]);
+        errorSig.set(`Validation failed: ${err.message ?? err}`);
+        okSig.set(false);
+        markersSig.set([]);
       }
     });
   }

@@ -89,7 +89,7 @@ public static class WorkflowValidator
                     break;
 
                 case WorkflowNodeKind.Logic:
-                    if (string.IsNullOrWhiteSpace(node.Script))
+                    if (string.IsNullOrWhiteSpace(node.OutputScript))
                     {
                         return ValidationResult.Fail($"Logic node {node.Id} must declare a non-empty script.");
                     }

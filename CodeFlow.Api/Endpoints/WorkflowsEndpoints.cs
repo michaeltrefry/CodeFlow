@@ -2,6 +2,7 @@ using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using Jint;
 using Microsoft.AspNetCore.Builder;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace CodeFlow.Api.Endpoints;
@@ -133,7 +135,9 @@ public static class WorkflowsEndpoints
         }
     }
 
-    private static IResult ValidateScript(ValidateScriptRequest request)
+    private static IResult ValidateScript(
+        ValidateScriptRequest request,
+        LogicNodeScriptHost scriptHost)
     {
         if (string.IsNullOrWhiteSpace(request.Script))
         {
@@ -145,7 +149,6 @@ public static class WorkflowsEndpoints
         try
         {
             Engine.PrepareScript(request.Script);
-            return Results.Ok(new ValidateScriptResponse(Ok: true, Errors: Array.Empty<ValidateScriptError>()));
         }
         catch (Exception ex)
         {
@@ -153,6 +156,41 @@ public static class WorkflowsEndpoints
                 Ok: false,
                 Errors: new[] { new ValidateScriptError(0, 0, ex.Message) }));
         }
+
+        // If a direction was specified, run a sandboxed dry-evaluate so wrong-verb usage
+        // (setInput in an output script, or setOutput in an input script) is reported by
+        // the script host's own gating rather than only at runtime.
+        if (request.Direction is ValidateScriptDirection direction)
+        {
+            var allowInput = direction == ValidateScriptDirection.Input;
+            var allowOutput = direction == ValidateScriptDirection.Output;
+            var variableName = direction == ValidateScriptDirection.Input ? "input" : "output";
+
+            var emptyJson = JsonDocument.Parse("{}").RootElement;
+            var emptyContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
+            var eval = scriptHost.Evaluate(
+                workflowKey: "__validate__",
+                workflowVersion: 0,
+                nodeId: Guid.NewGuid(),
+                script: request.Script!,
+                declaredPorts: Array.Empty<string>(),
+                input: emptyJson,
+                context: emptyContext,
+                allowOutputOverride: allowOutput,
+                allowInputOverride: allowInput,
+                inputVariableName: variableName,
+                requireSetNodePath: false);
+
+            if (eval.Failure is not null && eval.Failure != LogicNodeFailureKind.UnknownPort)
+            {
+                return Results.Ok(new ValidateScriptResponse(
+                    Ok: false,
+                    Errors: new[] { new ValidateScriptError(0, 0, eval.FailureMessage ?? eval.Failure.ToString()!) }));
+            }
+        }
+
+        return Results.Ok(new ValidateScriptResponse(Ok: true, Errors: Array.Empty<ValidateScriptError>()));
     }
 
     private static async Task<IResult> ListWorkflowsAsync(
@@ -371,14 +409,15 @@ public static class WorkflowsEndpoints
                     Kind: node.Kind,
                     AgentKey: node.AgentKey,
                     AgentVersion: node.AgentVersion,
-                    Script: node.Script,
+                    OutputScript: node.OutputScript,
                     OutputPorts: node.OutputPorts ?? Array.Empty<string>(),
                     LayoutX: node.LayoutX,
                     LayoutY: node.LayoutY,
                     SubflowKey: node.SubflowKey,
                     SubflowVersion: node.SubflowVersion,
                     ReviewMaxRounds: node.ReviewMaxRounds,
-                    LoopDecision: node.LoopDecision))
+                    LoopDecision: node.LoopDecision,
+                    InputScript: node.InputScript))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -428,14 +467,15 @@ public static class WorkflowsEndpoints
                 Kind: node.Kind,
                 AgentKey: node.AgentKey,
                 AgentVersion: node.AgentVersion,
-                Script: node.Script,
+                OutputScript: node.OutputScript,
                 OutputPorts: node.OutputPorts,
                 LayoutX: node.LayoutX,
                 LayoutY: node.LayoutY,
                 SubflowKey: node.SubflowKey,
                 SubflowVersion: node.SubflowVersion,
                 ReviewMaxRounds: node.ReviewMaxRounds,
-                LoopDecision: node.LoopDecision))
+                LoopDecision: node.LoopDecision,
+                InputScript: node.InputScript))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

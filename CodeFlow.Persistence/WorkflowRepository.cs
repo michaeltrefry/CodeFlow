@@ -143,7 +143,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         Kind = node.Kind,
                         AgentKey = NormalizeOptionalString(node.AgentKey),
                         AgentVersion = node.AgentVersion,
-                        Script = node.Script,
+                        OutputScript = node.OutputScript,
+                        InputScript = node.InputScript,
                         OutputPortsJson = WorkflowJson.SerializePorts(node.OutputPorts),
                         LayoutX = node.LayoutX,
                         LayoutY = node.LayoutY,
@@ -244,14 +245,15 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.Kind,
             entity.AgentKey,
             entity.AgentVersion,
-            entity.Script,
+            entity.OutputScript,
             WorkflowJson.DeserializePorts(entity.OutputPortsJson),
             entity.LayoutX,
             entity.LayoutY,
             entity.SubflowKey,
             entity.SubflowVersion,
             entity.ReviewMaxRounds,
-            entity.LoopDecision);
+            entity.LoopDecision,
+            entity.InputScript);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

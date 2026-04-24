@@ -2,6 +2,7 @@ using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TraceEvents;
 using CodeFlow.Contracts;
+using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
@@ -179,6 +180,7 @@ public static class TracesEndpoints
         IPublishEndpoint publishEndpoint,
         CodeFlowDbContext dbContext,
         ICurrentUser currentUser,
+        LogicNodeScriptHost scriptHost,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.WorkflowKey))
@@ -251,6 +253,51 @@ public static class TracesEndpoints
                 FileName: request.InputFileName ?? "input.txt"),
             cancellationToken);
 
+        // Mid-workflow dispatches run a node's InputScript via the saga's TryEvaluateInputScriptAsync
+        // helper, but a top-level Start has no saga yet at this point, so we evaluate the script
+        // here. The corresponding LogicEvaluationRecord is intentionally dropped — capturing it
+        // would require either changing the AgentInvokeRequested contract or pre-creating saga
+        // state from the endpoint. Per-saga hooks still record evaluations for child Start
+        // dispatches and every other node.
+        var effectiveInputRef = inputRef;
+        if (!string.IsNullOrWhiteSpace(startNode.InputScript))
+        {
+            var artifactJson = await ReadArtifactAsJsonAsync(artifactStore, inputRef, cancellationToken);
+            var eval = scriptHost.Evaluate(
+                workflowKey: workflow.Key,
+                workflowVersion: workflow.Version,
+                nodeId: startNode.Id,
+                script: startNode.InputScript!,
+                declaredPorts: startNode.OutputPorts,
+                input: artifactJson,
+                context: resolvedInputsResult.Values,
+                cancellationToken: cancellationToken,
+                global: null,
+                allowInputOverride: true,
+                requireSetNodePath: false);
+
+            if (eval.Failure is not null)
+            {
+                return Results.Problem(
+                    detail: $"Input script for start node {startNode.Id} failed ({eval.Failure}): {eval.FailureMessage}",
+                    statusCode: StatusCodes.Status422UnprocessableEntity);
+            }
+
+            if (!string.IsNullOrEmpty(eval.InputOverride))
+            {
+                await using var overrideStream = new MemoryStream(Encoding.UTF8.GetBytes(eval.InputOverride!));
+                effectiveInputRef = await artifactStore.WriteAsync(
+                    overrideStream,
+                    new ArtifactMetadata(
+                        TraceId: traceId,
+                        RoundId: roundId,
+                        ArtifactId: Guid.NewGuid(),
+                        ContentType: "text/plain",
+                        FileName: $"{startNode.AgentKey}-scripted-input.txt"),
+                    cancellationToken);
+            }
+        }
+
         await publishEndpoint.Publish(
             new AgentInvokeRequested(
                 TraceId: traceId,
@@ -260,7 +307,7 @@ public static class TracesEndpoints
                 NodeId: startNode.Id,
                 AgentKey: startNode.AgentKey,
                 AgentVersion: startAgentVersion,
-                InputRef: inputRef,
+                InputRef: effectiveInputRef,
                 ContextInputs: resolvedInputsResult.Values,
                 CorrelationHeaders: new Dictionary<string, string>
                 {
@@ -859,6 +906,33 @@ public static class TracesEndpoints
         }
 
         return result;
+    }
+
+    // Mirrors WorkflowSagaStateMachine.ReadArtifactAsJsonAsync — kept local because the saga's
+    // copy is private. Wraps non-JSON text as { "text": "…" } so InputScripts can still read it.
+    private static async Task<JsonElement> ReadArtifactAsJsonAsync(
+        IArtifactStore artifactStore,
+        Uri inputRef,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await artifactStore.ReadAsync(inputRef, cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+        var text = await reader.ReadToEndAsync(cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            var doc = new { text };
+            return JsonSerializer.SerializeToElement(doc);
+        }
     }
 
     private static IReadOnlyList<string> DeserializeLogs(string? json)

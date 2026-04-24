@@ -275,7 +275,8 @@ export interface WorkflowNode {
   kind: WorkflowNodeKind;
   agentKey?: string | null;
   agentVersion?: number | null;
-  script?: string | null;
+  outputScript?: string | null;
+  inputScript?: string | null;
   outputPorts: string[];
   layoutX: number;
   layoutY: number;

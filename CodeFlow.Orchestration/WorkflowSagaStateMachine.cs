@@ -169,6 +169,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var services = context.GetPayload<IServiceProvider>();
         var workflowRepo = services.GetRequiredService<IWorkflowRepository>();
         var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
+        var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
+        var artifactStore = services.GetRequiredService<IArtifactStore>();
 
         var workflow = await workflowRepo.GetAsync(
             message.SubflowKey,
@@ -212,6 +214,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ?? await agentConfigRepo.GetLatestVersionAsync(startNode.AgentKey, context.CancellationToken);
         saga.PinAgentVersion(startNode.AgentKey, startAgentVersion);
 
+        var inputOutcome = await TryEvaluateInputScriptAsync(
+            context, saga, workflow, startNode, message.InputRef, scriptHost, artifactStore);
+        if (inputOutcome.Failed)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason = inputOutcome.FailureReason;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var effectiveInputRef = inputOutcome.InputRef!;
+        saga.CurrentInputRef = effectiveInputRef.ToString();
+
         // The child's local `context` starts empty — the parent's shared snapshot belongs on
         // `global`, not on the child's local inputs. Publishing SharedContext as ContextInputs
         // would make parent keys show up under {{context.*}} on the child Start, and
@@ -224,12 +239,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             NodeId: startNode.Id,
             AgentKey: startNode.AgentKey,
             AgentVersion: startAgentVersion,
-            InputRef: message.InputRef,
+            InputRef: effectiveInputRef,
             ContextInputs: EmptyInputs,
             CorrelationHeaders: null,
             RetryContext: null,
             ToolExecutionContext: null,
-            GlobalContext: message.SharedContext,
+            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
             ReviewRound: message.ReviewRound,
             ReviewMaxRounds: message.ReviewMaxRounds));
     }
@@ -603,6 +618,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 await PublishHandoffAsync(
                     context,
                     agentConfigRepo,
+                    scriptHost,
+                    artifactStore,
                     saga,
                     workflow,
                     escalationNode,
@@ -628,6 +645,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         await DispatchToNodeAsync(
             context,
             agentConfigRepo,
+            scriptHost,
+            artifactStore,
             saga,
             workflow,
             targetNode,
@@ -699,6 +718,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             await HandleEscalationResponseAsync(
                 context,
                 agentConfigRepo,
+                scriptHost,
+                artifactStore,
                 workflow,
                 saga,
                 message,
@@ -848,6 +869,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 await PublishHandoffAsync(
                     context,
                     agentConfigRepo,
+                    scriptHost,
+                    artifactStore,
                     saga,
                     workflow,
                     escalationNode,
@@ -883,6 +906,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         await DispatchToNodeAsync(
             context,
             agentConfigRepo,
+            scriptHost,
+            artifactStore,
             saga,
             workflow,
             targetNode,
@@ -928,7 +953,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var fromNode = workflow.FindNode(message.FromNodeId);
         if (fromNode is null
             || fromNode.Kind == WorkflowNodeKind.Logic
-            || string.IsNullOrWhiteSpace(fromNode.Script))
+            || string.IsNullOrWhiteSpace(fromNode.OutputScript))
         {
             return new SourcePortResolution(fallbackPort, null);
         }
@@ -950,7 +975,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             workflowKey: workflow.Key,
             workflowVersion: workflow.Version,
             nodeId: fromNode.Id,
-            script: fromNode.Script!,
+            script: fromNode.OutputScript!,
             declaredPorts: fromNode.OutputPorts,
             input: scriptInput,
             context: contextInputs,
@@ -958,7 +983,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             global: globalInputs,
             reviewRound: saga.ParentReviewRound,
             reviewMaxRounds: saga.ParentReviewMaxRounds,
-            allowOutputOverride: true);
+            allowOutputOverride: true,
+            inputVariableName: "output");
 
         saga.AppendLogicEvaluation(new LogicEvaluationRecord(
             NodeId: fromNode.Id,
@@ -996,7 +1022,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         WorkflowSagaStateEntity saga,
         string? agentKey,
         string content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string fileNameSuffix = "scripted-output")
     {
         var bytes = Encoding.UTF8.GetBytes(content);
         using var stream = new MemoryStream(bytes);
@@ -1006,8 +1033,84 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RoundId: saga.CurrentRoundId,
             ArtifactId: Guid.NewGuid(),
             ContentType: "text/plain",
-            FileName: $"{fileNamePrefix}-scripted-output.txt");
+            FileName: $"{fileNamePrefix}-{fileNameSuffix}.txt");
         return await artifactStore.WriteAsync(stream, metadata, cancellationToken);
+    }
+
+    private readonly record struct InputScriptOutcome(Uri? InputRef, string? FailureReason)
+    {
+        public bool Failed => FailureReason is not null;
+        public static InputScriptOutcome Ok(Uri inputRef) => new(inputRef, null);
+        public static InputScriptOutcome Fail(string reason) => new(null, reason);
+    }
+
+    private static async Task<InputScriptOutcome> TryEvaluateInputScriptAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode targetNode,
+        Uri inputRef,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore)
+    {
+        if (string.IsNullOrWhiteSpace(targetNode.InputScript))
+        {
+            return InputScriptOutcome.Ok(inputRef);
+        }
+
+        var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var artifactJson = await ReadArtifactAsJsonAsync(
+            artifactStore,
+            inputRef,
+            context.CancellationToken);
+
+        var eval = scriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: targetNode.Id,
+            script: targetNode.InputScript!,
+            declaredPorts: targetNode.OutputPorts,
+            input: artifactJson,
+            context: contextInputs,
+            cancellationToken: context.CancellationToken,
+            global: globalInputs,
+            reviewRound: saga.ParentReviewRound,
+            reviewMaxRounds: saga.ParentReviewMaxRounds,
+            allowInputOverride: true,
+            requireSetNodePath: false);
+
+        saga.AppendLogicEvaluation(new LogicEvaluationRecord(
+            NodeId: targetNode.Id,
+            OutputPortName: eval.OutputPortName,
+            RoundId: saga.CurrentRoundId,
+            Duration: eval.Duration,
+            Logs: eval.LogEntries,
+            FailureKind: eval.Failure?.ToString(),
+            FailureMessage: eval.FailureMessage,
+            RecordedAtUtc: DateTime.UtcNow));
+
+        if (eval.Failure is not null)
+        {
+            return InputScriptOutcome.Fail(
+                $"Input script for node {targetNode.Id} failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+
+        if (!string.IsNullOrEmpty(eval.InputOverride))
+        {
+            var overrideRef = await WriteOverrideArtifactAsync(
+                artifactStore,
+                saga,
+                targetNode.AgentKey,
+                eval.InputOverride!,
+                context.CancellationToken,
+                fileNameSuffix: "scripted-input");
+            return InputScriptOutcome.Ok(overrideRef);
+        }
+
+        return InputScriptOutcome.Ok(inputRef);
     }
 
     private static async Task<DecisionOutputTemplateOutcome> TryApplyDecisionOutputTemplateAsync(
@@ -1273,7 +1376,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 inputLoaded = true;
             }
 
-            if (string.IsNullOrWhiteSpace(currentNode.Script))
+            if (string.IsNullOrWhiteSpace(currentNode.OutputScript))
             {
                 var reason = $"Logic node {currentNode.Id} has no script.";
                 saga.AppendLogicEvaluation(LogicEvaluationRecordFailure(
@@ -1291,7 +1394,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 workflowKey: workflow.Key,
                 workflowVersion: workflow.Version,
                 nodeId: currentNode.Id,
-                script: currentNode.Script,
+                script: currentNode.OutputScript,
                 declaredPorts: currentNode.OutputPorts,
                 input: inputJson,
                 context: contextInputs,
@@ -1436,6 +1539,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     private static async Task HandleEscalationResponseAsync(
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         IAgentConfigRepository agentConfigRepo,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
         Workflow workflow,
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message,
@@ -1455,6 +1560,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 await DispatchToNodeAsync(
                     context,
                     agentConfigRepo,
+                    scriptHost,
+                    artifactStore,
                     saga,
                     workflow,
                     resumeNode,
@@ -1486,6 +1593,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     private static Task DispatchToNodeAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
         WorkflowSagaStateEntity saga,
         Workflow workflow,
         WorkflowNode node,
@@ -1496,7 +1605,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         return node.Kind switch
         {
             WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation or WorkflowNodeKind.Start =>
-                PublishHandoffAsync(context, agentConfigRepo, saga, workflow, node, inputRef, roundId, retryContext),
+                PublishHandoffAsync(context, agentConfigRepo, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId, retryContext),
             WorkflowNodeKind.Subflow =>
                 PublishSubflowDispatchAsync(context, saga, workflow, node, inputRef, roundId),
             WorkflowNodeKind.ReviewLoop =>
@@ -1568,6 +1677,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     private static async Task PublishHandoffAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
         WorkflowSagaStateEntity saga,
         Workflow workflow,
         WorkflowNode targetNode,
@@ -1580,6 +1691,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             throw new InvalidOperationException(
                 $"Node {targetNode.Id} of kind {targetNode.Kind} in workflow {workflow.Key} v{workflow.Version} has no AgentKey.");
         }
+
+        var inputOutcome = await TryEvaluateInputScriptAsync(
+            context, saga, workflow, targetNode, inputRef, scriptHost, artifactStore);
+
+        if (inputOutcome.Failed)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason = inputOutcome.FailureReason;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var effectiveInputRef = inputOutcome.InputRef!;
 
         var targetAgentKey = targetNode.AgentKey;
         var pinnedVersion = saga.GetPinnedVersion(targetAgentKey);
@@ -1594,7 +1718,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.PinAgentVersion(targetAgentKey, pinnedVersion.Value);
         }
 
-        saga.CurrentInputRef = inputRef.ToString();
+        saga.CurrentInputRef = effectiveInputRef.ToString();
 
         await context.Publish(new AgentInvokeRequested(
             TraceId: saga.TraceId,
@@ -1604,7 +1728,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             NodeId: targetNode.Id,
             AgentKey: targetAgentKey,
             AgentVersion: pinnedVersion.Value,
-            InputRef: inputRef,
+            InputRef: effectiveInputRef,
             ContextInputs: DeserializeContextInputs(saga.InputsJson),
             RetryContext: retryContext,
             GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),

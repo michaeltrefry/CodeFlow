@@ -767,7 +767,7 @@ public sealed class WorkflowSagaStateMachineTests
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         const string script = """
-            setNodePath(input.verdict === 'ok' ? 'Accept' : 'Reject');
+            setNodePath(output.verdict === 'ok' ? 'Accept' : 'Reject');
             """;
         var workflow = BuildWorkflowWithScriptedSource(
             key: "scripted-agent",
@@ -888,7 +888,7 @@ public sealed class WorkflowSagaStateMachineTests
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         const string script = """
-            setNodePath(input.decision === 'Rejected' ? 'Revise' : 'Accept');
+            setNodePath(output.decision === 'Rejected' ? 'Revise' : 'Accept');
             """;
         var workflow = BuildWorkflowWithScriptedSource(
             key: "scripted-decision-branch",
@@ -951,7 +951,7 @@ public sealed class WorkflowSagaStateMachineTests
         // and the downstream agent receives the update via context.
         const string script = """
             var prior = (context.transcript || []).slice();
-            prior.push({ q: input.question, a: input.answer });
+            prior.push({ q: output.question, a: output.answer });
             setContext('transcript', prior);
             setNodePath('NextTurn');
             """;
@@ -1033,7 +1033,7 @@ public sealed class WorkflowSagaStateMachineTests
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         const string script = """
-            if (input.decision === 'Approved') { setNodePath('Answer'); }
+            if (output.decision === 'Approved') { setNodePath('Answer'); }
             else { setNodePath('Exit'); }
             """;
         var workflow = BuildHitlScriptedWorkflow(
@@ -1114,7 +1114,7 @@ public sealed class WorkflowSagaStateMachineTests
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         const string script = """
-            if (input.decision === 'Answered') { setNodePath('Answer'); }
+            if (output.decision === 'Answered') { setNodePath('Answer'); }
             else { setNodePath('Exit'); }
             """;
         var workflow = BuildHitlScriptedWorkflow(
@@ -1197,7 +1197,7 @@ public sealed class WorkflowSagaStateMachineTests
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         const string script = """
-            var md = '# Summary\n- answer: ' + input.answer;
+            var md = '# Summary\n- answer: ' + output.answer;
             setOutput(md);
             setNodePath('Completed');
             """;
@@ -1263,6 +1263,181 @@ public sealed class WorkflowSagaStateMachineTests
                 .Single(d => d.AgentKey == "interviewer" && d.RoundId == roundId);
             interviewerDecision.OutputRef.Should().Be(downstreamInputRef.ToString());
             interviewerDecision.OutputRef.Should().NotBe(originalOutputRef.ToString());
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ScriptedAgent_SetInput_SubstitutesDispatchInputRefAndPreservesOriginal()
+    {
+        // Downstream agent carries an InputScript. Before dispatch, the saga evaluates the script;
+        // setInput(md) writes a new artifact and the dispatched AgentInvokeRequested carries the
+        // override as InputRef. The original upstream artifact is untouched in the store.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+
+        var startId = Guid.NewGuid();
+        var downstreamId = Guid.NewGuid();
+        const string inputScript = """
+            setInput('# Briefing\n- topic: ' + input.topic);
+            """;
+        var workflow = new Workflow(
+            Key: "scripted-setInput",
+            Version: 1,
+            Name: "scripted-setInput",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(startId, WorkflowNodeKind.Start, "interviewer", 1,
+                    OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(downstreamId, WorkflowNodeKind.Agent, "publisher", 1,
+                    OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 500, LayoutY: 0,
+                    InputScript: inputScript)
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Completed", downstreamId,
+                    WorkflowEdge.DefaultInputPort, false, 0)
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var originalOutputRef = new Uri("file:///tmp/interviewer-out.bin");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"topic":"shipping the feature"}""");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>
+        {
+            ["publisher"] = 1
+        }, artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: startId,
+                AgentKey: "interviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstream = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+
+            var downstreamInputRef = downstream.Context.Message.InputRef!;
+            downstreamInputRef.Should().NotBe(originalOutputRef,
+                "InputScript's setInput() must substitute the downstream agent's InputRef.");
+            artifactStore.ReadWrittenContent(downstreamInputRef)
+                .Should().Be("# Briefing\n- topic: shipping the feature");
+
+            // Original upstream artifact is still readable.
+            artifactStore.SeededReads.Should().ContainKey(originalOutputRef);
+
+            // Input-script evaluation was logged to the saga's LogicEvaluationHistory.
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            var logicHistory = saga.GetLogicEvaluationHistory().ToList();
+            logicHistory.Should().Contain(r =>
+                r.NodeId == downstreamId && r.FailureKind == null);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ScriptedAgent_SetInput_BudgetExceeded_FailsSaga()
+    {
+        // 1 MiB cap — a setInput() payload above the cap must fail the saga with
+        // InputOverrideBudgetExceeded, rather than dispatching to the downstream agent.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+
+        var startId = Guid.NewGuid();
+        var downstreamId = Guid.NewGuid();
+        // 1.2 MiB — over the 1,048,576-char budget. Built with String.repeat to avoid the
+        // 4 MB Jint memory limit a concat-loop would trip.
+        const string inputScript = """
+            setInput('x'.repeat(1200000));
+            """;
+        var workflow = new Workflow(
+            Key: "scripted-setInput-budget",
+            Version: 1,
+            Name: "scripted-setInput-budget",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(startId, WorkflowNodeKind.Start, "interviewer", 1,
+                    OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(downstreamId, WorkflowNodeKind.Agent, "publisher", 1,
+                    OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 500, LayoutY: 0,
+                    InputScript: inputScript)
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Completed", downstreamId,
+                    WorkflowEdge.DefaultInputPort, false, 0)
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var originalOutputRef = new Uri("file:///tmp/interviewer-out.bin");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"topic":"x"}""");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>
+        {
+            ["publisher"] = 1
+        }, artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: startId,
+                AgentKey: "interviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Completed,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            await sagaHarness.Exists(traceId, s => s.Failed);
+
+            // Downstream agent must never have been dispatched.
+            harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher")
+                .Should().BeFalse();
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.FailureReason.Should().NotBeNull().And.Subject.Should().Contain("InputOverrideBudgetExceeded");
+
+            var logicHistory = saga.GetLogicEvaluationHistory().ToList();
+            logicHistory.Should().Contain(r =>
+                r.NodeId == downstreamId
+                && r.FailureKind == nameof(LogicNodeFailureKind.InputOverrideBudgetExceeded));
         }
         finally
         {
@@ -2516,7 +2691,7 @@ public sealed class WorkflowSagaStateMachineTests
             {
                 new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "interviewer-agent",
                     AgentVersion: null,
-                    Script: "setNodePath('Answered');",
+                    OutputScript: "setNodePath('Answered');",
                     OutputPorts: new[] { "Completed", "Answered", "Failed" },
                     LayoutX: 0, LayoutY: 0),
             },
@@ -2643,7 +2818,7 @@ public sealed class WorkflowSagaStateMachineTests
             Nodes: new[]
             {
                 new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "reviewer-agent",
-                    AgentVersion: null, Script: null,
+                    AgentVersion: null, OutputScript: null,
                     OutputPorts: new[] { "Completed", "Approved", "Rejected", "Failed" },
                     LayoutX: 0, LayoutY: 0),
             },
@@ -2731,7 +2906,7 @@ public sealed class WorkflowSagaStateMachineTests
             Nodes: new[]
             {
                 new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "child-start-agent",
-                    AgentVersion: null, Script: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
             },
             Edges: Array.Empty<WorkflowEdge>(),
             Inputs: Array.Empty<WorkflowInput>());
@@ -2813,9 +2988,9 @@ public sealed class WorkflowSagaStateMachineTests
     {
         var nodes = new List<WorkflowNode>
         {
-            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, Script: null,
+            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, OutputScript: null,
                 OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
-            new(subflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null, Script: null,
+            new(subflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null, OutputScript: null,
                 OutputPorts: new[] { "Completed", "Failed", "Escalated" }, LayoutX: 250, LayoutY: 0,
                 SubflowKey: subflowKey, SubflowVersion: subflowVersion),
         };
@@ -2848,9 +3023,9 @@ public sealed class WorkflowSagaStateMachineTests
     {
         var nodes = new List<WorkflowNode>
         {
-            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, Script: null,
+            new(startNodeId, WorkflowNodeKind.Start, startAgentKey, AgentVersion: null, OutputScript: null,
                 OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
-            new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, Script: null,
+            new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, OutputScript: null,
                 OutputPorts: new[] { "Approved", "Exhausted", "Failed" }, LayoutX: 250, LayoutY: 0,
                 SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds,
                 LoopDecision: loopDecision),
@@ -3040,7 +3215,7 @@ public sealed class WorkflowSagaStateMachineTests
                 kind = WorkflowNodeKind.Agent;
             }
 
-            nodes.Add(new WorkflowNode(id, kind, agentKey, AgentVersion: null, Script: null,
+            nodes.Add(new WorkflowNode(id, kind, agentKey, AgentVersion: null, OutputScript: null,
                 OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0));
         }
 

@@ -85,14 +85,15 @@ public sealed class WorkflowPackageResolver(
                 Kind: node.Kind,
                 AgentKey: NormalizeOptional(node.AgentKey),
                 AgentVersion: resolvedAgentVersion,
-                Script: node.Script,
+                OutputScript: node.OutputScript,
                 OutputPorts: node.OutputPorts.ToArray(),
                 LayoutX: node.LayoutX,
                 LayoutY: node.LayoutY,
                 SubflowKey: NormalizeOptional(node.SubflowKey),
                 SubflowVersion: resolvedSubflowVersion,
                 ReviewMaxRounds: node.ReviewMaxRounds,
-                LoopDecision: NormalizeOptional(node.LoopDecision)));
+                LoopDecision: NormalizeOptional(node.LoopDecision),
+                InputScript: node.InputScript));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

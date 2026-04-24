@@ -148,22 +148,29 @@ Every Logic evaluation produces a `LogicEvaluationRecord` on saga state containi
 
 ## Agent-attached routing scripts
 
-Agent, HITL, Escalation, and Start nodes may carry an **optional** `Script` that picks the outgoing port after the agent completes. The sandbox is nearly identical to the Logic node sandbox — same globals (`input`, `context`, `setNodePath`, `setContext`, `setGlobal`, `log`), same limits, same security posture. Agent-attached scripts additionally get `setOutput(text)` for replacing the artifact that flows downstream.
+Agent, HITL, Escalation, and Start nodes may carry two **optional** scripts that hook the saga's dispatch path — an **input script** that runs *before* the node receives its input, and an **output script** that runs *after* the agent produces its output. Both use the same sandbox as Logic nodes (same limits, same security posture) and share the globals `context`, `global`, `setNodePath`, `setContext`, `setGlobal`, `log`. Each carries one extra verb: input scripts get `setInput(text)`, output scripts get `setOutput(text)`.
 
-### When the script runs
+The two scripts differ in:
+
+- **What the artifact variable is called.** Input scripts see the upstream artifact as `input`. Output scripts see the agent's own output as `output` (with `output.decision` and `output.decisionPayload` attached).
+- **Where they hook into the dispatch path.** Input runs before the agent is invoked; output runs after.
+- **What artifact they can replace.** Input scripts replace what the node receives (`setInput`). Output scripts replace what the node emits downstream (`setOutput`).
+- **Whether `setNodePath` is required.** Output scripts must call it — they pick the outgoing port. Input scripts don't — the agent hasn't run yet.
+
+### Output scripts
 
 After the agent emits `AgentInvocationCompleted`, the saga:
 
 1. Finds the source node.
-2. If the node has a non-empty `Script`, reads the agent's output artifact as JSON, attaches `input.decision` (the AgentDecisionKind name: `Completed`, `Approved`, `Rejected`, `Failed`) and `input.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context`.
+2. If the node has a non-empty `OutputScript`, reads the agent's output artifact as JSON, attaches `output.decision` (the AgentDecisionKind name: `Completed`, `Approved`, `Rejected`, `Failed`) and `output.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context` and `global`.
 3. Uses the port chosen by `setNodePath` to find the outgoing edge.
 4. If the script fails (throws, times out, omits `setNodePath`, or picks an undeclared port), routing **falls back** to the `AgentDecisionKind`-named port carried on the completion message (i.e., the pre-script behavior).
 
-`setContext` writes are merged into the saga's context and flow into every downstream dispatch — same semantics as Logic node writes.
+`setContext` and `setGlobal` writes are merged into the saga and flow into every downstream dispatch — same semantics as Logic node writes.
 
-### Replacing the output artifact with `setOutput(text)`
+#### Replacing the output artifact with `setOutput(text)`
 
-Call `setOutput(text)` inside an agent-attached routing script to substitute a new artifact for the one flowing to the next node. The argument must be a non-empty string; the runtime writes it as a fresh `text/plain` artifact (file name `{agentKey}-scripted-output.txt`) and uses the new URI for:
+Call `setOutput(text)` inside an output script to substitute a new artifact for the one flowing to the next node. The argument must be a non-empty string; the runtime writes it as a fresh `text/plain` artifact (file name `{agentKey}-scripted-output.txt`) and uses the new URI for:
 
 - the downstream dispatch's `InputRef`;
 - the `DecisionRecord` appended to the saga's history (so the trace UI shows and downloads the rendered artifact).
@@ -172,14 +179,12 @@ Call `setOutput(text)` inside an agent-attached routing script to substitute a n
 
 **Size cap.** The string is capped at 1 MiB. Exceeding the cap fails the evaluation with `OutputOverrideBudgetExceeded`, which — like any script failure — routes via the `AgentDecisionKind`-named fallback port.
 
-**Scope.** `setOutput` is only exposed on agent-attached scripts (Agent / HITL / Escalation / Start nodes). Calling it from a Logic-node script throws a `TypeError` — Logic nodes don't own an "output artifact" in the same sense.
-
 #### Example: socratic HITL that emits a markdown summary
 
-A HITL interviewee submits structured Q&A pairs; the routing script composes a markdown summary and substitutes that for the raw submission so the downstream publisher renders human-readable output:
+A HITL interviewee submits structured Q&A pairs; the output script composes a markdown summary and substitutes that for the raw submission so the downstream publisher renders human-readable output:
 
 ```js
-if (input.decision !== 'Completed') { setNodePath('Failed'); }
+if (output.decision !== 'Completed') { setNodePath('Failed'); }
 else {
   var lines = ['# Interview summary'];
   (context.interview || []).forEach(function (turn) {
@@ -193,12 +198,12 @@ else {
 
 **Anti-pattern this avoids.** Without `setOutput`, the same effect requires stashing the rendered markdown on `global` (or `context`) and adding a passthrough agent downstream whose only job is to materialize `{{ global.summary }}` into an artifact. That's an extra agent invocation, an extra prompt, and an extra round of latency for what is really a local string transform.
 
-### Example: Answer-vs-Exit HITL routing
+#### Example: Answer-vs-Exit HITL routing
 
 A HITL node can fan out based on the human's decision without a separate Logic node:
 
 ```js
-if (input.decision === 'Approved') {
+if (output.decision === 'Approved') {
   setNodePath('Answer');
 } else {
   setNodePath('Exit');
@@ -207,18 +212,52 @@ if (input.decision === 'Approved') {
 
 Declare the node's `OutputPorts` as `["Answer", "Exit"]` and wire each port to the appropriate downstream.
 
-### Example: interviewer loop with accumulated transcript
+#### Example: interviewer loop with accumulated transcript
 
 A Start/Agent node that should loop back through a HITL while accumulating the Q&A:
 
 ```js
 var transcript = (context.transcript || []).slice();
-transcript.push({ q: input.question, a: input.answer });
+transcript.push({ q: output.question, a: output.answer });
 setContext('transcript', transcript);
 setNodePath('NextTurn');
 ```
 
 The interviewer's prompt template can reference `{{context.transcript}}` on every iteration.
+
+### Input scripts
+
+The saga evaluates the `InputScript` just before publishing the node's invocation event — the script sees what the node is *about* to receive and can transform it.
+
+1. When the saga is preparing to dispatch to a node with a non-empty `InputScript`, it reads the upstream artifact as JSON and evaluates the script with `input` bound to that artifact plus the current `context` and `global`.
+2. If the script calls `setInput(text)`, the runtime writes the string as a fresh `text/plain` artifact (file name `{agentKey}-scripted-input.txt`) and substitutes that URI for the `InputRef` handed to the agent, HITL UI, or escalation target.
+3. If the script omits `setInput`, the upstream artifact passes through unchanged.
+4. `setContext` and `setGlobal` writes are merged into the saga the same way as on output scripts.
+5. If the script throws, times out, or exceeds its budget, the saga transitions to `Failed` with the evaluation's error recorded — no fallback port applies because the agent hasn't run yet.
+
+**Audit semantics.** Same as `setOutput`: the upstream artifact is never mutated; only the pointer to what the node receives is swapped.
+
+**Size cap.** 1 MiB of UTF-16 characters. Exceeding it raises `InputOverrideBudgetExceeded`.
+
+**Scope.** Both `setInput` and `setOutput` are only exposed on agent-attached scripts (Agent / HITL / Escalation / Start). Calling either verb from a Logic-node script throws a `TypeError` — Logic nodes are themselves routing scripts and don't own a separate input/output artifact.
+
+**Top-level Start note.** Today, the input script runs for every mid-workflow dispatch and for subflow Start nodes. A top-level workflow's Start node does *not* currently run its input script — the first `AgentInvokeRequested` is published from the API endpoint before a saga exists to host the evaluation. For now, normalize the user prompt at submission time or in the first mid-flow node.
+
+#### Example: normalizing a noisy upstream artifact for a specialized subflow Start
+
+A subflow expects a narrowly-shaped JSON input but the parent calls it with varied shapes. The subflow's Start node uses an input script to coerce what it sees:
+
+```js
+var topic = (input.topic || input.subject || '(untitled)').trim();
+var normalized = {
+  topic: topic,
+  priority: input.priority || 'normal',
+  source: 'parent-workflow'
+};
+setInput(JSON.stringify(normalized));
+```
+
+Downstream the agent sees the same shape every invocation regardless of how the parent phrased its output.
 
 ### When to use a Logic node vs an agent-attached script
 

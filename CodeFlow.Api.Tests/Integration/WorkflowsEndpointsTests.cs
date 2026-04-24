@@ -39,7 +39,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "ghost",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
@@ -74,7 +74,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Approved", "Rejected", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -85,7 +85,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Agent",
                     agentKey = "wf-reviewer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Approved", "Rejected", "Failed" },
                     layoutX = 200,
                     layoutY = 0
@@ -136,7 +136,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-export-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -188,7 +188,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-preview-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -234,7 +234,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-apply-source-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -305,7 +305,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-conflict-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -359,7 +359,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-missing-closure-writer",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -404,7 +404,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey,
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 0,
                     layoutY = 0
@@ -507,8 +507,9 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         Guid Id,
         string Kind,
         string? AgentKey,
-        string? Script,
-        IReadOnlyList<string> OutputPorts);
+        string? OutputScript,
+        IReadOnlyList<string> OutputPorts,
+        string? InputScript = null);
 
     private sealed record EdgePayload(Guid FromNodeId, string FromPort, Guid ToNodeId, string ToPort, bool RotatesRound);
 
@@ -544,7 +545,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Start",
                     agentKey = "wf-classifier",
                     agentVersion = (int?)null,
-                    script = classifierScript,
+                    outputScript = classifierScript,
                     outputPorts = new[] { "Accept", "Reject" },
                     layoutX = 0,
                     layoutY = 0
@@ -555,7 +556,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Agent",
                     agentKey = "wf-accept-flow",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 200,
                     layoutY = 0
@@ -566,7 +567,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     kind = "Agent",
                     agentKey = "wf-reject-flow",
                     agentVersion = (int?)null,
-                    script = (string?)null,
+                    outputScript = (string?)null,
                     outputPorts = new[] { "Completed", "Failed" },
                     layoutX = 200,
                     layoutY = 200
@@ -584,11 +585,11 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var detail = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/scripted-agent-round-trip");
         detail.Should().NotBeNull();
         var reloadedStart = detail!.Nodes.Single(n => n.Id == startId);
-        reloadedStart.Script.Should().Be(classifierScript);
+        reloadedStart.OutputScript.Should().Be(classifierScript);
         reloadedStart.OutputPorts.Should().Equal("Accept", "Reject");
 
         var reloadedAccept = detail.Nodes.Single(n => n.Id == acceptId);
-        reloadedAccept.Script.Should().BeNull();
+        reloadedAccept.OutputScript.Should().BeNull();
         reloadedAccept.OutputPorts.Should().Equal("Completed", "Failed");
     }
 
@@ -648,6 +649,83 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         body.Should().NotBeNull();
         body!.Ok.Should().BeFalse();
         body.Errors.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task ValidateScript_InputDirection_AcceptsSetInput()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setInput('normalized: ' + (input.topic || 'none'));",
+            direction = "input"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body.Should().NotBeNull();
+        body!.Ok.Should().BeTrue();
+        body.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ValidateScript_InputDirection_RejectsSetOutput()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setOutput('wrong verb');",
+            direction = "input"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body.Should().NotBeNull();
+        body!.Ok.Should().BeFalse();
+        body.Errors.Should().NotBeEmpty();
+        body.Errors[0].Message.Should().Contain("agent-attached");
+    }
+
+    [Fact]
+    public async Task ValidateScript_OutputDirection_AcceptsSetOutputAndSetNodePath()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = """
+                setOutput('# Summary');
+                setNodePath('Completed');
+                """,
+            direction = "output"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body.Should().NotBeNull();
+        body!.Ok.Should().BeTrue();
+        body.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ValidateScript_OutputDirection_RejectsSetInput()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setInput('wrong verb');",
+            direction = "output"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body.Should().NotBeNull();
+        body!.Ok.Should().BeFalse();
+        body.Errors.Should().NotBeEmpty();
+        body.Errors[0].Message.Should().Contain("agent-attached");
     }
 
     [Fact]

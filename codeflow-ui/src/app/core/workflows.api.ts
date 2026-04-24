@@ -14,8 +14,11 @@ export interface WorkflowPayload {
   inputs: WorkflowInput[];
 }
 
+export type ValidateScriptDirection = 'Input' | 'Output';
+
 export interface ValidateScriptRequest {
   script: string;
+  direction?: ValidateScriptDirection;
 }
 
 export interface ValidateScriptError {

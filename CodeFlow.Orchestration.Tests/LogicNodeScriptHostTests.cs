@@ -648,7 +648,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeTrue();
         result.OutputOverride.Should().Be("# Interview Summary\n- Q1: a\n- Q2: b");
@@ -665,7 +665,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeTrue();
         result.OutputOverride.Should().BeNull();
@@ -685,7 +685,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
@@ -707,7 +707,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
@@ -727,7 +727,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
@@ -749,7 +749,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.OutputOverrideBudgetExceeded);
@@ -771,7 +771,7 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext,
-            allowOutputOverride: true);
+            allowOutputOverride: true, inputVariableName: "output");
 
         result.IsSuccess.Should().BeTrue();
         result.OutputPortName.Should().Be("Completed");
@@ -799,6 +799,272 @@ public sealed class LogicNodeScriptHostTests
             new[] { "Completed" },
             ParseJson("{}"),
             EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("agent-attached");
+    }
+
+    [Fact]
+    public void Evaluate_OutputScript_ShouldExposeArtifactAsOutputVariable()
+    {
+        // With inputVariableName: "output", the injected artifact is visible to the script as `output`
+        // rather than `input`. Output scripts run after the node produces its artifact, so `output`
+        // is the semantically correct name.
+        var host = BuildHost();
+        const string script = """
+            setOutput('echo:' + output.value);
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{\"value\":\"hello\"}"),
+            EmptyContext,
+            allowOutputOverride: true,
+            inputVariableName: "output");
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputOverride.Should().Be("echo:hello");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldCaptureInputOverride_WhenSetInputIsCalled()
+    {
+        var host = BuildHost();
+        const string script = """
+            setInput('normalized prompt');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.InputOverride.Should().Be("normalized prompt");
+        result.OutputOverride.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_InputOverride_ShouldBeNullWhenSetInputNotCalled()
+    {
+        var host = BuildHost();
+        const string script = "setNodePath('Completed');";
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.InputOverride.Should().BeNull();
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldRejectNonStringArgs()
+    {
+        var host = BuildHost();
+        const string script = """
+            setInput(42);
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("setInput");
+        result.FailureMessage.Should().Contain("string");
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldRejectObjectArgs()
+    {
+        var host = BuildHost();
+        const string script = """
+            setInput({ x: 1 });
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldRejectEmptyString()
+    {
+        var host = BuildHost();
+        const string script = """
+            setInput('');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldRejectOversizedStrings()
+    {
+        var host = BuildHost();
+        // 1 MiB cap (1,048,576 chars). Build a single ~1.1 MiB literal in one allocation — a
+        // tight concat loop risks tripping the 4 MB Jint memory limit instead.
+        const string script = """
+            setInput('x'.repeat(1200000));
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.InputOverrideBudgetExceeded);
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldCoexistWithSetNodePathAndSetContext()
+    {
+        var host = BuildHost();
+        const string script = """
+            setContext('stage', 'prep');
+            setInput('transformed prompt');
+            setGlobal('shared', true);
+            log('prepped input');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.OutputPortName.Should().Be("Completed");
+        result.InputOverride.Should().Be("transformed prompt");
+        result.ContextUpdates.Should().ContainKey("stage");
+        result.ContextUpdates["stage"].GetString().Should().Be("prep");
+        result.GlobalUpdates.Should().ContainKey("shared");
+        result.GlobalUpdates["shared"].GetBoolean().Should().BeTrue();
+        result.LogEntries.Should().Contain("prepped input");
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_ShouldFailScript_WhenNotAllowed()
+    {
+        // Default (allowInputOverride: false) — setInput must throw, paralleling setOutput's
+        // gating on Logic nodes and on output scripts.
+        var host = BuildHost();
+        const string script = """
+            setInput('ignored');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("agent-attached");
+    }
+
+    [Fact]
+    public void Evaluate_InputScript_ShouldSeeUpstreamArtifactAsInputVariable()
+    {
+        // Input scripts see the upstream artifact as `input` (the default variable name) and
+        // can transform it with setInput().
+        var host = BuildHost();
+        const string script = """
+            setInput('hello ' + input.name);
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{\"name\":\"world\"}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeTrue();
+        result.InputOverride.Should().Be("hello world");
+    }
+
+    [Fact]
+    public void Evaluate_SetOutput_OnInputScript_ShouldThrow()
+    {
+        // An input-script invocation (allowInputOverride: true, allowOutputOverride: false)
+        // must reject setOutput — the script's role is pre-dispatch input transformation only.
+        var host = BuildHost();
+        const string script = """
+            setOutput('wrong verb');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowInputOverride: true);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
+        result.FailureMessage.Should().Contain("agent-attached");
+    }
+
+    [Fact]
+    public void Evaluate_SetInput_OnOutputScript_ShouldThrow()
+    {
+        // An output-script invocation (allowOutputOverride: true, allowInputOverride: false)
+        // must reject setInput — mirror of the above.
+        var host = BuildHost();
+        const string script = """
+            setInput('wrong verb');
+            setNodePath('Completed');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Completed" },
+            ParseJson("{}"),
+            EmptyContext,
+            allowOutputOverride: true,
+            inputVariableName: "output");
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);

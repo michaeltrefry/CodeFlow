@@ -204,16 +204,16 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
 
         var reloadedStart = reloaded.Nodes.Single(n => n.Id == startNodeId);
         reloadedStart.Kind.Should().Be(WorkflowNodeKind.Start);
-        reloadedStart.Script.Should().Be(interviewerScript);
+        reloadedStart.OutputScript.Should().Be(interviewerScript);
         reloadedStart.OutputPorts.Should().Equal("NextTurn");
 
         var reloadedHitl = reloaded.Nodes.Single(n => n.Id == hitlNodeId);
         reloadedHitl.Kind.Should().Be(WorkflowNodeKind.Hitl);
-        reloadedHitl.Script.Should().Be(hitlScript);
+        reloadedHitl.OutputScript.Should().Be(hitlScript);
         reloadedHitl.OutputPorts.Should().Equal("Answer", "Exit");
 
         var reloadedAccept = reloaded.Nodes.Single(n => n.Id == acceptNodeId);
-        reloadedAccept.Script.Should().BeNull("unscripted agent nodes must round-trip with null Script");
+        reloadedAccept.OutputScript.Should().BeNull("unscripted agent nodes must round-trip with null OutputScript");
     }
 
     [Fact]
@@ -236,10 +236,10 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
                     null, new[] { "Completed", "Failed" }, 0, 0),
                 new WorkflowNodeDraft(pinnedSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
-                    AgentVersion: null, Script: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    AgentVersion: null, OutputScript: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
                     LayoutX: 250, LayoutY: 0, SubflowKey: "child-flow", SubflowVersion: 7),
                 new WorkflowNodeDraft(latestSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
-                    AgentVersion: null, Script: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    AgentVersion: null, OutputScript: null, OutputPorts: new[] { "Completed", "Failed", "Escalated" },
                     LayoutX: 500, LayoutY: 0, SubflowKey: "shared-utility", SubflowVersion: null)
             ],
             Edges:
@@ -294,13 +294,13 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
                     null, new[] { "Completed", "Failed" }, 0, 0),
                 new WorkflowNodeDraft(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null,
-                    AgentVersion: null, Script: null,
+                    AgentVersion: null, OutputScript: null,
                     OutputPorts: new[] { "Approved", "Exhausted", "Failed" },
                     LayoutX: 250, LayoutY: 0,
                     SubflowKey: "draft-critique-revise", SubflowVersion: 2,
                     ReviewMaxRounds: 3),
                 new WorkflowNodeDraft(plainSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
-                    AgentVersion: null, Script: null,
+                    AgentVersion: null, OutputScript: null,
                     OutputPorts: new[] { "Completed", "Failed", "Escalated" },
                     LayoutX: 500, LayoutY: 0,
                     SubflowKey: "follow-up", SubflowVersion: null)

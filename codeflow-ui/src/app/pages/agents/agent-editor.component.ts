@@ -490,8 +490,13 @@ export class AgentEditorComponent implements OnInit {
   readonly fallbackTemplates = signal<DecisionTemplateRow[]>([]);
 
   readonly previewContextText = signal(defaultLlmPreviewContext());
-  readonly previewContextPlaceholder = computed(() =>
-    this.type() === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
+  readonly previewContextPlaceholder = computed(() => {
+    if (this.type() === 'hitl') return defaultHitlPreviewContext();
+    const sample = pickSampleOutputRow(this.outputs());
+    return defaultLlmPreviewContext(
+      sample ? coerceSamplePayload(sample.payloadExample) : undefined,
+      sample?.kind);
+  });
   readonly previewContextError = signal<string | null>(null);
 
   readonly saving = signal(false);
@@ -678,8 +683,14 @@ export class AgentEditorComponent implements OnInit {
         previewPending: false
       }));
     this.fallbackTemplates.set(orphans);
-    this.previewContextText.set(
-      resolvedType === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
+    if (resolvedType === 'hitl') {
+      this.previewContextText.set(defaultHitlPreviewContext());
+    } else {
+      const sample = pickSampleOutputRow(this.outputs());
+      this.previewContextText.set(defaultLlmPreviewContext(
+        sample ? coerceSamplePayload(sample.payloadExample) : undefined,
+        sample?.kind));
+    }
   }
 
   addFallbackTemplate(): void {
@@ -987,16 +998,28 @@ function defaultHitlPreviewContext(): string {
   }, null, 2);
 }
 
-function defaultLlmPreviewContext(): string {
+function defaultLlmPreviewContext(sampleOutput?: unknown, sampleDecision?: string): string {
+  const decision = sampleDecision && sampleDecision.trim() ? sampleDecision : 'Completed';
+  const output = sampleOutput !== undefined ? sampleOutput : 'Example markdown content';
   return JSON.stringify({
-    output: {
-      headline: 'Example headline',
-      summary: 'Example summary'
-    },
+    decision,
+    outputPortName: decision,
+    output,
     input: {},
     context: {},
     global: {}
   }, null, 2);
+}
+
+function pickSampleOutputRow(rows: readonly OutputRow[]): OutputRow | null {
+  return rows.find(r => r.payloadExample !== null && r.payloadExample !== undefined) ?? null;
+}
+
+function coerceSamplePayload(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try { return JSON.parse(trimmed); } catch { return value; }
 }
 
 function stringifyPreviewOutput(value: unknown): string | undefined {

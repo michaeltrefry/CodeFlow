@@ -10,7 +10,8 @@ public sealed record LogicNodeEvaluationResult(
     string? FailureMessage,
     IReadOnlyDictionary<string, JsonElement> ContextUpdates,
     IReadOnlyDictionary<string, JsonElement> GlobalUpdates,
-    string? OutputOverride = null)
+    string? OutputOverride = null,
+    string? InputOverride = null)
 {
     public bool IsSuccess => Failure is null && !string.IsNullOrWhiteSpace(OutputPortName);
 
@@ -20,8 +21,9 @@ public sealed record LogicNodeEvaluationResult(
         TimeSpan duration,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
         IReadOnlyDictionary<string, JsonElement> globalUpdates,
-        string? outputOverride = null) =>
-        new(port, logs, duration, null, null, contextUpdates, globalUpdates, outputOverride);
+        string? outputOverride = null,
+        string? inputOverride = null) =>
+        new(port, logs, duration, null, null, contextUpdates, globalUpdates, outputOverride, inputOverride);
 
     public static LogicNodeEvaluationResult Fail(
         LogicNodeFailureKind kind,
@@ -41,5 +43,6 @@ public enum LogicNodeFailureKind
     MissingSetNodePath,
     UnknownPort,
     ContextBudgetExceeded,
-    OutputOverrideBudgetExceeded
+    OutputOverrideBudgetExceeded,
+    InputOverrideBudgetExceeded
 }

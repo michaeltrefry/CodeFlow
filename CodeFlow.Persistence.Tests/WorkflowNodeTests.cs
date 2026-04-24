@@ -39,7 +39,7 @@ public sealed class WorkflowNodeTests
             WorkflowNodeKind.Logic,
             AgentKey: null,
             AgentVersion: null,
-            Script: "setNodePath('A');",
+            OutputScript: "setNodePath('A');",
             OutputPorts: new[] { "A", "B" },
             LayoutX: 10,
             LayoutY: 20);
@@ -47,7 +47,7 @@ public sealed class WorkflowNodeTests
         var moved = node with { LayoutX = 99 };
 
         moved.LayoutX.Should().Be(99);
-        moved.Script.Should().Be(node.Script);
+        moved.OutputScript.Should().Be(node.OutputScript);
         moved.OutputPorts.Should().BeEquivalentTo(node.OutputPorts);
         moved.Should().NotBe(node);
     }
@@ -60,7 +60,7 @@ public sealed class WorkflowNodeTests
             Kind: WorkflowNodeKind.Logic,
             AgentKey: null,
             AgentVersion: null,
-            Script: "if (input.kind === 'NewProject') { setNodePath('NewProjectFlow'); }",
+            OutputScript: "if (input.kind === 'NewProject') { setNodePath('NewProjectFlow'); }",
             OutputPorts: new[] { "NewProjectFlow", "FeatureFlow", "BugFixFlow" },
             LayoutX: 150.5,
             LayoutY: 320.25);
@@ -73,7 +73,7 @@ public sealed class WorkflowNodeTests
         roundTripped.Kind.Should().Be(WorkflowNodeKind.Logic);
         roundTripped.AgentKey.Should().BeNull();
         roundTripped.AgentVersion.Should().BeNull();
-        roundTripped.Script.Should().Be(node.Script);
+        roundTripped.OutputScript.Should().Be(node.OutputScript);
         roundTripped.OutputPorts.Should().Equal(node.OutputPorts);
         roundTripped.LayoutX.Should().Be(150.5);
         roundTripped.LayoutY.Should().Be(320.25);
@@ -87,7 +87,7 @@ public sealed class WorkflowNodeTests
             Kind: WorkflowNodeKind.Agent,
             AgentKey: "reviewer",
             AgentVersion: 4,
-            Script: null,
+            OutputScript: null,
             OutputPorts: new[] { "Completed", "Approved", "Rejected", "Failed" },
             LayoutX: 0,
             LayoutY: 0);
@@ -98,6 +98,6 @@ public sealed class WorkflowNodeTests
         roundTripped!.Kind.Should().Be(WorkflowNodeKind.Agent);
         roundTripped.AgentKey.Should().Be("reviewer");
         roundTripped.AgentVersion.Should().Be(4);
-        roundTripped.Script.Should().BeNull();
+        roundTripped.OutputScript.Should().BeNull();
     }
 }

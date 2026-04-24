@@ -549,7 +549,8 @@ public sealed class WorkflowPackageImporter(
                         Kind = node.Kind,
                         AgentKey = Trim(node.AgentKey),
                         AgentVersion = node.AgentVersion,
-                        Script = node.Script,
+                        OutputScript = node.OutputScript,
+                        InputScript = node.InputScript,
                         OutputPortsJson = JsonSerializer.Serialize(node.OutputPorts, SerializerOptions),
                         LayoutX = node.LayoutX,
                         LayoutY = node.LayoutY,
@@ -612,14 +613,15 @@ public sealed class WorkflowPackageImporter(
             node.Kind,
             NormalizeOptional(node.AgentKey),
             node.AgentVersion ?? packageNode?.AgentVersion,
-            node.Script,
+            node.OutputScript,
             node.OutputPorts,
             node.LayoutX,
             node.LayoutY,
             NormalizeOptional(node.SubflowKey),
             node.SubflowVersion ?? packageNode?.SubflowVersion,
             node.ReviewMaxRounds,
-            NormalizeOptional(node.LoopDecision));
+            NormalizeOptional(node.LoopDecision),
+            node.InputScript);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,
