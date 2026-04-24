@@ -148,7 +148,7 @@ Every Logic evaluation produces a `LogicEvaluationRecord` on saga state containi
 
 ## Agent-attached routing scripts
 
-Agent, HITL, Escalation, and Start nodes may carry an **optional** `Script` that picks the outgoing port after the agent completes. The sandbox is **identical** to the Logic node sandbox — same globals (`input`, `context`, `setNodePath`, `setContext`, `log`), same limits, same security posture.
+Agent, HITL, Escalation, and Start nodes may carry an **optional** `Script` that picks the outgoing port after the agent completes. The sandbox is nearly identical to the Logic node sandbox — same globals (`input`, `context`, `setNodePath`, `setContext`, `setGlobal`, `log`), same limits, same security posture. Agent-attached scripts additionally get `setOutput(text)` for replacing the artifact that flows downstream.
 
 ### When the script runs
 
@@ -160,6 +160,38 @@ After the agent emits `AgentInvocationCompleted`, the saga:
 4. If the script fails (throws, times out, omits `setNodePath`, or picks an undeclared port), routing **falls back** to the `AgentDecisionKind`-named port carried on the completion message (i.e., the pre-script behavior).
 
 `setContext` writes are merged into the saga's context and flow into every downstream dispatch — same semantics as Logic node writes.
+
+### Replacing the output artifact with `setOutput(text)`
+
+Call `setOutput(text)` inside an agent-attached routing script to substitute a new artifact for the one flowing to the next node. The argument must be a non-empty string; the runtime writes it as a fresh `text/plain` artifact (file name `{agentKey}-scripted-output.txt`) and uses the new URI for:
+
+- the downstream dispatch's `InputRef`;
+- the `DecisionRecord` appended to the saga's history (so the trace UI shows and downloads the rendered artifact).
+
+**Audit semantics.** The original agent submission is never mutated or deleted. It remains in the artifact store with its original URI; only the pointer stored on the decision and handed to downstream nodes is swapped. If an external system already recorded the original URI, it continues to resolve.
+
+**Size cap.** The string is capped at 1 MiB. Exceeding the cap fails the evaluation with `OutputOverrideBudgetExceeded`, which — like any script failure — routes via the `AgentDecisionKind`-named fallback port.
+
+**Scope.** `setOutput` is only exposed on agent-attached scripts (Agent / HITL / Escalation / Start nodes). Calling it from a Logic-node script throws a `TypeError` — Logic nodes don't own an "output artifact" in the same sense.
+
+#### Example: socratic HITL that emits a markdown summary
+
+A HITL interviewee submits structured Q&A pairs; the routing script composes a markdown summary and substitutes that for the raw submission so the downstream publisher renders human-readable output:
+
+```js
+if (input.decision !== 'Completed') { setNodePath('Failed'); }
+else {
+  var lines = ['# Interview summary'];
+  (context.interview || []).forEach(function (turn) {
+    lines.push('- **' + turn.question + '** — ' + turn.answer);
+  });
+  lines.push('', 'Context: ' + (global.summary || '(none)'));
+  setOutput(lines.join('\n'));
+  setNodePath('Completed');
+}
+```
+
+**Anti-pattern this avoids.** Without `setOutput`, the same effect requires stashing the rendered markdown on `global` (or `context`) and adding a passthrough agent downstream whose only job is to materialize `{{ global.summary }}` into an artifact. That's an extra agent invocation, an extra prompt, and an extra round of latency for what is really a local string transform.
 
 ### Example: Answer-vs-Exit HITL routing
 

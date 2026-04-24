@@ -33,11 +33,12 @@ public sealed class LogicNodeScriptHost
     private const int MaxLogEntryChars = 4_000;
     private const int MaxTotalLogChars = 256 * 1024; // 256 KB of UTF-16 (host-side, outside Jint accounting)
     private const int MaxContextUpdatesChars = 256 * 1024; // 256 KB of serialized JSON per evaluation
+    private const int MaxOutputOverrideChars = 1 * 1024 * 1024; // 1 MiB of UTF-16 chars
     private const string LogBudgetExceededMessage =
         "log() output exceeded the host budget and evaluation was aborted.";
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(250);
 
-    private const string BootstrapScript = """
+    private const string BootstrapScriptCommon = """
         function __deepFreeze(o) {
             if (o === null || typeof o !== 'object') { return o; }
             Object.freeze(o);
@@ -50,6 +51,7 @@ public sealed class LogicNodeScriptHost
         }
         var __contextUpdates = Object.create(null);
         var __globalUpdates = Object.create(null);
+        var __outputOverride = null;
         function setContext(key, value) {
             if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
                 throw new TypeError('setContext(key, value) requires a non-empty string key.');
@@ -74,6 +76,27 @@ public sealed class LogicNodeScriptHost
                 throw new TypeError('setGlobal value is not JSON-serializable: ' + e.message);
             }
         }
+        function __readOutputOverride() {
+            return __outputOverride;
+        }
+        """;
+
+    private const string BootstrapScriptSetOutputEnabled = """
+        function setOutput(text) {
+            if (typeof text !== 'string') {
+                throw new TypeError('setOutput(text) requires a string argument.');
+            }
+            if (text.length === 0) {
+                throw new TypeError('setOutput(text) requires a non-empty string.');
+            }
+            __outputOverride = text;
+        }
+        """;
+
+    private const string BootstrapScriptSetOutputDisabled = """
+        function setOutput(text) {
+            throw new TypeError('setOutput(text) is only available on agent-attached routing scripts, not on Logic nodes.');
+        }
         """;
 
     private readonly IMemoryCache cache;
@@ -94,7 +117,8 @@ public sealed class LogicNodeScriptHost
         CancellationToken cancellationToken = default,
         IReadOnlyDictionary<string, JsonElement>? global = null,
         int? reviewRound = null,
-        int? reviewMaxRounds = null)
+        int? reviewMaxRounds = null,
+        bool allowOutputOverride = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(script);
@@ -172,7 +196,10 @@ public sealed class LogicNodeScriptHost
             var scriptMaxRounds = reviewMaxRounds ?? 0;
             var scriptIsLast = reviewRound is int r && reviewMaxRounds is int m && m > 0 && r >= m;
 
-            engine.Execute(BootstrapScript);
+            engine.Execute(BootstrapScriptCommon);
+            engine.Execute(allowOutputOverride
+                ? BootstrapScriptSetOutputEnabled
+                : BootstrapScriptSetOutputDisabled);
             engine.Execute($"var input = {input.GetRawText()};");
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
             engine.Execute($"var global = __deepFreeze({SerializeContext(globalSnapshot)});");
@@ -183,6 +210,10 @@ public sealed class LogicNodeScriptHost
 
             var updatesJson = engine.Evaluate("__readContextUpdates()").AsString();
             var globalUpdatesJson = engine.Evaluate("__readGlobalUpdates()").AsString();
+            var outputOverrideValue = engine.Evaluate("__readOutputOverride()");
+            string? outputOverride = outputOverrideValue.IsNull() || outputOverrideValue.IsUndefined()
+                ? null
+                : outputOverrideValue.AsString();
 
             stopwatch.Stop();
 
@@ -200,6 +231,15 @@ public sealed class LogicNodeScriptHost
                 return LogicNodeEvaluationResult.Fail(
                     LogicNodeFailureKind.ContextBudgetExceeded,
                     $"setGlobal payload exceeded {MaxContextUpdatesChars} characters when serialized.",
+                    logs,
+                    stopwatch.Elapsed);
+            }
+
+            if (outputOverride is not null && outputOverride.Length > MaxOutputOverrideChars)
+            {
+                return LogicNodeEvaluationResult.Fail(
+                    LogicNodeFailureKind.OutputOverrideBudgetExceeded,
+                    $"setOutput payload exceeded {MaxOutputOverrideChars} characters.",
                     logs,
                     stopwatch.Elapsed);
             }
@@ -225,7 +265,13 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
-            return LogicNodeEvaluationResult.Success(chosenPort, logs, stopwatch.Elapsed, contextUpdates, globalUpdates);
+            return LogicNodeEvaluationResult.Success(
+                chosenPort,
+                logs,
+                stopwatch.Elapsed,
+                contextUpdates,
+                globalUpdates,
+                outputOverride);
         }
         catch (TimeoutException)
         {

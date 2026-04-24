@@ -655,18 +655,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var runtimeKind = MapDecisionKind(message.Decision);
 
-        saga.AppendDecision(new DecisionRecord(
-            AgentKey: message.AgentKey,
-            AgentVersion: message.AgentVersion,
-            Decision: runtimeKind,
-            DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
-            RoundId: saga.CurrentRoundId,
-            RecordedAtUtc: DateTime.UtcNow,
-            NodeId: message.FromNodeId,
-            OutputPortName: message.OutputPortName,
-            InputRef: saga.CurrentInputRef,
-            OutputRef: message.OutputRef?.ToString()));
-
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,
             saga.WorkflowVersion,
@@ -674,6 +662,18 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (saga.EscalatedFromNodeId is Guid escalatedFromNodeId)
         {
+            saga.AppendDecision(new DecisionRecord(
+                AgentKey: message.AgentKey,
+                AgentVersion: message.AgentVersion,
+                Decision: runtimeKind,
+                DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
+                RoundId: saga.CurrentRoundId,
+                RecordedAtUtc: DateTime.UtcNow,
+                NodeId: message.FromNodeId,
+                OutputPortName: message.OutputPortName,
+                InputRef: saga.CurrentInputRef,
+                OutputRef: message.OutputRef?.ToString()));
+
             await HandleEscalationResponseAsync(
                 context,
                 agentConfigRepo,
@@ -687,13 +687,31 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        var effectivePortName = await ResolveSourcePortAsync(
+        var portResolution = await ResolveSourcePortAsync(
             context,
             workflow,
             saga,
             scriptHost,
             artifactStore,
             message);
+
+        var effectivePortName = portResolution.Port;
+        var effectiveOutputRef = portResolution.OverrideOutputRef ?? message.OutputRef;
+
+        // Append decision *after* the script runs so the OutputRef reflects any setOutput()
+        // override. The original output artifact is preserved in the store; only the pointer
+        // recorded on the decision and used for downstream dispatch is swapped.
+        saga.AppendDecision(new DecisionRecord(
+            AgentKey: message.AgentKey,
+            AgentVersion: message.AgentVersion,
+            Decision: runtimeKind,
+            DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
+            RoundId: saga.CurrentRoundId,
+            RecordedAtUtc: DateTime.UtcNow,
+            NodeId: message.FromNodeId,
+            OutputPortName: message.OutputPortName,
+            InputRef: saga.CurrentInputRef,
+            OutputRef: effectiveOutputRef?.ToString()));
 
         // Remember the effective port so the terminal SubflowCompleted can carry it as
         // TerminalPort — the ReviewLoop parent compares that against its configured
@@ -743,7 +761,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             scriptHost,
             artifactStore,
             edge,
-            upstreamOutputRef: message.OutputRef);
+            upstreamOutputRef: effectiveOutputRef);
 
         if (resolution is { FailureTerminal: true })
         {
@@ -774,7 +792,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     saga,
                     workflow,
                     escalationNode,
-                    inputRef: message.OutputRef,
+                    inputRef: effectiveOutputRef,
                     roundId: saga.CurrentRoundId,
                     retryContext: retryContext);
 
@@ -809,7 +827,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga,
             workflow,
             targetNode,
-            inputRef: message.OutputRef,
+            inputRef: effectiveOutputRef,
             roundId: targetRoundId,
             retryContext: retryContext);
 
@@ -822,6 +840,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }
 
+    private readonly record struct SourcePortResolution(string Port, Uri? OverrideOutputRef);
+
     /// <summary>
     /// If the source node (the one that just emitted <see cref="AgentInvocationCompleted"/>) is an
     /// Agent/HITL/Escalation/Start node with a non-empty script, evaluate the script to pick the
@@ -831,8 +851,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// <c>context</c>. On any failure or if <c>setNodePath</c> is not called, fall back to the
     /// AgentDecisionKind-named port carried on the completion message. Context writes made via
     /// <c>setContext</c> are merged into <see cref="WorkflowSagaStateEntity.InputsJson"/>.
+    ///
+    /// If the script calls <c>setOutput(text)</c>, the provided string is persisted as a new
+    /// artifact and returned via <see cref="SourcePortResolution.OverrideOutputRef"/>. The
+    /// original artifact is left in the store untouched — the override only affects the URI
+    /// used for the saga's DecisionRecord and for downstream dispatch.
     /// </summary>
-    private static async Task<string> ResolveSourcePortAsync(
+    private static async Task<SourcePortResolution> ResolveSourcePortAsync(
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         Workflow workflow,
         WorkflowSagaStateEntity saga,
@@ -846,12 +871,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             || fromNode.Kind == WorkflowNodeKind.Logic
             || string.IsNullOrWhiteSpace(fromNode.Script))
         {
-            return fallbackPort;
+            return new SourcePortResolution(fallbackPort, null);
         }
 
         if (message.OutputRef is null)
         {
-            return fallbackPort;
+            return new SourcePortResolution(fallbackPort, null);
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
@@ -873,7 +898,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             cancellationToken: context.CancellationToken,
             global: globalInputs,
             reviewRound: saga.ParentReviewRound,
-            reviewMaxRounds: saga.ParentReviewMaxRounds);
+            reviewMaxRounds: saga.ParentReviewMaxRounds,
+            allowOutputOverride: true);
 
         saga.AppendLogicEvaluation(new LogicEvaluationRecord(
             NodeId: fromNode.Id,
@@ -887,7 +913,42 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
 
-        return eval.IsSuccess ? eval.OutputPortName! : fallbackPort;
+        if (!eval.IsSuccess)
+        {
+            return new SourcePortResolution(fallbackPort, null);
+        }
+
+        Uri? overrideRef = null;
+        if (!string.IsNullOrEmpty(eval.OutputOverride))
+        {
+            overrideRef = await WriteOverrideArtifactAsync(
+                artifactStore,
+                saga,
+                fromNode.AgentKey,
+                eval.OutputOverride!,
+                context.CancellationToken);
+        }
+
+        return new SourcePortResolution(eval.OutputPortName!, overrideRef);
+    }
+
+    private static async Task<Uri> WriteOverrideArtifactAsync(
+        IArtifactStore artifactStore,
+        WorkflowSagaStateEntity saga,
+        string? agentKey,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var bytes = Encoding.UTF8.GetBytes(content);
+        using var stream = new MemoryStream(bytes);
+        var fileNamePrefix = string.IsNullOrWhiteSpace(agentKey) ? "node" : agentKey;
+        var metadata = new ArtifactMetadata(
+            TraceId: saga.TraceId,
+            RoundId: saga.CurrentRoundId,
+            ArtifactId: Guid.NewGuid(),
+            ContentType: "text/plain",
+            FileName: $"{fileNamePrefix}-scripted-output.txt");
+        return await artifactStore.WriteAsync(stream, metadata, cancellationToken);
     }
 
     private static void ApplyScriptUpdates(
