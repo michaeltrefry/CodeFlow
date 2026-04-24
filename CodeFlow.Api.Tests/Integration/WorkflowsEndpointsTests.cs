@@ -271,6 +271,18 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var agent = await client.GetAsync("/api/agents/wf-apply-target-writer/1");
         agent.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var workflows = await client.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryPayload>>("/api/workflows");
+        workflows.Should().NotBeNull();
+        workflows!.Should().Contain(workflow =>
+            workflow.Key == "apply-target-flow" &&
+            workflow.LatestVersion == 1);
+
+        var agents = await client.GetFromJsonAsync<IReadOnlyList<AgentSummaryPayload>>("/api/agents");
+        agents.Should().NotBeNull();
+        agents!.Should().Contain(agentSummary =>
+            agentSummary.Key == "wf-apply-target-writer" &&
+            agentSummary.LatestVersion == 1);
     }
 
     [Fact]
@@ -499,6 +511,10 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         IReadOnlyList<string> OutputPorts);
 
     private sealed record EdgePayload(Guid FromNodeId, string FromPort, Guid ToNodeId, string ToPort, bool RotatesRound);
+
+    private sealed record WorkflowSummaryPayload(string Key, int LatestVersion, string Name);
+
+    private sealed record AgentSummaryPayload(string Key, int LatestVersion, string Type);
 
     [Fact]
     public async Task Post_ThenGet_RoundTripsScriptedAgentNode()
