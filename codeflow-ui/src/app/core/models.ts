@@ -47,7 +47,33 @@ export interface AgentConfig {
   maxTokens?: number;
   temperature?: number;
   outputs?: AgentOutputDeclaration[];
+  decisionOutputTemplates?: Record<string, string>;
   [key: string]: unknown;
+}
+
+export type DecisionOutputTemplateMode = 'llm' | 'hitl';
+
+export interface DecisionOutputTemplatePreviewRequest {
+  template: string;
+  mode: DecisionOutputTemplateMode;
+  decision?: string;
+  outputPortName?: string;
+  output?: string;
+  input?: unknown;
+  fieldValues?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  global?: Record<string, unknown>;
+  reason?: string;
+  reasons?: string[];
+  actions?: string[];
+}
+
+export interface DecisionOutputTemplatePreviewResponse {
+  rendered: string;
+}
+
+export interface DecisionOutputTemplatePreviewError {
+  error: string;
 }
 
 export type McpTransportKind = 'StreamableHttp' | 'HttpSse';

@@ -1,9 +1,17 @@
-import { Component, inject, input, signal, OnInit } from '@angular/core';
+import { Component, computed, effect, inject, input, signal, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
-import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
+import { AgentConfig, AgentOutputDeclaration, DecisionOutputTemplateMode } from '../../core/models';
+
+interface DecisionTemplateRow {
+  port: string;
+  template: string;
+  preview: string;
+  previewError: string | null;
+  previewPending: boolean;
+}
 
 @Component({
   selector: 'cf-agent-editor',
@@ -130,6 +138,79 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
       }
 
       <section class="outputs-section">
+        <h3>
+          Decision output templates
+          <a
+            class="doc-link"
+            href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/decision-output-templates.md"
+            target="_blank"
+            rel="noopener noreferrer">Learn more ↗</a>
+        </h3>
+        <p class="muted small">
+          Reshape the artifact passed downstream once a decision lands. Key each template by the output port
+          the agent will emit, or use <code>*</code> as a wildcard fallback. Scriban syntax —
+          <code>{{ '{{ decision }}' }}</code>, <code>{{ '{{ output.field }}' }}</code>,
+          <code>{{ '{{ context.key }}' }}</code>, <code>{{ '{{ if … }}' }}</code>.
+          A routing script that calls <code>setOutput()</code> still wins over any template here.
+        </p>
+
+        <div class="form-field preview-context">
+          <label>Preview context <span class="muted small">(JSON — drives the live preview below)</span></label>
+          <textarea
+            rows="5"
+            class="mono"
+            [ngModel]="previewContextText()"
+            (ngModelChange)="previewContextText.set($event)"
+            name="decisionTemplatePreviewContext"
+            [placeholder]='previewContextPlaceholder()'></textarea>
+          @if (previewContextError()) {
+            <div class="tag error">{{ previewContextError() }}</div>
+          }
+        </div>
+
+        @for (row of decisionTemplates(); track $index; let i = $index) {
+          <div class="output-card">
+            <div class="row-spread">
+              <strong class="mono">{{ row.port || '(unnamed port)' }}</strong>
+              <button type="button" class="icon-button" (click)="removeDecisionTemplate(i)" title="Remove template">×</button>
+            </div>
+            <div class="form-field">
+              <label>Output port <span class="muted small">(or <code>*</code> for wildcard)</span></label>
+              <input type="text"
+                     [ngModel]="row.port"
+                     (ngModelChange)="updateDecisionTemplate(i, { port: $event })"
+                     [name]="'decision_template_port_' + i"
+                     placeholder="Approved" />
+            </div>
+            <div class="form-field">
+              <label>Template</label>
+              <textarea
+                rows="6"
+                class="mono"
+                [ngModel]="row.template"
+                (ngModelChange)="updateDecisionTemplate(i, { template: $event })"
+                [name]="'decision_template_body_' + i"
+                placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
+            </div>
+            <div class="form-field">
+              <label>
+                Preview
+                @if (row.previewPending) {
+                  <span class="muted small">(rendering…)</span>
+                }
+              </label>
+              @if (row.previewError) {
+                <pre class="preview-error mono">{{ row.previewError }}</pre>
+              } @else {
+                <pre class="preview-output mono">{{ row.preview || '(enter a template to see the rendered output)' }}</pre>
+              }
+            </div>
+          </div>
+        }
+        <button type="button" class="secondary" (click)="addDecisionTemplate()">+ Add template</button>
+      </section>
+
+      <section class="outputs-section">
         <h3>Declared outputs</h3>
         <p class="muted small">
           List the decision kinds this agent emits. Workflow nodes that reference this agent
@@ -212,6 +293,18 @@ import { AgentConfig, AgentOutputDeclaration } from '../../core/models';
       color: var(--color-muted); text-decoration: none;
     }
     .doc-link:hover { color: var(--color-accent, #58a6ff); text-decoration: underline; }
+    .preview-context textarea { min-height: 5rem; }
+    .preview-output, .preview-error {
+      padding: 0.5rem; border-radius: 4px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--color-border);
+      white-space: pre-wrap; word-break: break-word;
+      margin: 0; font-size: 0.85rem;
+    }
+    .preview-error {
+      color: #f85149; border-color: rgba(248, 81, 73, 0.5);
+      background: rgba(248, 81, 73, 0.08);
+    }
   `]
 })
 export class AgentEditorComponent implements OnInit {
@@ -236,8 +329,51 @@ export class AgentEditorComponent implements OnInit {
     { kind: 'Failed', description: null, payloadExample: null }
   ]);
 
+  readonly decisionTemplates = signal<DecisionTemplateRow[]>([]);
+
+  // Author-editable JSON that drives the live preview render. Resets to the mode-appropriate
+  // default whenever the agent type toggles so switching LLM ↔ HITL shows a sensible starter.
+  readonly previewContextText = signal(defaultLlmPreviewContext());
+  readonly previewContextPlaceholder = computed(() =>
+    this.type() === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
+  readonly previewContextError = signal<string | null>(null);
+
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
+
+  constructor() {
+    // Re-render every template's preview whenever its template body, port, preview context, or mode changes.
+    effect(() => {
+      const rows = this.decisionTemplates();
+      const contextText = this.previewContextText();
+      const mode: DecisionOutputTemplateMode = this.type() === 'hitl' ? 'hitl' : 'llm';
+
+      let parsedContext: Record<string, unknown> = {};
+      try {
+        const parsed = contextText.trim() ? JSON.parse(contextText) : {};
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsedContext = parsed as Record<string, unknown>;
+          this.previewContextError.set(null);
+        } else {
+          this.previewContextError.set('Preview context must be a JSON object.');
+          return;
+        }
+      } catch (e) {
+        this.previewContextError.set('Preview context is not valid JSON.');
+        return;
+      }
+
+      rows.forEach((row, index) => {
+        if (!row.template.trim()) {
+          if (row.preview || row.previewError || row.previewPending) {
+            this.patchDecisionRowSilently(index, { preview: '', previewError: null, previewPending: false });
+          }
+          return;
+        }
+        this.schedulePreviewRender(index, row, mode, parsedContext);
+      });
+    });
+  }
 
   ngOnInit(): void {
     const existing = this.existingKey();
@@ -264,9 +400,96 @@ export class AgentEditorComponent implements OnInit {
               payloadExample: d.payloadExample ?? null
             })));
           }
+          const templates = (config as AgentConfig)['decisionOutputTemplates'];
+          if (templates && typeof templates === 'object') {
+            const rows = Object.entries(templates).map(([port, template]) => ({
+              port,
+              template: String(template ?? ''),
+              preview: '',
+              previewError: null,
+              previewPending: false
+            }) as DecisionTemplateRow);
+            this.decisionTemplates.set(rows);
+          }
+          this.previewContextText.set(
+            version.type === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
         }
       });
     }
+  }
+
+  addDecisionTemplate(): void {
+    this.decisionTemplates.set([
+      ...this.decisionTemplates(),
+      { port: '', template: '', preview: '', previewError: null, previewPending: false }
+    ]);
+  }
+
+  removeDecisionTemplate(index: number): void {
+    this.decisionTemplates.set(this.decisionTemplates().filter((_, i) => i !== index));
+  }
+
+  updateDecisionTemplate(index: number, patch: Partial<DecisionTemplateRow>): void {
+    this.decisionTemplates.set(this.decisionTemplates().map((row, i) =>
+      i === index ? { ...row, ...patch } : row));
+  }
+
+  /**
+   * Apply preview fields (preview / previewError / previewPending) without triggering the
+   * preview-render effect. Uses signal.update so Angular sees the write but we're careful to
+   * only mutate preview-related keys — the effect's dependencies (template, port, mode, context)
+   * are read from the rows array and preview-only updates don't change those dependencies.
+   */
+  private patchDecisionRowSilently(index: number, patch: Partial<DecisionTemplateRow>): void {
+    this.decisionTemplates.update(rows => rows.map((row, i) =>
+      i === index ? { ...row, ...patch } : row));
+  }
+
+  private previewTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private schedulePreviewRender(
+    index: number,
+    row: DecisionTemplateRow,
+    mode: DecisionOutputTemplateMode,
+    parsedContext: Record<string, unknown>
+  ): void {
+    if (this.previewTimer !== null) {
+      clearTimeout(this.previewTimer);
+    }
+    this.previewTimer = setTimeout(() => this.runPreview(index, row, mode, parsedContext), 200);
+  }
+
+  private runPreview(
+    index: number,
+    row: DecisionTemplateRow,
+    mode: DecisionOutputTemplateMode,
+    parsedContext: Record<string, unknown>
+  ): void {
+    const port = row.port.trim() || '*';
+    this.patchDecisionRowSilently(index, { previewPending: true });
+    this.agentsApi.renderDecisionOutputTemplate({
+      template: row.template,
+      mode,
+      decision: port,
+      outputPortName: port,
+      output: mode === 'llm' ? (parsedContext['output'] as string | undefined) : undefined,
+      input: mode === 'llm' ? parsedContext['input'] : undefined,
+      fieldValues: mode === 'hitl'
+        ? (parsedContext['fieldValues'] as Record<string, unknown> | undefined)
+        : undefined,
+      reason: mode === 'hitl' ? (parsedContext['reason'] as string | undefined) : undefined,
+      reasons: mode === 'hitl' ? (parsedContext['reasons'] as string[] | undefined) : undefined,
+      actions: mode === 'hitl' ? (parsedContext['actions'] as string[] | undefined) : undefined,
+      context: parsedContext['context'] as Record<string, unknown> | undefined,
+      global: parsedContext['global'] as Record<string, unknown> | undefined
+    }).subscribe({
+      next: response => this.patchDecisionRowSilently(index, {
+        preview: response.rendered, previewError: null, previewPending: false
+      }),
+      error: err => this.patchDecisionRowSilently(index, {
+        preview: '', previewError: extractPreviewError(err), previewPending: false
+      })
+    });
   }
 
   addOutput(): void {
@@ -327,6 +550,14 @@ export class AgentEditorComponent implements OnInit {
 
     if (this.type() === 'hitl') {
       config.outputTemplate = this.outputTemplate() || undefined;
+    }
+
+    const cleanedTemplates = this.decisionTemplates()
+      .map(row => ({ port: row.port.trim(), template: row.template }))
+      .filter(row => row.port.length > 0 && row.template.length > 0);
+    if (cleanedTemplates.length > 0) {
+      config.decisionOutputTemplates = Object.fromEntries(
+        cleanedTemplates.map(row => [row.port, row.template]));
     }
 
     const cleanedOutputs = this.outputs()
@@ -402,4 +633,40 @@ function tryParseJson(raw: string): unknown {
   } catch {
     return raw;
   }
+}
+
+function defaultHitlPreviewContext(): string {
+  return JSON.stringify({
+    fieldValues: { feedback: 'looks good' },
+    reason: 'short explanation',
+    reasons: [],
+    actions: [],
+    context: {},
+    global: {}
+  }, null, 2);
+}
+
+function defaultLlmPreviewContext(): string {
+  return JSON.stringify({
+    output: '{"headline":"Example headline","summary":"Example summary"}',
+    input: {},
+    context: {},
+    global: {}
+  }, null, 2);
+}
+
+function extractPreviewError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const httpErr = err as { error?: { error?: string } | string; message?: string; status?: number };
+    if (httpErr.error && typeof httpErr.error === 'object' && 'error' in httpErr.error) {
+      return String((httpErr.error as { error: unknown }).error);
+    }
+    if (typeof httpErr.error === 'string') {
+      return httpErr.error;
+    }
+    if (httpErr.message) {
+      return httpErr.message;
+    }
+  }
+  return 'Preview render failed';
 }
