@@ -48,6 +48,33 @@ import {
 import { tidyLayout } from './auto-layout';
 import { WorkflowNodeComponent } from './workflow-node.component';
 import { MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
+import { NodeContextMenuComponent, NodeContextMenuItem } from './node-context-menu.component';
+import {
+  AgentInPlaceEditDialogComponent,
+  InPlaceEditResult,
+  InPlaceEditTarget
+} from './agent-in-place-edit-dialog.component';
+import {
+  PublishForkDialogComponent,
+  PublishForkResult,
+  PublishForkTarget
+} from './publish-fork-dialog.component';
+
+const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
+  'Agent',
+  'Hitl',
+  'Start',
+  'Escalation'
+] as WorkflowNodeKind[]);
+
+const FORK_KEY_PREFIX = '__fork_';
+
+interface NodeContextMenuState {
+  nodeId: string;
+  x: number;
+  y: number;
+  items: NodeContextMenuItem[];
+}
 
 interface SelectedNode {
   editor: WorkflowEditorNode;
@@ -74,7 +101,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent],
+  imports: [CommonModule, FormsModule, RouterLink, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -126,8 +153,30 @@ function defaultStartInput(): WorkflowInput {
         @if (statusMessage()) {
           <div class="banner success">{{ statusMessage() }}</div>
         }
-        <div #canvasHost class="canvas"></div>
+        <div #canvasHost class="canvas" (contextmenu)="onCanvasContextMenu($event)"></div>
       </main>
+
+      @if (contextMenu(); as menu) {
+        <cf-node-context-menu
+          [open]="true"
+          [x]="menu.x"
+          [y]="menu.y"
+          [items]="menu.items"
+          (pickItem)="onContextMenuPick($event)"
+          (close)="closeContextMenu()"></cf-node-context-menu>
+      }
+
+      <cf-agent-in-place-edit-dialog
+        [target]="editTarget()"
+        [suppressWarning]="warningSuppressed()"
+        (close)="closeEditInPlace()"
+        (saved)="onEditInPlaceSaved($event)"
+        (warningSuppressed)="warningSuppressed.set(true)"></cf-agent-in-place-edit-dialog>
+
+      <cf-publish-fork-dialog
+        [target]="publishTarget()"
+        (close)="closePublishFork()"
+        (published)="onForkPublished($event)"></cf-publish-fork-dialog>
 
       <aside class="sidebar">
         <div class="sidebar-section">
@@ -710,6 +759,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly scriptValidationOk = signal(false);
   readonly scriptMarkers = signal<MonacoMarker[]>([]);
   readonly selectedSubflowDetail = signal<import('../../../core/models').WorkflowDetail | null>(null);
+  readonly contextMenu = signal<NodeContextMenuState | null>(null);
+  readonly editTarget = signal<InPlaceEditTarget | null>(null);
+  readonly warningSuppressed = signal(false);
+  readonly publishTarget = signal<PublishForkTarget | null>(null);
 
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
@@ -909,6 +962,170 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     await this.area.translate(node.id, { x: 80 + (existingCount % 4) * 40, y: 80 + existingCount * 20 });
 
     this.error.set(null);
+  }
+
+  onCanvasContextMenu(event: MouseEvent): void {
+    const nodeId = this.findNodeIdAtEvent(event);
+    if (!nodeId || !this.editor) return;
+
+    const node = this.editor.getNode(nodeId) as WorkflowEditorNode | undefined;
+    if (!node) return;
+
+    event.preventDefault();
+    this.selectedNodeId.set(nodeId);
+
+    const items: NodeContextMenuItem[] = [];
+
+    if (AGENT_BEARING_KINDS.has(node.kind)) {
+      const hasAgent = !!node.agentKey;
+      items.push({
+        id: 'edit-in-place',
+        label: 'Edit agent in place…',
+        disabled: !hasAgent,
+        disabledReason: hasAgent ? undefined : 'Pick an agent on the inspector first.'
+      });
+      if (node.agentKey?.startsWith(FORK_KEY_PREFIX)) {
+        items.push({ id: 'publish-fork', label: 'Publish fork…' });
+      }
+    }
+
+    items.push({ id: 'delete', label: 'Delete node', danger: true });
+
+    this.contextMenu.set({
+      nodeId,
+      x: event.clientX,
+      y: event.clientY,
+      items
+    });
+  }
+
+  onContextMenuPick(item: NodeContextMenuItem): void {
+    const menu = this.contextMenu();
+    if (!menu || !this.editor) return;
+
+    const node = this.editor.getNode(menu.nodeId) as WorkflowEditorNode | undefined;
+    this.closeContextMenu();
+    if (!node) return;
+
+    switch (item.id) {
+      case 'delete':
+        void this.removeSelectedNode();
+        return;
+      case 'edit-in-place':
+        this.openEditInPlace(node);
+        return;
+      case 'publish-fork':
+        this.openPublishFork(node);
+        return;
+    }
+  }
+
+  closeContextMenu(): void {
+    if (this.contextMenu()) this.contextMenu.set(null);
+  }
+
+  protected openEditInPlace(node: WorkflowEditorNode): void {
+    if (!node.agentKey) return;
+    const workflowKey = this.workflowKey().trim();
+    if (!workflowKey) {
+      this.error.set('Pick a workflow key before editing an agent in place.');
+      return;
+    }
+
+    const isExistingFork = node.agentKey.startsWith(FORK_KEY_PREFIX);
+    const load$ = node.agentVersion
+      ? this.agentsApi.getVersion(node.agentKey, node.agentVersion)
+      : this.agentsApi.getLatest(node.agentKey);
+
+    load$.subscribe({
+      next: version => {
+        const config = (version.config ?? {}) as import('../../../core/models').AgentConfig;
+        const resolvedType = version.type === 'hitl' ? 'hitl' : 'agent';
+        this.editTarget.set({
+          nodeId: node.id,
+          agentKey: version.key,
+          agentVersion: version.version,
+          workflowKey,
+          initialConfig: config,
+          initialType: resolvedType,
+          isExistingFork
+        });
+      },
+      error: err => this.error.set(`Failed to load agent for in-place edit: ${err?.message ?? err}`)
+    });
+  }
+
+  protected openPublishFork(node: WorkflowEditorNode): void {
+    if (!node.agentKey || !node.agentKey.startsWith(FORK_KEY_PREFIX)) return;
+    this.publishTarget.set({ nodeId: node.id, forkKey: node.agentKey });
+  }
+
+  closePublishFork(): void {
+    this.publishTarget.set(null);
+  }
+
+  onForkPublished(result: PublishForkResult): void {
+    if (this.editor) {
+      const node = this.editor.getNode(result.nodeId) as WorkflowEditorNode | undefined;
+      if (node) {
+        node.agentKey = result.publishedKey;
+        node.agentVersion = result.publishedVersion;
+        node.label = labelFor(node);
+        this.area?.update('node', node.id);
+        this.selectedNodeId.set(this.selectedNodeId());
+      }
+    }
+    this.statusMessage.set(`Published ${result.publishedKey} v${result.publishedVersion}. Save the workflow to persist the re-link.`);
+    this.publishTarget.set(null);
+  }
+
+  closeEditInPlace(): void {
+    this.editTarget.set(null);
+  }
+
+  onEditInPlaceSaved(result: InPlaceEditResult): void {
+    if (!this.editor) {
+      this.editTarget.set(null);
+      return;
+    }
+
+    const node = this.editor.getNode(result.nodeId) as WorkflowEditorNode | undefined;
+    if (node) {
+      node.agentKey = result.agentKey;
+      node.agentVersion = result.agentVersion;
+      node.label = labelFor(node);
+
+      const declared = result.config.outputs;
+      if (Array.isArray(declared) && declared.length > 0) {
+        const portNames = declared
+          .map(d => d.kind)
+          .filter((kind): kind is string => typeof kind === 'string' && kind.length > 0);
+        if (portNames.length > 0) this.applyNodePorts(node, portNames);
+      }
+
+      this.area?.update('node', node.id);
+      // Bump the signal so the inspector re-reads node fields.
+      this.selectedNodeId.set(this.selectedNodeId());
+    }
+
+    this.statusMessage.set(`Saved ${result.agentKey} v${result.agentVersion} (workflow-scoped fork). Save the workflow to persist.`);
+    this.editTarget.set(null);
+  }
+
+  private findNodeIdAtEvent(event: MouseEvent): string | null {
+    if (!this.area) return null;
+    const target = event.target as Node | null;
+    if (!target) return null;
+
+    const nodeViews = (this.area as unknown as { nodeViews?: Map<string, { element: HTMLElement }> }).nodeViews;
+    if (!nodeViews) return null;
+
+    for (const [id, view] of nodeViews.entries()) {
+      if (view.element && view.element.contains(target)) {
+        return id;
+      }
+    }
+    return null;
   }
 
   async removeSelectedNode(): Promise<void> {

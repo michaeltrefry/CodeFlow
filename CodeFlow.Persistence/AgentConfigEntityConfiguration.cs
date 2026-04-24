@@ -47,11 +47,24 @@ public sealed class AgentConfigEntityConfiguration : IEntityTypeConfiguration<Ag
             .HasDefaultValue(false)
             .IsRequired();
 
+        builder.Property(agent => agent.OwningWorkflowKey)
+            .HasColumnName("owning_workflow_key")
+            .HasMaxLength(128);
+
+        builder.Property(agent => agent.ForkedFromKey)
+            .HasColumnName("forked_from_key")
+            .HasMaxLength(128);
+
+        builder.Property(agent => agent.ForkedFromVersion)
+            .HasColumnName("forked_from_version");
+
         builder.HasIndex(agent => new { agent.Key, agent.Version })
             .IsUnique();
 
         builder.HasIndex(agent => new { agent.Key, agent.IsActive });
 
         builder.HasIndex(agent => new { agent.Key, agent.IsRetired });
+
+        builder.HasIndex(agent => agent.OwningWorkflowKey);
     }
 }

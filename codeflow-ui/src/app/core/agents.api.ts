@@ -48,6 +48,59 @@ export class AgentsApi {
     );
   }
 
+  fork(request: {
+    sourceKey: string;
+    sourceVersion: number;
+    workflowKey: string;
+    config: AgentConfig;
+  }): Observable<{
+    key: string;
+    version: number;
+    forkedFromKey: string;
+    forkedFromVersion: number;
+    owningWorkflowKey: string;
+  }> {
+    return this.http.post<{
+      key: string;
+      version: number;
+      forkedFromKey: string;
+      forkedFromVersion: number;
+      owningWorkflowKey: string;
+    }>('/api/agents/fork', request);
+  }
+
+  getPublishStatus(forkKey: string): Observable<{
+    forkedFromKey: string;
+    forkedFromVersion: number;
+    originalLatestVersion: number | null;
+    isDrift: boolean;
+  }> {
+    return this.http.get<{
+      forkedFromKey: string;
+      forkedFromVersion: number;
+      originalLatestVersion: number | null;
+      isDrift: boolean;
+    }>(`/api/agents/${encodeURIComponent(forkKey)}/publish-status`);
+  }
+
+  publish(forkKey: string, request: {
+    mode: 'original' | 'new-agent';
+    newKey?: string;
+    acknowledgeDrift?: boolean;
+  }): Observable<{
+    publishedKey: string;
+    publishedVersion: number;
+    forkedFromKey: string;
+    forkedFromVersion: number;
+  }> {
+    return this.http.post<{
+      publishedKey: string;
+      publishedVersion: number;
+      forkedFromKey: string;
+      forkedFromVersion: number;
+    }>(`/api/agents/${encodeURIComponent(forkKey)}/publish`, request);
+  }
+
   renderDecisionOutputTemplate(
     request: DecisionOutputTemplatePreviewRequest
   ): Observable<DecisionOutputTemplatePreviewResponse> {

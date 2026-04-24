@@ -15,3 +15,4 @@ export { EmptyComponent } from './empty.component';
 export { PageHeaderComponent } from './page-header.component';
 export { ProviderIconComponent } from './provider-icon.component';
 export { TagInputComponent } from './tag-input.component';
+export { DialogComponent } from './dialog.component';

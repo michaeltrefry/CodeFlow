@@ -40,6 +40,15 @@ public static class AgentsEndpoints
         group.MapPost("/{key}/retire", RetireAgentAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
+        group.MapPost("/fork", ForkAgentAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
+
+        group.MapGet("/{key}/publish-status", GetPublishStatusAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+
+        group.MapPost("/{key}/publish", PublishForkAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
+
         group.MapPost("/templates/render-preview", RenderDecisionOutputTemplatePreviewAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
@@ -134,7 +143,7 @@ public static class AgentsEndpoints
     {
         var entities = await dbContext.Agents
             .AsNoTracking()
-            .Where(agent => !agent.IsRetired)
+            .Where(agent => !agent.IsRetired && agent.OwningWorkflowKey == null)
             .OrderBy(agent => agent.Key)
             .ThenByDescending(agent => agent.Version)
             .ToListAsync(cancellationToken);
@@ -326,6 +335,226 @@ public static class AgentsEndpoints
             cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
+    }
+
+    private const string ForkKeyPrefix = "__fork_";
+
+    private static async Task<IResult> ForkAgentAsync(
+        ForkAgentRequest request,
+        IAgentConfigRepository repository,
+        CodeFlowDbContext dbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return Results.BadRequest(new { error = "Request body is required." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SourceKey))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["sourceKey"] = new[] { "Source agent key must not be empty." }
+            });
+        }
+
+        if (request.SourceVersion is null or < 1)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["sourceVersion"] = new[] { "Source version must be >= 1." }
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.WorkflowKey))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["workflowKey"] = new[] { "Workflow key must not be empty." }
+            });
+        }
+
+        var configValidation = AgentConfigValidator.ValidateConfig(request.Config);
+        if (!configValidation.IsValid)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["config"] = new[] { configValidation.Error! }
+            });
+        }
+
+        var normalizedSourceKey = NormalizeKey(request.SourceKey!);
+        var sourceEntity = await dbContext.Agents
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                agent => agent.Key == normalizedSourceKey && agent.Version == request.SourceVersion!.Value,
+                cancellationToken);
+
+        if (sourceEntity is null)
+        {
+            return Results.NotFound(new { error = $"Agent '{normalizedSourceKey}' v{request.SourceVersion} does not exist." });
+        }
+
+        if (sourceEntity.IsRetired)
+        {
+            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedSourceKey}' is retired; forking is not allowed." });
+        }
+
+        var configJson = request.Config!.Value.GetRawText();
+        var fork = await repository.CreateForkAsync(
+            normalizedSourceKey,
+            request.SourceVersion!.Value,
+            request.WorkflowKey!,
+            configJson,
+            currentUser.Id,
+            cancellationToken);
+
+        return Results.Created(
+            $"/api/agents/{fork.Key}/{fork.Version}",
+            new ForkAgentResponse(
+                Key: fork.Key,
+                Version: fork.Version,
+                ForkedFromKey: fork.ForkedFromKey!,
+                ForkedFromVersion: fork.ForkedFromVersion!.Value,
+                OwningWorkflowKey: fork.OwningWorkflowKey!));
+    }
+
+    private static async Task<IResult> GetPublishStatusAsync(
+        string key,
+        IAgentConfigRepository repository,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var normalizedKey = NormalizeKey(key);
+        var fork = await dbContext.Agents
+            .AsNoTracking()
+            .Where(agent => agent.Key == normalizedKey)
+            .OrderByDescending(agent => agent.Version)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (fork is null)
+        {
+            return Results.NotFound(new { error = $"Agent '{normalizedKey}' does not exist." });
+        }
+
+        if (string.IsNullOrEmpty(fork.ForkedFromKey) || fork.ForkedFromVersion is null)
+        {
+            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedKey}' is not a fork." });
+        }
+
+        var originalLatest = await dbContext.Agents
+            .AsNoTracking()
+            .Where(agent => agent.Key == fork.ForkedFromKey)
+            .OrderByDescending(agent => agent.Version)
+            .Select(agent => (int?)agent.Version)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var isDrift = originalLatest is int latest && latest != fork.ForkedFromVersion.Value;
+
+        return Results.Ok(new PublishForkStatusResponse(
+            ForkedFromKey: fork.ForkedFromKey,
+            ForkedFromVersion: fork.ForkedFromVersion.Value,
+            OriginalLatestVersion: originalLatest,
+            IsDrift: isDrift));
+    }
+
+    private static async Task<IResult> PublishForkAsync(
+        string key,
+        PublishForkRequest request,
+        IAgentConfigRepository repository,
+        CodeFlowDbContext dbContext,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return Results.BadRequest(new { error = "Request body is required." });
+        }
+
+        var mode = (request.Mode ?? string.Empty).Trim().ToLowerInvariant();
+        if (mode is not ("original" or "new-agent"))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["mode"] = new[] { "Mode must be either 'original' or 'new-agent'." }
+            });
+        }
+
+        var normalizedForkKey = NormalizeKey(key);
+        var fork = await dbContext.Agents
+            .AsNoTracking()
+            .Where(agent => agent.Key == normalizedForkKey)
+            .OrderByDescending(agent => agent.Version)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (fork is null)
+        {
+            return Results.NotFound(new { error = $"Agent '{normalizedForkKey}' does not exist." });
+        }
+
+        if (string.IsNullOrEmpty(fork.ForkedFromKey) || fork.ForkedFromVersion is null)
+        {
+            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedForkKey}' is not a fork." });
+        }
+
+        string targetKey;
+        if (mode == "original")
+        {
+            targetKey = fork.ForkedFromKey;
+
+            // Re-check drift at publish time so we don't race with the client.
+            var originalLatest = await dbContext.Agents
+                .AsNoTracking()
+                .Where(agent => agent.Key == fork.ForkedFromKey)
+                .OrderByDescending(agent => agent.Version)
+                .Select(agent => (int?)agent.Version)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var isDrift = originalLatest is int latest && latest != fork.ForkedFromVersion.Value;
+            if (isDrift && request.AcknowledgeDrift != true)
+            {
+                return Results.Conflict(new
+                {
+                    error = $"Original agent '{fork.ForkedFromKey}' has moved from v{fork.ForkedFromVersion.Value} to v{originalLatest}. Acknowledge drift or publish as a new agent."
+                });
+            }
+        }
+        else
+        {
+            var keyValidation = AgentConfigValidator.ValidateKey(request.NewKey);
+            if (!keyValidation.IsValid)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["newKey"] = new[] { keyValidation.Error! }
+                });
+            }
+
+            targetKey = NormalizeKey(request.NewKey!);
+            var conflict = await dbContext.Agents
+                .AsNoTracking()
+                .AnyAsync(agent => agent.Key == targetKey, cancellationToken);
+
+            if (conflict)
+            {
+                return Results.Conflict(new { error = $"Agent with key '{targetKey}' already exists." });
+            }
+        }
+
+        var publishedVersion = await repository.CreatePublishedVersionAsync(
+            targetKey,
+            fork.ConfigJson,
+            fork.ForkedFromKey,
+            fork.ForkedFromVersion.Value,
+            currentUser.Id,
+            cancellationToken);
+
+        return Results.Ok(new PublishForkResponse(
+            PublishedKey: targetKey,
+            PublishedVersion: publishedVersion,
+            ForkedFromKey: fork.ForkedFromKey,
+            ForkedFromVersion: fork.ForkedFromVersion.Value));
     }
 
     private static async Task<IResult> RetireAgentAsync(

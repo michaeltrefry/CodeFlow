@@ -1,4 +1,6 @@
+using CodeFlow.Persistence;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
 
@@ -108,6 +110,295 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    [Fact]
+    public async Task List_ShouldHideWorkflowScopedForks()
+    {
+        using var client = factory.CreateClient();
+
+        var librarySourceKey = $"library-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = librarySourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Visible." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var forkKey = $"__fork_{Guid.NewGuid():N}";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = forkKey,
+                Version = 1,
+                ConfigJson = """{"provider":"openai","model":"gpt-5","systemPrompt":"Hidden."}""",
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = "tester",
+                IsActive = true,
+                OwningWorkflowKey = $"wf-{Guid.NewGuid():N}",
+                ForkedFromKey = librarySourceKey,
+                ForkedFromVersion = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
+        list.Should().NotBeNull();
+        list!.Select(s => s.Key).Should().Contain(librarySourceKey);
+        list.Select(s => s.Key).Should().NotContain(forkKey);
+    }
+
+    [Fact]
+    public async Task Fork_HappyPath_CreatesHiddenScopedAgent()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"fork-src-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Base." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var workflowKey = $"wf-{Guid.NewGuid():N}";
+        var fork = await client.PostAsJsonAsync("/api/agents/fork", new
+        {
+            sourceKey,
+            sourceVersion = 1,
+            workflowKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Edited in place." }
+        });
+        fork.StatusCode.Should().Be(HttpStatusCode.Created);
+        var forkPayload = await fork.Content.ReadFromJsonAsync<ForkResponse>();
+        forkPayload!.Key.Should().StartWith("__fork_");
+        forkPayload.Version.Should().Be(1);
+        forkPayload.ForkedFromKey.Should().Be(sourceKey);
+        forkPayload.ForkedFromVersion.Should().Be(1);
+        forkPayload.OwningWorkflowKey.Should().Be(workflowKey);
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
+        list.Should().NotBeNull();
+        list!.Select(s => s.Key).Should().Contain(sourceKey);
+        list.Select(s => s.Key).Should().NotContain(forkPayload.Key);
+    }
+
+    [Fact]
+    public async Task Fork_UnknownSource_Returns404()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/agents/fork", new
+        {
+            sourceKey = $"nope-{Guid.NewGuid():N}",
+            sourceVersion = 1,
+            workflowKey = "wf-any",
+            config = new { provider = "openai", model = "gpt-5" }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Fork_RetiredSource_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"retired-src-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "x" }
+        });
+        await client.PostAsync($"/api/agents/{sourceKey}/retire", content: null);
+
+        var response = await client.PostAsJsonAsync("/api/agents/fork", new
+        {
+            sourceKey,
+            sourceVersion = 1,
+            workflowKey = "wf-any",
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "x" }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+    }
+
+    [Fact]
+    public async Task PublishStatus_DriftReflectsOriginalAdvancement()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"drift-src-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1" }
+        });
+
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1);
+
+        var beforeStatus = await client.GetFromJsonAsync<PublishStatusDto>($"/api/agents/{fork.Key}/publish-status");
+        beforeStatus!.IsDrift.Should().BeFalse();
+        beforeStatus.OriginalLatestVersion.Should().Be(1);
+
+        await client.PutAsJsonAsync($"/api/agents/{sourceKey}", new
+        {
+            config = new { provider = "openai", model = "gpt-5.4", systemPrompt = "v2" }
+        });
+
+        var afterStatus = await client.GetFromJsonAsync<PublishStatusDto>($"/api/agents/{fork.Key}/publish-status");
+        afterStatus!.IsDrift.Should().BeTrue();
+        afterStatus.OriginalLatestVersion.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Publish_ToOriginal_NoDrift_CreatesNewVersionOnOriginal()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"pub-src-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1" }
+        });
+
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1, forkPrompt: "forked");
+
+        var publish = await client.PostAsJsonAsync(
+            $"/api/agents/{fork.Key}/publish",
+            new { mode = "original" });
+        publish.StatusCode.Should().Be(HttpStatusCode.OK);
+        var response = await publish.Content.ReadFromJsonAsync<PublishResponseDto>();
+        response!.PublishedKey.Should().Be(sourceKey);
+        response.PublishedVersion.Should().Be(2);
+
+        var versions = await client.GetFromJsonAsync<IReadOnlyList<VersionDto>>($"/api/agents/{sourceKey}/versions");
+        versions!.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Publish_ToOriginal_WithDrift_RequiresAcknowledgement()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"drift-pub-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1" }
+        });
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1);
+
+        await client.PutAsJsonAsync($"/api/agents/{sourceKey}", new
+        {
+            config = new { provider = "openai", model = "gpt-5.4", systemPrompt = "upstream v2" }
+        });
+
+        var refused = await client.PostAsJsonAsync(
+            $"/api/agents/{fork.Key}/publish",
+            new { mode = "original" });
+        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var accepted = await client.PostAsJsonAsync(
+            $"/api/agents/{fork.Key}/publish",
+            new { mode = "original", acknowledgeDrift = true });
+        accepted.StatusCode.Should().Be(HttpStatusCode.OK);
+        var response = await accepted.Content.ReadFromJsonAsync<PublishResponseDto>();
+        response!.PublishedVersion.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Publish_AsNewAgent_CreatesFreshAgent()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"new-src-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1" }
+        });
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1);
+
+        var newKey = $"published-{Guid.NewGuid():N}".ToLowerInvariant()[..40];
+        var publish = await client.PostAsJsonAsync(
+            $"/api/agents/{fork.Key}/publish",
+            new { mode = "new-agent", newKey });
+        publish.StatusCode.Should().Be(HttpStatusCode.OK);
+        var response = await publish.Content.ReadFromJsonAsync<PublishResponseDto>();
+        response!.PublishedKey.Should().Be(newKey);
+        response.PublishedVersion.Should().Be(1);
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
+        list!.Select(s => s.Key).Should().Contain(newKey);
+    }
+
+    [Fact]
+    public async Task Publish_AsNewAgent_ConflictOnExistingKey_Returns409()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"conflict-src-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "x" }
+        });
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/agents/{fork.Key}/publish",
+            new { mode = "new-agent", newKey = sourceKey });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Publish_NonForkKey_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var key = $"plain-agent-{Guid.NewGuid():N}";
+        await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "x" }
+        });
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/agents/{key}/publish",
+            new { mode = "original" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+    }
+
+    private static async Task<ForkResponse> CreateForkAsync(
+        HttpClient client,
+        string sourceKey,
+        int sourceVersion,
+        string? forkPrompt = null)
+    {
+        var workflowKey = $"wf-{Guid.NewGuid():N}";
+        var response = await client.PostAsJsonAsync("/api/agents/fork", new
+        {
+            sourceKey,
+            sourceVersion,
+            workflowKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = forkPrompt ?? "forked" }
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var payload = await response.Content.ReadFromJsonAsync<ForkResponse>();
+        payload.Should().NotBeNull();
+        return payload!;
+    }
+
+    private sealed record ForkResponse(string Key, int Version, string ForkedFromKey, int ForkedFromVersion, string OwningWorkflowKey);
+
+    private sealed record PublishStatusDto(string ForkedFromKey, int ForkedFromVersion, int? OriginalLatestVersion, bool IsDrift);
+
+    private sealed record PublishResponseDto(string PublishedKey, int PublishedVersion, string ForkedFromKey, int ForkedFromVersion);
 
     [Fact]
     public async Task RenderPreview_Hitl_ShouldRenderTemplateWithFieldValuesAndContext()

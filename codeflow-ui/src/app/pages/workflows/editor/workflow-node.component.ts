@@ -21,6 +21,10 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
       <div class="wf-node-head">
         <span class="wf-node-kind">{{ kindLabel }}</span>
         <span class="wf-node-title" data-testid="title">{{ data.label }}</span>
+        <span *ngIf="isFork"
+              class="wf-node-fork-badge"
+              title="Workflow-scoped fork"
+              data-testid="node-fork-badge">fork</span>
         <span *ngIf="hasScript"
               class="wf-node-script-badge"
               title="Routing script attached"
@@ -107,6 +111,10 @@ export class WorkflowNodeComponent implements OnChanges {
   get hasScript(): boolean {
     const script = this.data.script;
     return typeof script === 'string' && script.trim().length > 0;
+  }
+
+  get isFork(): boolean {
+    return typeof this.data.agentKey === 'string' && this.data.agentKey.startsWith('__fork_');
   }
 
   constructor(private readonly cdr: ChangeDetectorRef) {

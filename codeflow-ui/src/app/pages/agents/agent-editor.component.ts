@@ -1,4 +1,15 @@
-import { Component, computed, effect, inject, input, signal, OnInit } from '@angular/core';
+import {
+  Component,
+  EventEmitter,
+  Output,
+  booleanAttribute,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+  OnInit
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
@@ -28,30 +39,32 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
     PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, TabsComponent,
   ],
   template: `
-    <div class="page">
-      <cf-page-header
-        [title]="existingKey() ? 'Edit ' + existingKey() : 'New agent'"
-        subtitle="Saving always creates a new immutable version. Tool access flows through roles assigned on the agent's detail page.">
-        <a routerLink="/agents">
-          <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
-        </a>
-        <button type="button" cf-button variant="primary" icon="check"
-                (click)="submit($event)" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : (existingKey() ? 'Save new version' : 'Create agent') }}
-        </button>
-        <div page-header-body>
-          <div class="trace-header-meta">
-            @if (existingKey()) { <cf-chip mono>{{ existingKey() }}</cf-chip> }
-            <cf-chip [variant]="type() === 'hitl' ? 'accent' : 'default'" mono>{{ type() === 'hitl' ? 'HITL' : 'LLM agent' }}</cf-chip>
-            @if (type() === 'agent') {
-              <cf-chip mono>{{ provider() }}</cf-chip>
-              <cf-chip mono>{{ model() }}</cf-chip>
-            }
+    <div [class.page]="!embedded()">
+      @if (!embedded()) {
+        <cf-page-header
+          [title]="existingKey() ? 'Edit ' + existingKey() : 'New agent'"
+          subtitle="Saving always creates a new immutable version. Tool access flows through roles assigned on the agent's detail page.">
+          <a routerLink="/agents">
+            <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
+          </a>
+          <button type="button" cf-button variant="primary" icon="check"
+                  (click)="submit($event)" [disabled]="saving()">
+            {{ saving() ? 'Saving…' : (existingKey() ? 'Save new version' : 'Create agent') }}
+          </button>
+          <div page-header-body>
+            <div class="trace-header-meta">
+              @if (existingKey()) { <cf-chip mono>{{ existingKey() }}</cf-chip> }
+              <cf-chip [variant]="type() === 'hitl' ? 'accent' : 'default'" mono>{{ type() === 'hitl' ? 'HITL' : 'LLM agent' }}</cf-chip>
+              @if (type() === 'agent') {
+                <cf-chip mono>{{ provider() }}</cf-chip>
+                <cf-chip mono>{{ model() }}</cf-chip>
+              }
+            </div>
           </div>
-        </div>
-      </cf-page-header>
+        </cf-page-header>
+      }
 
-      <div class="card" style="padding: 0 20px">
+      <div [class.card]="!embedded()" style="padding: 0 20px">
         <cf-tabs [items]="tabs()" [value]="tab()" (valueChange)="tab.set($any($event))"></cf-tabs>
       </div>
 
@@ -355,6 +368,11 @@ export class AgentEditorComponent implements OnInit {
   private readonly router = inject(Router);
 
   readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
+  readonly embedded = input(false, { transform: booleanAttribute });
+  readonly initialConfig = input<AgentConfig | null>(null);
+  readonly initialType = input<'agent' | 'hitl' | null>(null);
+
+  @Output() saveRequested = new EventEmitter<{ key: string; type: 'agent' | 'hitl'; config: AgentConfig }>();
 
   readonly key = signal('');
   readonly type = signal<'agent' | 'hitl'>('agent');
@@ -425,46 +443,63 @@ export class AgentEditorComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    if (this.embedded()) {
+      const existing = this.existingKey();
+      if (existing) this.key.set(existing);
+      const providedType = this.initialType();
+      if (providedType) this.type.set(providedType);
+      const providedConfig = this.initialConfig();
+      if (providedConfig) {
+        this.hydrateFromConfig(providedConfig, providedType ?? 'agent');
+      }
+      return;
+    }
+
     const existing = this.existingKey();
     if (existing) {
       this.key.set(existing);
       this.agentsApi.getLatest(existing).subscribe({
         next: version => {
           const config = version.config ?? {};
-          this.type.set(version.type === 'hitl' ? 'hitl' : 'agent');
-          this.name.set((config['name'] as string) ?? '');
-          this.description.set((config['description'] as string) ?? '');
-          this.provider.set((config['provider'] as 'openai' | 'anthropic' | 'lmstudio') ?? 'openai');
-          this.model.set((config['model'] as string) ?? 'gpt-5.4');
-          this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
-          this.promptTemplate.set((config['promptTemplate'] as string) ?? '');
-          this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
-          this.maxTokens.set(config['maxTokens'] as number | undefined);
-          this.temperature.set(config['temperature'] as number | undefined);
-          const declared = (config as AgentConfig)['outputs'];
-          if (Array.isArray(declared) && declared.length > 0) {
-            this.outputs.set(declared.map(d => ({
-              kind: d.kind ?? '',
-              description: d.description ?? null,
-              payloadExample: d.payloadExample ?? null
-            })));
-          }
-          const templates = (config as AgentConfig)['decisionOutputTemplates'];
-          if (templates && typeof templates === 'object') {
-            const rows = Object.entries(templates).map(([port, template]) => ({
-              port,
-              template: String(template ?? ''),
-              preview: '',
-              previewError: null,
-              previewPending: false
-            }) as DecisionTemplateRow);
-            this.decisionTemplates.set(rows);
-          }
-          this.previewContextText.set(
-            version.type === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
+          const resolvedType = version.type === 'hitl' ? 'hitl' : 'agent';
+          this.hydrateFromConfig(config, resolvedType);
         }
       });
     }
+  }
+
+  private hydrateFromConfig(config: AgentConfig, resolvedType: 'agent' | 'hitl'): void {
+    this.type.set(resolvedType);
+    this.name.set((config['name'] as string) ?? '');
+    this.description.set((config['description'] as string) ?? '');
+    this.provider.set((config['provider'] as 'openai' | 'anthropic' | 'lmstudio') ?? 'openai');
+    this.model.set((config['model'] as string) ?? 'gpt-5.4');
+    this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
+    this.promptTemplate.set((config['promptTemplate'] as string) ?? '');
+    this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
+    this.maxTokens.set(config['maxTokens'] as number | undefined);
+    this.temperature.set(config['temperature'] as number | undefined);
+    const declared = config['outputs'];
+    if (Array.isArray(declared) && declared.length > 0) {
+      this.outputs.set(declared.map(d => ({
+        kind: d.kind ?? '',
+        description: d.description ?? null,
+        payloadExample: d.payloadExample ?? null
+      })));
+    }
+    const templates = config['decisionOutputTemplates'];
+    if (templates && typeof templates === 'object') {
+      const rows = Object.entries(templates).map(([port, template]) => ({
+        port,
+        template: String(template ?? ''),
+        preview: '',
+        previewError: null,
+        previewPending: false
+      }) as DecisionTemplateRow);
+      this.decisionTemplates.set(rows);
+    }
+    this.previewContextText.set(
+      resolvedType === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
   }
 
   addDecisionTemplate(): void {
@@ -614,6 +649,13 @@ export class AgentEditorComponent implements OnInit {
 
     if (cleanedOutputs.length > 0) {
       config.outputs = cleanedOutputs;
+    }
+
+    if (this.embedded()) {
+      // Parent owns the API call + error surfacing.
+      this.saving.set(false);
+      this.saveRequested.emit({ key: this.key(), type: this.type(), config });
+      return;
     }
 
     const existingKey = this.existingKey();
