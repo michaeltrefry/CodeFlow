@@ -720,6 +720,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid color-mix(in oklab, var(--sem-amber) 35%, transparent);
   padding: 1px 5px; border-radius: 3px;
 }
+.wf-node-fork-badge {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--sem-violet, #bc8cff);
+  background: color-mix(in oklab, var(--sem-violet, #bc8cff) 18%, transparent);
+  border: 1px solid color-mix(in oklab, var(--sem-violet, #bc8cff) 35%, transparent);
+  padding: 1px 5px; border-radius: 3px;
+}
 .wf-node-body { padding: 8px 0; font-size: var(--fs-sm); }
 .wf-node-row {
   display: flex; align-items: center;

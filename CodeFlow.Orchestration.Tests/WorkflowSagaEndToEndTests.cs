@@ -102,7 +102,7 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
 
             var bus = host.Services.GetRequiredService<IBus>();
             var startNodeId = await GetStartNodeIdAsync(host.Services, workflowKey, 1);
-            await bus.Publish(new AgentInvokeRequested(
+            var request = new AgentInvokeRequested(
                 TraceId: traceId,
                 RoundId: initialRoundId,
                 WorkflowKey: workflowKey,
@@ -111,10 +111,18 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 AgentKey: "evaluator",
                 AgentVersion: 1,
                 InputRef: inputRef,
-                ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>()));
+                ContextInputs: new Dictionary<string, System.Text.Json.JsonElement>());
 
-            var saga = await WaitForTerminalStateAsync(
+            // MassTransit's generic-host wiring returns from StartAsync when the bus has
+            // connected to RabbitMQ but before every receive endpoint has finished binding
+            // its queue to the fanout exchange. A Publish that slips through that window
+            // lands on an exchange with zero bound queues and is silently dropped. Republish
+            // until the saga endpoint actually creates the saga instance — the MessageId is
+            // sticky so inbox dedup swallows the duplicates.
+            var saga = await PublishAndWaitForTerminalStateAsync(
+                bus,
                 host.Services,
+                request,
                 traceId,
                 timeout: TimeSpan.FromSeconds(120));
 
@@ -276,19 +284,27 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 FileName: "input.txt"));
     }
 
-    private static async Task<WorkflowSagaStateEntity> WaitForTerminalStateAsync(
+    private static async Task<WorkflowSagaStateEntity> PublishAndWaitForTerminalStateAsync(
+        IBus bus,
         IServiceProvider services,
+        AgentInvokeRequested request,
         Guid traceId,
         TimeSpan timeout)
     {
+        var messageId = Guid.NewGuid();
         var deadline = DateTime.UtcNow + timeout;
+        var nextPublishAt = DateTime.UtcNow;
         WorkflowSagaStateEntity? saga = null;
+
+        await bus.Publish(request, ctx => ctx.MessageId = messageId);
+        nextPublishAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
 
         while (DateTime.UtcNow < deadline)
         {
             await using var scope = services.CreateAsyncScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
             saga = await dbContext.WorkflowSagas
+                .Include(s => s.Decisions)
                 .AsNoTracking()
                 .SingleOrDefaultAsync(s => s.TraceId == traceId);
 
@@ -298,6 +314,12 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
                 or nameof(WorkflowSagaStateMachine.Escalated))
             {
                 return saga;
+            }
+
+            if (saga is null && DateTime.UtcNow >= nextPublishAt)
+            {
+                await bus.Publish(request, ctx => ctx.MessageId = messageId);
+                nextPublishAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
             }
 
             await Task.Delay(250);

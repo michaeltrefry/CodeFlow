@@ -114,6 +114,127 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             cancellationToken);
     }
 
+    public async Task<AgentConfig> CreateForkAsync(
+        string sourceKey,
+        int sourceVersion,
+        string workflowKey,
+        string configJson,
+        string? createdBy,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(configJson);
+
+        var normalizedSourceKey = NormalizeKey(sourceKey);
+        var normalizedWorkflowKey = workflowKey.Trim();
+        var normalizedCreatedBy = NormalizeCreatedBy(createdBy);
+        _ = AgentConfigJson.Deserialize(configJson);
+
+        // Synthetic, server-minted key. Prefix keeps forks out of the user-facing validator's
+        // legal-key space; guid body is short enough to fit in the 128-char column with room to spare.
+        var forkKey = "__fork_" + Guid.NewGuid().ToString("N")[..16];
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var sourceExists = await dbContext.Agents
+                .AsNoTracking()
+                .AnyAsync(
+                    agent => agent.Key == normalizedSourceKey && agent.Version == sourceVersion,
+                    cancellationToken);
+
+            if (!sourceExists)
+            {
+                throw new AgentConfigNotFoundException(normalizedSourceKey, sourceVersion);
+            }
+
+            var entity = new AgentConfigEntity
+            {
+                Key = forkKey,
+                Version = 1,
+                ConfigJson = configJson,
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = normalizedCreatedBy,
+                IsActive = true,
+                OwningWorkflowKey = normalizedWorkflowKey,
+                ForkedFromKey = normalizedSourceKey,
+                ForkedFromVersion = sourceVersion
+            };
+
+            dbContext.Agents.Add(entity);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            var mapped = Map(entity);
+            Cache.Set(AgentConfigCacheKey.Create(forkKey, 1), mapped, CacheEntryOptions);
+            return mapped;
+        });
+    }
+
+    public async Task<int> CreatePublishedVersionAsync(
+        string targetKey,
+        string configJson,
+        string forkedFromKey,
+        int forkedFromVersion,
+        string? createdBy,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(configJson);
+
+        var normalizedTarget = NormalizeKey(targetKey);
+        var normalizedLineageKey = NormalizeKey(forkedFromKey);
+        var normalizedCreatedBy = NormalizeCreatedBy(createdBy);
+        _ = AgentConfigJson.Deserialize(configJson);
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var existingConfigs = await dbContext.Agents
+                .Where(agent => agent.Key == normalizedTarget)
+                .OrderBy(agent => agent.Version)
+                .ToListAsync(cancellationToken);
+
+            var nextVersion = existingConfigs.Count == 0 ? 1 : existingConfigs[^1].Version + 1;
+
+            foreach (var existingConfig in existingConfigs.Where(agent => agent.IsActive))
+            {
+                existingConfig.IsActive = false;
+            }
+
+            var entity = new AgentConfigEntity
+            {
+                Key = normalizedTarget,
+                Version = nextVersion,
+                ConfigJson = configJson,
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = normalizedCreatedBy,
+                IsActive = true,
+                ForkedFromKey = normalizedLineageKey,
+                ForkedFromVersion = forkedFromVersion
+                // OwningWorkflowKey intentionally null — published agents are library-wide.
+            };
+
+            dbContext.Agents.Add(entity);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            Cache.Set(AgentConfigCacheKey.Create(normalizedTarget, nextVersion), Map(entity), CacheEntryOptions);
+            return nextVersion;
+        });
+    }
+
     public async Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
     {
         var normalizedKey = NormalizeKey(key);
@@ -179,7 +300,10 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             entity.ConfigJson,
             DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
             entity.CreatedBy,
-            AgentConfigJson.ReadOutputs(entity.ConfigJson));
+            AgentConfigJson.ReadOutputs(entity.ConfigJson),
+            entity.OwningWorkflowKey,
+            entity.ForkedFromKey,
+            entity.ForkedFromVersion);
     }
 
     private static string NormalizeKey(string key)

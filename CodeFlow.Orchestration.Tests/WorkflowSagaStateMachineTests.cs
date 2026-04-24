@@ -3191,5 +3191,23 @@ public sealed class WorkflowSagaStateMachineTests
 
         public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<AgentConfig> CreateForkAsync(
+            string sourceKey,
+            int sourceVersion,
+            string workflowKey,
+            string configJson,
+            string? createdBy,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> CreatePublishedVersionAsync(
+            string targetKey,
+            string configJson,
+            string forkedFromKey,
+            int forkedFromVersion,
+            string? createdBy,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

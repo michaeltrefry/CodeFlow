@@ -90,6 +90,69 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
             ]);
     }
 
+    [Fact]
+    public async Task GetAsync_ShouldRoundTripForkLineageColumns()
+    {
+        var sourceKey = $"source-{Guid.NewGuid():N}";
+        var forkKey = $"__fork_{Guid.NewGuid():N}";
+        var workflowKey = $"wf-{Guid.NewGuid():N}";
+        var configJson = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "test",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+
+        await using var writeContext = CreateDbContext();
+        writeContext.Agents.Add(new AgentConfigEntity
+        {
+            Key = forkKey,
+            Version = 1,
+            ConfigJson = configJson,
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedBy = "tester",
+            IsActive = true,
+            OwningWorkflowKey = workflowKey,
+            ForkedFromKey = sourceKey,
+            ForkedFromVersion = 3
+        });
+        await writeContext.SaveChangesAsync();
+
+        await using var readContext = CreateDbContext();
+        var repository = new AgentConfigRepository(readContext);
+        var fetched = await repository.GetAsync(forkKey, 1);
+
+        fetched.OwningWorkflowKey.Should().Be(workflowKey);
+        fetched.ForkedFromKey.Should().Be(sourceKey);
+        fetched.ForkedFromVersion.Should().Be(3);
+        fetched.IsWorkflowScoped.Should().BeTrue();
+        fetched.IsFork.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetAsync_ShouldReturnNullLineageForLibraryAgents()
+    {
+        var key = $"library-{Guid.NewGuid():N}";
+        var configJson = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "test",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+
+        await using var writeContext = CreateDbContext();
+        var repository = new AgentConfigRepository(writeContext);
+        await repository.CreateNewVersionAsync(key, configJson, "tester");
+
+        await using var readContext = CreateDbContext();
+        var readRepository = new AgentConfigRepository(readContext);
+        var fetched = await readRepository.GetAsync(key, 1);
+
+        fetched.OwningWorkflowKey.Should().BeNull();
+        fetched.ForkedFromKey.Should().BeNull();
+        fetched.ForkedFromVersion.Should().BeNull();
+        fetched.IsWorkflowScoped.Should().BeFalse();
+        fetched.IsFork.Should().BeFalse();
+    }
+
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();

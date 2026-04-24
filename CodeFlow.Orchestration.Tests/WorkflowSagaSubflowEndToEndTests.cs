@@ -71,11 +71,12 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Edges: Array.Empty<WorkflowEdge>(),
             Inputs: Array.Empty<WorkflowInput>());
 
-        var harness = BuildHarness(new[] { parent, child }, new Dictionary<string, int>
+        await using var scope = BuildHarness(new[] { parent, child }, new Dictionary<string, int>
         {
             ["kickoff"] = 1,
             ["child-agent"] = 1,
         });
+        var harness = scope.Harness;
 
         await harness.Start();
         try
@@ -222,7 +223,8 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             ["start-leaf"] = 1,
         };
 
-        var harness = BuildHarness(workflows, agentVersions);
+        await using var scope = BuildHarness(workflows, agentVersions);
+        var harness = scope.Harness;
         await harness.Start();
         try
         {
@@ -386,7 +388,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             TokenUsage: new TokenUsage(0, 0, 0));
     }
 
-    private static ITestHarness BuildHarness(
+    private static HarnessScope BuildHarness(
         IEnumerable<Workflow> workflows,
         IReadOnlyDictionary<string, int> agentVersions)
     {
@@ -396,13 +398,33 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             .AddSingleton<IArtifactStore>(new DictionaryArtifactStore())
             .AddSingleton<IMemoryCache>(_ => new MemoryCache(new MemoryCacheOptions()))
             .AddSingleton<LogicNodeScriptHost>()
+            .AddSingleton<CodeFlow.Runtime.IScribanTemplateRenderer, CodeFlow.Runtime.ScribanTemplateRenderer>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             })
             .BuildServiceProvider(true);
 
-        return provider.GetRequiredService<ITestHarness>();
+        return new HarnessScope(provider, provider.GetRequiredService<ITestHarness>());
+    }
+
+    // Wraps the harness + its provider so the test can dispose both. Without disposing the
+    // provider, the MassTransit hosted services keep running after the test ends, and stale
+    // publish-topology state leaks into the RabbitMQ-backed E2E test that runs next in the
+    // collection (producing a saga-never-initializes timeout).
+    private sealed class HarnessScope : IAsyncDisposable
+    {
+        private readonly ServiceProvider provider;
+
+        public HarnessScope(ServiceProvider provider, ITestHarness harness)
+        {
+            this.provider = provider;
+            Harness = harness;
+        }
+
+        public ITestHarness Harness { get; }
+
+        public ValueTask DisposeAsync() => provider.DisposeAsync();
     }
 
     private sealed class MultiWorkflowRepository : IWorkflowRepository
@@ -451,8 +473,20 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             this.versions = versions;
         }
 
-        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)
+        {
+            var empty = new AgentConfig(
+                Key: key,
+                Version: version,
+                Kind: AgentKind.Agent,
+                Configuration: new CodeFlow.Runtime.AgentInvocationConfiguration(
+                    Provider: "openai",
+                    Model: "gpt-test"),
+                ConfigJson: "{}",
+                CreatedAtUtc: DateTime.UtcNow,
+                CreatedBy: null);
+            return Task.FromResult(empty);
+        }
 
         public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
@@ -463,6 +497,24 @@ public sealed class WorkflowSagaSubflowEndToEndTests
                 : throw new AgentConfigNotFoundException(key, 0);
 
         public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentConfig> CreateForkAsync(
+            string sourceKey,
+            int sourceVersion,
+            string workflowKey,
+            string configJson,
+            string? createdBy,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> CreatePublishedVersionAsync(
+            string targetKey,
+            string configJson,
+            string forkedFromKey,
+            int forkedFromVersion,
+            string? createdBy,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

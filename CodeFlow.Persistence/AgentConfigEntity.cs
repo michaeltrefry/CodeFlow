@@ -17,4 +17,10 @@ public sealed class AgentConfigEntity
     public bool IsActive { get; set; }
 
     public bool IsRetired { get; set; }
+
+    public string? OwningWorkflowKey { get; set; }
+
+    public string? ForkedFromKey { get; set; }
+
+    public int? ForkedFromVersion { get; set; }
 }
