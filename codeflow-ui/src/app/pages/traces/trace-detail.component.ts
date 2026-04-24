@@ -18,6 +18,12 @@ import { streamTrace } from '../../core/trace-stream';
 import { AuthService } from '../../auth/auth.service';
 import { HitlReviewComponent } from '../hitl/hitl-review.component';
 import { WorkflowReadonlyCanvasComponent } from '../workflows/editor/workflow-readonly-canvas.component';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { StateChipComponent } from '../../ui/state-chip.component';
+import { CardComponent } from '../../ui/card.component';
+import { IconComponent } from '../../ui/icon.component';
 
 interface TimelineEntry {
   id: string;
@@ -57,12 +63,11 @@ interface ReviewLoopGroup {
   nodeId: string;
   nodeLabel: string;
   subflowKey: string | null;
-  /** The ReviewLoop node's configured LoopDecision (default "Rejected"). Used as the badge
-   *  label on intermediate rounds so the user sees the actual loop trigger, not a hardcoded
-   *  "Rejected" that might not match their config. */
   loopDecision: string;
   rounds: ReviewLoopRoundEntry[];
 }
+
+type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
 
 @Component({
   selector: 'cf-trace-detail',
@@ -73,274 +78,256 @@ interface ReviewLoopGroup {
     DatePipe,
     JsonPipe,
     HitlReviewComponent,
-    WorkflowReadonlyCanvasComponent
+    WorkflowReadonlyCanvasComponent,
+    PageHeaderComponent,
+    ButtonComponent,
+    ChipComponent,
+    StateChipComponent,
+    CardComponent,
+    IconComponent,
   ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>Trace</h1>
-        <p class="muted monospace">{{ id() }}</p>
-      </div>
-      <div class="header-actions">
-        @if (detail(); as d) {
+    <div class="page">
+      @if (detail(); as d) {
+        <cf-page-header title="Trace">
+          <button type="button" cf-button variant="ghost" icon="copy" (click)="copyId(d.traceId)">Copy ID</button>
           @if (d.currentState === 'Running') {
-            <button class="secondary danger" (click)="terminate()" [disabled]="actionBusy()">
+            <button type="button" cf-button variant="danger" (click)="terminate()" [disabled]="actionBusy()">
               {{ actionBusy() ? 'Terminating…' : 'Terminate trace' }}
             </button>
           } @else {
-            <button class="secondary danger" (click)="deleteTrace()" [disabled]="actionBusy()">
+            <button type="button" cf-button variant="danger" icon="trash" (click)="deleteTrace()" [disabled]="actionBusy()">
               {{ actionBusy() ? 'Deleting…' : 'Delete trace' }}
             </button>
           }
-        }
-        <a routerLink="/traces"><button class="secondary" [disabled]="actionBusy()">Back</button></a>
-      </div>
-    </header>
+          <div page-header-body>
+            <p class="mono muted" style="font-size: 13px; margin-top: 4px">{{ d.traceId }}</p>
+            <div class="trace-header-meta">
+              <cf-state-chip [state]="d.currentState"></cf-state-chip>
+              <cf-chip mono>workflow: {{ d.workflowKey }} v{{ d.workflowVersion }}</cf-chip>
+              <cf-chip mono>round: {{ d.roundCount }}</cf-chip>
+              <cf-chip mono>current: {{ d.currentAgentKey }}</cf-chip>
+              <cf-chip>created {{ d.createdAtUtc | date:'medium' }}</cf-chip>
+              <cf-chip>updated {{ d.updatedAtUtc | date:'medium' }}</cf-chip>
+            </div>
+          </div>
+        </cf-page-header>
 
-    @if (detail(); as d) {
-      <section class="card">
-        <div class="row">
-          <span class="tag" [class.ok]="d.currentState === 'Completed'" [class.warn]="d.currentState === 'Running'" [class.error]="d.currentState === 'Failed' || d.currentState === 'Escalated'">{{ d.currentState }}</span>
-          <span class="tag">workflow: {{ d.workflowKey }} v{{ d.workflowVersion }}</span>
-          <span class="tag">current: {{ d.currentAgentKey }}</span>
-          <span class="tag">round: {{ d.roundCount }}</span>
-        </div>
-        <div class="muted small" style="margin-top: 0.5rem;">
-          created {{ d.createdAtUtc | date:'medium' }} &middot; updated {{ d.updatedAtUtc | date:'medium' }}
-        </div>
         @if (d.failureReason) {
-          <div class="failure-reason">
+          <div class="trace-failure">
             <strong>Failure:</strong> {{ d.failureReason }}
             @if (failureHttpDiagnosticsRef(); as diagnosticsRef) {
-              <div class="failure-links">
-                <a href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics</a>
+              <div style="margin-top: 6px">
+                <a class="mono-link" href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics →</a>
               </div>
             }
           </div>
         }
-      </section>
 
-      @if (d.pendingHitl.length > 0) {
-        <section class="card">
-          <h3>Awaiting human review</h3>
-          @for (group of pendingHitlGroups(); track group.traceId) {
-            @if (group.isSubflow) {
-              <div class="hitl-group-header">
-                <span class="tag small subflow">Subflow</span>
-                <span class="mono small">{{ group.subflowPathLabel }}</span>
-                @if (group.traceId !== d.traceId) {
-                  <a class="small"
-                     [routerLink]="['/traces', group.traceId]"
-                     title="Open the child trace that owns this HITL">
-                    open child trace ↗
-                  </a>
-                }
-              </div>
-            }
-            @for (task of group.tasks; track task.id) {
-              <cf-hitl-review [task]="task" (decided)="reload()" />
-            }
-          }
-        </section>
-      }
-
-      @if (workflow()) {
-        <section class="card">
-          <h3>Path through the workflow</h3>
-          <p class="muted small">Nodes that executed during this trace are highlighted; the rest are dimmed.</p>
-          <div class="graph-host">
-            <cf-workflow-readonly-canvas
-              [workflow]="workflow()"
-              [highlightedNodeIds]="highlightedNodeIds()"></cf-workflow-readonly-canvas>
-          </div>
-        </section>
-      }
-
-      @if (d.logicEvaluations.length > 0) {
-        <section class="card">
-          <h3>Script evaluations</h3>
-          <p class="muted xsmall">
-            Includes both Logic node evaluations and agent/HITL-attached routing scripts.
-          </p>
-          <table class="logic-table">
-            <thead><tr><th>Node</th><th>Port chosen</th><th>Duration</th><th>Outcome</th><th>Logs</th></tr></thead>
-            <tbody>
-              @for (eval of d.logicEvaluations; track eval.recordedAtUtc) {
-                <tr>
-                  <td class="mono small">{{ labelForNode(eval.nodeId) }}</td>
-                  <td>
-                    @if (eval.outputPortName) {
-                      <span class="tag accent">{{ eval.outputPortName }}</span>
-                    } @else {
-                      <span class="muted small">—</span>
-                    }
-                  </td>
-                  <td class="muted small">{{ eval.duration }}</td>
-                  <td>
-                    @if (eval.failureKind) {
-                      <span class="tag error">{{ eval.failureKind }}</span>
-                      @if (eval.failureMessage) {
-                        <div class="muted xsmall">{{ eval.failureMessage }}</div>
-                      }
-                    } @else {
-                      <span class="tag ok">ok</span>
-                    }
-                  </td>
-                  <td>
-                    @if (eval.logs.length === 0) {
-                      <span class="muted small">—</span>
-                    } @else {
-                      <ul class="log-list">
-                        @for (log of eval.logs; track $index) {
-                          <li class="mono xsmall">{{ log }}</li>
-                        }
-                      </ul>
-                    }
-                  </td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </section>
-      }
-
-      @if (reviewLoopGroups().length > 0) {
-        <section class="card">
-          <h3>Review loops</h3>
-          <p class="muted xsmall">
-            Each round is a separate child saga. Rounds before the last one returned the
-            configured loop-decision port (that's what triggered the next iteration). The
-            last round shows the outcome — see its trace for the terminal decision.
-          </p>
-          @for (group of reviewLoopGroups(); track group.nodeId) {
-            <div class="review-loop-group">
-              <div class="row-spread">
-                <strong class="mono small">{{ group.nodeLabel }}</strong>
-                <span class="muted xsmall">loop decision: <code>{{ group.loopDecision }}</code></span>
-              </div>
-              <ul class="review-loop-rounds">
-                @for (round of group.rounds; track round.traceId) {
-                  <li>
-                    <a [routerLink]="['/traces', round.traceId]" class="small">
-                      Round {{ round.round }} of {{ round.maxRounds }} ↗
+        @if (d.pendingHitl.length > 0) {
+          <cf-card title="Awaiting human review">
+            @for (group of pendingHitlGroups(); track group.traceId) {
+              @if (group.isSubflow) {
+                <div class="hitl-group-header">
+                  <cf-chip mono>Subflow</cf-chip>
+                  <span class="mono small">{{ group.subflowPathLabel }}</span>
+                  @if (group.traceId !== d.traceId) {
+                    <a class="mono-link small"
+                       [routerLink]="['/traces', group.traceId]"
+                       title="Open the child trace that owns this HITL">
+                      open child trace ↗
                     </a>
-                    <span class="tag xsmall">{{ round.currentState }}</span>
-                    @if (!round.isLastRoundSeen) {
-                      <span class="tag xsmall rejected"
-                            [title]="'Child returned ' + group.loopDecision + ', triggering the next round'">{{ group.loopDecision }}</span>
-                    }
-                  </li>
-                }
-              </ul>
+                  }
+                </div>
+              }
+              @for (task of group.tasks; track task.id) {
+                <cf-hitl-review [task]="task" (decided)="reload()" />
+              }
+            }
+          </cf-card>
+        }
+
+        @if (workflow()) {
+          <cf-card title="Path through the workflow">
+            <p class="muted small" style="margin-bottom: 10px">
+              Nodes that executed during this trace are highlighted; the rest are dimmed.
+            </p>
+            <div class="graph-host">
+              <cf-workflow-readonly-canvas
+                [workflow]="workflow()"
+                [highlightedNodeIds]="highlightedNodeIds()"></cf-workflow-readonly-canvas>
             </div>
-          }
-        </section>
-      }
+          </cf-card>
+        }
 
-      <section class="card">
-        <h3>Timeline</h3>
-        <ul class="timeline">
-          @for (entry of timeline(); track entry.id) {
-            <li [class.completed]="entry.kind === 'Completed'">
-              <span class="timeline-dot"></span>
-              <div class="timeline-body">
-                <button type="button" class="timeline-toggle" (click)="toggleEntry(entry)"
-                        [disabled]="!entry.inputRef && !entry.outputRef"
-                        [attr.aria-expanded]="expandedEntries().has(entry.id)">
-                  <div class="timeline-header">
-                    <strong>{{ labelForTimelineEntry(entry) }}</strong>
-                    <span class="muted small">v{{ entry.agentVersion }} &middot; {{ entry.timestampUtc | date:'mediumTime' }}</span>
-                  </div>
-                  <div>
-                    <span class="tag" [class.accent]="entry.kind === 'Requested'" [class.ok]="entry.decision === 'Completed'" [class.error]="entry.decision === 'Failed' || entry.decision === 'Rejected'">
-                      {{ entry.kind }}{{ entry.decision ? ': ' + entry.decision : '' }}
-                    </span>
-                    @if (entry.inputRef || entry.outputRef) {
-                      <span class="caret">{{ expandedEntries().has(entry.id) ? '▾' : '▸' }}</span>
-                    }
-                  </div>
-                </button>
-                @if (expandedEntries().has(entry.id)) {
-                  <div class="timeline-expand">
-                    @if (entry.inputRef) {
-                      <div class="artifact-block">
-                        <h4>Input</h4>
-                        <p class="artifact-link-row">
-                          <a href="" (click)="downloadArtifact($event, entry.inputRef)">Download input artifact</a>
-                        </p>
-                        @if (artifactState(entry.inputRef); as state) {
-                          @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
-                          @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
-                          @else if (state.content !== undefined) { <pre class="monospace">{{ state.content }}</pre> }
+        @if (d.logicEvaluations.length > 0) {
+          <cf-card title="Script evaluations" flush>
+            <p class="muted xsmall" style="padding: 12px 16px 0">
+              Includes both Logic node evaluations and agent/HITL-attached routing scripts.
+            </p>
+            <table class="table">
+              <thead><tr><th>Node</th><th>Port chosen</th><th>Duration</th><th>Outcome</th><th>Logs</th></tr></thead>
+              <tbody>
+                @for (evaluation of d.logicEvaluations; track evaluation.recordedAtUtc) {
+                  <tr>
+                    <td class="mono small">{{ labelForNode(evaluation.nodeId) }}</td>
+                    <td>
+                      @if (evaluation.outputPortName) {
+                        <cf-chip variant="accent" mono>{{ evaluation.outputPortName }}</cf-chip>
+                      } @else {
+                        <span class="muted small">—</span>
+                      }
+                    </td>
+                    <td class="muted small">{{ evaluation.duration }}</td>
+                    <td>
+                      @if (evaluation.failureKind) {
+                        <cf-chip variant="err" dot>{{ evaluation.failureKind }}</cf-chip>
+                        @if (evaluation.failureMessage) {
+                          <div class="muted xsmall">{{ evaluation.failureMessage }}</div>
                         }
-                      </div>
-                    }
-                    @if (entry.outputRef) {
-                      <div class="artifact-block">
-                        <h4>Output</h4>
-                        @if (httpDiagnosticsRefForDecision(entry.decisionPayload); as diagnosticsRef) {
-                          <p class="artifact-link-row">
-                            <a href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics</a>
-                          </p>
-                        }
-                        @if (artifactState(entry.outputRef); as state) {
-                          @if (state.loading) { <p class="muted small">Loading&hellip;</p> }
-                          @else if (state.error) { <p class="muted small error">{{ state.error }}</p> }
-                          @else if (state.content !== undefined) { <pre class="monospace">{{ state.content }}</pre> }
-                        }
-                      </div>
-                    }
-                  </div>
+                      } @else {
+                        <cf-chip variant="ok" dot>ok</cf-chip>
+                      }
+                    </td>
+                    <td>
+                      @if (evaluation.logs.length === 0) {
+                        <span class="muted small">—</span>
+                      } @else {
+                        <ul class="log-list">
+                          @for (log of evaluation.logs; track $index) {
+                            <li class="mono xsmall">{{ log }}</li>
+                          }
+                        </ul>
+                      }
+                    </td>
+                  </tr>
                 }
+              </tbody>
+            </table>
+          </cf-card>
+        }
+
+        @if (reviewLoopGroups().length > 0) {
+          <cf-card title="Review loops">
+            <p class="muted xsmall" style="margin-bottom: 10px">
+              Each round is a separate child saga. Rounds before the last one returned the
+              configured loop-decision port. The last round shows the outcome.
+            </p>
+            @for (group of reviewLoopGroups(); track group.nodeId) {
+              <div class="review-loop-group">
+                <div class="row-spread">
+                  <strong class="mono small">{{ group.nodeLabel }}</strong>
+                  <span class="muted xsmall">loop decision: <code>{{ group.loopDecision }}</code></span>
+                </div>
+                <ul class="review-loop-rounds">
+                  @for (round of group.rounds; track round.traceId) {
+                    <li>
+                      <a [routerLink]="['/traces', round.traceId]" class="mono-link small">
+                        Round {{ round.round }} of {{ round.maxRounds }} ↗
+                      </a>
+                      <cf-chip>{{ round.currentState }}</cf-chip>
+                      @if (!round.isLastRoundSeen) {
+                        <cf-chip variant="err" dot
+                                [title]="'Child returned ' + group.loopDecision + ', triggering the next round'">{{ group.loopDecision }}</cf-chip>
+                      }
+                    </li>
+                  }
+                </ul>
               </div>
-            </li>
-          }
-        </ul>
-      </section>
+            }
+          </cf-card>
+        }
 
-      <section class="card">
-        <h3>Pinned agent versions</h3>
-        <pre class="monospace">{{ d.pinnedAgentVersions | json }}</pre>
-      </section>
+        <cf-card title="Execution timeline" flush>
+          <ng-template #cardRight><cf-chip mono>{{ timeline().length }} hops</cf-chip></ng-template>
+          <div class="timeline">
+            @for (entry of timeline(); track entry.id) {
+              <div class="tl-step" [attr.data-state]="dotStateFor(entry)">
+                <div class="tl-dot">
+                  @switch (dotStateFor(entry)) {
+                    @case ('ok')   { <cf-icon name="check"></cf-icon> }
+                    @case ('err')  { <cf-icon name="x"></cf-icon> }
+                    @case ('hitl') { <cf-icon name="hitl"></cf-icon> }
+                    @case ('run')  { <cf-icon name="play"></cf-icon> }
+                    @default       { <cf-icon name="chevR"></cf-icon> }
+                  }
+                </div>
+                <div class="tl-body">
+                  <button type="button" class="timeline-toggle" (click)="toggleEntry(entry)"
+                          [disabled]="!entry.inputRef && !entry.outputRef"
+                          [attr.aria-expanded]="expandedEntries().has(entry.id)">
+                    <div class="tl-title">
+                      <span class="tl-agent">{{ labelForTimelineEntry(entry) }}</span>
+                      <cf-chip mono>v{{ entry.agentVersion }}</cf-chip>
+                      @if (entry.decision) {
+                        <cf-chip [variant]="decisionVariantFor(entry.decision)" dot>{{ entry.decision }}</cf-chip>
+                      } @else {
+                        <cf-chip variant="accent" mono>{{ entry.kind }}</cf-chip>
+                      }
+                      @if (entry.inputRef || entry.outputRef) {
+                        <span class="caret">{{ expandedEntries().has(entry.id) ? '▾' : '▸' }}</span>
+                      }
+                    </div>
+                  </button>
+                  @if (expandedEntries().has(entry.id)) {
+                    <div class="tl-expand">
+                      @if (entry.inputRef) {
+                        <div class="artifact-block">
+                          <div class="artifact-h">Input</div>
+                          <p class="artifact-link-row">
+                            <a class="mono-link" href="" (click)="downloadArtifact($event, entry.inputRef!)">Download input artifact</a>
+                          </p>
+                          @if (artifactState(entry.inputRef); as state) {
+                            @if (state.loading) { <p class="muted small">Loading…</p> }
+                            @else if (state.error) { <cf-chip variant="err" dot>{{ state.error }}</cf-chip> }
+                            @else if (state.content !== undefined) { <pre class="tl-payload">{{ state.content }}</pre> }
+                          }
+                        </div>
+                      }
+                      @if (entry.outputRef) {
+                        <div class="artifact-block">
+                          <div class="artifact-h">Output</div>
+                          @if (httpDiagnosticsRefForDecision(entry.decisionPayload); as diagnosticsRef) {
+                            <p class="artifact-link-row">
+                              <a class="mono-link" href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics →</a>
+                            </p>
+                          }
+                          @if (artifactState(entry.outputRef); as state) {
+                            @if (state.loading) { <p class="muted small">Loading…</p> }
+                            @else if (state.error) { <cf-chip variant="err" dot>{{ state.error }}</cf-chip> }
+                            @else if (state.content !== undefined) { <pre class="tl-payload">{{ state.content }}</pre> }
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+                <div class="tl-when">{{ entry.timestampUtc | date:'mediumTime' }}</div>
+              </div>
+            }
+          </div>
+        </cf-card>
 
-      <section class="card">
-        <h3>Context inputs</h3>
-        <p class="muted small">Current saga context available to workflow scripts and agent templates.</p>
-        <pre class="monospace">{{ d.contextInputs | json }}</pre>
-      </section>
+        <cf-card title="Pinned agent versions">
+          <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ d.pinnedAgentVersions | json }}</pre>
+        </cf-card>
 
-      @if (actionError()) {
-        <p class="tag error">{{ actionError() }}</p>
+        <cf-card title="Context inputs">
+          <p class="muted small" style="margin-bottom: 10px">Current saga context available to workflow scripts and agent templates.</p>
+          <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ d.contextInputs | json }}</pre>
+        </cf-card>
+
+        @if (actionError()) {
+          <cf-chip variant="err" dot>{{ actionError() }}</cf-chip>
+        }
+      } @else {
+        <cf-card>
+          <div class="muted">Loading trace…</div>
+        </cf-card>
       }
-    } @else {
-      <p>Loading trace&hellip;</p>
-    }
+    </div>
   `,
   styles: [`
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 1.5rem;
-    }
-    .header-actions {
-      display: flex;
-      gap: 0.75rem;
-      align-items: center;
-    }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-    .xsmall { font-size: 0.72rem; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    button.secondary.danger {
-      background: rgba(248, 81, 73, 0.12);
-      border: 1px solid #f87171;
-      color: #fecaca;
-    }
-    button.secondary.danger:hover {
-      background: rgba(248, 81, 73, 0.22);
-      color: #fff5f5;
-    }
     .graph-host { height: 460px; margin-top: 0.5rem; }
     .hitl-group-header {
       display: flex;
@@ -348,112 +335,39 @@ interface ReviewLoopGroup {
       gap: 0.5rem;
       padding: 0.5rem 0;
       margin-top: 0.75rem;
-      border-top: 1px solid var(--color-border);
+      border-top: 1px solid var(--border);
     }
-    .hitl-group-header:first-child { border-top: none; margin-top: 0; padding-top: 0; }
-    .tag.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; padding: 0.15rem 0.4rem; border-radius: 3px; }
-    .tag.rejected { background: rgba(248, 81, 73, 0.18); color: #fca5a5; padding: 0.15rem 0.4rem; border-radius: 3px; }
-    .review-loop-group { padding: 0.5rem 0; }
-    .review-loop-group + .review-loop-group { border-top: 1px solid rgba(255, 255, 255, 0.06); margin-top: 0.5rem; padding-top: 0.75rem; }
-    .review-loop-rounds { list-style: none; padding: 0.25rem 0 0 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-    .review-loop-rounds li { display: flex; gap: 0.5rem; align-items: center; }
-    .logic-table { width: 100%; border-collapse: collapse; }
-    .logic-table th, .logic-table td { padding: 0.4rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
-    .logic-table th { color: var(--color-muted); text-transform: uppercase; font-size: 0.75rem; }
+    .hitl-group-header:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+    .review-loop-group { padding: 6px 0; }
+    .review-loop-group + .review-loop-group { border-top: 1px solid var(--hairline); margin-top: 6px; padding-top: 10px; }
+    .review-loop-rounds { list-style: none; padding: 4px 0 0 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+    .review-loop-rounds li { display: flex; gap: 8px; align-items: center; }
+    .row-spread { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .log-list { margin: 0; padding-left: 1rem; list-style: disc; }
-    .timeline {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-    }
-    .timeline li {
-      display: grid;
-      grid-template-columns: 12px 1fr;
-      gap: 0.75rem;
-      padding: 0.5rem 0;
-      border-left: 2px solid var(--color-border);
-      padding-left: 1rem;
-      position: relative;
-    }
-    .timeline-dot {
-      width: 10px;
-      height: 10px;
-      background: var(--color-accent);
-      border-radius: 50%;
-      margin-top: 0.35rem;
-    }
-    .timeline li.completed .timeline-dot {
-      background: var(--color-ok);
-    }
-    .timeline-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-    }
-    pre.monospace {
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: var(--color-surface-alt);
-      padding: 0.75rem;
-      border-radius: 4px;
-    }
-    .failure-reason {
-      margin-top: 0.75rem;
-      padding: 0.75rem;
-      border-left: 3px solid var(--color-error, #c0392b);
-      background: var(--color-surface-alt);
-      border-radius: 4px;
-    }
-    .failure-links {
-      margin-top: 0.5rem;
-      font-size: 0.9rem;
-    }
-    .timeline-body {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
+
     .timeline-toggle {
       all: unset;
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
+      display: block;
       width: 100%;
-      cursor: pointer;
-      padding: 0.25rem 0;
-    }
-    .timeline-toggle:focus-visible {
-      outline: 2px solid var(--color-accent);
-      outline-offset: 2px;
-      border-radius: 2px;
-    }
-    .timeline-toggle:disabled {
       cursor: default;
     }
-    .caret {
-      margin-left: 0.5rem;
-      color: var(--color-muted);
+    .timeline-toggle:disabled { cursor: default; }
+    .timeline-toggle:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+      border-radius: var(--radius);
     }
-    .timeline-expand {
-      margin-top: 0.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-    .artifact-block h4 {
-      margin: 0 0 0.25rem;
-      font-size: 0.85rem;
+    .caret { margin-left: 6px; color: var(--muted); font-size: var(--fs-sm); }
+    .tl-expand { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+    .artifact-block .artifact-h {
+      font-size: var(--fs-xs);
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--color-muted);
+      letter-spacing: 0.06em;
+      color: var(--faint);
+      margin-bottom: 4px;
     }
-    .artifact-link-row {
-      margin: 0 0 0.5rem;
-      font-size: 0.9rem;
-    }
-    .artifact-block .error {
-      color: var(--color-error, #c0392b);
-    }
+    .artifact-link-row { margin: 0 0 6px; font-size: var(--fs-sm); }
   `]
 })
 export class TraceDetailComponent implements OnInit, OnDestroy {
@@ -472,13 +386,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly childTraces = signal<TraceSummary[]>([]);
   private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
 
-  /**
-   * For each ReviewLoop node in the current workflow, group the child sagas it spawned (ordered
-   * by their 1-indexed parent_review_round) so the trace detail can show "Round N of M" with
-   * deep links into each round's child trace. The last round in the list is the outcome round;
-   * any earlier round necessarily returned Rejected (that's what caused the next iteration), so
-   * we badge it accordingly.
-   */
   readonly reviewLoopGroups = computed<ReviewLoopGroup[]>(() => {
     const detail = this.detail();
     const workflow = this.workflow();
@@ -536,12 +443,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     return ids.size > 0 ? Array.from(ids) : [];
   });
 
-  /**
-   * Groups pending HITL tasks by the trace that actually owns them. Tasks owned by the current
-   * trace (or with no origin/path metadata) go into a single "root" group that renders as a flat
-   * list — matching the pre-subflow UI. Tasks from descendant subflows are grouped together
-   * under a header showing the subflow path and a deep link to the owning trace.
-   */
   readonly pendingHitlGroups = computed<PendingHitlGroup[]>(() => {
     const d = this.detail();
     if (!d || d.pendingHitl.length === 0) return [];
@@ -672,11 +573,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       next: evt => this.appendEvent(evt)
     });
 
-    // The per-trace SSE stream only surfaces events for *this* trace id. With subflows and
-    // ReviewLoops, HITL tasks and agent invocations fire on child saga trace ids — the parent
-    // client never sees them via SSE. Poll the aggregated trace detail every 3s while the
-    // parent is Running so descendant HITL tasks show up without a manual refresh. Stops
-    // polling once the trace reaches a terminal state.
     this.pollSub = interval(3000).subscribe(() => {
       const current = this.detail();
       if (current && current.currentState === 'Running') {
@@ -723,32 +619,25 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   private loadChildTracesFor(traceId: string): void {
-    // ReviewLoop iterations produce child sagas keyed by parent_trace_id + parent_node_id +
-    // parent_review_round. We list and filter client-side — good enough until the trace count
-    // justifies a server-side filter.
     this.api.list().subscribe({
       next: all => this.childTraces.set(all.filter(t => t.parentTraceId === traceId)),
       error: () => this.childTraces.set([])
     });
   }
 
+  copyId(id: string): void {
+    navigator.clipboard?.writeText(id).catch(() => undefined);
+  }
+
   terminate(): void {
     const detail = this.detail();
-    if (!detail || detail.currentState !== 'Running') {
-      return;
-    }
-
-    if (!window.confirm(`Terminate trace ${detail.traceId}?`)) {
-      return;
-    }
+    if (!detail || detail.currentState !== 'Running') return;
+    if (!window.confirm(`Terminate trace ${detail.traceId}?`)) return;
 
     this.actionBusy.set(true);
     this.actionError.set(null);
     this.api.terminate(detail.traceId).subscribe({
-      next: () => {
-        this.actionBusy.set(false);
-        this.reload();
-      },
+      next: () => { this.actionBusy.set(false); this.reload(); },
       error: err => {
         this.actionBusy.set(false);
         this.actionError.set(err?.error?.error ?? err?.message ?? 'Failed to terminate trace');
@@ -758,21 +647,13 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
   deleteTrace(): void {
     const detail = this.detail();
-    if (!detail || detail.currentState === 'Running') {
-      return;
-    }
-
-    if (!window.confirm(`Delete trace ${detail.traceId}? This removes its history.`)) {
-      return;
-    }
+    if (!detail || detail.currentState === 'Running') return;
+    if (!window.confirm(`Delete trace ${detail.traceId}? This removes its history.`)) return;
 
     this.actionBusy.set(true);
     this.actionError.set(null);
     this.api.delete(detail.traceId).subscribe({
-      next: () => {
-        this.actionBusy.set(false);
-        this.router.navigate(['/traces']);
-      },
+      next: () => { this.actionBusy.set(false); this.router.navigate(['/traces']); },
       error: err => {
         this.actionBusy.set(false);
         this.actionError.set(err?.error?.error ?? err?.message ?? 'Failed to delete trace');
@@ -793,15 +674,22 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
   labelForTimelineEntry(entry: TimelineEntry): string {
     const explicit = entry.agentKey?.trim();
-    if (explicit) {
-      return explicit;
-    }
-
-    if (entry.nodeId) {
-      return this.labelForNode(entry.nodeId);
-    }
-
+    if (explicit) return explicit;
+    if (entry.nodeId) return this.labelForNode(entry.nodeId);
     return 'workflow step';
+  }
+
+  dotStateFor(entry: TimelineEntry): TimelineDotState {
+    if (entry.kind === 'Requested') return 'run';
+    if (entry.decision === 'Failed' || entry.decision === 'Rejected') return 'err';
+    if (entry.decision === 'Completed' || entry.decision === 'Approved') return 'ok';
+    return '';
+  }
+
+  decisionVariantFor(decision: AgentDecisionKind | null | undefined): 'ok' | 'err' | 'warn' | 'accent' {
+    if (decision === 'Completed' || decision === 'Approved') return 'ok';
+    if (decision === 'Failed' || decision === 'Rejected') return 'err';
+    return 'accent';
   }
 
   private labelForSubflowNode(node: WorkflowNode): string {
@@ -839,12 +727,10 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     };
 
     const existing = this.timeline();
-    if (existing.some(e => e.id === entry.id)) { return; }
+    if (existing.some(e => e.id === entry.id)) return;
     this.timeline.set([...existing, entry]);
 
     if (evt.kind === 'Requested') {
-      // HITL tasks are created after the invoke request is observed, so schedule
-      // a follow-up reload to surface newly pending human-review work.
       setTimeout(() => this.reload(), 400);
     }
 
@@ -860,10 +746,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       if (!current || typeof current !== 'object' || !(segment in current)) {
         return null;
       }
-
       current = (current as Record<string, unknown>)[segment];
     }
-
     return typeof current === 'string' && current.length > 0 ? current : null;
   }
 
@@ -882,11 +766,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   private fileNameFromResponse(contentDisposition: string | null): string | null {
-    if (!contentDisposition) {
-      return null;
-    }
-
-    const match = /filename=\"?([^\";]+)\"?/i.exec(contentDisposition);
+    if (!contentDisposition) return null;
+    const match = /filename="?([^";]+)"?/i.exec(contentDisposition);
     return match?.[1] ?? null;
   }
 }

@@ -271,10 +271,18 @@ export interface WorkflowInput {
   ordinal: number;
 }
 
+export type WorkflowCategory = 'Workflow' | 'Subflow' | 'Loop';
+
+export const WORKFLOW_CATEGORIES: readonly WorkflowCategory[] = ['Workflow', 'Subflow', 'Loop'] as const;
+
+export const MAX_WORKFLOW_TAGS = 5;
+
 export interface WorkflowSummary {
   key: string;
   latestVersion: number;
   name: string;
+  category: WorkflowCategory;
+  tags: string[];
   nodeCount: number;
   edgeCount: number;
   inputCount: number;
@@ -286,6 +294,8 @@ export interface WorkflowDetail {
   version: number;
   name: string;
   maxRoundsPerRound: number;
+  category: WorkflowCategory;
+  tags: string[];
   createdAtUtc: string;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];

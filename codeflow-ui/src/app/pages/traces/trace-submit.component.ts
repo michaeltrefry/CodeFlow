@@ -7,6 +7,10 @@ import { map, retry, switchMap, timer } from 'rxjs';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowDetail, WorkflowInput, WorkflowSummary } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { CardComponent } from '../../ui/card.component';
 
 interface InputFieldState {
   key: string;
@@ -18,100 +22,99 @@ interface InputFieldState {
 @Component({
   selector: 'cf-trace-submit',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [
+    CommonModule, FormsModule, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent,
+  ],
   template: `
-    <header class="page-header">
-      <h1>Submit run</h1>
-      <a routerLink="/traces"><button class="secondary">Cancel</button></a>
-    </header>
+    <div class="page">
+    <cf-page-header title="Submit run" subtitle="Kick off a workflow run with a configured input payload.">
+      <a routerLink="/traces"><button type="button" cf-button variant="ghost" icon="back">Cancel</button></a>
+    </cf-page-header>
 
     <form (submit)="submit($event)">
-      <div class="grid-two">
-        <div class="form-field">
-          <label>Workflow</label>
-          <select [ngModel]="workflowKey()" (ngModelChange)="onWorkflowChanged($event)" name="workflowKey" required>
-            <option [ngValue]="null">Select workflow…</option>
-            @for (wf of workflows(); track wf.key) {
-              <option [value]="wf.key">{{ wf.name }} ({{ wf.key }})</option>
-            }
-          </select>
+      <cf-card title="Workflow selection">
+        <div class="form-grid">
+          <div class="field">
+            <span class="field-label">Workflow</span>
+            <select class="select" [ngModel]="workflowKey()" (ngModelChange)="onWorkflowChanged($event)" name="workflowKey" required>
+              <option [ngValue]="null">Select workflow…</option>
+              @for (wf of workflows(); track wf.key) {
+                <option [value]="wf.key">{{ wf.name }} ({{ wf.key }})</option>
+              }
+            </select>
+          </div>
+          <div class="field">
+            <span class="field-label">Version (blank = latest)</span>
+            <input type="number" class="input mono" [(ngModel)]="workflowVersion" name="workflowVersion" min="1" />
+          </div>
         </div>
-        <div class="form-field">
-          <label>Version (blank = latest)</label>
-          <input type="number" [(ngModel)]="workflowVersion" name="workflowVersion" min="1" />
-        </div>
-      </div>
+      </cf-card>
 
       @if (workflowDetail(); as wf) {
         @if (inputFields().length > 0) {
-          <section class="card">
-            <h3>Workflow inputs</h3>
-            <p class="muted small">
+          <cf-card title="Workflow inputs">
+            <p class="muted small" style="margin-bottom: 10px">
               These values are handed to the run. The <code>input</code> field becomes the Start agent's input artifact;
               the rest are available to agent prompt templates as <code>{{'{{'}}context.&lt;key&gt;{{'}}'}}</code>
               (including nested JSON like <code>{{'{{'}}context.target.path{{'}}'}}</code>) and to Logic nodes as <code>context.&lt;key&gt;</code>.
             </p>
             @for (field of inputFields(); track field.key) {
-              <div class="form-field">
-                <label>
+              <div class="field" style="margin-bottom: 14px">
+                <span class="field-label">
                   {{ field.definition.displayName || field.definition.key }}
-                  @if (field.definition.required) { <span class="required">*</span> }
-                  <span class="tag small">{{ field.definition.kind }}</span>
-                </label>
+                  @if (field.definition.required) { <span style="color: var(--sem-red); margin-left: 4px">*</span> }
+                  <cf-chip mono style="margin-left: 6px">{{ field.definition.kind }}</cf-chip>
+                </span>
                 @if (field.definition.description) {
-                  <p class="muted small">{{ field.definition.description }}</p>
+                  <span class="field-hint">{{ field.definition.description }}</span>
                 }
                 @if (field.definition.kind === 'Text') {
                   @if (field.definition.key === 'input') {
-                    <textarea rows="8"
+                    <textarea class="textarea" rows="8"
                               [ngModel]="field.value"
                               (ngModelChange)="updateInputValue(field.key, $event)"
                               [name]="'input_' + field.key"
                               placeholder="Content passed to the Start agent…"></textarea>
                   } @else {
-                    <input type="text" [ngModel]="field.value"
+                    <input type="text" class="input"
+                           [ngModel]="field.value"
                            (ngModelChange)="updateInputValue(field.key, $event)"
                            [name]="'input_' + field.key"
                            [placeholder]="field.definition.defaultValueJson ?? ''" />
                   }
                 } @else {
-                  <textarea rows="5" class="mono"
+                  <textarea class="textarea mono" rows="5"
                             [ngModel]="field.value"
                             (ngModelChange)="updateInputValue(field.key, $event)"
                             [name]="'input_' + field.key"
                             placeholder='{"key":"value"}'></textarea>
                 }
                 @if (field.error) {
-                  <span class="tag error">{{ field.error }}</span>
+                  <cf-chip variant="err" dot>{{ field.error }}</cf-chip>
                 }
               </div>
             }
-          </section>
+          </cf-card>
         } @else {
-          <p class="muted small">This workflow declares no inputs.</p>
+          <div class="muted small">This workflow declares no inputs.</div>
         }
       }
 
       @if (error()) {
-        <div class="tag error">{{ error() }}</div>
+        <div class="trace-failure"><strong>Submit failed:</strong> {{ error() }}</div>
       }
 
-      <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="submitting() || !workflowKey() || !workflowDetail()">
+      <div class="row" style="margin-top: 14px; justify-content: flex-end">
+        <button type="submit" cf-button variant="primary" icon="play"
+                [disabled]="submitting() || !workflowKey() || !workflowDetail()">
           {{ submitting() ? 'Submitting…' : 'Submit run' }}
         </button>
       </div>
     </form>
+    </div>
   `,
-  styles: [`
-    .required { color: #f85149; margin-left: 0.25rem; }
-    .tag.small { margin-left: 0.5rem; font-size: 0.7rem; }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.25rem 0.5rem; border-radius: 3px; display: inline-block; margin-top: 0.25rem; }
-    .form-field { margin-bottom: 1rem; }
-  `]
+  styles: [``]
 })
 export class TraceSubmitComponent implements OnInit {
   private readonly workflowsApi = inject(WorkflowsApi);

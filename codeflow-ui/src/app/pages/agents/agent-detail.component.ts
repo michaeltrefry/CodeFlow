@@ -15,45 +15,49 @@ import {
   McpServer,
 } from '../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-picker/tool-picker.component';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
 
 @Component({
   selector: 'cf-agent-detail',
   standalone: true,
-  imports: [RouterLink, DatePipe, JsonPipe, ToolPickerComponent],
+  imports: [
+    RouterLink, DatePipe, JsonPipe, ToolPickerComponent,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>
-          {{ key() }}
-          @if (retired()) {
-            <span class="tag error">Retired</span>
+    <div class="page">
+    <cf-page-header [title]="key()">
+      @if (!retired()) {
+        <a [routerLink]="['/agents', key(), 'test']">
+          <button type="button" cf-button variant="ghost">Test agent</button>
+        </a>
+        <a [routerLink]="['/agents', key(), 'edit']">
+          <button type="button" cf-button variant="primary" icon="plus">New version</button>
+        </a>
+        <button type="button" cf-button variant="danger" (click)="retire()" [disabled]="retiring()">
+          {{ retiring() ? 'Retiring…' : 'Retire agent' }}
+        </button>
+      }
+      <a routerLink="/agents"><button type="button" cf-button variant="ghost" icon="back">Back</button></a>
+      <div page-header-body>
+        <div class="trace-header-meta">
+          @if (retired()) { <cf-chip variant="err" dot>Retired</cf-chip> }
+          @if (viewing(); as v) {
+            <cf-chip mono>v{{ v.version }}</cf-chip>
+            <cf-chip>created {{ v.createdAtUtc | date:'medium' }}</cf-chip>
+            <cf-chip mono>&#64;{{ v.createdBy ?? 'unknown' }}</cf-chip>
           }
-        </h1>
-        @if (viewing(); as v) {
-          <p class="muted">Viewing v{{ v.version }} &middot; created {{ v.createdAtUtc | date:'medium' }} by {{ v.createdBy ?? 'unknown' }}</p>
-        }
+        </div>
         @if (retired()) {
-          <p class="muted">This agent is retired. Running workflows continue to use their pinned version, but new workflows cannot reference it.</p>
+          <p class="muted small" style="margin-top: 8px">This agent is retired. Running workflows continue to use their pinned version, but new workflows cannot reference it.</p>
         }
       </div>
-      <div class="row">
-        @if (!retired()) {
-          <a [routerLink]="['/agents', key(), 'test']">
-            <button class="secondary">Test Agent</button>
-          </a>
-          <a [routerLink]="['/agents', key(), 'edit']">
-            <button>New version</button>
-          </a>
-          <button class="secondary" (click)="retire()" [disabled]="retiring()">
-            {{ retiring() ? 'Retiring…' : 'Retire agent' }}
-          </button>
-        }
-        <a routerLink="/agents"><button class="secondary">Back</button></a>
-      </div>
-    </header>
+    </cf-page-header>
 
     @if (retireError()) {
-      <p class="tag error">{{ retireError() }}</p>
+      <div class="trace-failure"><strong>Retire failed:</strong> {{ retireError() }}</div>
     }
 
     <div class="detail-grid">
@@ -130,10 +134,11 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
         }
       </section>
     </div>
+    </div>
   `,
   styles: [`
     .small { font-size: 0.8rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     pre.json {
       white-space: pre-wrap;
       word-break: break-word;
@@ -159,9 +164,9 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
       width: 100%;
       padding: 0.5rem 0.75rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
-      color: var(--color-text);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
     }
     .role-list { display: flex; flex-direction: column; gap: 0.35rem; }
     .role-option {
@@ -169,13 +174,13 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
       align-items: center;
       gap: 0.5rem;
       padding: 0.5rem 0.75rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       cursor: pointer;
-      background: var(--color-surface);
+      background: var(--surface);
     }
     .role-option.selected {
-      border-color: var(--color-accent);
+      border-color: var(--accent);
       background: rgba(56,189,248,0.05);
     }
     .role-key { font-family: var(--font-mono, monospace); font-weight: 600; }

@@ -1,90 +1,171 @@
-import { Component, inject, signal } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Component, computed, inject, signal } from '@angular/core';
+import { Router, RouterLink } from '@angular/router';
 import { TracesApi } from '../../core/traces.api';
 import { HitlTask } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { CardComponent } from '../../ui/card.component';
+import { IconComponent } from '../../ui/icon.component';
+
+function relTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const diff = (Date.now() - t) / 1000;
+  if (diff < 60) return `${Math.max(0, Math.round(diff))}s ago`;
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
+  return `${Math.round(diff / 86400)}d ago`;
+}
 
 @Component({
   selector: 'cf-hitl-queue',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [
+    RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, IconComponent,
+  ],
   template: `
-    <header class="page-header">
-      <h1>HITL queue</h1>
-      <button class="secondary" (click)="reload()">Refresh</button>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="HITL queue"
+        subtitle="Human-in-the-loop approval inbox. Each item pauses a workflow until decided.">
+        <cf-chip variant="accent" dot>{{ pendingCount() }} pending</cf-chip>
+        <button type="button" cf-button variant="ghost" icon="refresh" (click)="reload()">Refresh</button>
+      </cf-page-header>
 
-    @if (loading()) {
-      <p>Loading pending reviews&hellip;</p>
-    } @else if (tasks().length === 0) {
-      <p class="tag ok">No pending human reviews.</p>
-    } @else {
-      <div class="stack">
-        @for (task of tasks(); track task.id) {
-          <a class="card hitl-link" [routerLink]="['/traces', task.traceId]">
-            <div class="row" style="justify-content: space-between;">
-              <div>
-                <strong>{{ task.agentKey }}</strong>
-                <span class="muted small"> v{{ task.agentVersion }}</span>
-              </div>
-              <span class="tag warn">{{ task.state }}</span>
-            </div>
-            <div class="muted small">trace {{ task.traceId }}</div>
-            <div class="muted small">created {{ task.createdAtUtc | date:'medium' }}</div>
-            @if (task.inputPreview) {
-              <p class="preview">{{ task.inputPreview }}</p>
+      @if (loading()) {
+        <cf-card><div class="muted">Loading pending reviews…</div></cf-card>
+      } @else if (tasks().length === 0) {
+        <cf-card><cf-chip variant="ok" dot>No pending human reviews.</cf-chip></cf-card>
+      } @else {
+        <div style="display: grid; grid-template-columns: 1fr 460px; gap: 16px; align-items: flex-start">
+          <div class="hitl-grid">
+            @for (task of tasks(); track task.id) {
+              <article class="hitl-card"
+                       [attr.data-selected]="selectedId() === task.id ? 'true' : null"
+                       (click)="selectedId.set(task.id)">
+                <div class="hitl-ico"><cf-icon name="hitl"></cf-icon></div>
+                <div class="hitl-body">
+                  <div class="hitl-title">
+                    <span class="mono">#{{ task.id }}</span>
+                    <span>{{ task.agentKey }}</span>
+                    <cf-chip mono>v{{ task.agentVersion }}</cf-chip>
+                    <cf-chip mono>{{ task.roundId.slice(0, 8) }}</cf-chip>
+                  </div>
+                  <div class="hitl-meta">
+                    <span>trace <span class="mono">{{ task.traceId.slice(0, 8) }}</span></span>
+                    <span>·</span>
+                    <span>queued {{ relTime(task.createdAtUtc) }}</span>
+                    @if (task.subflowPath && task.subflowPath.length > 0) {
+                      <span>·</span>
+                      <span class="mono">↳ {{ task.subflowPath.join('/') }}</span>
+                    }
+                  </div>
+                  @if (task.inputPreview) {
+                    <div class="hitl-preview">{{ task.inputPreview }}</div>
+                  }
+                </div>
+                <div class="row" style="flex-direction: column; align-items: flex-end; gap: 6px">
+                  <cf-chip variant="warn" dot>{{ task.state }}</cf-chip>
+                </div>
+              </article>
             }
-          </a>
-        }
-      </div>
-    }
+          </div>
+
+          <div class="stack">
+            @if (selectedTask(); as active) {
+              <cf-card title="Task detail">
+                <ng-template #cardRight><cf-chip mono>#{{ active.id }}</cf-chip></ng-template>
+                <div class="stack">
+                  <div>
+                    <div class="field-label">Agent</div>
+                    <div class="mono" style="font-size: 13px; margin-top: 2px">
+                      {{ active.agentKey }} <cf-chip mono style="margin-left: 4px">v{{ active.agentVersion }}</cf-chip>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="field-label">Trace</div>
+                    <a class="mono-link" style="font-size: 13px" [routerLink]="['/traces', active.traceId]">
+                      {{ active.traceId }} ↗
+                    </a>
+                  </div>
+                  <div>
+                    <div class="field-label">Round</div>
+                    <div class="mono" style="font-size: 12px">{{ active.roundId }}</div>
+                  </div>
+                  @if (active.subflowPath && active.subflowPath.length > 0) {
+                    <div>
+                      <div class="field-label">Subflow path</div>
+                      <div class="mono" style="font-size: 12px">{{ active.subflowPath.join(' › ') }}</div>
+                    </div>
+                  }
+                  @if (active.inputPreview) {
+                    <div>
+                      <div class="field-label">Input preview</div>
+                      <pre class="payload-view" style="max-height: 200px; margin-top: 6px">{{ active.inputPreview }}</pre>
+                    </div>
+                  }
+
+                  <div class="sep"></div>
+                  <p class="muted small" style="margin: 0">
+                    Submit a decision from the trace detail view — the agent's output template drives the form fields.
+                  </p>
+                  <div class="row" style="justify-content: flex-end">
+                    <button type="button" cf-button variant="primary" icon="chevR"
+                            (click)="openTrace(active)">Open in trace</button>
+                  </div>
+                </div>
+              </cf-card>
+            } @else {
+              <cf-card>
+                <div class="muted">Select a task to inspect the agent, trace, and input preview.</div>
+              </cf-card>
+            }
+          </div>
+        </div>
+      }
+    </div>
   `,
   styles: [`
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.5rem;
-    }
-    .hitl-link {
-      display: block;
-      color: inherit;
-    }
-    .hitl-link:hover {
-      border-color: var(--color-accent);
-    }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-    .preview {
-      margin-top: 0.5rem;
-      max-height: 120px;
-      overflow: hidden;
-      background: var(--color-surface-alt);
-      padding: 0.5rem;
-      border-radius: 4px;
-      font-family: 'SFMono-Regular', Consolas, monospace;
-      font-size: 0.85rem;
-    }
+    .hitl-card { cursor: default; }
   `]
 })
 export class HitlQueueComponent {
   private readonly api = inject(TracesApi);
+  private readonly router = inject(Router);
 
   readonly tasks = signal<HitlTask[]>([]);
   readonly loading = signal(true);
+  readonly selectedId = signal<number | null>(null);
 
-  constructor() {
-    this.reload();
-  }
+  readonly pendingCount = computed(() => this.tasks().filter(t => t.state === 'Pending').length);
+  readonly selectedTask = computed<HitlTask | null>(() => {
+    const id = this.selectedId();
+    if (id === null) return this.tasks()[0] ?? null;
+    return this.tasks().find(t => t.id === id) ?? null;
+  });
+
+  constructor() { this.reload(); }
 
   reload(): void {
     this.loading.set(true);
     this.api.pendingHitl().subscribe({
       next: tasks => {
         this.tasks.set(tasks);
+        if (this.selectedId() === null && tasks.length > 0) {
+          this.selectedId.set(tasks[0].id);
+        }
         this.loading.set(false);
       },
-      error: () => this.loading.set(false)
+      error: () => this.loading.set(false),
     });
   }
+
+  openTrace(task: HitlTask): void {
+    this.router.navigate(['/traces', task.traceId]);
+  }
+
+  relTime = relTime;
 }

@@ -600,6 +600,12 @@ namespace CodeFlow.Persistence.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasColumnName("category");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime(6)")
                         .HasColumnName("created_at");
@@ -619,6 +625,11 @@ namespace CodeFlow.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("varchar(256)")
                         .HasColumnName("name");
+
+                    b.Property<string>("TagsJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("tags_json");
 
                     b.Property<int>("Version")
                         .HasColumnType("int")

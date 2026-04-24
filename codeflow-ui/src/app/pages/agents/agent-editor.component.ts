@@ -4,6 +4,11 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { AgentConfig, AgentOutputDeclaration, DecisionOutputTemplateMode } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { CardComponent } from '../../ui/card.component';
+import { TabsComponent, TabItem } from '../../ui/tabs.component';
 
 interface DecisionTemplateRow {
   port: string;
@@ -13,297 +18,335 @@ interface DecisionTemplateRow {
   previewPending: boolean;
 }
 
+type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
+
 @Component({
   selector: 'cf-agent-editor',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [
+    CommonModule, FormsModule, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, TabsComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>{{ existingKey() ? 'New version of ' + existingKey() : 'New agent' }}</h1>
-        <p class="muted">Saving always creates a new immutable version. Tool access flows through roles assigned on the agent's detail page.</p>
-      </div>
-      <a routerLink="/agents"><button class="secondary">Cancel</button></a>
-    </header>
-
-    <form (submit)="submit($event)">
-      @if (!existingKey()) {
-        <div class="form-field">
-          <label>Agent key</label>
-          <input [(ngModel)]="key" name="key" required placeholder="reviewer-v1" />
-          <div class="muted small">Lowercase letters, digits, '-' or '_'.</div>
+    <div class="page">
+      <cf-page-header
+        [title]="existingKey() ? 'Edit ' + existingKey() : 'New agent'"
+        subtitle="Saving always creates a new immutable version. Tool access flows through roles assigned on the agent's detail page.">
+        <a routerLink="/agents">
+          <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
+        </a>
+        <button type="button" cf-button variant="primary" icon="check"
+                (click)="submit($event)" [disabled]="saving()">
+          {{ saving() ? 'Saving…' : (existingKey() ? 'Save new version' : 'Create agent') }}
+        </button>
+        <div page-header-body>
+          <div class="trace-header-meta">
+            @if (existingKey()) { <cf-chip mono>{{ existingKey() }}</cf-chip> }
+            <cf-chip [variant]="type() === 'hitl' ? 'accent' : 'default'" mono>{{ type() === 'hitl' ? 'HITL' : 'LLM agent' }}</cf-chip>
+            @if (type() === 'agent') {
+              <cf-chip mono>{{ provider() }}</cf-chip>
+              <cf-chip mono>{{ model() }}</cf-chip>
+            }
+          </div>
         </div>
-      }
+      </cf-page-header>
 
-      <div class="form-field">
-        <label>Type</label>
-        <select [(ngModel)]="type" name="type">
-          <option value="agent">Agent (LLM)</option>
-          <option value="hitl">HITL (Human reviewer)</option>
-        </select>
-      </div>
-
-      <div class="form-field">
-        <label>Name</label>
-        <input [(ngModel)]="name" name="name" placeholder="Technical reviewer" />
+      <div class="card" style="padding: 0 20px">
+        <cf-tabs [items]="tabs()" [value]="tab()" (valueChange)="tab.set($any($event))"></cf-tabs>
       </div>
 
-      <div class="form-field">
-        <label>Description</label>
-        <textarea [(ngModel)]="description" name="description" rows="2"></textarea>
-      </div>
+      <form (submit)="submit($event)">
+        @if (tab() === 'identity') {
+          <cf-card>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Identity</h3>
+                <p>Key is immutable once created. Rename the display name freely.</p>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">Agent key</span>
+                  <input class="input mono" [(ngModel)]="key" name="key"
+                         [disabled]="!!existingKey()" required placeholder="reviewer-v1" />
+                  <span class="field-hint">Lowercase letters, digits, '-' or '_'.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Display name</span>
+                  <input class="input" [(ngModel)]="name" name="name" placeholder="Technical reviewer" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Type</span>
+                  <div class="seg" style="width: fit-content">
+                    <button type="button" [attr.data-active]="type() === 'agent' ? 'true' : null" (click)="type.set('agent')">LLM agent</button>
+                    <button type="button" [attr.data-active]="type() === 'hitl' ? 'true' : null" (click)="type.set('hitl')">HITL</button>
+                  </div>
+                </label>
+                <label class="field span-2">
+                  <span class="field-label">Description</span>
+                  <textarea class="textarea" [(ngModel)]="description" name="description" rows="2"
+                            style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
+                </label>
+              </div>
+            </div>
+          </cf-card>
+        }
 
-      @if (type() === 'hitl') {
-        <div class="form-field">
-          <label>Output template</label>
-          <textarea [(ngModel)]="outputTemplate" name="outputTemplate" rows="6" placeholder="HITL decision: {{ '{{decision:Approved|Rejected}}' }}&#10;{{ '{{feedback}}' }}"></textarea>
-          <div class="muted small">
-            Defines exactly how reviewers enter their response.
-            Use <code>{{ '{{name}}' }}</code> for free text or <code>{{ '{{name:Opt1|Opt2}}' }}</code> for a dropdown.
-            <code>{{ '{{decision}}' }}</code> is special — if its options match built-in decision kinds, that choice is sent directly.
-            Otherwise the selected value is emitted as the HITL node's output port while the canonical decision stays <code>Completed</code>.
-            Use <code>{{ '{{json(name)}}' }}</code> when the final artifact should be valid JSON; the form still treats it like the underlying field, so
-            <code>{{ '{{json(context.lastQuestion)}}' }}</code> stays read-only, <code>{{ '{{json(answer)}}' }}</code> stays a textbox, and
-            <code>{{ '{{json(decision:Answered|Exit)}}' }}</code> stays a decision chooser.
-          </div>
-        </div>
-      }
-
-      @if (type() === 'agent') {
-        <div class="grid-two">
-          <div class="form-field">
-            <label>Provider</label>
-            <select [(ngModel)]="provider" name="provider">
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="lmstudio">LM Studio</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label>Model</label>
-            <input [(ngModel)]="model" name="model" placeholder="gpt-5.4" />
-          </div>
-        </div>
-
-        <div class="form-field">
-          <label>System prompt</label>
-          <textarea [(ngModel)]="systemPrompt" name="systemPrompt" rows="4"></textarea>
-        </div>
-
-        <div class="form-field">
-          <label>
-            Prompt template
-            <a
-              class="doc-link"
-              href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/prompt-templates.md"
-              target="_blank"
-              rel="noopener noreferrer">Learn more ↗</a>
-          </label>
-          <textarea
-            [(ngModel)]="promptTemplate"
-            name="promptTemplate"
-            rows="20"
-            class="prompt-template-input"
-            placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
-          <div class="muted small">
-            Supports <code>{{ '{{ name }}' }}</code> substitution plus conditionals and loops —
-            see the <a href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/prompt-templates.md" target="_blank" rel="noopener noreferrer">prompt template guide</a>.
-          </div>
-        </div>
-
-        <div class="grid-two">
-          <div class="form-field">
-            <label>Max tokens</label>
-            <input
-              type="number"
-              [ngModel]="maxTokens() ?? null"
-              (ngModelChange)="maxTokens.set(coerceOptionalNumber($event))"
-              name="maxTokens"
-              min="1"
-              autocomplete="off" />
-          </div>
-          <div class="form-field">
-            <label>Temperature</label>
-            <input
-              type="number"
-              [ngModel]="temperature() ?? null"
-              (ngModelChange)="temperature.set(coerceOptionalNumber($event))"
-              name="temperature"
-              step="0.1"
-              min="0"
-              max="2"
-              autocomplete="off" />
-          </div>
-        </div>
-      }
-
-      <section class="outputs-section">
-        <h3>
-          Decision output templates
-          <a
-            class="doc-link"
-            href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/decision-output-templates.md"
-            target="_blank"
-            rel="noopener noreferrer">Learn more ↗</a>
-        </h3>
-        <p class="muted small">
-          Reshape the artifact passed downstream once a decision lands. Key each template by the output port
-          the agent will emit, or use <code>*</code> as a wildcard fallback. Scriban syntax —
-          <code>{{ '{{ decision }}' }}</code>, <code>{{ '{{ output.field }}' }}</code>,
-          <code>{{ '{{ context.key }}' }}</code>, <code>{{ '{{ if … }}' }}</code>.
-          A routing script that calls <code>setOutput()</code> still wins over any template here.
-        </p>
-
-        <div class="form-field preview-context">
-          <label>Preview context <span class="muted small">(JSON — drives the live preview below)</span></label>
-          <textarea
-            rows="5"
-            class="mono"
-            [ngModel]="previewContextText()"
-            (ngModelChange)="previewContextText.set($event)"
-            name="decisionTemplatePreviewContext"
-            [placeholder]='previewContextPlaceholder()'></textarea>
-          @if (previewContextError()) {
-            <div class="tag error">{{ previewContextError() }}</div>
+        @if (tab() === 'prompt') {
+          @if (type() === 'agent') {
+            <cf-card>
+              <div class="form-section">
+                <div class="form-section-head">
+                  <h3>System prompt</h3>
+                  <p>Prepended to every call. Keep instruction-focused and stable.</p>
+                </div>
+                <div class="code-field">
+                  <div class="code-field-head"><span>system.md</span><span>markdown</span></div>
+                  <textarea class="textarea" rows="8"
+                            [(ngModel)]="systemPrompt" name="systemPrompt"
+                            style="border: 0; border-radius: 0; background: var(--bg)"></textarea>
+                </div>
+              </div>
+              <div class="form-section">
+                <div class="form-section-head">
+                  <h3>Prompt template</h3>
+                  <p>
+                    Rendered per-round with Scriban substitution plus conditionals and loops —
+                    see the <a class="mono-link" href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/prompt-templates.md" target="_blank" rel="noopener noreferrer">prompt template guide ↗</a>.
+                  </p>
+                </div>
+                <div class="code-field">
+                  <div class="code-field-head"><span>input.scriban</span><span>scriban</span></div>
+                  <textarea class="textarea mono" rows="18"
+                            [(ngModel)]="promptTemplate" name="promptTemplate"
+                            style="border: 0; border-radius: 0; background: var(--bg); min-height: 28rem; resize: vertical"
+                            placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
+                </div>
+              </div>
+            </cf-card>
+          } @else {
+            <cf-card>
+              <div class="form-section">
+                <div class="form-section-head">
+                  <h3>Output template</h3>
+                  <p>
+                    Defines exactly how reviewers enter their response. Use <code>{{ '{{name}}' }}</code> for free text,
+                    <code>{{ '{{name:Opt1|Opt2}}' }}</code> for a dropdown, <code>{{ '{{decision}}' }}</code> for decision choice,
+                    or <code>{{ '{{json(name)}}' }}</code> when the artifact should be JSON.
+                  </p>
+                </div>
+                <div class="code-field">
+                  <div class="code-field-head"><span>hitl.template</span><span>form</span></div>
+                  <textarea class="textarea mono" rows="10"
+                            [(ngModel)]="outputTemplate" name="outputTemplate"
+                            style="border: 0; border-radius: 0; background: var(--bg)"
+                            placeholder="HITL decision: {{ '{{decision:Approved|Rejected}}' }}&#10;{{ '{{feedback}}' }}"></textarea>
+                </div>
+              </div>
+            </cf-card>
           }
-        </div>
+        }
 
-        @for (row of decisionTemplates(); track $index; let i = $index) {
-          <div class="output-card">
-            <div class="row-spread">
-              <strong class="mono">{{ row.port || '(unnamed port)' }}</strong>
-              <button type="button" class="icon-button" (click)="removeDecisionTemplate(i)" title="Remove template">×</button>
+        @if (tab() === 'model' && type() === 'agent') {
+          <cf-card>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Model</h3>
+                <p>Provider, model id and generation parameters.</p>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">Provider</span>
+                  <select class="select" [(ngModel)]="provider" name="provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="lmstudio">LM Studio (local)</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Model</span>
+                  <input class="input mono" [(ngModel)]="model" name="model" placeholder="gpt-5.4" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Temperature</span>
+                  <input class="input mono" type="number" step="0.1" min="0" max="2"
+                         [ngModel]="temperature() ?? null"
+                         (ngModelChange)="temperature.set(coerceOptionalNumber($event))"
+                         name="temperature" autocomplete="off" />
+                  <span class="field-hint">0.0 for deterministic routing; 0.7 for creative synthesis.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Max output tokens</span>
+                  <input class="input mono" type="number" min="1"
+                         [ngModel]="maxTokens() ?? null"
+                         (ngModelChange)="maxTokens.set(coerceOptionalNumber($event))"
+                         name="maxTokens" autocomplete="off" />
+                </label>
+              </div>
             </div>
-            <div class="form-field">
-              <label>Output port <span class="muted small">(or <code>*</code> for wildcard)</span></label>
-              <input type="text"
-                     [ngModel]="row.port"
-                     (ngModelChange)="updateDecisionTemplate(i, { port: $event })"
-                     [name]="'decision_template_port_' + i"
-                     placeholder="Approved" />
+          </cf-card>
+        }
+
+        @if (tab() === 'model' && type() === 'hitl') {
+          <cf-card>
+            <div class="card-body muted">
+              HITL agents don't use a model. Switch to <strong>LLM agent</strong> on the Identity tab to configure a provider and model.
             </div>
-            <div class="form-field">
-              <label>Template</label>
-              <textarea
-                rows="6"
-                class="mono"
-                [ngModel]="row.template"
-                (ngModelChange)="updateDecisionTemplate(i, { template: $event })"
-                [name]="'decision_template_body_' + i"
-                placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
+          </cf-card>
+        }
+
+        @if (tab() === 'outputs') {
+          <cf-card>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Declared outputs</h3>
+                <p>
+                  List the decision kinds this agent emits. Workflow nodes that reference this agent
+                  automatically get a matching set of output ports in the canvas editor. Baseline agents at
+                  least emit <code>Completed</code> and <code>Failed</code>.
+                </p>
+              </div>
+              <div class="stack">
+                @for (output of outputs(); track $index; let i = $index) {
+                  <div class="output-card">
+                    <div class="row" style="justify-content: space-between">
+                      <cf-chip mono>{{ output.kind || '(unnamed)' }}</cf-chip>
+                      <button type="button" cf-button variant="ghost" size="sm" icon="x" iconOnly
+                              (click)="removeOutput(i)" [attr.aria-label]="'Remove output ' + output.kind"></button>
+                    </div>
+                    <div class="form-grid">
+                      <label class="field">
+                        <span class="field-label">Kind</span>
+                        <input class="input mono" type="text"
+                               [ngModel]="output.kind"
+                               (ngModelChange)="updateOutput(i, { kind: $event })"
+                               [name]="'output_kind_' + i" placeholder="Completed" />
+                        <span class="field-hint">Becomes the port name on workflow edges.</span>
+                      </label>
+                      <label class="field">
+                        <span class="field-label">Description</span>
+                        <input class="input" type="text"
+                               [ngModel]="output.description ?? ''"
+                               (ngModelChange)="updateOutput(i, { description: $event || null })"
+                               [name]="'output_desc_' + i" placeholder="Normal success" />
+                      </label>
+                      <label class="field span-2">
+                        <span class="field-label">Payload example (JSON)</span>
+                        <textarea class="textarea mono" rows="10"
+                                  [ngModel]="payloadExampleText(output)"
+                                  (ngModelChange)="updatePayloadExample(i, $event)"
+                                  [name]="'output_example_' + i"
+                                  placeholder='{"reasons": ["..."]}'></textarea>
+                      </label>
+                    </div>
+                  </div>
+                }
+                <button type="button" cf-button size="sm" icon="plus" style="align-self: flex-start"
+                        (click)="addOutput()">Add output</button>
+              </div>
             </div>
-            <div class="form-field">
-              <label>
-                Preview
-                @if (row.previewPending) {
-                  <span class="muted small">(rendering…)</span>
+          </cf-card>
+        }
+
+        @if (tab() === 'templates') {
+          <cf-card>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Decision output templates</h3>
+                <p>
+                  Reshape the artifact passed downstream once a decision lands. Key each template by the output
+                  port the agent emits, or use <code>*</code> as a wildcard fallback. Scriban syntax.
+                  See the <a class="mono-link" href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/decision-output-templates.md" target="_blank" rel="noopener noreferrer">guide ↗</a>.
+                  A routing script that calls <code>setOutput()</code> still wins over any template here.
+                </p>
+              </div>
+
+              <label class="field">
+                <span class="field-label">Preview context <span class="muted small">(JSON — drives the live preview below)</span></span>
+                <textarea class="textarea mono" rows="5"
+                          [ngModel]="previewContextText()"
+                          (ngModelChange)="previewContextText.set($event)"
+                          name="decisionTemplatePreviewContext"
+                          [placeholder]="previewContextPlaceholder()"></textarea>
+                @if (previewContextError()) {
+                  <cf-chip variant="err" dot>{{ previewContextError() }}</cf-chip>
                 }
               </label>
-              @if (row.previewError) {
-                <pre class="preview-error mono">{{ row.previewError }}</pre>
-              } @else {
-                <pre class="preview-output mono">{{ row.preview || '(enter a template to see the rendered output)' }}</pre>
-              }
+
+              <div class="stack" style="margin-top: 14px">
+                @for (row of decisionTemplates(); track $index; let i = $index) {
+                  <div class="output-card">
+                    <div class="row" style="justify-content: space-between">
+                      <cf-chip mono>{{ row.port || '(unnamed port)' }}</cf-chip>
+                      <button type="button" cf-button variant="ghost" size="sm" icon="x" iconOnly
+                              (click)="removeDecisionTemplate(i)" [attr.aria-label]="'Remove template'"></button>
+                    </div>
+                    <label class="field">
+                      <span class="field-label">Output port <span class="muted small">(or <code>*</code>)</span></span>
+                      <input class="input mono" type="text"
+                             [ngModel]="row.port"
+                             (ngModelChange)="updateDecisionTemplate(i, { port: $event })"
+                             [name]="'decision_template_port_' + i" placeholder="Approved" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Template</span>
+                      <textarea class="textarea mono" rows="6"
+                                [ngModel]="row.template"
+                                (ngModelChange)="updateDecisionTemplate(i, { template: $event })"
+                                [name]="'decision_template_body_' + i"
+                                placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
+                    </label>
+                    <label class="field">
+                      <span class="field-label">
+                        Preview
+                        @if (row.previewPending) {
+                          <span class="muted small">(rendering…)</span>
+                        }
+                      </span>
+                      @if (row.previewError) {
+                        <pre class="preview-error mono">{{ row.previewError }}</pre>
+                      } @else {
+                        <pre class="preview-output mono">{{ row.preview || '(enter a template to see the rendered output)' }}</pre>
+                      }
+                    </label>
+                  </div>
+                }
+                <button type="button" cf-button size="sm" icon="plus" style="align-self: flex-start"
+                        (click)="addDecisionTemplate()">Add template</button>
+              </div>
             </div>
-          </div>
+          </cf-card>
         }
-        <button type="button" class="secondary" (click)="addDecisionTemplate()">+ Add template</button>
-      </section>
 
-      <section class="outputs-section">
-        <h3>Declared outputs</h3>
-        <p class="muted small">
-          List the decision kinds this agent emits. Workflow nodes that reference this agent
-          will automatically get a matching set of output ports in the canvas editor. Baseline
-          agents at least emit <code>Completed</code> and <code>Failed</code>.
-        </p>
-        @for (output of outputs(); track $index; let i = $index) {
-          <div class="output-card">
-            <div class="row-spread">
-              <strong class="mono">{{ output.kind || '(unnamed)' }}</strong>
-              <button type="button" class="icon-button" (click)="removeOutput(i)" title="Remove output">×</button>
-            </div>
-            <div class="form-field">
-              <label>Kind</label>
-              <input type="text" [ngModel]="output.kind" (ngModelChange)="updateOutput(i, { kind: $event })"
-                     [name]="'output_kind_' + i" placeholder="Completed" />
-              <div class="muted small">Becomes the port name on workflow edges.</div>
-            </div>
-            <div class="form-field">
-              <label>Description <span class="muted small">(optional)</span></label>
-              <input type="text" [ngModel]="output.description ?? ''"
-                     (ngModelChange)="updateOutput(i, { description: $event || null })"
-                     [name]="'output_desc_' + i"
-                     placeholder="Normal success" />
-            </div>
-            <div class="form-field">
-              <label>Payload example <span class="muted small">(optional JSON)</span></label>
-              <textarea rows="10" class="mono"
-                        [ngModel]="payloadExampleText(output)"
-                        (ngModelChange)="updatePayloadExample(i, $event)"
-                        [name]="'output_example_' + i"
-                        placeholder='{"reasons": ["..."]}'></textarea>
-            </div>
-          </div>
+        @if (error()) {
+          <div class="trace-failure"><strong>Save failed:</strong> {{ error() }}</div>
         }
-        <button type="button" class="secondary" (click)="addOutput()">+ Add output</button>
-      </section>
-
-      @if (error()) {
-        <div class="tag error">{{ error() }}</div>
-      }
-
-      <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : 'Save new version' }}
-        </button>
-      </div>
-    </form>
+      </form>
+    </div>
   `,
   styles: [`
-    .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .outputs-section {
-      margin-top: 1.5rem;
-      padding: 1rem;
-      border: 1px solid var(--color-border);
-      border-radius: 6px;
-      background: rgba(255, 255, 255, 0.02);
-    }
-    .outputs-section h3 { margin-top: 0; }
     .output-card {
-      padding: 0.75rem;
-      border: 1px solid var(--color-border);
-      border-radius: 4px;
-      margin-bottom: 0.75rem;
-      background: var(--color-surface);
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
-    .row-spread { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-    .prompt-template-input { min-height: 28rem; resize: vertical; }
-    .icon-button {
-      width: 22px; height: 22px; padding: 0; border-radius: 50%;
-      border: 1px solid var(--color-border); background: var(--color-surface);
-      cursor: pointer; color: inherit;
-    }
-    .icon-button:hover { border-color: #f85149; color: #f85149; }
-    .doc-link {
-      margin-left: 0.5rem; font-size: 0.75rem; font-weight: normal;
-      color: var(--color-muted); text-decoration: none;
-    }
-    .doc-link:hover { color: var(--color-accent, #58a6ff); text-decoration: underline; }
-    .preview-context textarea { min-height: 5rem; }
     .preview-output, .preview-error {
-      padding: 0.5rem; border-radius: 4px;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--color-border);
-      white-space: pre-wrap; word-break: break-word;
-      margin: 0; font-size: 0.85rem;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      font-size: var(--fs-sm);
     }
     .preview-error {
-      color: #f85149; border-color: rgba(248, 81, 73, 0.5);
-      background: rgba(248, 81, 73, 0.08);
+      color: var(--sem-red);
+      border-color: color-mix(in oklab, var(--sem-red) 40%, transparent);
+      background: var(--err-bg);
     }
   `]
 })
@@ -331,8 +374,6 @@ export class AgentEditorComponent implements OnInit {
 
   readonly decisionTemplates = signal<DecisionTemplateRow[]>([]);
 
-  // Author-editable JSON that drives the live preview render. Resets to the mode-appropriate
-  // default whenever the agent type toggles so switching LLM ↔ HITL shows a sensible starter.
   readonly previewContextText = signal(defaultLlmPreviewContext());
   readonly previewContextPlaceholder = computed(() =>
     this.type() === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
@@ -341,8 +382,16 @@ export class AgentEditorComponent implements OnInit {
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
 
+  readonly tab = signal<EditorTab>('identity');
+  readonly tabs = computed<TabItem[]>(() => [
+    { value: 'identity', label: 'Identity' },
+    { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
+    { value: 'model', label: 'Model' },
+    { value: 'outputs', label: 'Declared outputs', count: this.outputs().length },
+    { value: 'templates', label: 'Decision templates', count: this.decisionTemplates().length },
+  ]);
+
   constructor() {
-    // Re-render every template's preview whenever its template body, port, preview context, or mode changes.
     effect(() => {
       const rows = this.decisionTemplates();
       const contextText = this.previewContextText();
@@ -358,7 +407,7 @@ export class AgentEditorComponent implements OnInit {
           this.previewContextError.set('Preview context must be a JSON object.');
           return;
         }
-      } catch (e) {
+      } catch {
         this.previewContextError.set('Preview context is not valid JSON.');
         return;
       }
@@ -434,12 +483,6 @@ export class AgentEditorComponent implements OnInit {
       i === index ? { ...row, ...patch } : row));
   }
 
-  /**
-   * Apply preview fields (preview / previewError / previewPending) without triggering the
-   * preview-render effect. Uses signal.update so Angular sees the write but we're careful to
-   * only mutate preview-related keys — the effect's dependencies (template, port, mode, context)
-   * are read from the rows array and preview-only updates don't change those dependencies.
-   */
   private patchDecisionRowSilently(index: number, patch: Partial<DecisionTemplateRow>): void {
     this.decisionTemplates.update(rows => rows.map((row, i) =>
       i === index ? { ...row, ...patch } : row));
@@ -523,7 +566,6 @@ export class AgentEditorComponent implements OnInit {
       const parsed = JSON.parse(trimmed);
       this.updateOutput(index, { payloadExample: parsed });
     } catch {
-      // Keep the raw string so the user can fix it; round-trip will re-parse on save.
       this.updateOutput(index, { payloadExample: raw });
     }
   }
@@ -608,31 +650,21 @@ export class AgentEditorComponent implements OnInit {
     if (value === null || value === undefined || value === '') {
       return undefined;
     }
-
     if (typeof value === 'number') {
       return Number.isFinite(value) ? value : undefined;
     }
-
     if (typeof value === 'string') {
       const trimmed = value.trim();
-      if (!trimmed) {
-        return undefined;
-      }
-
+      if (!trimmed) return undefined;
       const parsed = Number(trimmed);
       return Number.isFinite(parsed) ? parsed : undefined;
     }
-
     return undefined;
   }
 }
 
 function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
+  try { return JSON.parse(raw); } catch { return raw; }
 }
 
 function defaultHitlPreviewContext(): string {

@@ -1,4 +1,5 @@
 import {
+  WorkflowCategory,
   WorkflowDetail,
   WorkflowEdge,
   WorkflowInput,
@@ -42,6 +43,8 @@ export interface WorkflowModel {
   key: string;
   name: string;
   maxRoundsPerRound: number;
+  category: WorkflowCategory;
+  tags: string[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   inputs: WorkflowInput[];
@@ -52,6 +55,8 @@ export function workflowDetailToModel(detail: WorkflowDetail): WorkflowModel {
     key: detail.key,
     name: detail.name,
     maxRoundsPerRound: detail.maxRoundsPerRound,
+    category: detail.category,
+    tags: detail.tags ?? [],
     nodes: detail.nodes,
     edges: detail.edges,
     inputs: detail.inputs
@@ -63,6 +68,8 @@ export function emptyModel(): WorkflowModel {
     key: '',
     name: '',
     maxRoundsPerRound: 3,
+    category: 'Workflow',
+    tags: [],
     nodes: [],
     edges: [],
     inputs: []
@@ -132,7 +139,7 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
 export function serializeEditor(
   editor: NodeEditor<WorkflowSchemes>,
   area: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>,
-  meta: { key: string; name: string; maxRoundsPerRound: number; inputs: WorkflowInput[] }
+  meta: { key: string; name: string; maxRoundsPerRound: number; category: WorkflowCategory; tags: string[]; inputs: WorkflowInput[] }
 ): WorkflowPayload {
   const nodes: WorkflowNode[] = editor.getNodes().map(node => {
     const position = area.nodeViews.get(node.id)?.position ?? { x: 0, y: 0 };
@@ -166,6 +173,8 @@ export function serializeEditor(
     key: meta.key,
     name: meta.name,
     maxRoundsPerRound: meta.maxRoundsPerRound,
+    category: meta.category,
+    tags: meta.tags,
     nodes,
     edges,
     inputs: meta.inputs

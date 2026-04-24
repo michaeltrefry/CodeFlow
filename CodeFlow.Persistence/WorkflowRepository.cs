@@ -133,6 +133,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 Version = nextVersion,
                 Name = draft.Name.Trim(),
                 MaxRoundsPerRound = draft.MaxRoundsPerRound,
+                Category = draft.Category,
+                TagsJson = WorkflowJson.SerializeTags(NormalizeTags(draft.Tags)),
                 CreatedAtUtc = DateTime.UtcNow,
                 Nodes = draft.Nodes
                     .Select(node => new WorkflowNodeEntity
@@ -215,7 +217,24 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.Inputs
                 .OrderBy(input => input.Ordinal)
                 .Select(Map)
-                .ToArray());
+                .ToArray(),
+            entity.Category,
+            WorkflowJson.DeserializeTags(entity.TagsJson));
+    }
+
+    private static IReadOnlyList<string> NormalizeTags(IReadOnlyList<string>? tags)
+    {
+        if (tags is null || tags.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return tags
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => tag.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToArray();
     }
 
     private static WorkflowNode Map(WorkflowNodeEntity entity)

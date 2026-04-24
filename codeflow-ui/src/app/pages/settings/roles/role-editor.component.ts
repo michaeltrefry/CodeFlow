@@ -15,46 +15,53 @@ import {
   Skill,
 } from '../../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-picker/tool-picker.component';
+import { PageHeaderComponent } from '../../../ui/page-header.component';
+import { ButtonComponent } from '../../../ui/button.component';
+import { CardComponent } from '../../../ui/card.component';
 
 @Component({
   selector: 'cf-role-editor',
   standalone: true,
-  imports: [FormsModule, RouterLink, ToolPickerComponent],
+  imports: [
+    FormsModule, RouterLink, ToolPickerComponent,
+    PageHeaderComponent, ButtonComponent, CardComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>{{ id() ? 'Edit role' : 'New role' }}</h1>
-        <p class="muted">Role edits take effect on the next agent invocation — no agent version bump.</p>
-      </div>
-      <a routerLink="/settings/roles"><button class="secondary">Cancel</button></a>
-    </header>
+    <div class="page">
+    <cf-page-header
+      [title]="id() ? 'Edit role' : 'New role'"
+      subtitle="Role edits take effect on the next agent invocation — no agent version bump.">
+      <a routerLink="/settings/roles">
+        <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
+      </a>
+      <button type="button" cf-button variant="primary" icon="check" (click)="submit($event)" [disabled]="saving()">
+        {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create role') }}
+      </button>
+    </cf-page-header>
 
     <form (submit)="submit($event)">
-      <div class="grid-two">
-        <div class="form-field">
-          <label>Key</label>
-          <input [(ngModel)]="key" name="key" required [disabled]="!!id()" placeholder="reader" />
+      <cf-card title="Role details">
+        <div class="form-grid">
+          <label class="field">
+            <span class="field-label">Key</span>
+            <input class="input mono" [(ngModel)]="key" name="key" required [disabled]="!!id()" placeholder="reader" />
+          </label>
+          <label class="field">
+            <span class="field-label">Display name</span>
+            <input class="input" [(ngModel)]="displayName" name="displayName" required placeholder="Reader" />
+          </label>
+          <label class="field span-2">
+            <span class="field-label">Description</span>
+            <textarea class="textarea" [(ngModel)]="description" name="description" rows="2"
+                      placeholder="What does this role grant?"
+                      style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
+          </label>
         </div>
-        <div class="form-field">
-          <label>Display name</label>
-          <input [(ngModel)]="displayName" name="displayName" required placeholder="Reader" />
-        </div>
-      </div>
 
-      <div class="form-field">
-        <label>Description</label>
-        <textarea [(ngModel)]="description" name="description" rows="2" placeholder="What does this role grant?"></textarea>
-      </div>
-
-      @if (error()) {
-        <div class="tag error">{{ error() }}</div>
-      }
-
-      <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create role') }}
-        </button>
-      </div>
+        @if (error()) {
+          <div class="trace-failure" style="margin-top: 10px"><strong>Save failed:</strong> {{ error() }}</div>
+        }
+      </cf-card>
     </form>
 
     @if (id()) {
@@ -123,18 +130,19 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
         }
       </section>
     }
+    </div>
   `,
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .grants-section { margin-top: 2rem; }
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
     .small { font-size: 0.8rem; }
     .skill-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
     .skill-row label { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer; }
-    .skill-row label:hover { background: var(--color-surface-alt); }
-    .skill-row.ghost label { color: var(--color-muted); }
+    .skill-row label:hover { background: var(--surface-2); }
+    .skill-row.ghost label { color: var(--muted); }
     .skill-row .skill-name { font-family: var(--font-mono, monospace); font-size: 0.9rem; }
   `]
 })

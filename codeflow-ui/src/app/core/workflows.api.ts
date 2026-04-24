@@ -1,12 +1,14 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import { WorkflowDetail, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowSummary } from './models';
+import { WorkflowCategory, WorkflowDetail, WorkflowEdge, WorkflowInput, WorkflowNode, WorkflowSummary } from './models';
 
 export interface WorkflowPayload {
   key?: string;
   name: string;
   maxRoundsPerRound: number;
+  category: WorkflowCategory;
+  tags: string[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   inputs: WorkflowInput[];

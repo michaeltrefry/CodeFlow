@@ -3,61 +3,68 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { SkillsApi } from '../../../core/skills.api';
 import { Skill } from '../../../core/models';
+import { PageHeaderComponent } from '../../../ui/page-header.component';
+import { ButtonComponent } from '../../../ui/button.component';
+import { ChipComponent } from '../../../ui/chip.component';
+import { CardComponent } from '../../../ui/card.component';
 
 @Component({
   selector: 'cf-skill-editor',
   standalone: true,
-  imports: [FormsModule, RouterLink],
+  imports: [
+    FormsModule, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>{{ id() ? 'Edit skill' : 'New skill' }}</h1>
-        <p class="muted">Skills granted to an agent's roles are appended to its system prompt at invocation time.</p>
-      </div>
-      <div class="header-actions">
-        @if (id() && !skill()?.isArchived) {
-          <button type="button" class="danger" (click)="archive()" [disabled]="saving()">Archive</button>
-        }
-        <a routerLink="/settings/skills"><button class="secondary">Cancel</button></a>
-      </div>
-    </header>
+    <div class="page">
+    <cf-page-header
+      [title]="id() ? 'Edit skill' : 'New skill'"
+      subtitle="Skills granted to an agent's roles are appended to its system prompt at invocation time.">
+      @if (id() && !skill()?.isArchived) {
+        <button type="button" cf-button variant="danger" icon="trash" (click)="archive()" [disabled]="saving()">Archive</button>
+      }
+      <a routerLink="/settings/skills">
+        <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
+      </a>
+      <button type="button" cf-button variant="primary" icon="check" (click)="submit($event)" [disabled]="saving()">
+        {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create skill') }}
+      </button>
+    </cf-page-header>
 
     @if (skill()?.isArchived) {
-      <p class="tag warn">This skill is archived. It's hidden from agents and from role-grant pickers.</p>
+      <cf-chip variant="warn" dot>This skill is archived. It's hidden from agents and from role-grant pickers.</cf-chip>
     }
 
     <form (submit)="submit($event)">
-      <div class="form-field">
-        <label>Name</label>
-        <input [(ngModel)]="name" name="name" required placeholder="socratic-interview" />
-      </div>
+      <cf-card title="Skill definition">
+        <div class="stack">
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input class="input mono" [(ngModel)]="name" name="name" required placeholder="socratic-interview" />
+          </label>
 
-      <div class="form-field">
-        <label>Body</label>
-        <textarea [(ngModel)]="body" name="body" rows="18" required></textarea>
-        <p class="muted small">
-          Use <code>{{ '{{' }}variable.name{{ '}}' }}</code> to reference workflow variables. Unknown variables are left as-is.
-        </p>
-      </div>
+          <label class="field">
+            <span class="field-label">Body</span>
+            <div class="code-field">
+              <div class="code-field-head"><span>{{ name() || 'skill' }}.md</span><span>markdown</span></div>
+              <textarea class="textarea mono" rows="18" required
+                        [(ngModel)]="body" name="body"
+                        style="border: 0; border-radius: 0; background: var(--bg)"></textarea>
+            </div>
+            <span class="field-hint">
+              Use <code>{{ '{{' }}variable.name{{ '}}' }}</code> to reference workflow variables. Unknown variables are left as-is.
+            </span>
+          </label>
+        </div>
 
-      @if (error()) {
-        <div class="tag error">{{ error() }}</div>
-      }
-
-      <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create skill') }}
-        </button>
-      </div>
+        @if (error()) {
+          <div class="trace-failure" style="margin-top: 10px"><strong>Save failed:</strong> {{ error() }}</div>
+        }
+      </cf-card>
     </form>
+    </div>
   `,
-  styles: [`
-    .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .header-actions { display: flex; gap: 0.5rem; }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; margin-top: 0.25rem; }
-    textarea { font-family: var(--font-mono, monospace); font-size: 0.9rem; }
-  `]
+  styles: [``]
 })
 export class SkillEditorComponent implements OnInit {
   private readonly api = inject(SkillsApi);

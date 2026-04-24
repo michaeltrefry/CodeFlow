@@ -8,8 +8,12 @@ public sealed record Workflow(
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowNode> Nodes,
     IReadOnlyList<WorkflowEdge> Edges,
-    IReadOnlyList<WorkflowInput> Inputs)
+    IReadOnlyList<WorkflowInput> Inputs,
+    WorkflowCategory Category = WorkflowCategory.Workflow,
+    IReadOnlyList<string>? Tags = null)
 {
+    public IReadOnlyList<string> TagsOrEmpty => Tags ?? Array.Empty<string>();
+
     public WorkflowNode StartNode =>
         Nodes.Single(node => node.Kind == WorkflowNodeKind.Start);
 

@@ -1,0 +1,126 @@
+/* ==========================================================================
+   CodeFlow — design tokens
+   Ported from design_handoff_codeflow_facelift/app.css.
+   Swap via data-theme / data-accent / data-font on <html>.
+   ========================================================================== */
+
+:root {
+  /* Type pairings (swapped on [data-font]) */
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Semantic (shared across themes — load-bearing for node kinds + state chips) */
+  --sem-green:  #3FB950;
+  --sem-amber:  #D29922;
+  --sem-red:    #F85149;
+  --sem-blue:   #58A6FF;
+  --sem-purple: #BC8CFF;
+  --sem-cyan:   #2EA3F2;
+
+  /* Accent (swapped on [data-accent]); default indigo */
+  --accent:       oklch(0.66 0.16 265);
+  --accent-weak:  oklch(0.66 0.16 265 / 0.14);
+  --accent-dim:   oklch(0.66 0.16 265 / 0.28);
+  --accent-ink:   oklch(0.82 0.11 265);
+
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-h3: 18px;
+  --fs-h2: 22px;
+  --fs-h1: 28px;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --transition: 140ms cubic-bezier(.3, .6, .3, 1);
+}
+
+/* ---------- THEMES ---------- */
+[data-theme="dark"], :root:not([data-theme]) {
+  --bg:         #0B0C0E;
+  --surface:    #131519;
+  --surface-2:  #1A1D22;
+  --surface-3:  #22262C;
+  --border:     #23272E;
+  --border-2:   #2E333B;
+  --hairline:   #1D2026;
+
+  --text:       #E7E9EE;
+  --text-2:     #B8BDC8;
+  --muted:      #8B92A1;
+  --faint:      #5A6070;
+
+  --ok-bg:      color-mix(in oklab, var(--sem-green) 14%, transparent);
+  --warn-bg:    color-mix(in oklab, var(--sem-amber) 14%, transparent);
+  --err-bg:     color-mix(in oklab, var(--sem-red) 14%, transparent);
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg:         #FAFAF7;
+  --surface:    #FFFFFF;
+  --surface-2:  #F4F4EE;
+  --surface-3:  #EDECE5;
+  --border:     #E5E4DC;
+  --border-2:   #D6D4C8;
+  --hairline:   #EDECE5;
+
+  --text:       #15171C;
+  --text-2:     #3B3F49;
+  --muted:      #6B6F7A;
+  --faint:      #9A9EA8;
+
+  --ok-bg:      color-mix(in oklab, var(--sem-green) 10%, transparent);
+  --warn-bg:    color-mix(in oklab, var(--sem-amber) 12%, transparent);
+  --err-bg:     color-mix(in oklab, var(--sem-red) 10%, transparent);
+
+  color-scheme: light;
+}
+
+/* ---------- ACCENTS ---------- */
+[data-accent="indigo"] {
+  --accent:      oklch(0.66 0.16 265);
+  --accent-weak: oklch(0.66 0.16 265 / 0.14);
+  --accent-dim:  oklch(0.66 0.16 265 / 0.28);
+  --accent-ink:  oklch(0.82 0.11 265);
+}
+[data-accent="cyan"] {
+  --accent:      oklch(0.72 0.14 210);
+  --accent-weak: oklch(0.72 0.14 210 / 0.14);
+  --accent-dim:  oklch(0.72 0.14 210 / 0.28);
+  --accent-ink:  oklch(0.84 0.09 210);
+}
+[data-accent="green"] {
+  --accent:      oklch(0.72 0.15 150);
+  --accent-weak: oklch(0.72 0.15 150 / 0.14);
+  --accent-dim:  oklch(0.72 0.15 150 / 0.28);
+  --accent-ink:  oklch(0.84 0.10 150);
+}
+[data-accent="amber"] {
+  --accent:      oklch(0.76 0.15 75);
+  --accent-weak: oklch(0.76 0.15 75 / 0.14);
+  --accent-dim:  oklch(0.76 0.15 75 / 0.28);
+  --accent-ink:  oklch(0.86 0.10 75);
+}
+
+/* ---------- FONTS ---------- */
+[data-font="geist"] {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, Menlo, monospace;
+}
+[data-font="inter"] {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+[data-font="plex"] {
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}

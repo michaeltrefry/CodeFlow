@@ -19,8 +19,18 @@ import { AreaExtensions, AreaPlugin } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
 import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20';
 import { AgentsApi } from '../../../core/agents.api';
-import { AgentSummary, WorkflowInput, WorkflowNodeKind, WorkflowSummary } from '../../../core/models';
+import {
+  AgentSummary,
+  MAX_WORKFLOW_TAGS,
+  WORKFLOW_CATEGORIES,
+  WorkflowCategory,
+  WorkflowInput,
+  WorkflowNodeKind,
+  WorkflowSummary
+} from '../../../core/models';
 import { WorkflowsApi } from '../../../core/workflows.api';
+import { ButtonComponent } from '../../../ui/button.component';
+import { TagInputComponent } from '../../../ui/tag-input.component';
 import {
   WorkflowAreaExtra,
   WorkflowEditorConnection,
@@ -64,30 +74,48 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, MonacoScriptEditorComponent],
+  imports: [CommonModule, FormsModule, RouterLink, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
       <main class="canvas-wrapper">
         <div class="toolbar">
-          <div class="toolbar-left">
-            <label>
-              Key
-              <input type="text" [(ngModel)]="workflowKey" [disabled]="hasExistingKey()" placeholder="my-workflow" />
-            </label>
-            <label>
-              Name
+          <div class="toolbar-fields">
+            <label class="tb-field">
+              <span class="tb-label">Name</span>
               <input type="text" [(ngModel)]="workflowName" placeholder="My workflow" />
             </label>
-            <label>
-              Max rounds
+            <label class="tb-field">
+              <span class="tb-label">Key</span>
+              <input type="text" [(ngModel)]="workflowKey" [disabled]="hasExistingKey()" placeholder="my-workflow" />
+            </label>
+            <label class="tb-field tb-narrow">
+              <span class="tb-label">Category</span>
+              <select [ngModel]="workflowCategory()" (ngModelChange)="workflowCategory.set($event)">
+                @for (opt of categoryOptions; track opt) {
+                  <option [ngValue]="opt">{{ opt }}</option>
+                }
+              </select>
+            </label>
+            <label class="tb-field tb-narrow">
+              <span class="tb-label">Max rounds</span>
               <input type="number" [(ngModel)]="maxRoundsPerRound" min="1" max="50" />
             </label>
+            <label class="tb-field tb-tags">
+              <span class="tb-label">Tags <span class="tb-hint">up to {{ maxTags }}</span></span>
+              <cf-tag-input
+                [tags]="workflowTags()"
+                [suggestions]="tagSuggestions()"
+                [maxTags]="maxTags"
+                [showCounter]="false"
+                placeholder="Add tag…"
+                (tagsChange)="workflowTags.set($event)"></cf-tag-input>
+            </label>
           </div>
-          <div class="toolbar-right">
-            <button type="button" class="secondary" (click)="tidy()">Tidy up</button>
-            <a routerLink="/workflows" class="secondary">Cancel</a>
-            <button type="button" (click)="save()" [disabled]="saving()">
+          <div class="toolbar-actions">
+            <button type="button" cf-button variant="ghost" size="sm" (click)="tidy()">Tidy up</button>
+            <button type="button" cf-button variant="ghost" size="sm" (click)="cancel()">Cancel</button>
+            <button type="button" cf-button variant="primary" size="sm" (click)="save()" [disabled]="saving()">
               {{ saving() ? 'Saving…' : 'Save version' }}
             </button>
           </div>
@@ -409,50 +437,83 @@ function defaultStartInput(): WorkflowInput {
       height: calc(100vh - var(--header-height, 64px));
     }
     .sidebar {
-      background: var(--color-surface);
-      border-left: 1px solid var(--color-border);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
       overflow-y: auto;
       display: flex;
       flex-direction: column;
     }
     .sidebar-section {
       padding: 1rem;
-      border-bottom: 1px solid var(--color-border);
+      border-bottom: 1px solid var(--border);
     }
     .sidebar-section:last-child { border-bottom: none; flex: 1; }
     .canvas-wrapper { display: flex; flex-direction: column; min-width: 0; }
     .canvas {
       flex: 1;
       min-height: 0;
-      background: var(--color-surface-2, #0d1117);
+      background: var(--bg);
+      background-image: radial-gradient(circle at center, color-mix(in oklab, var(--muted) 22%, transparent) 1px, transparent 1.5px);
+      background-size: 22px 22px;
       position: relative;
       overflow: hidden;
+    }
+    [data-theme="light"] .canvas {
+      background-image: radial-gradient(circle at center, color-mix(in oklab, var(--muted) 25%, transparent) 1px, transparent 1.5px);
     }
     .toolbar {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: flex-end;
       padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--color-border);
+      border-bottom: 1px solid var(--border);
       gap: 1rem;
       flex-wrap: wrap;
     }
-    .toolbar-left { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-    .toolbar-right { display: flex; gap: 0.5rem; align-items: center; }
-    .toolbar label {
+    .toolbar-fields {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      flex: 1;
+      min-width: 0;
+    }
+    .toolbar-actions {
+      display: flex;
+      gap: 0.4rem;
+      align-items: center;
+      padding-bottom: 1px;
+    }
+    .tb-field {
       display: flex;
       flex-direction: column;
-      font-size: 0.75rem;
-      color: var(--color-muted);
       gap: 0.25rem;
+      min-width: 160px;
     }
-    .toolbar input {
-      padding: 0.35rem 0.5rem;
-      border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
+    .tb-field.tb-narrow { min-width: 110px; max-width: 160px; }
+    .tb-field.tb-tags { flex: 1; min-width: 260px; }
+    .tb-label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+    .tb-hint {
+      color: var(--muted);
+      font-weight: 400;
+      opacity: 0.75;
+      margin-left: 0.25rem;
+    }
+    .toolbar input, .toolbar select {
+      padding: 0.4rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
       color: inherit;
+      height: 32px;
+      box-sizing: border-box;
     }
+    .toolbar input:disabled { opacity: 0.65; cursor: not-allowed; }
     .palette {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -462,14 +523,14 @@ function defaultStartInput(): WorkflowInput {
       display: block;
       padding: 0.5rem 0.6rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       background: rgba(255, 255, 255, 0.03);
-      color: var(--color-text, #c9d1d9);
+      color: var(--text);
       text-align: left;
       font-weight: 500;
       cursor: grab;
     }
-    .palette-item:hover { border-color: var(--color-accent); background: rgba(255, 255, 255, 0.06); }
+    .palette-item:hover { border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
     .palette-item.start { border-left: 4px solid #3fb950; }
     .palette-item.agent { border-left: 4px solid #58a6ff; }
     .palette-item.logic { border-left: 4px solid #d29922; }
@@ -481,7 +542,7 @@ function defaultStartInput(): WorkflowInput {
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.75rem;
     }
     .panel-title-inline {
@@ -490,7 +551,7 @@ function defaultStartInput(): WorkflowInput {
       margin-bottom: 0.4rem;
     }
     .inspector-section {
-      border-top: 1px solid var(--color-border);
+      border-top: 1px solid var(--border);
       padding: 0.75rem 0;
     }
     .inspector-section:first-of-type { border-top: none; padding-top: 0; }
@@ -501,7 +562,7 @@ function defaultStartInput(): WorkflowInput {
     .field > span {
       display: block;
       font-size: 0.75rem;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.25rem;
     }
     .field.row-inline {
@@ -515,8 +576,8 @@ function defaultStartInput(): WorkflowInput {
       width: 100%;
       padding: 0.35rem 0.5rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface-2, #0d1117);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
       color: inherit;
       font-family: inherit;
     }
@@ -524,20 +585,20 @@ function defaultStartInput(): WorkflowInput {
     .field-label {
       display: block;
       font-size: 0.75rem;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.25rem;
     }
     .script-editor {
       display: block;
       min-height: 320px;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       overflow: hidden;
     }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {
       padding: 0.75rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.02);
     }
@@ -557,7 +618,7 @@ function defaultStartInput(): WorkflowInput {
     .inspector-kind.connection { background: rgba(255, 209, 102, 0.16); color: #ffd166; }
     .subflow-outline {
       padding: 0.5rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.02);
     }
@@ -573,7 +634,7 @@ function defaultStartInput(): WorkflowInput {
     .row-spread { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .xsmall { font-size: 0.72rem; }
     .small { font-size: 0.8rem; }
     button.small { padding: 0.2rem 0.5rem; font-size: 0.75rem; }
@@ -587,8 +648,8 @@ function defaultStartInput(): WorkflowInput {
       height: 22px;
       padding: 0;
       border-radius: 50%;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      border: 1px solid var(--border);
+      background: var(--surface);
       cursor: pointer;
       color: inherit;
     }
@@ -619,7 +680,28 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly workflowKey = signal<string>('');
   readonly workflowName = signal<string>('');
   readonly maxRoundsPerRound = signal<number>(3);
+  readonly workflowCategory = signal<WorkflowCategory>('Workflow');
+  readonly workflowTags = signal<string[]>([]);
   readonly inputs = signal<WorkflowInput[]>([defaultStartInput()]);
+
+  readonly categoryOptions = WORKFLOW_CATEGORIES;
+  readonly maxTags = MAX_WORKFLOW_TAGS;
+
+  readonly tagSuggestions = computed(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const wf of this.workflows()) {
+      for (const tag of wf.tags ?? []) {
+        const normalized = tag.trim();
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(normalized);
+      }
+    }
+    return result.sort((a, b) => a.localeCompare(b));
+  });
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly statusMessage = signal<string | null>(null);
@@ -746,6 +828,8 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         next: async detail => {
           this.workflowName.set(detail.name);
           this.maxRoundsPerRound.set(detail.maxRoundsPerRound);
+          this.workflowCategory.set(detail.category ?? 'Workflow');
+          this.workflowTags.set(detail.tags ?? []);
           const loadedInputs = detail.inputs.slice().sort((a, b) => a.ordinal - b.ordinal);
           this.inputs.set(loadedInputs.length === 0 ? [defaultStartInput()] : loadedInputs);
           await loadIntoEditor(workflowDetailToModel(detail), editor, area);
@@ -794,6 +878,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (this.editor.getNodes().length > 0) {
       AreaExtensions.zoomAt(this.area, this.editor.getNodes());
     }
+  }
+
+  cancel(): void {
+    this.router.navigate(['/workflows']);
   }
 
   async addPaletteNode(kind: WorkflowNodeKind): Promise<void> {
@@ -1132,6 +1220,8 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       key,
       name: this.workflowName().trim(),
       maxRoundsPerRound: this.maxRoundsPerRound(),
+      category: this.workflowCategory(),
+      tags: this.workflowTags(),
       inputs: this.inputs()
     });
 

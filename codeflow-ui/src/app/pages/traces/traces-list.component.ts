@@ -1,190 +1,171 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe, SlicePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { TracesApi } from '../../core/traces.api';
 import { TraceSummary } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { StateChipComponent } from '../../ui/state-chip.component';
+import { SegmentedComponent, SegmentedOption } from '../../ui/segmented.component';
+
+type StateFilter = 'all' | 'running' | 'terminal';
+
+const TERMINAL_STATES = new Set(['Completed', 'Failed', 'Escalated']);
+
+const BULK_STATE_OPTIONS = [
+  { value: 'Completed', label: 'Completed traces', shortLabel: 'completed' },
+  { value: 'Failed', label: 'Failed traces', shortLabel: 'failed' },
+  { value: 'Escalated', label: 'Escalated traces', shortLabel: 'escalated' },
+  { value: '', label: 'All terminal traces', shortLabel: 'terminal' },
+];
+
+const BULK_AGE_OPTIONS = [
+  { days: 1, label: '1 day' },
+  { days: 7, label: '7 days' },
+  { days: 30, label: '30 days' },
+  { days: 90, label: '90 days' },
+];
+
+const FILTER_OPTIONS: SegmentedOption[] = [
+  { value: 'all', label: 'All' },
+  { value: 'running', label: 'Running' },
+  { value: 'terminal', label: 'Terminal' },
+];
 
 @Component({
   selector: 'cf-traces-list',
   standalone: true,
-  imports: [RouterLink, DatePipe, SlicePipe, FormsModule],
+  imports: [
+    RouterLink, DatePipe, SlicePipe, FormsModule,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+    StateChipComponent, SegmentedComponent,
+  ],
   template: `
-    <header class="page-header">
-      <h1>Traces</h1>
-      <a routerLink="/traces/new"><button>Submit run</button></a>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="Traces"
+        subtitle="Every workflow run, streamed in real time. Running traces update live.">
+        <button type="button" cf-button variant="ghost" icon="refresh" (click)="reload()">Refresh</button>
+        <button type="button" cf-button variant="primary" icon="plus" (click)="newTrace()">Submit run</button>
+      </cf-page-header>
 
-    <section class="card bulk-actions">
-      <div>
-        <h3>Bulk cleanup</h3>
-        <p class="muted small">Delete terminal traces that are older than a cutoff. Running traces are never included.</p>
+      <div class="bulk-panel">
+        <div>
+          <div class="label">Bulk cleanup</div>
+          <div class="muted">Delete terminal traces older than a cutoff. Running traces are always excluded.</div>
+        </div>
+        <div class="bulk-controls">
+          <div class="bulk-field">
+            <span class="field-label">State</span>
+            <select class="select" [(ngModel)]="bulkStateRaw" name="bulkState">
+              @for (option of bulkStateOptions; track option.value) {
+                <option [ngValue]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <div class="bulk-field">
+            <span class="field-label">Older than</span>
+            <select class="select" [(ngModel)]="bulkOlderThanDays" name="bulkOlderThanDays">
+              @for (option of bulkAgeOptions; track option.days) {
+                <option [ngValue]="option.days">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <button type="button" cf-button variant="danger" icon="trash"
+                  [disabled]="bulkBusy()" (click)="bulkDelete()">
+            {{ bulkBusy() ? 'Deleting…' : bulkButtonLabel() }}
+          </button>
+        </div>
       </div>
-      <div class="bulk-controls">
-        <label class="bulk-field">
-          <span class="muted small">State</span>
-          <select [(ngModel)]="bulkState" name="bulkState">
-            @for (option of bulkStateOptions; track option.value) {
-              <option [ngValue]="option.value">{{ option.label }}</option>
-            }
-          </select>
-        </label>
-        <label class="bulk-field">
-          <span class="muted small">Older than</span>
-          <select [(ngModel)]="bulkOlderThanDays" name="bulkOlderThanDays">
-            @for (option of bulkAgeOptions; track option.days) {
-              <option [ngValue]="option.days">{{ option.label }}</option>
-            }
-          </select>
-        </label>
-        <button class="secondary danger" (click)="bulkDelete()" [disabled]="bulkBusy()">
-          {{ bulkBusy() ? 'Deleting…' : bulkButtonLabel() }}
-        </button>
-      </div>
+
       @if (bulkResult()) {
-        <p class="muted small">{{ bulkResult() }}</p>
+        <div class="muted small">{{ bulkResult() }}</div>
       }
-    </section>
 
-    @if (loading()) {
-      <p>Loading traces&hellip;</p>
-    } @else if (error()) {
-      <p class="tag error">{{ error() }}</p>
-    } @else if (traces().length === 0) {
-      <p class="tag">No traces yet.</p>
-    } @else {
       <div class="list-toolbar">
-        <label class="checkbox">
-          <input type="checkbox" [checked]="hideSubflowChildren()"
-                 (change)="hideSubflowChildren.set($any($event.target).checked)" />
-          <span>Hide subflow children</span>
-        </label>
+        <div class="list-toolbar-left">
+          <cf-segmented
+            [options]="filterOptions"
+            [value]="stateFilter()"
+            (valueChange)="stateFilter.set($any($event))">
+          </cf-segmented>
+          <label class="checkbox">
+            <input type="checkbox"
+                   [checked]="hideSubflowChildren()"
+                   (change)="hideSubflowChildren.set($any($event.target).checked)">
+            <span>Hide subflow children</span>
+          </label>
+        </div>
         <span class="muted small">{{ visibleTraces().length }} of {{ traces().length }} shown</span>
       </div>
-      <table class="trace-table card">
-        <thead>
-          <tr><th>Trace ID</th><th>Workflow</th><th>Current agent</th><th>State</th><th>Round</th><th>Updated</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          @for (trace of visibleTraces(); track trace.traceId) {
-            <tr>
-              <td>
-                <a [routerLink]="['/traces', trace.traceId]" class="monospace">{{ trace.traceId | slice:0:8 }}</a>
-                @if (trace.parentTraceId) {
-                  <span class="tag small subflow" title="This trace is a subflow child of another trace.">child</span>
+
+      @if (loading()) {
+        <div class="card"><div class="card-body muted">Loading traces…</div></div>
+      } @else if (error()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ error() }}</cf-chip></div></div>
+      } @else if (traces().length === 0) {
+        <div class="card"><div class="card-body muted">No traces yet.</div></div>
+      } @else {
+        <div class="card" style="overflow:hidden">
+          <div class="scroll" style="max-height: calc(100vh - 390px)">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Trace</th>
+                  <th>Workflow</th>
+                  <th>Current agent</th>
+                  <th>State</th>
+                  <th>Round</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (trace of visibleTraces(); track trace.traceId) {
+                  <tr (click)="openTrace(trace)">
+                    <td>
+                      <a [routerLink]="['/traces', trace.traceId]" class="mono-link" (click)="$event.stopPropagation()">{{ trace.traceId | slice:0:8 }}</a>
+                      @if (trace.parentTraceId) {
+                        <cf-chip style="margin-left: 6px">child</cf-chip>
+                      }
+                    </td>
+                    <td>
+                      <span style="font-weight: 500">{{ trace.workflowKey }}</span>
+                      <span class="mono muted" style="margin-left:6px; font-size:12px">v{{ trace.workflowVersion }}</span>
+                    </td>
+                    <td class="mono" style="font-size: 12px">{{ trace.currentAgentKey }}</td>
+                    <td><cf-state-chip [state]="trace.currentState"></cf-state-chip></td>
+                    <td class="mono muted">{{ trace.roundCount }}</td>
+                    <td class="muted small">{{ trace.updatedAtUtc | date:'medium' }}</td>
+                    <td class="actions">
+                      @if (trace.currentState === 'Running') {
+                        <button type="button" cf-button variant="danger" size="sm"
+                                (click)="$event.stopPropagation(); terminate(trace)"
+                                [disabled]="busyTraceId() === trace.traceId">
+                          {{ busyTraceId() === trace.traceId ? 'Terminating…' : 'Terminate' }}
+                        </button>
+                      } @else {
+                        <button type="button" cf-button variant="ghost" size="sm" icon="trash" iconOnly
+                                (click)="$event.stopPropagation(); delete(trace)"
+                                [disabled]="busyTraceId() === trace.traceId"
+                                [attr.aria-label]="'Delete trace ' + trace.traceId"></button>
+                      }
+                    </td>
+                  </tr>
                 }
-              </td>
-              <td>{{ trace.workflowKey }} <span class="muted small">v{{ trace.workflowVersion }}</span></td>
-              <td>{{ trace.currentAgentKey }}</td>
-              <td><span class="tag" [class.ok]="trace.currentState === 'Completed'" [class.warn]="trace.currentState === 'Running'" [class.error]="trace.currentState === 'Failed' || trace.currentState === 'Escalated'">{{ trace.currentState }}</span></td>
-              <td>{{ trace.roundCount }}</td>
-              <td class="muted small">{{ trace.updatedAtUtc | date:'medium' }}</td>
-              <td class="actions-cell">
-                @if (trace.currentState === 'Running') {
-                  <button class="secondary danger" (click)="terminate(trace); $event.stopPropagation()" [disabled]="busyTraceId() === trace.traceId">
-                    {{ busyTraceId() === trace.traceId ? 'Terminating…' : 'Terminate' }}
-                  </button>
-                } @else {
-                  <button class="secondary danger" (click)="delete(trace); $event.stopPropagation()" [disabled]="busyTraceId() === trace.traceId">
-                    {{ busyTraceId() === trace.traceId ? 'Deleting…' : 'Delete' }}
-                  </button>
-                }
-              </td>
-            </tr>
-          }
-        </tbody>
-      </table>
-    }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
+    </div>
   `,
-  styles: [`
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.5rem;
-    }
-    .bulk-actions {
-      display: flex;
-      justify-content: space-between;
-      align-items: end;
-      gap: 1rem;
-      margin-bottom: 1rem;
-    }
-    .bulk-actions h3 {
-      margin: 0 0 0.25rem;
-    }
-    .bulk-actions p {
-      margin: 0;
-    }
-    .bulk-controls {
-      display: flex;
-      align-items: end;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .bulk-field {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-      min-width: 10rem;
-    }
-    table.trace-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    table.trace-table th, table.trace-table td {
-      padding: 0.55rem 0.75rem;
-      border-bottom: 1px solid var(--color-border);
-      text-align: left;
-    }
-    table.trace-table th {
-      color: var(--color-muted);
-      text-transform: uppercase;
-      font-size: 0.75rem;
-      letter-spacing: 0.05em;
-    }
-    .actions-cell {
-      white-space: nowrap;
-      width: 1%;
-    }
-    button.secondary.danger {
-      background: rgba(248, 81, 73, 0.12);
-      border: 1px solid #f87171;
-      color: #fecaca;
-    }
-    button.secondary.danger:hover {
-      background: rgba(248, 81, 73, 0.22);
-      color: #fff5f5;
-    }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-    .list-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: 0.25rem 0 0.75rem;
-    }
-    .checkbox {
-      display: inline-flex;
-      gap: 0.4rem;
-      align-items: center;
-      font-size: 0.85rem;
-      color: var(--color-muted);
-    }
-    .tag.subflow {
-      background: rgba(46, 163, 242, 0.2);
-      color: #2ea3f2;
-      padding: 0.1rem 0.35rem;
-      border-radius: 3px;
-      margin-left: 0.4rem;
-      font-size: 0.7rem;
-    }
-  `]
 })
 export class TracesListComponent {
   private readonly api = inject(TracesApi);
+  private readonly router = inject(Router);
 
   readonly traces = signal<TraceSummary[]>([]);
   readonly loading = signal(true);
@@ -193,72 +174,77 @@ export class TracesListComponent {
   readonly bulkBusy = signal(false);
   readonly bulkResult = signal<string | null>(null);
   readonly hideSubflowChildren = signal(false);
+  readonly stateFilter = signal<StateFilter>('all');
 
   readonly visibleTraces = computed<TraceSummary[]>(() => {
     const all = this.traces();
-    return this.hideSubflowChildren() ? all.filter(t => !t.parentTraceId) : all;
+    const filter = this.stateFilter();
+    const hideChildren = this.hideSubflowChildren();
+    return all.filter(t => {
+      if (hideChildren && t.parentTraceId) return false;
+      if (filter === 'running' && t.currentState !== 'Running') return false;
+      if (filter === 'terminal' && !TERMINAL_STATES.has(t.currentState)) return false;
+      return true;
+    });
   });
 
   readonly bulkStateOptions = BULK_STATE_OPTIONS;
   readonly bulkAgeOptions = BULK_AGE_OPTIONS;
-  readonly bulkState = signal<string | null>('Completed');
+  readonly bulkStateRaw = signal<string>('Completed');
   readonly bulkOlderThanDays = signal(7);
+  readonly filterOptions = FILTER_OPTIONS;
 
   constructor() {
     this.reload();
   }
 
-  terminate(trace: TraceSummary): void {
-    if (!window.confirm(`Terminate trace ${trace.traceId}?`)) {
-      return;
-    }
+  openTrace(trace: TraceSummary): void {
+    this.router.navigate(['/traces', trace.traceId]);
+  }
 
+  newTrace(): void {
+    this.router.navigate(['/traces/new']);
+  }
+
+  terminate(trace: TraceSummary): void {
+    if (!window.confirm(`Terminate trace ${trace.traceId}?`)) return;
     this.busyTraceId.set(trace.traceId);
     this.error.set(null);
     this.api.terminate(trace.traceId).subscribe({
-      next: () => {
-        this.busyTraceId.set(null);
-        this.reload();
-      },
+      next: () => { this.busyTraceId.set(null); this.reload(); },
       error: err => {
         this.busyTraceId.set(null);
         this.error.set(err?.error?.error ?? err?.message ?? 'Failed to terminate trace');
-      }
+      },
     });
   }
 
   delete(trace: TraceSummary): void {
-    if (!window.confirm(`Delete trace ${trace.traceId}? This removes its history.`)) {
-      return;
-    }
-
+    if (!window.confirm(`Delete trace ${trace.traceId}? This removes its history.`)) return;
     this.busyTraceId.set(trace.traceId);
     this.error.set(null);
     this.api.delete(trace.traceId).subscribe({
-      next: () => {
-        this.busyTraceId.set(null);
-        this.reload();
-      },
+      next: () => { this.busyTraceId.set(null); this.reload(); },
       error: err => {
         this.busyTraceId.set(null);
         this.error.set(err?.error?.error ?? err?.message ?? 'Failed to delete trace');
-      }
+      },
     });
   }
 
   bulkDelete(): void {
-    const stateLabel = this.bulkStateOptions.find(option => option.value === this.bulkState())?.label ?? 'selected traces';
+    const raw = this.bulkStateRaw();
+    const chosen = this.bulkStateOptions.find(option => option.value === raw);
     const olderThanDays = this.bulkOlderThanDays();
-    if (!window.confirm(`Delete ${stateLabel.toLowerCase()} older than ${olderThanDays} days? This removes their history.`)) {
-      return;
-    }
+    const label = chosen?.label.toLowerCase() ?? 'selected traces';
+    if (!window.confirm(`Delete ${label} older than ${olderThanDays} days? This removes their history.`)) return;
 
     this.bulkBusy.set(true);
     this.error.set(null);
     this.bulkResult.set(null);
     this.api.bulkDelete({
-      state: this.bulkState(),
-      olderThanDays
+      state: raw === '' ? null : raw,
+      olderThanDays,
     }).subscribe({
       next: response => {
         this.bulkBusy.set(false);
@@ -268,34 +254,21 @@ export class TracesListComponent {
       error: err => {
         this.bulkBusy.set(false);
         this.error.set(err?.error?.error ?? err?.message ?? 'Failed to bulk delete traces');
-      }
+      },
     });
   }
 
   bulkButtonLabel(): string {
-    const stateLabel = this.bulkStateOptions.find(option => option.value === this.bulkState())?.shortLabel ?? 'terminal';
-    return `Delete ${stateLabel}`;
+    const raw = this.bulkStateRaw();
+    const chosen = this.bulkStateOptions.find(option => option.value === raw);
+    return `Delete ${chosen?.shortLabel ?? 'terminal'}`;
   }
 
-  private reload(): void {
+  reload(): void {
     this.loading.set(true);
     this.api.list().subscribe({
       next: ts => { this.traces.set(ts); this.loading.set(false); },
-      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); }
+      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); },
     });
   }
 }
-
-const BULK_STATE_OPTIONS = [
-  { value: 'Completed', label: 'Completed traces', shortLabel: 'completed' },
-  { value: 'Failed', label: 'Failed traces', shortLabel: 'failed' },
-  { value: 'Escalated', label: 'Escalated traces', shortLabel: 'escalated' },
-  { value: null, label: 'All terminal traces', shortLabel: 'terminal' }
-];
-
-const BULK_AGE_OPTIONS = [
-  { days: 1, label: '1 day' },
-  { days: 7, label: '7 days' },
-  { days: 30, label: '30 days' },
-  { days: 90, label: '90 days' }
-];

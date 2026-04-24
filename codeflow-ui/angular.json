@@ -18,7 +18,7 @@
             "tsConfig": "tsconfig.app.json",
             "assets": [],
             "styles": [
-              "src/styles.css",
+              "src/styles.scss",
               "node_modules/monaco-editor/min/vs/editor/editor.main.css"
             ],
             "scripts": [],

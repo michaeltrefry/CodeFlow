@@ -28,7 +28,9 @@ public sealed record WorkflowDraft(
     int MaxRoundsPerRound,
     IReadOnlyList<WorkflowNodeDraft> Nodes,
     IReadOnlyList<WorkflowEdgeDraft> Edges,
-    IReadOnlyList<WorkflowInputDraft> Inputs);
+    IReadOnlyList<WorkflowInputDraft> Inputs,
+    WorkflowCategory Category = WorkflowCategory.Workflow,
+    IReadOnlyList<string>? Tags = null);
 
 public sealed record WorkflowNodeDraft(
     Guid Id,

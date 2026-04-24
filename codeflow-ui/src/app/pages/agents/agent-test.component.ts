@@ -11,6 +11,9 @@ import {
   AgentTestTokenUsage,
   streamAgentTest
 } from '../../core/agent-test-stream';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
 
 interface LogEntry {
   id: number;
@@ -40,15 +43,22 @@ const RESERVED_VARIABLES = new Set(['input']);
 @Component({
   selector: 'cf-agent-test',
   standalone: true,
-  imports: [FormsModule, DatePipe, RouterLink],
+  imports: [
+    FormsModule, DatePipe, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>Test agent</h1>
-        <p class="muted monospace">{{ key() }}</p>
+    <div class="page">
+    <cf-page-header title="Test agent">
+      <a [routerLink]="['/agents', key()]">
+        <button type="button" cf-button variant="ghost" icon="back">Back</button>
+      </a>
+      <div page-header-body>
+        <div class="trace-header-meta">
+          <cf-chip mono>{{ key() }}</cf-chip>
+        </div>
       </div>
-      <a [routerLink]="['/agents', key()]"><button class="secondary">Back</button></a>
-    </header>
+    </cf-page-header>
 
     <div class="test-grid">
       <section class="test-column">
@@ -167,9 +177,10 @@ const RESERVED_VARIABLES = new Set(['input']);
         }
       </section>
     </div>
+    </div>
   `,
   styles: [`
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .small { font-size: 0.8rem; }
     .test-grid {
       display: grid;
@@ -197,14 +208,14 @@ const RESERVED_VARIABLES = new Set(['input']);
     .variable-name {
       font-size: 0.8rem;
       padding: 0.3rem 0.5rem;
-      background: var(--color-surface-alt);
+      background: var(--surface-2);
       border-radius: 3px;
-      color: var(--color-accent);
+      color: var(--accent);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .variable-name.custom { color: var(--color-muted); }
+    .variable-name.custom { color: var(--muted); }
     button.icon {
       padding: 0.2rem 0.5rem;
       font-size: 1rem;
@@ -224,19 +235,19 @@ const RESERVED_VARIABLES = new Set(['input']);
     .event-log li {
       padding: 0.6rem 0.75rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      border: 1px solid var(--border);
+      background: var(--surface);
     }
     .event-log li.error {
-      border-color: var(--color-error, #ef4444);
+      border-color: var(--sem-red);
       background: rgba(239, 68, 68, 0.05);
     }
     .event-log li.entry-tool-call-started,
     .event-log li.entry-tool-call-completed {
-      border-left: 3px solid var(--color-accent);
+      border-left: 3px solid var(--accent);
     }
     .event-log li.entry-model-call-completed {
-      border-left: 3px solid var(--color-ok, #22c55e);
+      border-left: 3px solid var(--sem-green);
     }
     .log-header {
       display: flex;
@@ -246,7 +257,7 @@ const RESERVED_VARIABLES = new Set(['input']);
       text-transform: uppercase;
       letter-spacing: 0.03em;
     }
-    .log-kind { color: var(--color-muted); font-weight: 600; }
+    .log-kind { color: var(--muted); font-weight: 600; }
     .log-title {
       font-size: 0.9rem;
       margin-top: 0.2rem;
@@ -255,7 +266,7 @@ const RESERVED_VARIABLES = new Set(['input']);
     .log-detail {
       margin: 0.4rem 0 0 0;
       padding: 0.4rem 0.5rem;
-      background: var(--color-surface-alt);
+      background: var(--surface-2);
       border-radius: 3px;
       font-size: 0.8rem;
       white-space: pre-wrap;
