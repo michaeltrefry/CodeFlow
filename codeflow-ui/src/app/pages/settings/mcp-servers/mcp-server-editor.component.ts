@@ -137,7 +137,7 @@ import {
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
     .token-row { display: flex; align-items: center; gap: 0.5rem; }
     .small { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .muted.small { font-size: 0.8rem; }
     .tag.success { background: rgba(34,197,94,0.15); color: #22c55e; }
     .tag.error { background: rgba(239,68,68,0.15); color: #ef4444; }
@@ -145,7 +145,7 @@ import {
     .section-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
     .section-header h2 { margin: 0; flex: 1; font-size: 1.1rem; }
     .tool-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-    .tool-list li { border: 1px solid var(--color-border); border-radius: 4px; padding: 0.5rem 0.75rem; }
+    .tool-list li { border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem 0.75rem; }
     .tool-name { display: flex; gap: 0.5rem; align-items: center; }
   `]
 })

@@ -54,7 +54,7 @@ import { Skill } from '../../../core/models';
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
     .header-actions { display: flex; gap: 0.5rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .small { font-size: 0.8rem; margin-top: 0.25rem; }
     textarea { font-family: var(--font-mono, monospace); font-size: 0.9rem; }
   `]

@@ -133,7 +133,7 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
   `,
   styles: [`
     .small { font-size: 0.8rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     pre.json {
       white-space: pre-wrap;
       word-break: break-word;
@@ -159,9 +159,9 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
       width: 100%;
       padding: 0.5rem 0.75rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
-      color: var(--color-text);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
     }
     .role-list { display: flex; flex-direction: column; gap: 0.35rem; }
     .role-option {
@@ -169,13 +169,13 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
       align-items: center;
       gap: 0.5rem;
       padding: 0.5rem 0.75rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       cursor: pointer;
-      background: var(--color-surface);
+      background: var(--surface);
     }
     .role-option.selected {
-      border-color: var(--color-accent);
+      border-color: var(--accent);
       background: rgba(56,189,248,0.05);
     }
     .role-key { font-family: var(--font-mono, monospace); font-weight: 600; }

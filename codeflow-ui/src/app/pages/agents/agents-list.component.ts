@@ -1,109 +1,141 @@
-import { Component, inject, signal } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Component, computed, inject, signal } from '@angular/core';
+import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { AgentSummary } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
+import { IconComponent } from '../../ui/icon.component';
+import { SegmentedComponent, SegmentedOption } from '../../ui/segmented.component';
+import { ProviderIconComponent } from '../../ui/provider-icon.component';
+
+type AgentFilter = 'all' | 'agent' | 'hitl';
+
+function relTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const diff = (Date.now() - t) / 1000;
+  if (diff < 60) return `${Math.max(0, Math.round(diff))}s ago`;
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
+  return `${Math.round(diff / 86400)}d ago`;
+}
 
 @Component({
   selector: 'cf-agents-list',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [
+    RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent, IconComponent,
+    SegmentedComponent, ProviderIconComponent,
+  ],
   template: `
-    <header class="page-header">
-      <h1>Agents</h1>
-      <a routerLink="/agents/new"><button>New agent</button></a>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="Agents"
+        subtitle="Named, versioned prompt + model bundles. Each version is immutable; latest is rotated in on new runs unless pinned.">
+        <button type="button" cf-button variant="ghost" icon="refresh" (click)="reload()">Refresh</button>
+        <a routerLink="/agents/new">
+          <button type="button" cf-button variant="primary" icon="plus">New agent</button>
+        </a>
+      </cf-page-header>
 
-    @if (loading()) {
-      <p>Loading agents&hellip;</p>
-    } @else if (error()) {
-      <p class="tag error">{{ error() }}</p>
-    } @else if (agents().length === 0) {
-      <p class="tag">No agents yet. Create one to get started.</p>
-    } @else {
-      <div class="agent-grid">
-        @for (agent of agents(); track agent.key) {
-          <a class="card agent-card" [routerLink]="['/agents', agent.key]">
-            <div class="agent-header">
-              <span class="agent-key">{{ agent.key }}</span>
-              <span class="tag accent">v{{ agent.latestVersion }}</span>
-            </div>
-            <div class="agent-meta">
-              <span class="tag">{{ agent.type }}</span>
-              @if (agent.provider) { <span class="tag">{{ agent.provider }}</span> }
-              @if (agent.model) { <span class="tag">{{ agent.model }}</span> }
-            </div>
-            <div class="agent-stamp">
-              updated {{ agent.latestCreatedAtUtc | date:'medium' }}
-              @if (agent.latestCreatedBy) {
-                by {{ agent.latestCreatedBy }}
-              }
-            </div>
-          </a>
-        }
+      <div class="list-toolbar">
+        <div class="list-toolbar-left">
+          <cf-segmented
+            [options]="filterOptions()"
+            [value]="filter()"
+            (valueChange)="filter.set($any($event))">
+          </cf-segmented>
+        </div>
+        <span class="muted small">showing {{ visibleAgents().length }}</span>
       </div>
-    }
+
+      @if (loading()) {
+        <div class="card"><div class="card-body muted">Loading agents…</div></div>
+      } @else if (error()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ error() }}</cf-chip></div></div>
+      } @else if (agents().length === 0) {
+        <div class="card"><div class="card-body muted">No agents yet. Create one to get started.</div></div>
+      } @else {
+        <div class="agent-grid">
+          @for (agent of visibleAgents(); track agent.key) {
+            <a class="agent-card" [routerLink]="['/agents', agent.key]">
+              <div class="agent-card-head">
+                <div style="min-width: 0; flex: 1">
+                  <div class="agent-key">{{ agent.key }}</div>
+                  <div class="agent-name">{{ agent.name ?? '—' }}</div>
+                </div>
+                <div class="agent-type-ico" [class.hitl]="agent.type === 'hitl'">
+                  <cf-icon [name]="agent.type === 'hitl' ? 'hitl' : 'bot'"></cf-icon>
+                </div>
+              </div>
+              <div class="agent-tags">
+                <cf-chip variant="accent" mono>v{{ agent.latestVersion }}</cf-chip>
+                @if (agent.type === 'hitl') {
+                  <cf-chip mono>hitl</cf-chip>
+                } @else {
+                  @if (agent.provider) {
+                    <cf-chip mono>
+                      <cf-provider-icon [provider]="agent.provider"></cf-provider-icon>
+                      {{ agent.provider }}
+                    </cf-chip>
+                  }
+                  @if (agent.model) {
+                    <cf-chip mono>{{ agent.model }}</cf-chip>
+                  }
+                }
+              </div>
+              <div class="agent-stamp">
+                <span>updated {{ relTime(agent.latestCreatedAtUtc) }}</span>
+                @if (agent.latestCreatedBy) {
+                  <span>·</span>
+                  <span class="mono">&#64;{{ agent.latestCreatedBy }}</span>
+                }
+              </div>
+            </a>
+          }
+        </div>
+      }
+    </div>
   `,
-  styles: [`
-    .page-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 1.5rem;
-    }
-    .agent-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 1rem;
-    }
-    .agent-card {
-      display: block;
-      color: inherit;
-      cursor: pointer;
-      transition: border-color 150ms ease;
-    }
-    .agent-card:hover {
-      border-color: var(--color-accent);
-    }
-    .agent-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 0.5rem;
-    }
-    .agent-key {
-      font-weight: 600;
-      font-size: 1.05rem;
-    }
-    .agent-meta {
-      display: flex;
-      gap: 0.4rem;
-      flex-wrap: wrap;
-      margin-bottom: 0.75rem;
-    }
-    .agent-stamp {
-      color: var(--color-muted);
-      font-size: 0.8rem;
-    }
-  `]
 })
 export class AgentsListComponent {
   private readonly agentsApi = inject(AgentsApi);
+  private readonly router = inject(Router);
 
   readonly agents = signal<AgentSummary[]>([]);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
+  readonly filter = signal<AgentFilter>('all');
 
-  constructor() {
+  readonly visibleAgents = computed(() => {
+    const f = this.filter();
+    return f === 'all' ? this.agents() : this.agents().filter(a => a.type === f);
+  });
+
+  readonly filterOptions = computed<SegmentedOption[]>(() => {
+    const all = this.agents();
+    return [
+      { value: 'all', label: `All (${all.length})` },
+      { value: 'agent', label: `LLM (${all.filter(a => a.type === 'agent').length})` },
+      { value: 'hitl', label: `HITL (${all.filter(a => a.type === 'hitl').length})` },
+    ];
+  });
+
+  constructor() { this.reload(); }
+
+  reload(): void {
+    this.loading.set(true);
     this.agentsApi.list().subscribe({
-      next: results => {
-        this.agents.set(results);
-        this.loading.set(false);
-      },
+      next: results => { this.agents.set(results); this.loading.set(false); },
       error: err => {
         this.error.set(err?.message ?? 'Failed to load agents');
         this.loading.set(false);
-      }
+      },
     });
   }
+
+  relTime = relTime;
 }

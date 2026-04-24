@@ -57,7 +57,7 @@ export interface MonacoMarker {
       padding: 0.5rem;
       background: #0d1117;
       color: #e5e9f0;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
     }
   `]

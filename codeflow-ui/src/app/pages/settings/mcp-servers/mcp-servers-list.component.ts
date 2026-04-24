@@ -1,117 +1,131 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { McpServersApi } from '../../../core/mcp-servers.api';
 import { McpServer } from '../../../core/models';
+import { PageHeaderComponent } from '../../../ui/page-header.component';
+import { ButtonComponent } from '../../../ui/button.component';
+import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
 
 @Component({
   selector: 'cf-mcp-servers-list',
   standalone: true,
-  imports: [DatePipe, RouterLink],
+  imports: [
+    DatePipe, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+  ],
   template: `
-    <header class="page-header">
-      <h1>MCP Servers</h1>
-      <a routerLink="/settings/mcp-servers/new"><button>New MCP server</button></a>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="MCP servers"
+        subtitle="Model Context Protocol endpoints available to all agents on this tenant.">
+        <a routerLink="/settings/mcp-servers/new">
+          <button type="button" cf-button variant="primary" icon="plus">Add server</button>
+        </a>
+      </cf-page-header>
 
-    @if (loading()) {
-      <p>Loading servers&hellip;</p>
-    } @else if (error()) {
-      <p class="tag error">{{ error() }}</p>
-    } @else if (servers().length === 0) {
-      <p class="tag">No MCP servers configured yet.</p>
-    } @else {
-      <table class="mcp-table">
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Name</th>
-            <th>Transport</th>
-            <th>Endpoint</th>
-            <th>Health</th>
-            <th>Last verified</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          @for (server of servers(); track server.id) {
-            <tr>
-              <td><code>{{ server.key }}</code></td>
-              <td>{{ server.displayName }}</td>
-              <td><span class="tag">{{ server.transport }}</span></td>
-              <td class="endpoint">{{ server.endpointUrl }}</td>
-              <td>
-                <span class="tag" [class.success]="server.healthStatus === 'Healthy'"
-                      [class.error]="server.healthStatus === 'Unhealthy'"
-                      [title]="server.lastVerificationError ?? ''">
-                  {{ server.healthStatus }}
-                </span>
-              </td>
-              <td class="stamp">
-                @if (server.lastVerifiedAtUtc) {
-                  {{ server.lastVerifiedAtUtc | date:'medium' }}
-                } @else {
-                  <span class="muted">never</span>
-                }
-              </td>
-              <td class="actions">
-                <a [routerLink]="['/settings/mcp-servers', server.id]">
-                  <button class="secondary small">Edit</button>
-                </a>
-                <button class="secondary small" (click)="verify(server)" [disabled]="busy() === server.id">
-                  {{ busy() === server.id ? 'Verifying…' : 'Verify' }}
-                </button>
-                <button class="secondary small" (click)="refresh(server)" [disabled]="busy() === server.id">
-                  Refresh
-                </button>
-              </td>
-            </tr>
-          }
-        </tbody>
-      </table>
-    }
+      @if (loading()) {
+        <div class="card"><div class="card-body muted">Loading servers…</div></div>
+      } @else if (error()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ error() }}</cf-chip></div></div>
+      } @else if (servers().length === 0) {
+        <div class="card"><div class="card-body muted">No MCP servers configured yet.</div></div>
+      } @else {
+        <div class="card" style="overflow: hidden">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Name</th>
+                <th>Transport</th>
+                <th>Endpoint</th>
+                <th>Auth</th>
+                <th>Health</th>
+                <th>Last verified</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (server of servers(); track server.id) {
+                <tr (click)="open(server.id)">
+                  <td class="mono" style="font-weight: 500">{{ server.key }}</td>
+                  <td>{{ server.displayName }}</td>
+                  <td><cf-chip mono>{{ server.transport }}</cf-chip></td>
+                  <td class="mono small muted" style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ server.endpointUrl }}</td>
+                  <td>
+                    @if (server.hasBearerToken) { <cf-chip mono>Bearer</cf-chip> }
+                    @else { <cf-chip mono>none</cf-chip> }
+                  </td>
+                  <td>
+                    <cf-chip [variant]="healthVariant(server)" dot [title]="server.lastVerificationError ?? ''">{{ server.healthStatus }}</cf-chip>
+                  </td>
+                  <td class="muted small">
+                    @if (server.lastVerifiedAtUtc) {
+                      {{ server.lastVerifiedAtUtc | date:'medium' }}
+                    } @else {
+                      —
+                    }
+                  </td>
+                  <td class="actions">
+                    <button type="button" cf-button size="sm"
+                            (click)="$event.stopPropagation(); verify(server)"
+                            [disabled]="busy() === server.id">
+                      {{ busy() === server.id ? 'Verifying…' : 'Verify' }}
+                    </button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        @if (unhealthy(); as bad) {
+          <div class="card">
+            <div class="card-header">
+              <h3>{{ bad.displayName }} — last verification error</h3>
+            </div>
+            <div class="card-body">
+              <div class="trace-failure">
+                <strong>{{ bad.healthStatus }}:</strong>
+                {{ bad.lastVerificationError ?? 'No details provided by the server.' }}
+              </div>
+            </div>
+          </div>
+        }
+      }
+    </div>
   `,
-  styles: [`
-    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-    .mcp-table { width: 100%; border-collapse: collapse; }
-    .mcp-table th, .mcp-table td {
-      text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--color-border);
-      vertical-align: middle;
-    }
-    .mcp-table th { color: var(--color-muted); font-size: 0.8rem; text-transform: uppercase; font-weight: 600; }
-    .endpoint { font-family: var(--font-mono, monospace); font-size: 0.85rem; }
-    .stamp { color: var(--color-muted); font-size: 0.85rem; }
-    .actions { display: flex; gap: 0.25rem; }
-    .tag.success { background: rgba(34,197,94,0.15); color: #22c55e; }
-    .tag.error { background: rgba(239,68,68,0.15); color: #ef4444; }
-    .small { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
-    .muted { color: var(--color-muted); }
-  `]
 })
 export class McpServersListComponent {
   private readonly api = inject(McpServersApi);
+  private readonly router = inject(Router);
 
   readonly servers = signal<McpServer[]>([]);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
   readonly busy = signal<number | null>(null);
 
-  constructor() {
-    this.reload();
+  readonly unhealthy = computed(() => this.servers().find(s => s.healthStatus === 'Unhealthy' && s.lastVerificationError));
+
+  constructor() { this.reload(); }
+
+  open(id: number): void { this.router.navigate(['/settings/mcp-servers', id]); }
+
+  healthVariant(server: McpServer): ChipVariant {
+    if (server.healthStatus === 'Healthy') return 'ok';
+    if (server.healthStatus === 'Unhealthy') return 'err';
+    return 'default';
   }
 
   reload(): void {
     this.loading.set(true);
     this.error.set(null);
     this.api.list().subscribe({
-      next: servers => {
-        this.servers.set(servers);
-        this.loading.set(false);
-      },
+      next: servers => { this.servers.set(servers); this.loading.set(false); },
       error: err => {
         this.error.set(err?.message ?? 'Failed to load MCP servers');
         this.loading.set(false);
-      }
+      },
     });
   }
 
@@ -125,21 +139,7 @@ export class McpServersListComponent {
             : s));
         this.busy.set(null);
       },
-      error: () => this.busy.set(null)
-    });
-  }
-
-  refresh(server: McpServer): void {
-    this.busy.set(server.id);
-    this.api.refreshTools(server.id).subscribe({
-      next: result => {
-        this.servers.update(list => list.map(s =>
-          s.id === server.id
-            ? { ...s, healthStatus: result.healthStatus, lastVerifiedAtUtc: result.lastVerifiedAtUtc, lastVerificationError: result.lastVerificationError }
-            : s));
-        this.busy.set(null);
-      },
-      error: () => this.busy.set(null)
+      error: () => this.busy.set(null),
     });
   }
 }

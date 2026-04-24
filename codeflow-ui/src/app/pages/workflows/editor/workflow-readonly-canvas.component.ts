@@ -41,8 +41,8 @@ import { WorkflowNodeComponent } from './workflow-node.component';
     .readonly-canvas {
       width: 100%;
       height: 100%;
-      background: var(--color-surface-2, #0d1117);
-      border: 1px solid var(--color-border);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
       border-radius: 6px;
       overflow: hidden;
     }

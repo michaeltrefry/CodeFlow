@@ -3,118 +3,111 @@ import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { GitHostApi } from '../../../core/git-host.api';
 import { GitHostMode, GitHostSettingsResponse, GitHostVerifyResponse } from '../../../core/models';
+import { PageHeaderComponent } from '../../../ui/page-header.component';
+import { ButtonComponent } from '../../../ui/button.component';
+import { ChipComponent } from '../../../ui/chip.component';
+import { CardComponent } from '../../../ui/card.component';
 
 @Component({
   selector: 'cf-git-host-settings',
   standalone: true,
-  imports: [FormsModule, DatePipe],
+  imports: [
+    FormsModule, DatePipe,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>Git host</h1>
-        <p class="muted">Configure the git host (GitHub or self-hosted GitLab) this CodeFlow instance
-          will clone from, push to, and open PRs against.</p>
-      </div>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="Git host"
+        subtitle="Configure the git host (GitHub or self-hosted GitLab) this CodeFlow instance will clone from, push to, and open PRs against.">
+      </cf-page-header>
 
     @if (loading()) {
-      <p class="muted">Loading&hellip;</p>
+      <cf-card><div class="muted">Loading…</div></cf-card>
     } @else {
+      <cf-card title="Provider connection">
       <form (submit)="save($event)">
-        <div class="form-field">
-          <label>Host</label>
-          <div class="radio-row">
-            <label class="radio">
-              <input type="radio" name="mode" value="GitHub" [checked]="mode() === 'GitHub'" (change)="setMode('GitHub')" />
-              <span>GitHub (github.com)</span>
-            </label>
-            <label class="radio">
-              <input type="radio" name="mode" value="GitLab" [checked]="mode() === 'GitLab'" (change)="setMode('GitLab')" />
-              <span>Self-hosted GitLab</span>
-            </label>
-          </div>
-        </div>
-
-        @if (mode() === 'GitLab') {
-          <div class="form-field">
-            <label>Base URL</label>
-            <input [ngModel]="baseUrl()" (ngModelChange)="baseUrl.set($event)" name="baseUrl"
-                   placeholder="https://gitlab.example.com" />
-            <div class="muted small">No trailing slash; the API path <code>/api/v4</code> is appended automatically.</div>
-          </div>
-        }
-
-        <div class="form-field">
-          <label>Personal access token</label>
-          @if (hasToken() && !replacingToken()) {
-            <div class="token-row">
-              <span class="tag">••••••••</span>
-              <button type="button" class="secondary small" (click)="startReplace()">Replace token</button>
+        <div class="form-grid">
+          <div class="field">
+            <span class="field-label">Host</span>
+            <div class="seg" style="width: fit-content">
+              <button type="button" [attr.data-active]="mode() === 'GitHub' ? 'true' : null" (click)="setMode('GitHub')">GitHub</button>
+              <button type="button" [attr.data-active]="mode() === 'GitLab' ? 'true' : null" (click)="setMode('GitLab')">Self-hosted GitLab</button>
             </div>
-            <div class="muted small">Minimum scopes — GitHub: <code>repo</code>. GitLab: <code>api</code> + <code>write_repository</code>.</div>
-          } @else {
-            <input type="password" [ngModel]="tokenValue()" (ngModelChange)="tokenValue.set($event)"
-                   name="token" placeholder="Paste a personal access token" autocomplete="new-password" />
-            @if (hasToken()) {
-              <button type="button" class="ghost small" (click)="cancelReplace()">Cancel replace</button>
-            }
-            <div class="muted small">Tokens are encrypted at rest and never returned by the API.</div>
+          </div>
+
+          @if (mode() === 'GitLab') {
+            <div class="field">
+              <span class="field-label">Base URL</span>
+              <input class="input mono" [ngModel]="baseUrl()" (ngModelChange)="baseUrl.set($event)" name="baseUrl"
+                     placeholder="https://gitlab.example.com" />
+              <span class="field-hint">No trailing slash; the API path <code>/api/v4</code> is appended automatically.</span>
+            </div>
           }
+
+          <div class="field span-2">
+            <span class="field-label">Personal access token</span>
+            @if (hasToken() && !replacingToken()) {
+              <div class="row">
+                <cf-chip mono>••••••••</cf-chip>
+                <button type="button" cf-button size="sm" (click)="startReplace()">Replace token</button>
+              </div>
+              <span class="field-hint">Minimum scopes — GitHub: <code>repo</code>. GitLab: <code>api</code> + <code>write_repository</code>.</span>
+            } @else {
+              <input type="password" class="input mono" [ngModel]="tokenValue()" (ngModelChange)="tokenValue.set($event)"
+                     name="token" placeholder="Paste a personal access token" autocomplete="new-password" />
+              @if (hasToken()) {
+                <button type="button" cf-button variant="ghost" size="sm" (click)="cancelReplace()">Cancel replace</button>
+              }
+              <span class="field-hint">Tokens are encrypted at rest and never returned by the API.</span>
+            }
+          </div>
         </div>
 
         @if (error()) {
-          <div class="tag error">{{ error() }}</div>
+          <div class="trace-failure"><strong>Save failed:</strong> {{ error() }}</div>
         }
 
-        <div class="row">
-          <button type="submit" [disabled]="saving() || !canSave()">
+        <div class="row" style="margin-top: 14px; justify-content: flex-end">
+          <button type="submit" cf-button variant="primary" [disabled]="saving() || !canSave()">
             {{ saving() ? 'Saving…' : 'Save' }}
           </button>
         </div>
       </form>
+      </cf-card>
 
-      <section class="verify-section">
-        <header class="section-header">
-          <h2>Verify</h2>
-          <button type="button" class="secondary" (click)="verify()" [disabled]="verifying() || !hasToken() || replacingToken()">
+      <cf-card title="Verify">
+        <ng-template #cardRight>
+          <button type="button" cf-button (click)="verify()" [disabled]="verifying() || !hasToken() || replacingToken()">
             {{ verifying() ? 'Verifying…' : 'Verify connection' }}
           </button>
-        </header>
+        </ng-template>
 
-        <div class="status">
-          <span class="dot"
-                [class.success]="statusOk()"
-                [class.warning]="statusUnverified()"
-                [class.danger]="statusFailed()"></span>
-          @if (lastVerifiedAtUtc()) {
-            <span>Last verified: {{ lastVerifiedAtUtc() | date:'medium' }}</span>
+        <div class="row">
+          @if (statusOk()) {
+            <cf-chip variant="ok" dot>Healthy</cf-chip>
+          } @else if (statusFailed()) {
+            <cf-chip variant="err" dot>Failed</cf-chip>
+          } @else if (statusUnverified()) {
+            <cf-chip variant="warn" dot>Unverified</cf-chip>
           } @else {
-            <span class="muted">{{ hasToken() ? 'Not yet verified' : 'No token configured yet' }}</span>
+            <cf-chip>No token</cf-chip>
+          }
+          @if (lastVerifiedAtUtc()) {
+            <span class="muted small">Last verified: {{ lastVerifiedAtUtc() | date:'medium' }}</span>
+          } @else {
+            <span class="muted small">{{ hasToken() ? 'Not yet verified' : 'No token configured yet' }}</span>
           }
         </div>
 
         @if (verifyError()) {
-          <div class="tag error">{{ verifyError() }}</div>
+          <div class="trace-failure" style="margin-top: 10px"><strong>Error:</strong> {{ verifyError() }}</div>
         }
-      </section>
+      </cf-card>
     }
+    </div>
   `,
-  styles: [`
-    .page-header { margin-bottom: 1.5rem; }
-    .radio-row { display: flex; gap: 1rem; }
-    .radio { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: normal; }
-    .small { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
-    .token-row { display: flex; align-items: center; gap: 0.5rem; }
-    .row { margin-top: 1rem; }
-    .verify-section { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
-    .section-header { display: flex; justify-content: space-between; align-items: center; }
-    .status { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
-    .dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--color-muted); display: inline-block; }
-    .dot.success { background: var(--color-success, #4caf50); }
-    .dot.warning { background: var(--color-warning, #f0ad4e); }
-    .dot.danger { background: var(--color-danger, #d9534f); }
-    .tag.error { color: var(--color-error, #d9534f); }
-  `],
+  styles: [``],
 })
 export class GitHostSettingsComponent implements OnInit {
   private readonly api = inject(GitHostApi);

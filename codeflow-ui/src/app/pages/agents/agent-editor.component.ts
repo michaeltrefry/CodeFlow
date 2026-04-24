@@ -262,42 +262,42 @@ interface DecisionTemplateRow {
   `,
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .small { font-size: 0.8rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .outputs-section {
       margin-top: 1.5rem;
       padding: 1rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 6px;
       background: rgba(255, 255, 255, 0.02);
     }
     .outputs-section h3 { margin-top: 0; }
     .output-card {
       padding: 0.75rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       margin-bottom: 0.75rem;
-      background: var(--color-surface);
+      background: var(--surface);
     }
     .row-spread { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
     .prompt-template-input { min-height: 28rem; resize: vertical; }
     .icon-button {
       width: 22px; height: 22px; padding: 0; border-radius: 50%;
-      border: 1px solid var(--color-border); background: var(--color-surface);
+      border: 1px solid var(--border); background: var(--surface);
       cursor: pointer; color: inherit;
     }
     .icon-button:hover { border-color: #f85149; color: #f85149; }
     .doc-link {
       margin-left: 0.5rem; font-size: 0.75rem; font-weight: normal;
-      color: var(--color-muted); text-decoration: none;
+      color: var(--muted); text-decoration: none;
     }
-    .doc-link:hover { color: var(--color-accent, #58a6ff); text-decoration: underline; }
+    .doc-link:hover { color: var(--accent); text-decoration: underline; }
     .preview-context textarea { min-height: 5rem; }
     .preview-output, .preview-error {
       padding: 0.5rem; border-radius: 4px;
       background: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       white-space: pre-wrap; word-break: break-word;
       margin: 0; font-size: 0.85rem;
     }

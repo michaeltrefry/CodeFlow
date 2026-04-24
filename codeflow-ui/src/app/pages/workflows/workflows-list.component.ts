@@ -1,87 +1,74 @@
 import { Component, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { WorkflowSummary } from '../../core/models';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
 
 @Component({
   selector: 'cf-workflows-list',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [RouterLink, DatePipe, PageHeaderComponent, ButtonComponent, ChipComponent],
   template: `
-    <header class="page-header">
-      <h1>Workflows</h1>
-      <a routerLink="/workflows/new"><button>New workflow</button></a>
-    </header>
+    <div class="page">
+      <cf-page-header
+        title="Workflows"
+        subtitle="Versioned graphs of agents, logic, and human checkpoints.">
+        <a routerLink="/workflows/new">
+          <button type="button" cf-button variant="primary" icon="plus">New workflow</button>
+        </a>
+      </cf-page-header>
 
-    @if (loading()) {
-      <p>Loading workflows&hellip;</p>
-    } @else if (error()) {
-      <p class="tag error">{{ error() }}</p>
-    } @else if (workflows().length === 0) {
-      <p class="tag">No workflows yet. Create one to get started.</p>
-    } @else {
-      <div class="workflow-grid">
-        @for (wf of workflows(); track wf.key) {
-          <a class="card workflow-card" [routerLink]="['/workflows', wf.key]">
-            <div class="row">
-              <span class="workflow-name">{{ wf.name }}</span>
-              <span class="tag accent">v{{ wf.latestVersion }}</span>
-            </div>
-            <div class="workflow-key muted">{{ wf.key }}</div>
-            <div class="workflow-meta">
-              <span class="tag">{{ wf.nodeCount }} nodes</span>
-              <span class="tag">{{ wf.edgeCount }} edges</span>
-              @if (wf.inputCount > 0) {
-                <span class="tag">{{ wf.inputCount }} inputs</span>
+      @if (loading()) {
+        <div class="card"><div class="card-body muted">Loading workflows…</div></div>
+      } @else if (error()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ error() }}</cf-chip></div></div>
+      } @else if (workflows().length === 0) {
+        <div class="card"><div class="card-body muted">No workflows yet. Create one to get started.</div></div>
+      } @else {
+        <div class="card" style="overflow: hidden">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Name</th>
+                <th>Version</th>
+                <th>Nodes</th>
+                <th>Edges</th>
+                <th>Inputs</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (wf of workflows(); track wf.key) {
+                <tr (click)="open(wf.key)">
+                  <td class="mono" style="font-weight: 500">{{ wf.key }}</td>
+                  <td>{{ wf.name }}</td>
+                  <td><cf-chip mono>v{{ wf.latestVersion }}</cf-chip></td>
+                  <td class="mono muted">{{ wf.nodeCount }}</td>
+                  <td class="mono muted">{{ wf.edgeCount }}</td>
+                  <td class="mono muted">{{ wf.inputCount }}</td>
+                  <td class="muted small">{{ wf.createdAtUtc | date:'medium' }}</td>
+                  <td class="actions">
+                    <a [routerLink]="['/workflows', wf.key, 'edit']" (click)="$event.stopPropagation()">
+                      <button type="button" cf-button size="sm">Edit</button>
+                    </a>
+                  </td>
+                </tr>
               }
-            </div>
-            <div class="muted small">created {{ wf.createdAtUtc | date:'medium' }}</div>
-          </a>
-        }
-      </div>
-    }
+            </tbody>
+          </table>
+        </div>
+      }
+    </div>
   `,
-  styles: [`
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.5rem;
-    }
-    .workflow-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 1rem;
-    }
-    .workflow-card {
-      display: block;
-      color: inherit;
-    }
-    .workflow-card:hover {
-      border-color: var(--color-accent);
-    }
-    .workflow-name {
-      font-size: 1.05rem;
-      font-weight: 600;
-      flex: 1;
-    }
-    .workflow-key {
-      font-size: 0.85rem;
-      margin-bottom: 0.5rem;
-    }
-    .workflow-meta {
-      display: flex;
-      gap: 0.4rem;
-      flex-wrap: wrap;
-      margin-bottom: 0.5rem;
-    }
-    .muted { color: var(--color-muted); }
-    .small { font-size: 0.8rem; }
-  `]
 })
 export class WorkflowsListComponent {
   private readonly api = inject(WorkflowsApi);
+  private readonly router = inject(Router);
 
   readonly workflows = signal<WorkflowSummary[]>([]);
   readonly loading = signal(true);
@@ -90,7 +77,11 @@ export class WorkflowsListComponent {
   constructor() {
     this.api.list().subscribe({
       next: wfs => { this.workflows.set(wfs); this.loading.set(false); },
-      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); }
+      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); },
     });
+  }
+
+  open(key: string): void {
+    this.router.navigate(['/workflows', key]);
   }
 }

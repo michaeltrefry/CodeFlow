@@ -126,15 +126,15 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
   `,
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .grants-section { margin-top: 2rem; }
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
     .small { font-size: 0.8rem; }
     .skill-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
     .skill-row label { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer; }
-    .skill-row label:hover { background: var(--color-surface-alt); }
-    .skill-row.ghost label { color: var(--color-muted); }
+    .skill-row label:hover { background: var(--surface-2); }
+    .skill-row.ghost label { color: var(--muted); }
     .skill-row .skill-name { font-family: var(--font-mono, monospace); font-size: 0.9rem; }
   `]
 })

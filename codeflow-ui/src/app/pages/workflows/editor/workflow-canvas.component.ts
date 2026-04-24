@@ -409,22 +409,22 @@ function defaultStartInput(): WorkflowInput {
       height: calc(100vh - var(--header-height, 64px));
     }
     .sidebar {
-      background: var(--color-surface);
-      border-left: 1px solid var(--color-border);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
       overflow-y: auto;
       display: flex;
       flex-direction: column;
     }
     .sidebar-section {
       padding: 1rem;
-      border-bottom: 1px solid var(--color-border);
+      border-bottom: 1px solid var(--border);
     }
     .sidebar-section:last-child { border-bottom: none; flex: 1; }
     .canvas-wrapper { display: flex; flex-direction: column; min-width: 0; }
     .canvas {
       flex: 1;
       min-height: 0;
-      background: var(--color-surface-2, #0d1117);
+      background: var(--surface-2);
       position: relative;
       overflow: hidden;
     }
@@ -433,7 +433,7 @@ function defaultStartInput(): WorkflowInput {
       justify-content: space-between;
       align-items: center;
       padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--color-border);
+      border-bottom: 1px solid var(--border);
       gap: 1rem;
       flex-wrap: wrap;
     }
@@ -443,14 +443,14 @@ function defaultStartInput(): WorkflowInput {
       display: flex;
       flex-direction: column;
       font-size: 0.75rem;
-      color: var(--color-muted);
+      color: var(--muted);
       gap: 0.25rem;
     }
     .toolbar input {
       padding: 0.35rem 0.5rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      border: 1px solid var(--border);
+      background: var(--surface);
       color: inherit;
     }
     .palette {
@@ -462,14 +462,14 @@ function defaultStartInput(): WorkflowInput {
       display: block;
       padding: 0.5rem 0.6rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       background: rgba(255, 255, 255, 0.03);
-      color: var(--color-text, #c9d1d9);
+      color: var(--text);
       text-align: left;
       font-weight: 500;
       cursor: grab;
     }
-    .palette-item:hover { border-color: var(--color-accent); background: rgba(255, 255, 255, 0.06); }
+    .palette-item:hover { border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
     .palette-item.start { border-left: 4px solid #3fb950; }
     .palette-item.agent { border-left: 4px solid #58a6ff; }
     .palette-item.logic { border-left: 4px solid #d29922; }
@@ -481,7 +481,7 @@ function defaultStartInput(): WorkflowInput {
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.75rem;
     }
     .panel-title-inline {
@@ -490,7 +490,7 @@ function defaultStartInput(): WorkflowInput {
       margin-bottom: 0.4rem;
     }
     .inspector-section {
-      border-top: 1px solid var(--color-border);
+      border-top: 1px solid var(--border);
       padding: 0.75rem 0;
     }
     .inspector-section:first-of-type { border-top: none; padding-top: 0; }
@@ -501,7 +501,7 @@ function defaultStartInput(): WorkflowInput {
     .field > span {
       display: block;
       font-size: 0.75rem;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.25rem;
     }
     .field.row-inline {
@@ -515,8 +515,8 @@ function defaultStartInput(): WorkflowInput {
       width: 100%;
       padding: 0.35rem 0.5rem;
       border-radius: 4px;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface-2, #0d1117);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
       color: inherit;
       font-family: inherit;
     }
@@ -524,20 +524,20 @@ function defaultStartInput(): WorkflowInput {
     .field-label {
       display: block;
       font-size: 0.75rem;
-      color: var(--color-muted);
+      color: var(--muted);
       margin-bottom: 0.25rem;
     }
     .script-editor {
       display: block;
       min-height: 320px;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       overflow: hidden;
     }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {
       padding: 0.75rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.02);
     }
@@ -557,7 +557,7 @@ function defaultStartInput(): WorkflowInput {
     .inspector-kind.connection { background: rgba(255, 209, 102, 0.16); color: #ffd166; }
     .subflow-outline {
       padding: 0.5rem;
-      border: 1px solid var(--color-border);
+      border: 1px solid var(--border);
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.02);
     }
@@ -573,7 +573,7 @@ function defaultStartInput(): WorkflowInput {
     .row-spread { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
-    .muted { color: var(--color-muted); }
+    .muted { color: var(--muted); }
     .xsmall { font-size: 0.72rem; }
     .small { font-size: 0.8rem; }
     button.small { padding: 0.2rem 0.5rem; font-size: 0.75rem; }
@@ -587,8 +587,8 @@ function defaultStartInput(): WorkflowInput {
       height: 22px;
       padding: 0;
       border-radius: 50%;
-      border: 1px solid var(--color-border);
-      background: var(--color-surface);
+      border: 1px solid var(--border);
+      background: var(--surface);
       cursor: pointer;
       color: inherit;
     }
