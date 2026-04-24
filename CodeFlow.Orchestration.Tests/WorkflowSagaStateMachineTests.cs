@@ -1270,6 +1270,303 @@ public sealed class WorkflowSagaStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task DecisionOutputTemplate_RendersForExactPortMatch_AndSubstitutesDownstreamInput()
+    {
+        // Source agent declares a per-decision template for "Approved". On decision completion the
+        // saga renders the template server-side, writes the rendered content as an override
+        // artifact, and the downstream agent receives the rendered content as its InputRef.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflowWithScriptedSource(
+            key: "decision-template-exact",
+            sourceAgentKey: "evaluator",
+            sourceScript: null,
+            sourceOutputPorts: new[] { "Approved" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher"
+            });
+
+        var originalOutputRef = new Uri("file:///tmp/evaluator-out.json");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"headline":"Ready to ship"}""");
+
+        var agentConfigs = new Dictionary<string, AgentConfig>
+        {
+            ["evaluator"] = BuildAgentConfig("evaluator", 1, new Dictionary<string, string>
+            {
+                ["Approved"] = "APPROVED: {{ output.headline }} (port={{ outputPortName }})"
+            })
+        };
+
+        var harness = BuildHarness(workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore,
+            agentConfigs);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "evaluator"),
+                AgentKey: "evaluator",
+                AgentVersion: 1,
+                OutputPortName: "Approved",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Approved,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstream = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+            var downstreamInputRef = downstream.Context.Message.InputRef!;
+            downstreamInputRef.Should().NotBe(originalOutputRef);
+
+            artifactStore.ReadWrittenContent(downstreamInputRef)
+                .Should().Be("APPROVED: Ready to ship (port=Approved)");
+
+            // Original submission is untouched; decision record points at the rendered override.
+            artifactStore.SeededReads.Should().ContainKey(originalOutputRef);
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            var decisions = saga.GetDecisionHistory();
+            decisions.Single(d => d.AgentKey == "evaluator" && d.RoundId == roundId)
+                .OutputRef.Should().Be(downstreamInputRef.ToString());
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task DecisionOutputTemplate_FallsBackToWildcard_WhenNoExactMatch()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflowWithScriptedSource(
+            key: "decision-template-wildcard",
+            sourceAgentKey: "evaluator",
+            sourceScript: null,
+            sourceOutputPorts: new[] { "Approved" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher"
+            });
+
+        var originalOutputRef = new Uri("file:///tmp/evaluator-out.json");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"note":"fine"}""");
+
+        var agentConfigs = new Dictionary<string, AgentConfig>
+        {
+            ["evaluator"] = BuildAgentConfig("evaluator", 1, new Dictionary<string, string>
+            {
+                ["*"] = "[{{ decision }}] wildcard-{{ output.note }}"
+            })
+        };
+
+        var harness = BuildHarness(workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore,
+            agentConfigs);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "evaluator"),
+                AgentKey: "evaluator",
+                AgentVersion: 1,
+                OutputPortName: "Approved",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Approved,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstream = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+            var downstreamInputRef = downstream.Context.Message.InputRef!;
+            artifactStore.ReadWrittenContent(downstreamInputRef)
+                .Should().Be("[Approved] wildcard-fine");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task DecisionOutputTemplate_NoMatchLeavesOriginalOutputRefIntact()
+    {
+        // Agent has some templates but none match the submitted decision and no wildcard — the
+        // saga must leave the OutputRef pointing at the original submission.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflowWithScriptedSource(
+            key: "decision-template-none",
+            sourceAgentKey: "evaluator",
+            sourceScript: null,
+            sourceOutputPorts: new[] { "Approved" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher"
+            });
+
+        var originalOutputRef = new Uri("file:///tmp/evaluator-out.bin");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, "raw submission");
+
+        var agentConfigs = new Dictionary<string, AgentConfig>
+        {
+            ["evaluator"] = BuildAgentConfig("evaluator", 1, new Dictionary<string, string>
+            {
+                ["Rejected"] = "not used"
+            })
+        };
+
+        var harness = BuildHarness(workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore,
+            agentConfigs);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "evaluator"),
+                AgentKey: "evaluator",
+                AgentVersion: 1,
+                OutputPortName: "Approved",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Approved,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstream = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+            downstream.Context.Message.InputRef.Should().Be(originalOutputRef);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task DecisionOutputTemplate_RenderFailure_TransitionsSagaToFailed()
+    {
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflowWithScriptedSource(
+            key: "decision-template-fail",
+            sourceAgentKey: "evaluator",
+            sourceScript: null,
+            sourceOutputPorts: new[] { "Approved" },
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher"
+            });
+
+        var originalOutputRef = new Uri("file:///tmp/evaluator-out.json");
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(originalOutputRef, """{"headline":"x"}""");
+
+        var agentConfigs = new Dictionary<string, AgentConfig>
+        {
+            // Malformed template — unterminated `{{ if` raises PromptTemplateException during render.
+            ["evaluator"] = BuildAgentConfig("evaluator", 1, new Dictionary<string, string>
+            {
+                ["Approved"] = "{{ if output.missing"
+            })
+        };
+
+        var harness = BuildHarness(workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore,
+            agentConfigs);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "evaluator"),
+                AgentKey: "evaluator",
+                AgentVersion: 1,
+                OutputPortName: "Approved",
+                OutputRef: originalOutputRef,
+                Decision: AgentDecisionKind.Approved,
+                DecisionPayload: null,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            await sagaHarness.Exists(traceId, s => s.Failed);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.FailureReason.Should().Contain("Decision output template failed");
+
+            // Downstream agent must not have been invoked on a template failure.
+            harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher")
+                .Should().BeFalse();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    private static AgentConfig BuildAgentConfig(
+        string key,
+        int version,
+        IReadOnlyDictionary<string, string> decisionOutputTemplates)
+    {
+        var configuration = new Runtime.AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-test",
+            DecisionOutputTemplates: decisionOutputTemplates);
+        return new AgentConfig(
+            Key: key,
+            Version: version,
+            Kind: AgentKind.Agent,
+            Configuration: configuration,
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: null);
+    }
+
     private static Workflow BuildWorkflowWithScriptedSource(
         string key,
         string sourceAgentKey,
@@ -2599,14 +2896,16 @@ public sealed class WorkflowSagaStateMachineTests
     private static ITestHarness BuildHarness(
         Workflow workflow,
         IReadOnlyDictionary<string, int> agentVersions,
-        IArtifactStore? artifactStore = null)
+        IArtifactStore? artifactStore = null,
+        IReadOnlyDictionary<string, AgentConfig>? agentConfigs = null)
     {
         var provider = new ServiceCollection()
             .AddSingleton<IWorkflowRepository>(new FakeWorkflowRepository(workflow))
-            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentVersions))
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentVersions, agentConfigs))
             .AddSingleton<IArtifactStore>(artifactStore ?? new StubArtifactStore(defaultJson: "{}"))
             .AddSingleton<IMemoryCache>(_ => new MemoryCache(new MemoryCacheOptions()))
             .AddSingleton<LogicNodeScriptHost>()
+            .AddSingleton<Runtime.IScribanTemplateRenderer, Runtime.ScribanTemplateRenderer>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
@@ -2855,11 +3154,32 @@ public sealed class WorkflowSagaStateMachineTests
             throw new NotSupportedException();
     }
 
-    private sealed class FakeAgentConfigRepository(IReadOnlyDictionary<string, int> versions)
+    private sealed class FakeAgentConfigRepository(
+        IReadOnlyDictionary<string, int> versions,
+        IReadOnlyDictionary<string, AgentConfig>? configs = null)
         : IAgentConfigRepository
     {
-        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)
+        {
+            if (configs is not null && configs.TryGetValue(key, out var explicitConfig))
+            {
+                return Task.FromResult(explicitConfig);
+            }
+
+            // Default agent config with no decision-output templates — preserves pre-feature behavior
+            // for tests that don't care about templating.
+            var empty = new AgentConfig(
+                Key: key,
+                Version: version,
+                Kind: AgentKind.Agent,
+                Configuration: new Runtime.AgentInvocationConfiguration(
+                    Provider: "openai",
+                    Model: "gpt-test"),
+                ConfigJson: "{}",
+                CreatedAtUtc: DateTime.UtcNow,
+                CreatedBy: null);
+            return Task.FromResult(empty);
+        }
 
         public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

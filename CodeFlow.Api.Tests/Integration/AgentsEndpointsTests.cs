@@ -109,9 +109,94 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task RenderPreview_Hitl_ShouldRenderTemplateWithFieldValuesAndContext()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "[{{ decision }}] {{ input.feedback }} // ctx={{ context.headline }}",
+            mode = "hitl",
+            decision = "Approved",
+            outputPortName = "Approved",
+            fieldValues = new Dictionary<string, object>
+            {
+                ["feedback"] = "shipped"
+            },
+            context = new Dictionary<string, object>
+            {
+                ["headline"] = "Ready to go"
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewResponse>();
+        payload!.Rendered.Should().Be("[Approved] shipped // ctx=Ready to go");
+    }
+
+    [Fact]
+    public async Task RenderPreview_Llm_ShouldExposeOutputAsStructuredJson()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{{ decision }}: {{ output.headline }} -> {{ outputPortName }}",
+            mode = "llm",
+            decision = "Approved",
+            outputPortName = "Approved",
+            output = """{"headline":"lede"}"""
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewResponse>();
+        payload!.Rendered.Should().Be("Approved: lede -> Approved");
+    }
+
+    [Fact]
+    public async Task RenderPreview_MalformedTemplate_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{{ if unterminated",
+            decision = "Approved",
+            outputPortName = "Approved"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewErrorResponse>();
+        payload!.Error.Should().Contain("syntax");
+    }
+
+    [Fact]
+    public async Task RenderPreview_EmptyTemplate_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "",
+            decision = "Approved",
+            outputPortName = "Approved"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
     private sealed record VersionDto(string Key, int Version, DateTime CreatedAtUtc, string? CreatedBy);
 
     private sealed record SummaryDto(string Key, int LatestVersion, bool IsRetired);
 
     private sealed record VersionDetailDto(string Key, int Version, bool IsRetired);
+
+    private sealed record PreviewResponse(string Rendered);
+
+    private sealed record PreviewErrorResponse(string Error);
 }

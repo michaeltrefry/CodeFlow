@@ -114,6 +114,7 @@ public static class HostExtensions
         services.AddHttpClient<LMStudioModelClient>();
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
+        services.AddSingleton<IScribanTemplateRenderer, ScribanTemplateRenderer>();
         services.AddSingleton<ContextAssembler>();
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(

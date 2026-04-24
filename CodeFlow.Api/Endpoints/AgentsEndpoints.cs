@@ -40,7 +40,92 @@ public static class AgentsEndpoints
         group.MapPost("/{key}/retire", RetireAgentAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
+        group.MapPost("/templates/render-preview", RenderDecisionOutputTemplatePreviewAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+
         return routes;
+    }
+
+    private static IResult RenderDecisionOutputTemplatePreviewAsync(
+        DecisionOutputTemplatePreviewRequest request,
+        CodeFlow.Runtime.IScribanTemplateRenderer renderer,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrEmpty(request.Template))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["template"] = new[] { "Template must not be empty." }
+            });
+        }
+
+        var mode = request.Mode ?? DecisionOutputTemplateMode.Hitl;
+        var decision = request.Decision ?? string.Empty;
+        var outputPortName = request.OutputPortName ?? decision;
+        var context = request.Context ?? EmptyJsonElementDictionary;
+        var global = request.Global ?? EmptyJsonElementDictionary;
+
+        Scriban.Runtime.ScriptObject scope;
+        if (mode == DecisionOutputTemplateMode.Hitl)
+        {
+            var fields = request.FieldValues ?? EmptyJsonElementDictionary;
+            scope = CodeFlow.Orchestration.DecisionOutputTemplateContext.BuildForHitl(
+                decision: decision,
+                outputPortName: outputPortName,
+                fieldValues: fields,
+                reason: request.Reason,
+                reasons: request.Reasons,
+                actions: request.Actions,
+                contextInputs: context,
+                globalInputs: global);
+        }
+        else
+        {
+            scope = CodeFlow.Orchestration.DecisionOutputTemplateContext.Build(
+                decision: decision,
+                outputPortName: outputPortName,
+                outputText: request.Output ?? string.Empty,
+                outputJson: ParseOutputAsStructuredJson(request.Output),
+                inputJson: request.Input,
+                contextInputs: context,
+                globalInputs: global);
+        }
+
+        string rendered;
+        try
+        {
+            rendered = renderer.Render(request.Template, scope, cancellationToken);
+        }
+        catch (CodeFlow.Runtime.PromptTemplateException ex)
+        {
+            return Results.UnprocessableEntity(new DecisionOutputTemplatePreviewErrorResponse(ex.Message));
+        }
+
+        return Results.Ok(new DecisionOutputTemplatePreviewResponse(rendered));
+    }
+
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyJsonElementDictionary =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
+    private static JsonElement? ParseOutputAsStructuredJson(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            if (document.RootElement.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+            {
+                return document.RootElement.Clone();
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return null;
     }
 
     private static async Task<IResult> ListAgentsAsync(

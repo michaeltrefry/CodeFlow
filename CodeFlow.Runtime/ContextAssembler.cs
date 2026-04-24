@@ -1,16 +1,24 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Scriban;
-using Scriban.Parsing;
 using Scriban.Runtime;
-using Scriban.Syntax;
 
 namespace CodeFlow.Runtime;
 
 public sealed class ContextAssembler
 {
-    internal static readonly TimeSpan RenderTimeout = TimeSpan.FromMilliseconds(50);
+    internal static TimeSpan RenderTimeout => ScribanTemplateRenderer.RenderTimeout;
+
+    private readonly IScribanTemplateRenderer renderer;
+
+    public ContextAssembler() : this(new ScribanTemplateRenderer())
+    {
+    }
+
+    public ContextAssembler(IScribanTemplateRenderer renderer)
+    {
+        this.renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
+    }
 
     // Matches the exact shape the legacy regex engine handled: bare `{{ name }}` or `{{ path.to.key }}`
     // references with no expressions, pipes, filters, or statement keywords. Anything outside this shape
@@ -75,7 +83,7 @@ public sealed class ContextAssembler
         return messages;
     }
 
-    private static string? BuildUserMessage(ContextAssemblyRequest request)
+    private string? BuildUserMessage(ContextAssemblyRequest request)
     {
         var renderedPrompt = RenderTemplate(request.PromptTemplate, request.Variables, request.Input);
         var trimmedInput = string.IsNullOrWhiteSpace(request.Input) ? null : request.Input.Trim();
@@ -93,7 +101,7 @@ public sealed class ContextAssembler
         return $"{renderedPrompt}{Environment.NewLine}{Environment.NewLine}{trimmedInput}";
     }
 
-    private static string? RenderTemplate(
+    private string? RenderTemplate(
         string? template,
         IReadOnlyDictionary<string, string?>? variables,
         string? input)
@@ -108,7 +116,7 @@ public sealed class ContextAssembler
         return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
-    private static string ApplyVariables(
+    private string ApplyVariables(
         string template,
         IReadOnlyDictionary<string, string?>? variables,
         string? input)
@@ -169,58 +177,10 @@ public sealed class ContextAssembler
         return dot < 0 ? dottedName : dottedName[..dot];
     }
 
-    private static string RenderWithScriban(string template, IReadOnlyDictionary<string, string?> flat)
+    private string RenderWithScriban(string template, IReadOnlyDictionary<string, string?> flat)
     {
-        Template parsed;
-        try
-        {
-            parsed = Template.Parse(template);
-        }
-        catch (Exception ex) when (ex is not PromptTemplateException)
-        {
-            throw new PromptTemplateException(
-                $"Prompt template could not be parsed: {ex.Message}", ex);
-        }
-
-        if (parsed.HasErrors)
-        {
-            var details = string.Join(
-                "; ",
-                parsed.Messages.Where(m => m.Type == ParserMessageType.Error).Select(m => m.Message));
-            throw new PromptTemplateException(
-                string.IsNullOrWhiteSpace(details)
-                    ? "Prompt template has syntax errors."
-                    : $"Prompt template has syntax errors: {details}");
-        }
-
         var scriptObject = BuildScriptObject(flat);
-        using var cts = new CancellationTokenSource(RenderTimeout);
-        var context = new TemplateContext
-        {
-            TemplateLoader = null,
-            LoopLimit = 1000,
-            RecursiveLimit = 64,
-            LimitToString = 1_000_000,
-            StrictVariables = false,
-            EnableRelaxedMemberAccess = true,
-            CancellationToken = cts.Token
-        };
-        context.PushGlobal(scriptObject);
-
-        try
-        {
-            return parsed.Render(context);
-        }
-        catch (ScriptAbortException)
-        {
-            throw new PromptTemplateException(
-                $"Prompt template render exceeded the {RenderTimeout.TotalMilliseconds:F0}ms sandbox budget.");
-        }
-        catch (ScriptRuntimeException ex)
-        {
-            throw new PromptTemplateException(
-                $"Prompt template render failed: {ex.OriginalMessage}", ex);
-        }
+        return renderer.Render(template, scriptObject);
     }
 
     private static string EscapeLegacyLiteral(string literal)
@@ -404,7 +364,7 @@ public sealed class ContextAssembler
         return true;
     }
 
-    private static string? BuildSkillsBlock(
+    private string? BuildSkillsBlock(
         IReadOnlyList<ResolvedSkill>? skills,
         IReadOnlyDictionary<string, string?>? variables,
         string? input)

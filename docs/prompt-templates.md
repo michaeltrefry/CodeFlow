@@ -2,7 +2,7 @@
 
 Prompt templates shape what an agent actually sees. The runtime compiles each template through the [Scriban](https://github.com/scriban/scriban) engine — a lightweight, sandboxed text templating language whose `{{ name }}` substitution is a strict superset of the original CodeFlow placeholder syntax. Existing prompts that only use `{{ name }}` continue to render exactly as before; authors who need conditionals, loops, or filters now have them available.
 
-> Companion references: [workflows.md](workflows.md) describes how template variables get populated (workflow inputs, `global`, per-round review counters); [review-loop.md](review-loop.md) documents the `round`/`maxRounds`/`isLastRound` bindings.
+> Companion references: [workflows.md](workflows.md) describes how template variables get populated (workflow inputs, `global`, per-round review counters); [review-loop.md](review-loop.md) documents the `round`/`maxRounds`/`isLastRound` bindings; [decision-output-templates.md](decision-output-templates.md) covers per-decision templates that reshape the agent's artifact *after* a decision is submitted.
 
 ## 1. The basics
 

@@ -32,3 +32,27 @@ public sealed record AgentVersionDto(
 public sealed record CreateAgentRequest(string? Key, JsonElement? Config);
 
 public sealed record UpdateAgentRequest(JsonElement? Config);
+
+public enum DecisionOutputTemplateMode
+{
+    Llm,
+    Hitl
+}
+
+public sealed record DecisionOutputTemplatePreviewRequest(
+    string? Template,
+    DecisionOutputTemplateMode? Mode,
+    string? Decision,
+    string? OutputPortName,
+    string? Output,
+    JsonElement? Input,
+    IReadOnlyDictionary<string, JsonElement>? FieldValues,
+    IReadOnlyDictionary<string, JsonElement>? Context,
+    IReadOnlyDictionary<string, JsonElement>? Global,
+    string? Reason,
+    IReadOnlyList<string>? Reasons,
+    IReadOnlyList<string>? Actions);
+
+public sealed record DecisionOutputTemplatePreviewResponse(string Rendered);
+
+public sealed record DecisionOutputTemplatePreviewErrorResponse(string Error);

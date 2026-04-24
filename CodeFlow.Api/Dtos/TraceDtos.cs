@@ -93,4 +93,5 @@ public sealed record HitlDecisionRequest(
     string? Reason,
     IReadOnlyList<string>? Actions,
     IReadOnlyList<string>? Reasons,
-    string? OutputText);
+    string? OutputText,
+    IReadOnlyDictionary<string, JsonElement>? FieldValues = null);

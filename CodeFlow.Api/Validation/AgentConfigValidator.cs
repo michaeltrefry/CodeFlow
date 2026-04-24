@@ -6,6 +6,9 @@ namespace CodeFlow.Api.Validation;
 public static class AgentConfigValidator
 {
     private static readonly Regex KeyPattern = new("^[a-z0-9]+(?:[-_][a-z0-9]+)*$", RegexOptions.Compiled);
+    private static readonly Regex DecisionOutputPortPattern = new("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled);
+    private const int MaxDecisionOutputTemplates = 32;
+    private const int MaxDecisionOutputTemplateLength = 16 * 1024;
     private static readonly HashSet<string> KnownProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
@@ -78,7 +81,74 @@ public static class AgentConfigValidator
             }
         }
 
+        var decisionTemplatesResult = ValidateDecisionOutputTemplates(config.Value);
+        if (!decisionTemplatesResult.IsValid)
+        {
+            return decisionTemplatesResult;
+        }
+
         return ValidationResult.Ok();
+    }
+
+    private static ValidationResult ValidateDecisionOutputTemplates(JsonElement config)
+    {
+        if (!config.TryGetProperty("decisionOutputTemplates", out var templates))
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (templates.ValueKind == JsonValueKind.Null)
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (templates.ValueKind != JsonValueKind.Object)
+        {
+            return ValidationResult.Fail("'decisionOutputTemplates' must be a JSON object keyed by output port name.");
+        }
+
+        var count = 0;
+        foreach (var entry in templates.EnumerateObject())
+        {
+            count++;
+            if (count > MaxDecisionOutputTemplates)
+            {
+                return ValidationResult.Fail(
+                    $"'decisionOutputTemplates' may define at most {MaxDecisionOutputTemplates} entries.");
+            }
+
+            if (!IsValidDecisionOutputPortName(entry.Name))
+            {
+                return ValidationResult.Fail(
+                    $"'decisionOutputTemplates' key '{entry.Name}' must be '*' or match [A-Za-z0-9_-]{{1,64}}.");
+            }
+
+            if (entry.Value.ValueKind != JsonValueKind.String)
+            {
+                return ValidationResult.Fail(
+                    $"'decisionOutputTemplates.{entry.Name}' must be a string template.");
+            }
+
+            var template = entry.Value.GetString();
+            if (string.IsNullOrEmpty(template))
+            {
+                return ValidationResult.Fail(
+                    $"'decisionOutputTemplates.{entry.Name}' must not be empty.");
+            }
+
+            if (template.Length > MaxDecisionOutputTemplateLength)
+            {
+                return ValidationResult.Fail(
+                    $"'decisionOutputTemplates.{entry.Name}' exceeds the {MaxDecisionOutputTemplateLength}-character limit.");
+            }
+        }
+
+        return ValidationResult.Ok();
+    }
+
+    private static bool IsValidDecisionOutputPortName(string name)
+    {
+        return name == "*" || DecisionOutputPortPattern.IsMatch(name);
     }
 
     private static string? ReadStringProperty(JsonElement element, string propertyName)
