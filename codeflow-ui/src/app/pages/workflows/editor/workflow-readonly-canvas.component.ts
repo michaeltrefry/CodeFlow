@@ -61,6 +61,7 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   private area?: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>;
   private initialized = false;
   private loading = false;
+  private wheelHandler?: (event: WheelEvent) => void;
 
   async ngAfterViewInit(): Promise<void> {
     await this.initialize();
@@ -79,6 +80,10 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   }
 
   ngOnDestroy(): void {
+    if (this.wheelHandler) {
+      this.canvasHost.nativeElement.removeEventListener('wheel', this.wheelHandler, { capture: true });
+      this.wheelHandler = undefined;
+    }
     this.area?.destroy();
   }
 
@@ -99,6 +104,20 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
 
     editor.use(area);
     area.use(angularRender);
+
+    // Swallow wheel events before they reach the rete area plugin so trackpad / wheel scrolling
+    // over the readonly canvas scrolls the page instead of zooming the graph. Capture phase +
+    // stopPropagation prevents rete's bubble-phase listeners from firing; we deliberately do
+    // NOT call preventDefault so the browser's native page-scroll still works when the pointer
+    // is over the canvas. The zoom-to-fit on load uses AreaExtensions.zoomAt programmatically,
+    // which doesn't go through the DOM wheel pipeline, so it still works.
+    this.wheelHandler = (event: WheelEvent) => {
+      event.stopPropagation();
+    };
+    this.canvasHost.nativeElement.addEventListener('wheel', this.wheelHandler, {
+      capture: true,
+      passive: true,
+    });
 
     // Block user edits.
     editor.addPipe(context => {

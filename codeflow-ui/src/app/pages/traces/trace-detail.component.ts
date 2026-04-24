@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { Subscription, retry, timer } from 'rxjs';
+import { Subscription, interval, retry, timer } from 'rxjs';
 import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowsApi } from '../../core/workflows.api';
@@ -56,6 +56,10 @@ interface ReviewLoopGroup {
   nodeId: string;
   nodeLabel: string;
   subflowKey: string | null;
+  /** The ReviewLoop node's configured LoopDecision (default "Rejected"). Used as the badge
+   *  label on intermediate rounds so the user sees the actual loop trigger, not a hardcoded
+   *  "Rejected" that might not match their config. */
+  loopDecision: string;
   rounds: ReviewLoopRoundEntry[];
 }
 
@@ -114,6 +118,30 @@ interface ReviewLoopGroup {
           </div>
         }
       </section>
+
+      @if (d.pendingHitl.length > 0) {
+        <section class="card">
+          <h3>Awaiting human review</h3>
+          @for (group of pendingHitlGroups(); track group.traceId) {
+            @if (group.isSubflow) {
+              <div class="hitl-group-header">
+                <span class="tag small subflow">Subflow</span>
+                <span class="mono small">{{ group.subflowPathLabel }}</span>
+                @if (group.traceId !== d.traceId) {
+                  <a class="small"
+                     [routerLink]="['/traces', group.traceId]"
+                     title="Open the child trace that owns this HITL">
+                    open child trace ↗
+                  </a>
+                }
+              </div>
+            }
+            @for (task of group.tasks; track task.id) {
+              <cf-hitl-review [task]="task" (decided)="reload()" />
+            }
+          }
+        </section>
+      }
 
       @if (workflow()) {
         <section class="card">
@@ -179,14 +207,15 @@ interface ReviewLoopGroup {
         <section class="card">
           <h3>Review loops</h3>
           <p class="muted xsmall">
-            Each round is a separate child saga. Rounds before the last one returned
-            <code>Rejected</code> (that's what triggered the next iteration). The last round
-            shows the outcome — see its trace for the terminal decision.
+            Each round is a separate child saga. Rounds before the last one returned the
+            configured loop-decision port (that's what triggered the next iteration). The
+            last round shows the outcome — see its trace for the terminal decision.
           </p>
           @for (group of reviewLoopGroups(); track group.nodeId) {
             <div class="review-loop-group">
               <div class="row-spread">
                 <strong class="mono small">{{ group.nodeLabel }}</strong>
+                <span class="muted xsmall">loop decision: <code>{{ group.loopDecision }}</code></span>
               </div>
               <ul class="review-loop-rounds">
                 @for (round of group.rounds; track round.traceId) {
@@ -196,36 +225,13 @@ interface ReviewLoopGroup {
                     </a>
                     <span class="tag xsmall">{{ round.currentState }}</span>
                     @if (!round.isLastRoundSeen) {
-                      <span class="tag xsmall rejected" title="Child returned Rejected, triggering the next round">Rejected</span>
+                      <span class="tag xsmall rejected"
+                            [title]="'Child returned ' + group.loopDecision + ', triggering the next round'">{{ group.loopDecision }}</span>
                     }
                   </li>
                 }
               </ul>
             </div>
-          }
-        </section>
-      }
-
-      @if (d.pendingHitl.length > 0) {
-        <section class="card">
-          <h3>Awaiting human review</h3>
-          @for (group of pendingHitlGroups(); track group.traceId) {
-            @if (group.isSubflow) {
-              <div class="hitl-group-header">
-                <span class="tag small subflow">Subflow</span>
-                <span class="mono small">{{ group.subflowPathLabel }}</span>
-                @if (group.traceId !== d.traceId) {
-                  <a class="small"
-                     [routerLink]="['/traces', group.traceId]"
-                     title="Open the child trace that owns this HITL">
-                    open child trace ↗
-                  </a>
-                }
-              </div>
-            }
-            @for (task of group.tasks; track task.id) {
-              <cf-hitl-review [task]="task" (decided)="reload()" />
-            }
           }
         </section>
       }
@@ -503,6 +509,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
         nodeId: node.id,
         nodeLabel: this.labelForReviewLoopNode(node),
         subflowKey: node.subflowKey ?? null,
+        loopDecision: (node.loopDecision ?? '').trim() || 'Rejected',
         rounds
       });
     }
@@ -594,6 +601,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   });
 
   private streamSub?: Subscription;
+  private pollSub?: Subscription;
   private loadedWorkflowKey: string | null = null;
   private loadedWorkflowVersion: number | null = null;
 
@@ -662,10 +670,23 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     this.streamSub = streamTrace(this.id(), this.auth).subscribe({
       next: evt => this.appendEvent(evt)
     });
+
+    // The per-trace SSE stream only surfaces events for *this* trace id. With subflows and
+    // ReviewLoops, HITL tasks and agent invocations fire on child saga trace ids — the parent
+    // client never sees them via SSE. Poll the aggregated trace detail every 3s while the
+    // parent is Running so descendant HITL tasks show up without a manual refresh. Stops
+    // polling once the trace reaches a terminal state.
+    this.pollSub = interval(3000).subscribe(() => {
+      const current = this.detail();
+      if (current && current.currentState === 'Running') {
+        this.reload();
+      }
+    });
   }
 
   ngOnDestroy(): void {
     this.streamSub?.unsubscribe();
+    this.pollSub?.unsubscribe();
   }
 
   reload(): void {
