@@ -432,6 +432,7 @@ public static class TracesEndpoints
         Guid id,
         string uri,
         IArtifactStore artifactStore,
+        CodeFlowDbContext dbContext,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(uri) || !Uri.TryCreate(uri, UriKind.Absolute, out var artifactUri))
@@ -453,7 +454,14 @@ public static class TracesEndpoints
             return Results.BadRequest(new { error = "The artifact URI is not valid for this store." });
         }
 
-        if (metadata.TraceId != id)
+        // The authoritative owner is the trace whose saga wrote the artifact (metadata.TraceId).
+        // But when Subflow/ReviewLoop nodes surface a child's output on the parent trace's
+        // timeline, the artifact's owning trace is a *descendant* of the trace being viewed. We
+        // walk down through parent_trace_id to decide whether the requested trace is an ancestor
+        // of the artifact's owning trace, and only then serve it. Sibling and unrelated traces
+        // still 404. Bounded by MaxSubflowDepth so there's no risk of unbounded recursion.
+        if (metadata.TraceId != id
+            && !await IsDescendantTraceAsync(dbContext, id, metadata.TraceId, cancellationToken))
         {
             return Results.NotFound();
         }
@@ -898,6 +906,50 @@ public static class TracesEndpoints
             DeciderId: task.DeciderId,
             OriginTraceId: originTraceId,
             SubflowPath: subflowPath);
+
+    /// <summary>
+    /// Walks up <paramref name="descendantId"/>'s <c>parent_trace_id</c> chain and returns true
+    /// iff <paramref name="ancestorId"/> appears in that chain. Used by the artifact endpoint to
+    /// authorize serving a descendant saga's artifact when the request is scoped to an ancestor
+    /// trace (Subflow/ReviewLoop nodes surface child outputs on the parent's timeline). Bounded
+    /// by <see cref="CodeFlow.Orchestration.WorkflowSagaStateMachine.MaxSubflowDepth"/> so there
+    /// is no risk of unbounded recursion even if parent_trace_id columns are corrupt.
+    /// </summary>
+    private static async Task<bool> IsDescendantTraceAsync(
+        CodeFlowDbContext dbContext,
+        Guid ancestorId,
+        Guid descendantId,
+        CancellationToken cancellationToken)
+    {
+        if (ancestorId == descendantId)
+        {
+            return true;
+        }
+
+        var cursor = descendantId;
+        for (var hops = 0; hops <= CodeFlow.Orchestration.WorkflowSagaStateMachine.MaxSubflowDepth; hops++)
+        {
+            var parentId = await dbContext.WorkflowSagas
+                .AsNoTracking()
+                .Where(s => s.TraceId == cursor)
+                .Select(s => s.ParentTraceId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (parentId is null)
+            {
+                return false;
+            }
+
+            if (parentId.Value == ancestorId)
+            {
+                return true;
+            }
+
+            cursor = parentId.Value;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Breadth-first walk from the root saga down through descendants via parent_trace_id.
