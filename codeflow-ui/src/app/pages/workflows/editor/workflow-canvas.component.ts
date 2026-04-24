@@ -156,28 +156,6 @@ function defaultStartInput(): WorkflowInput {
         <div #canvasHost class="canvas" (contextmenu)="onCanvasContextMenu($event)"></div>
       </main>
 
-      @if (contextMenu(); as menu) {
-        <cf-node-context-menu
-          [open]="true"
-          [x]="menu.x"
-          [y]="menu.y"
-          [items]="menu.items"
-          (pickItem)="onContextMenuPick($event)"
-          (close)="closeContextMenu()"></cf-node-context-menu>
-      }
-
-      <cf-agent-in-place-edit-dialog
-        [target]="editTarget()"
-        [suppressWarning]="warningSuppressed()"
-        (close)="closeEditInPlace()"
-        (saved)="onEditInPlaceSaved($event)"
-        (warningSuppressed)="warningSuppressed.set(true)"></cf-agent-in-place-edit-dialog>
-
-      <cf-publish-fork-dialog
-        [target]="publishTarget()"
-        (close)="closePublishFork()"
-        (published)="onForkPublished($event)"></cf-publish-fork-dialog>
-
       <aside class="sidebar">
         <div class="sidebar-section">
           <div class="panel-title">Add node</div>
@@ -475,6 +453,28 @@ function defaultStartInput(): WorkflowInput {
         </div>
       </aside>
     </div>
+
+    @if (contextMenu(); as menu) {
+      <cf-node-context-menu
+        [open]="true"
+        [x]="menu.x"
+        [y]="menu.y"
+        [items]="menu.items"
+        (pickItem)="onContextMenuPick($event)"
+        (close)="closeContextMenu()"></cf-node-context-menu>
+    }
+
+    <cf-agent-in-place-edit-dialog
+      [target]="editTarget()"
+      [suppressWarning]="warningSuppressed()"
+      (close)="closeEditInPlace()"
+      (saved)="onEditInPlaceSaved($event)"
+      (warningSuppressed)="warningSuppressed.set(true)"></cf-agent-in-place-edit-dialog>
+
+    <cf-publish-fork-dialog
+      [target]="publishTarget()"
+      (close)="closePublishFork()"
+      (published)="onForkPublished($event)"></cf-publish-fork-dialog>
   `,
   styles: [`
     :host { display: block; height: 100%; }
