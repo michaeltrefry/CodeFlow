@@ -233,6 +233,39 @@ export interface GitHostVerifyResponse {
   error?: string | null;
 }
 
+export type LlmProviderKey = 'openai' | 'anthropic' | 'lmstudio';
+
+export const LLM_PROVIDER_KEYS: readonly LlmProviderKey[] = ['openai', 'anthropic', 'lmstudio'] as const;
+
+export type LlmProviderTokenAction = 'Preserve' | 'Replace' | 'Clear';
+
+export interface LlmProviderTokenUpdateRequest {
+  action: LlmProviderTokenAction;
+  value?: string | null;
+}
+
+export interface LlmProviderResponse {
+  provider: LlmProviderKey;
+  hasApiKey: boolean;
+  endpointUrl?: string | null;
+  apiVersion?: string | null;
+  models: string[];
+  updatedBy?: string | null;
+  updatedAtUtc?: string | null;
+}
+
+export interface LlmProviderWriteRequest {
+  endpointUrl?: string | null;
+  apiVersion?: string | null;
+  models?: string[];
+  token?: LlmProviderTokenUpdateRequest;
+}
+
+export interface LlmProviderModelOption {
+  provider: LlmProviderKey;
+  model: string;
+}
+
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow' | 'ReviewLoop';
 
 export type WorkflowInputKind = 'Text' | 'Json';

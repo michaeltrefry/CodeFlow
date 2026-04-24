@@ -35,10 +35,11 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Settings',
     items: [
-      { id: 'mcp',    label: 'MCP servers', icon: 'mcp',    route: '/settings/mcp-servers' },
-      { id: 'roles',  label: 'Roles',       icon: 'roles',  route: '/settings/roles' },
-      { id: 'skills', label: 'Skills',      icon: 'skills', route: '/settings/skills' },
-      { id: 'git',    label: 'Git host',    icon: 'git',    route: '/settings/git-host' },
+      { id: 'mcp',    label: 'MCP servers',   icon: 'mcp',    route: '/settings/mcp-servers' },
+      { id: 'roles',  label: 'Roles',         icon: 'roles',  route: '/settings/roles' },
+      { id: 'skills', label: 'Skills',        icon: 'skills', route: '/settings/skills' },
+      { id: 'git',    label: 'Git host',      icon: 'git',    route: '/settings/git-host' },
+      { id: 'llm',    label: 'LLM providers', icon: 'bot',    route: '/settings/llm-providers' },
     ],
   },
 ];
@@ -61,6 +62,7 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
   { match: (u) => u.startsWith('/settings/roles'), title: 'Roles' },
   { match: (u) => u.startsWith('/settings/skills'),title: 'Skills' },
   { match: (u) => u.startsWith('/settings/git'),   title: 'Git host' },
+  { match: (u) => u.startsWith('/settings/llm-providers'), title: 'LLM providers' },
 ];
 
 @Component({

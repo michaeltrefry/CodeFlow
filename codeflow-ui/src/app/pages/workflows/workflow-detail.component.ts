@@ -31,6 +31,7 @@ const KIND_CHIP: Record<string, ChipVariant> = {
     <div class="page">
       @if (workflow(); as wf) {
         <cf-page-header [title]="wf.name">
+          <button type="button" cf-button (click)="downloadPackage(wf)">Export</button>
           <a [routerLink]="['/workflows', key(), 'edit']">
             <button type="button" cf-button>Edit</button>
           </a>
@@ -51,6 +52,10 @@ const KIND_CHIP: Record<string, ChipVariant> = {
             </div>
           </div>
         </cf-page-header>
+
+        @if (exportError()) {
+          <cf-card><cf-chip variant="err" dot>{{ exportError() }}</cf-chip></cf-card>
+        }
 
         @if (wf.inputs.length > 0) {
           <cf-card title="Workflow inputs" flush>
@@ -126,6 +131,7 @@ export class WorkflowDetailComponent implements OnInit {
 
   readonly key = input.required<string>();
   readonly workflow = signal<WorkflowDetail | null>(null);
+  readonly exportError = signal<string | null>(null);
 
   ngOnInit(): void {
     this.api.getLatest(this.key()).subscribe({
@@ -154,5 +160,39 @@ export class WorkflowDetailComponent implements OnInit {
     if (!wf) return nodeId;
     const node = wf.nodes.find(n => n.id === nodeId);
     return node ? this.labelFor(node) : nodeId;
+  }
+
+  downloadPackage(workflow: WorkflowDetail): void {
+    this.exportError.set(null);
+
+    this.api.downloadPackage(workflow.key, workflow.version).subscribe({
+      next: response => this.saveBlob(
+        response.body,
+        this.fileNameFromResponse(response.headers.get('content-disposition'))
+          ?? `${workflow.key}-v${workflow.version}-package.json`),
+      error: err => this.exportError.set(err?.message ?? 'Failed to export workflow package.')
+    });
+  }
+
+  private saveBlob(blob: Blob | null, fileName: string): void {
+    if (!blob) {
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private fileNameFromResponse(disposition: string | null): string | null {
+    if (!disposition) {
+      return null;
+    }
+
+    const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
+    return match ? decodeURIComponent(match[1]) : null;
   }
 }

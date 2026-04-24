@@ -1,6 +1,12 @@
+using CodeFlow.Persistence;
+using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeFlow.Api.Tests.Integration;
 
@@ -108,6 +114,314 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             .Which.FromPort.Should().Be("Completed");
     }
 
+    [Fact]
+    public async Task ExportPackage_ReturnsJsonDownloadForSelectedWorkflowVersion()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-export-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "export-flow",
+            name = "Export flow",
+            maxRoundsPerRound = 3,
+            category = "Subflow",
+            tags = new[] { "portable" },
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-export-writer",
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var response = await client.GetAsync("/api/workflows/export-flow/1/package");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+        response.Content.Headers.ContentDisposition?.FileName.Should().Be("export-flow-v1-package.json");
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        root.GetProperty("schemaVersion").GetString().Should().Be("codeflow.workflow-package.v1");
+        root.GetProperty("entryPoint").GetProperty("key").GetString().Should().Be("export-flow");
+        root.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(1);
+
+        var workflow = root.GetProperty("workflows").EnumerateArray().Single();
+        workflow.GetProperty("category").GetString().Should().Be("Subflow");
+        workflow.GetProperty("tags").EnumerateArray().Select(tag => tag.GetString()).Should().Equal("portable");
+        workflow.GetProperty("nodes").EnumerateArray().Single()
+            .GetProperty("agentVersion").GetInt32().Should().Be(1);
+
+        root.GetProperty("agents").EnumerateArray().Single()
+            .GetProperty("key").GetString().Should().Be("wf-export-writer");
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_ReusesMatchingExportedPackage()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-preview-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "preview-flow",
+            name = "Preview flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-preview-writer",
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/preview-flow/1/package");
+        var response = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        root.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        root.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        root.GetProperty("reuseCount").GetInt32().Should().BeGreaterThanOrEqualTo(2);
+        root.GetProperty("items").EnumerateArray()
+            .Select(item => item.GetProperty("action").GetString())
+            .Should().OnlyContain(action => action == "Reuse");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_CreatesWorkflowAndDependencies()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-apply-source-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "apply-source-flow",
+            name = "Apply source flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-apply-source-writer",
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/apply-source-flow/1/package");
+        using var packageDocument = JsonDocument.Parse(packageJson);
+        var package = packageDocument.RootElement.Clone();
+        var rewritten = RewritePackageKeys(
+            package,
+            fromWorkflowKey: "apply-source-flow",
+            toWorkflowKey: "apply-target-flow",
+            fromAgentKey: "wf-apply-source-writer",
+            toAgentKey: "wf-apply-target-writer");
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(rewritten, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDocument = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDocument.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(2);
+
+        var imported = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/apply-target-flow/1");
+        imported.Should().NotBeNull();
+        imported!.Key.Should().Be("apply-target-flow");
+        imported.Nodes.Should().ContainSingle()
+            .Which.AgentKey.Should().Be("wf-apply-target-writer");
+
+        var agent = await client.GetAsync("/api/agents/wf-apply-target-writer/1");
+        agent.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_ReportsConflict_AndApplyRefuses()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-conflict-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "conflict-flow",
+            name = "Conflict flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-conflict-writer",
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/conflict-flow/1/package");
+        var conflictingPackage = packageJson.Replace("Conflict flow", "Different imported flow", StringComparison.Ordinal);
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Workflow" &&
+                item.GetProperty("key").GetString() == "conflict-flow" &&
+                item.GetProperty("action").GetString() == "Conflict");
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_RejectsIncompleteDependencyClosure()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-missing-closure-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "missing-closure-flow",
+            name = "Missing closure flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-missing-closure-writer",
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/missing-closure-flow/1/package");
+        var package = JsonNode.Parse(packageJson)!.AsObject();
+        package["agents"] = new JsonArray();
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(package.ToJsonString(), Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await preview.Content.ReadAsStringAsync();
+        body.Should().Contain("references missing agent");
+    }
+
+    [Fact]
+    public async Task ExportPackage_RedactsMcpBearerToken_AndPreviewWarns()
+    {
+        using var client = factory.CreateClient();
+        const string agentKey = "wf-secret-tool-writer";
+        await SeedAgentAsync(client, agentKey);
+        await SeedMcpRoleAsync(agentKey);
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "secret-tool-flow",
+            name = "Secret tool flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    script = (string?)null,
+                    outputPorts = new[] { "Completed", "Failed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/secret-tool-flow/1/package");
+        packageJson.Should().NotContain("super-secret-token");
+
+        using var packageDocument = JsonDocument.Parse(packageJson);
+        var server = packageDocument.RootElement.GetProperty("mcpServers").EnumerateArray().Single();
+        server.GetProperty("key").GetString().Should().Be("secret-search");
+        server.GetProperty("hasBearerToken").GetBoolean().Should().BeTrue();
+        server.TryGetProperty("bearerToken", out _).Should().BeFalse();
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("warnings").EnumerateArray()
+            .Select(warning => warning.GetString())
+            .Should().Contain(warning => warning!.Contains("bearer token", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task SeedAgentAsync(HttpClient client, string key)
     {
         var response = await client.PostAsJsonAsync("/api/agents", new
@@ -116,6 +430,58 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             config = new { provider = "openai", model = "gpt-5", systemPrompt = "Do work." }
         });
         response.EnsureSuccessStatusCode();
+    }
+
+    private async Task SeedMcpRoleAsync(string agentKey)
+    {
+        using var scope = factory.Services.CreateScope();
+        var mcpRepository = scope.ServiceProvider.GetRequiredService<IMcpServerRepository>();
+        var roleRepository = scope.ServiceProvider.GetRequiredService<IAgentRoleRepository>();
+
+        var serverId = await mcpRepository.CreateAsync(new McpServerCreate(
+            Key: "secret-search",
+            DisplayName: "Secret Search",
+            Transport: McpTransportKind.StreamableHttp,
+            EndpointUrl: "http://localhost:8765/mcp",
+            BearerTokenPlaintext: "super-secret-token",
+            CreatedBy: "test"));
+
+        await mcpRepository.ReplaceToolsAsync(serverId, new[]
+        {
+            new McpServerToolWrite(
+                ToolName: "query",
+                Description: "Search",
+                ParametersJson: """{"type":"object"}""",
+                IsMutating: false)
+        });
+
+        var roleId = await roleRepository.CreateAsync(new AgentRoleCreate(
+            Key: "secret-search-role",
+            DisplayName: "Secret Search Role",
+            Description: null,
+            CreatedBy: "test"));
+
+        await roleRepository.ReplaceGrantsAsync(roleId, new[]
+        {
+            new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, "mcp:secret-search:query")
+        });
+
+        await roleRepository.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+    }
+
+    private static string RewritePackageKeys(
+        JsonElement package,
+        string fromWorkflowKey,
+        string toWorkflowKey,
+        string fromAgentKey,
+        string toAgentKey)
+    {
+        var json = package.GetRawText()
+            .Replace(fromWorkflowKey, toWorkflowKey, StringComparison.Ordinal)
+            .Replace(fromAgentKey, toAgentKey, StringComparison.Ordinal)
+            .Replace("Apply source flow", "Apply target flow", StringComparison.Ordinal);
+
+        return json;
     }
 
     private sealed record WorkflowDetailPayload(

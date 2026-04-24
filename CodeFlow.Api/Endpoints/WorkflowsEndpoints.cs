@@ -1,17 +1,23 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using Jint;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using System.Text.RegularExpressions;
 
 namespace CodeFlow.Api.Endpoints;
 
 public static class WorkflowsEndpoints
 {
+    private static readonly Regex PackageFileNameUnsafeChars = new("[^A-Za-z0-9_.-]+", RegexOptions.Compiled);
+
     public static IEndpointRouteBuilder MapWorkflowsEndpoints(this IEndpointRouteBuilder routes)
     {
         ArgumentNullException.ThrowIfNull(routes);
@@ -27,6 +33,15 @@ public static class WorkflowsEndpoints
         group.MapGet("/{key}/{version:int}", GetVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
+        group.MapGet("/{key}/{version:int}/package", ExportPackageAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
+
+        group.MapPost("/package/preview", PreviewPackageImportAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
+        group.MapPost("/package/apply", ApplyPackageImportAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
         group.MapGet("/{key}", GetLatestAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
@@ -40,6 +55,82 @@ public static class WorkflowsEndpoints
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
         return routes;
+    }
+
+    private static async Task<IResult> ExportPackageAsync(
+        string key,
+        int version,
+        IWorkflowPackageResolver resolver,
+        HttpResponse response,
+        IOptions<JsonOptions> jsonOptions,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var package = await resolver.ResolveAsync(key, version, cancellationToken);
+            response.Headers.ContentDisposition = $"attachment; filename=\"{PackageFileName(package.EntryPoint)}\"";
+            return Results.Json(package, jsonOptions.Value.SerializerOptions, contentType: "application/json");
+        }
+        catch (WorkflowNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return Results.Problem(
+                title: "Workflow package export failed",
+                detail: exception.Message,
+                statusCode: StatusCodes.Status422UnprocessableEntity);
+        }
+    }
+
+    private static string PackageFileName(WorkflowPackageReference entryPoint)
+    {
+        var safeKey = PackageFileNameUnsafeChars.Replace(entryPoint.Key.Trim(), "-").Trim('-');
+        if (string.IsNullOrWhiteSpace(safeKey))
+        {
+            safeKey = "workflow";
+        }
+
+        return $"{safeKey}-v{entryPoint.Version}-package.json";
+    }
+
+    private static async Task<IResult> PreviewPackageImportAsync(
+        WorkflowPackage package,
+        IWorkflowPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var preview = await importer.PreviewAsync(package, cancellationToken);
+            return Results.Ok(preview);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { exception.Message }
+            });
+        }
+    }
+
+    private static async Task<IResult> ApplyPackageImportAsync(
+        WorkflowPackage package,
+        IWorkflowPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await importer.ApplyAsync(package, cancellationToken);
+            return Results.Ok(result);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { exception.Message }
+            });
+        }
     }
 
     private static IResult ValidateScript(ValidateScriptRequest request)

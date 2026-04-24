@@ -122,5 +122,10 @@ export const routes: Routes = [
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/settings/git-host/git-host-settings.component').then(m => m.GitHostSettingsComponent)
   },
+  {
+    path: 'settings/llm-providers',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/settings/llm-providers/llm-providers.component').then(m => m.LlmProvidersComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];

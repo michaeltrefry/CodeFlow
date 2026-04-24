@@ -1,0 +1,3 @@
+Secrets__MasterKey={32-bit key}
+OpenAI__ApiKey={Open Api Key}
+Anthropic__ApiKey={Anthropic Api Key}
