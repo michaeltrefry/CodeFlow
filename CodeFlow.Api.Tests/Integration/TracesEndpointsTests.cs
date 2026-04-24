@@ -191,6 +191,48 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task GetArtifact_ShouldServeDescendantArtifactFromAncestorTrace()
+    {
+        var rootTraceId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+        var unrelatedTraceId = Guid.NewGuid();
+        var childRoundId = Guid.NewGuid();
+
+        Uri childArtifactUri;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.AddRange(
+                NewSaga(Guid.NewGuid(), rootTraceId, "parent-wf", parentTraceId: null, subflowDepth: 0),
+                NewSaga(Guid.NewGuid(), childTraceId, "review-loop-child", parentTraceId: rootTraceId, subflowDepth: 1),
+                NewSaga(Guid.NewGuid(), unrelatedTraceId, "other-wf", parentTraceId: null, subflowDepth: 0));
+
+            var artifactStore = scope.ServiceProvider.GetRequiredService<IArtifactStore>();
+            await using var content = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("child review output"));
+            childArtifactUri = await artifactStore.WriteAsync(
+                content,
+                new ArtifactMetadata(
+                    TraceId: childTraceId,
+                    RoundId: childRoundId,
+                    ArtifactId: Guid.NewGuid(),
+                    ContentType: "text/plain",
+                    FileName: "review-output.txt"));
+
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var encodedUri = Uri.EscapeDataString(childArtifactUri.ToString());
+
+        var response = await client.GetAsync($"/api/traces/{rootTraceId}/artifact?uri={encodedUri}");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("child review output");
+
+        var unrelatedResponse = await client.GetAsync($"/api/traces/{unrelatedTraceId}/artifact?uri={encodedUri}");
+        unrelatedResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task SubmitHitlDecision_ShouldRenderDecisionOutputTemplateServerSide()
     {
         // An agent with a matching DecisionOutputTemplate renders server-side using FieldValues

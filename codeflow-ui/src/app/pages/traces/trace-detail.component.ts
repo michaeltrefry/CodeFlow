@@ -24,6 +24,7 @@ interface TimelineEntry {
   kind: 'Requested' | 'Completed';
   agentKey: string;
   agentVersion: number;
+  nodeId?: string | null;
   decision?: AgentDecisionKind | null;
   decisionPayload?: unknown;
   timestampUtc: string;
@@ -247,7 +248,7 @@ interface ReviewLoopGroup {
                         [disabled]="!entry.inputRef && !entry.outputRef"
                         [attr.aria-expanded]="expandedEntries().has(entry.id)">
                   <div class="timeline-header">
-                    <strong>{{ entry.agentKey }}</strong>
+                    <strong>{{ labelForTimelineEntry(entry) }}</strong>
                     <span class="muted small">v{{ entry.agentVersion }} &middot; {{ entry.timestampUtc | date:'mediumTime' }}</span>
                   </div>
                   <div>
@@ -707,6 +708,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           kind: 'Completed',
           agentKey: d.agentKey,
           agentVersion: d.agentVersion,
+          nodeId: d.nodeId,
           decision: d.decision,
           decisionPayload: d.decisionPayload,
           timestampUtc: d.recordedAtUtc,
@@ -784,7 +786,27 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     const node = wf.nodes.find(n => n.id === nodeId);
     if (!node) return nodeId;
     if (node.agentKey) return `${node.agentKey} (${node.kind})`;
+    if (node.kind === 'ReviewLoop') return this.labelForReviewLoopNode(node);
+    if (node.kind === 'Subflow') return this.labelForSubflowNode(node);
     return `${node.kind} ${nodeId.substring(0, 8)}`;
+  }
+
+  labelForTimelineEntry(entry: TimelineEntry): string {
+    const explicit = entry.agentKey?.trim();
+    if (explicit) {
+      return explicit;
+    }
+
+    if (entry.nodeId) {
+      return this.labelForNode(entry.nodeId);
+    }
+
+    return 'workflow step';
+  }
+
+  private labelForSubflowNode(node: WorkflowNode): string {
+    const key = node.subflowKey?.trim();
+    return key ? `Subflow — ${key}` : `Subflow ${node.id.substring(0, 8)}`;
   }
 
   private loadWorkflowForTrace(detail: TraceDetail): void {
