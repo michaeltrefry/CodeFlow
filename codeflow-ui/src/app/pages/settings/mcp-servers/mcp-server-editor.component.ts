@@ -1,4 +1,4 @@
-import { Component, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
+import { Component, computed, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { DatePipe } from '@angular/common';
@@ -9,144 +9,146 @@ import {
   McpServerTool,
   McpTransportKind,
 } from '../../../core/models';
+import { PageHeaderComponent } from '../../../ui/page-header.component';
+import { ButtonComponent } from '../../../ui/button.component';
+import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
+import { CardComponent } from '../../../ui/card.component';
 
 @Component({
   selector: 'cf-mcp-server-editor',
   standalone: true,
-  imports: [FormsModule, RouterLink, DatePipe],
+  imports: [
+    FormsModule, RouterLink, DatePipe,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>{{ id() ? 'Edit MCP server' : 'New MCP server' }}</h1>
+    <div class="page">
+    <cf-page-header [title]="id() ? 'Edit MCP server' : 'New MCP server'">
+      <a routerLink="/settings/mcp-servers">
+        <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
+      </a>
+      <button type="button" cf-button variant="primary" icon="check" (click)="submit($event)" [disabled]="saving()">
+        {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create server') }}
+      </button>
+      <div page-header-body>
         @if (server(); as s) {
-          <div class="muted small">
-            Health: <span class="tag" [class.success]="s.healthStatus === 'Healthy'"
-                                     [class.error]="s.healthStatus === 'Unhealthy'">{{ s.healthStatus }}</span>
+          <div class="trace-header-meta">
+            <cf-chip [variant]="healthVariant(s)" dot [title]="s.lastVerificationError ?? ''">{{ s.healthStatus }}</cf-chip>
             @if (s.lastVerifiedAtUtc) {
-              · last verified {{ s.lastVerifiedAtUtc | date:'medium' }}
-            }
-            @if (s.lastVerificationError) {
-              · <span class="muted">{{ s.lastVerificationError }}</span>
+              <cf-chip>last verified {{ s.lastVerifiedAtUtc | date:'medium' }}</cf-chip>
             }
           </div>
-        }
-      </div>
-      <a routerLink="/settings/mcp-servers"><button class="secondary">Cancel</button></a>
-    </header>
-
-    <form (submit)="submit($event)">
-      <div class="grid-two">
-        <div class="form-field">
-          <label>Key</label>
-          <input [(ngModel)]="key" name="key" required [disabled]="!!id()" placeholder="artifacts" />
-          <div class="muted small">Used in tool identifiers (e.g. <code>mcp:&lt;key&gt;:tool_name</code>).</div>
-        </div>
-        <div class="form-field">
-          <label>Display name</label>
-          <input [(ngModel)]="displayName" name="displayName" required placeholder="Artifact Store" />
-        </div>
-      </div>
-
-      <div class="grid-two">
-        <div class="form-field">
-          <label>Transport</label>
-          <select [(ngModel)]="transport" name="transport">
-            <option value="StreamableHttp">Streamable HTTP (current)</option>
-            <option value="HttpSse">HTTP + SSE (legacy)</option>
-          </select>
-        </div>
-        <div class="form-field">
-          <label>Endpoint URL</label>
-          <input [(ngModel)]="endpointUrl" name="endpointUrl" required placeholder="https://mcp.example.com/mcp" />
-        </div>
-      </div>
-
-      <div class="form-field">
-        <label>Bearer token</label>
-        @if (id() && !replacingToken()) {
-          <div class="token-row">
-            @if (server()?.hasBearerToken) {
-              <span class="tag">••••••••</span>
-              <button type="button" class="secondary small" (click)="startReplace()">Replace</button>
-              <button type="button" class="secondary small" (click)="clearToken()">Clear</button>
-            } @else {
-              <span class="muted">no token set</span>
-              <button type="button" class="secondary small" (click)="startReplace()">Set token</button>
-            }
-          </div>
-        } @else {
-          <input
-            type="password"
-            [(ngModel)]="bearerTokenValue"
-            name="bearerToken"
-            placeholder="Bearer token (leave blank for none)" />
-          @if (id()) {
-            <button type="button" class="ghost small" (click)="cancelReplace()">Cancel</button>
+          @if (s.lastVerificationError) {
+            <div class="trace-failure" style="margin-top: 8px">
+              <strong>Last verification error:</strong> {{ s.lastVerificationError }}
+            </div>
           }
         }
       </div>
+    </cf-page-header>
 
-      @if (error()) {
-        <div class="tag error">{{ error() }}</div>
-      }
+    <form (submit)="submit($event)">
+      <cf-card title="Server connection">
+        <div class="form-grid">
+          <label class="field">
+            <span class="field-label">Key</span>
+            <input class="input mono" [(ngModel)]="key" name="key" required [disabled]="!!id()" placeholder="artifacts" />
+            <span class="field-hint">Used in tool identifiers (e.g. <code>mcp:&lt;key&gt;:tool_name</code>).</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Display name</span>
+            <input class="input" [(ngModel)]="displayName" name="displayName" required placeholder="Artifact Store" />
+          </label>
+          <label class="field">
+            <span class="field-label">Transport</span>
+            <select class="select" [(ngModel)]="transport" name="transport">
+              <option value="StreamableHttp">Streamable HTTP (current)</option>
+              <option value="HttpSse">HTTP + SSE (legacy)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Endpoint URL</span>
+            <input class="input mono" [(ngModel)]="endpointUrl" name="endpointUrl" required placeholder="https://mcp.example.com/mcp" />
+          </label>
 
-      <div class="row" style="margin-top: 1rem;">
-        <button type="submit" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : (id() ? 'Save changes' : 'Create server') }}
-        </button>
-      </div>
+          <label class="field span-2">
+            <span class="field-label">Bearer token</span>
+            @if (id() && !replacingToken()) {
+              <div class="row">
+                @if (server()?.hasBearerToken) {
+                  <cf-chip mono>••••••••</cf-chip>
+                  <button type="button" cf-button size="sm" (click)="startReplace()">Replace</button>
+                  <button type="button" cf-button variant="danger" size="sm" (click)="clearToken()">Clear</button>
+                } @else {
+                  <span class="muted">no token set</span>
+                  <button type="button" cf-button size="sm" (click)="startReplace()">Set token</button>
+                }
+              </div>
+            } @else {
+              <input type="password" class="input mono"
+                     [(ngModel)]="bearerTokenValue" name="bearerToken"
+                     placeholder="Bearer token (leave blank for none)" />
+              @if (id()) {
+                <button type="button" cf-button variant="ghost" size="sm" (click)="cancelReplace()">Cancel</button>
+              }
+            }
+          </label>
+        </div>
+
+        @if (error()) {
+          <div class="trace-failure" style="margin-top: 10px"><strong>Save failed:</strong> {{ error() }}</div>
+        }
+      </cf-card>
     </form>
 
     @if (id()) {
-      <section class="tools-section">
-        <header class="section-header">
-          <h2>Discovered tools</h2>
-          <button type="button" class="secondary small" (click)="verify()" [disabled]="busy()">
-            {{ verifyingMessage() }}
-          </button>
-          <button type="button" class="secondary small" (click)="refresh()" [disabled]="busy()">
-            {{ refreshingMessage() }}
-          </button>
-        </header>
+      <cf-card title="Discovered tools">
+        <ng-template #cardRight>
+          <div class="row">
+            <button type="button" cf-button size="sm" (click)="verify()" [disabled]="busy()">
+              {{ verifyingMessage() }}
+            </button>
+            <button type="button" cf-button size="sm" (click)="refresh()" [disabled]="busy()">
+              {{ refreshingMessage() }}
+            </button>
+          </div>
+        </ng-template>
 
         @if (toolsLoading()) {
-          <p>Loading tools&hellip;</p>
+          <div class="muted">Loading tools…</div>
         } @else if (tools().length === 0) {
-          <p class="muted">No tools discovered yet. Click <strong>Refresh</strong> to fetch from the server.</p>
+          <div class="muted">No tools discovered yet. Click <strong>Refresh</strong> to fetch from the server.</div>
         } @else {
-          <ul class="tool-list">
+          <div class="stack">
             @for (tool of tools(); track tool.toolName) {
-              <li>
-                <div class="tool-name">
-                  <code>mcp:{{ server()?.key }}:{{ tool.toolName }}</code>
+              <div class="output-card">
+                <div class="row" style="justify-content: space-between">
+                  <code class="mono">mcp:{{ server()?.key }}:{{ tool.toolName }}</code>
                   @if (tool.isMutating) {
-                    <span class="tag small">mutating</span>
+                    <cf-chip variant="warn" mono>mutating</cf-chip>
                   }
                 </div>
                 @if (tool.description) {
                   <div class="muted small">{{ tool.description }}</div>
                 }
-              </li>
+              </div>
             }
-          </ul>
+          </div>
         }
-      </section>
+      </cf-card>
     }
+    </div>
   `,
   styles: [`
-    .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
-    .token-row { display: flex; align-items: center; gap: 0.5rem; }
-    .small { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
-    .muted { color: var(--muted); }
-    .muted.small { font-size: 0.8rem; }
-    .tag.success { background: rgba(34,197,94,0.15); color: #22c55e; }
-    .tag.error { background: rgba(239,68,68,0.15); color: #ef4444; }
-    .tools-section { margin-top: 2rem; }
-    .section-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
-    .section-header h2 { margin: 0; flex: 1; font-size: 1.1rem; }
-    .tool-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-    .tool-list li { border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem 0.75rem; }
-    .tool-name { display: flex; gap: 0.5rem; align-items: center; }
+    .output-card {
+      padding: 10px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
   `]
 })
 export class McpServerEditorComponent implements OnInit {
@@ -169,6 +171,12 @@ export class McpServerEditorComponent implements OnInit {
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly busy = signal<'verify' | 'refresh' | null>(null);
+
+  healthVariant(s: McpServer): ChipVariant {
+    if (s.healthStatus === 'Healthy') return 'ok';
+    if (s.healthStatus === 'Unhealthy') return 'err';
+    return 'default';
+  }
 
   ngOnInit(): void {
     const existingId = this.id();

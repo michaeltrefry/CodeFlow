@@ -33,6 +33,17 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
             .HasColumnName("max_rounds_per_round")
             .IsRequired();
 
+        builder.Property(workflow => workflow.Category)
+            .HasColumnName("category")
+            .HasConversion<string>()
+            .HasMaxLength(32)
+            .IsRequired();
+
+        builder.Property(workflow => workflow.TagsJson)
+            .HasColumnName("tags_json")
+            .HasColumnType("longtext")
+            .IsRequired();
+
         builder.Property(workflow => workflow.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")

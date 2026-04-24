@@ -41,10 +41,15 @@ import { WorkflowNodeComponent } from './workflow-node.component';
     .readonly-canvas {
       width: 100%;
       height: 100%;
-      background: var(--surface-2);
+      background: var(--bg);
+      background-image: radial-gradient(circle at center, color-mix(in oklab, var(--muted) 22%, transparent) 1px, transparent 1.5px);
+      background-size: 22px 22px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: var(--radius-lg);
       overflow: hidden;
+    }
+    :host-context([data-theme="light"]) .readonly-canvas {
+      background-image: radial-gradient(circle at center, color-mix(in oklab, var(--muted) 25%, transparent) 1px, transparent 1.5px);
     }
   `]
 })

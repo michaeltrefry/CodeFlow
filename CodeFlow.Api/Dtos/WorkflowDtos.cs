@@ -6,6 +6,8 @@ public sealed record WorkflowSummaryDto(
     string Key,
     int LatestVersion,
     string Name,
+    WorkflowCategory Category,
+    IReadOnlyList<string> Tags,
     int NodeCount,
     int EdgeCount,
     int InputCount,
@@ -47,6 +49,8 @@ public sealed record WorkflowDetailDto(
     int Version,
     string Name,
     int MaxRoundsPerRound,
+    WorkflowCategory Category,
+    IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowNodeDto> Nodes,
     IReadOnlyList<WorkflowEdgeDto> Edges,
@@ -56,6 +60,8 @@ public sealed record CreateWorkflowRequest(
     string? Key,
     string? Name,
     int? MaxRoundsPerRound,
+    WorkflowCategory? Category,
+    IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs);
@@ -63,6 +69,8 @@ public sealed record CreateWorkflowRequest(
 public sealed record UpdateWorkflowRequest(
     string? Name,
     int? MaxRoundsPerRound,
+    WorkflowCategory? Category,
+    IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs);

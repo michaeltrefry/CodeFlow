@@ -147,7 +147,15 @@ public static class WorkflowsEndpoints
         }
 
         var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
-        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, resolvedNodes, request.Edges!, request.Inputs);
+        var draft = ToDraft(
+            normalizedKey,
+            request.Name!,
+            request.MaxRoundsPerRound,
+            request.Category ?? WorkflowCategory.Workflow,
+            request.Tags,
+            resolvedNodes,
+            request.Edges!,
+            request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -189,7 +197,15 @@ public static class WorkflowsEndpoints
         }
 
         var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
-        var draft = ToDraft(normalizedKey, request.Name!, request.MaxRoundsPerRound, resolvedNodes, request.Edges!, request.Inputs);
+        var draft = ToDraft(
+            normalizedKey,
+            request.Name!,
+            request.MaxRoundsPerRound,
+            request.Category ?? WorkflowCategory.Workflow,
+            request.Tags,
+            resolvedNodes,
+            request.Edges!,
+            request.Inputs);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
@@ -246,6 +262,8 @@ public static class WorkflowsEndpoints
         string key,
         string name,
         int? maxRoundsPerRound,
+        WorkflowCategory category,
+        IReadOnlyList<string>? tags,
         IReadOnlyList<WorkflowNodeDto> nodes,
         IReadOnlyList<WorkflowEdgeDto> edges,
         IReadOnlyList<WorkflowInputDto>? inputs)
@@ -254,6 +272,8 @@ public static class WorkflowsEndpoints
             Key: key,
             Name: name,
             MaxRoundsPerRound: maxRoundsPerRound ?? 3,
+            Category: category,
+            Tags: tags ?? Array.Empty<string>(),
             Nodes: nodes
                 .Select(node => new WorkflowNodeDraft(
                     Id: node.Id,
@@ -296,6 +316,8 @@ public static class WorkflowsEndpoints
         Key: workflow.Key,
         LatestVersion: workflow.Version,
         Name: workflow.Name,
+        Category: workflow.Category,
+        Tags: workflow.TagsOrEmpty,
         NodeCount: workflow.Nodes.Count,
         EdgeCount: workflow.Edges.Count,
         InputCount: workflow.Inputs.Count,
@@ -306,6 +328,8 @@ public static class WorkflowsEndpoints
         Version: workflow.Version,
         Name: workflow.Name,
         MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+        Category: workflow.Category,
+        Tags: workflow.TagsOrEmpty,
         CreatedAtUtc: workflow.CreatedAtUtc,
         Nodes: workflow.Nodes
             .Select(node => new WorkflowNodeDto(

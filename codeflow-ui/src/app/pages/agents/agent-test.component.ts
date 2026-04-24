@@ -11,6 +11,9 @@ import {
   AgentTestTokenUsage,
   streamAgentTest
 } from '../../core/agent-test-stream';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
 
 interface LogEntry {
   id: number;
@@ -40,15 +43,22 @@ const RESERVED_VARIABLES = new Set(['input']);
 @Component({
   selector: 'cf-agent-test',
   standalone: true,
-  imports: [FormsModule, DatePipe, RouterLink],
+  imports: [
+    FormsModule, DatePipe, RouterLink,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>Test agent</h1>
-        <p class="muted monospace">{{ key() }}</p>
+    <div class="page">
+    <cf-page-header title="Test agent">
+      <a [routerLink]="['/agents', key()]">
+        <button type="button" cf-button variant="ghost" icon="back">Back</button>
+      </a>
+      <div page-header-body>
+        <div class="trace-header-meta">
+          <cf-chip mono>{{ key() }}</cf-chip>
+        </div>
       </div>
-      <a [routerLink]="['/agents', key()]"><button class="secondary">Back</button></a>
-    </header>
+    </cf-page-header>
 
     <div class="test-grid">
       <section class="test-column">
@@ -166,6 +176,7 @@ const RESERVED_VARIABLES = new Set(['input']);
           <pre class="card monospace">{{ output }}</pre>
         }
       </section>
+    </div>
     </div>
   `,
   styles: [`

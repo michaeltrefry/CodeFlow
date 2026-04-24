@@ -15,45 +15,49 @@ import {
   McpServer,
 } from '../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-picker/tool-picker.component';
+import { PageHeaderComponent } from '../../ui/page-header.component';
+import { ButtonComponent } from '../../ui/button.component';
+import { ChipComponent } from '../../ui/chip.component';
 
 @Component({
   selector: 'cf-agent-detail',
   standalone: true,
-  imports: [RouterLink, DatePipe, JsonPipe, ToolPickerComponent],
+  imports: [
+    RouterLink, DatePipe, JsonPipe, ToolPickerComponent,
+    PageHeaderComponent, ButtonComponent, ChipComponent,
+  ],
   template: `
-    <header class="page-header">
-      <div>
-        <h1>
-          {{ key() }}
-          @if (retired()) {
-            <span class="tag error">Retired</span>
+    <div class="page">
+    <cf-page-header [title]="key()">
+      @if (!retired()) {
+        <a [routerLink]="['/agents', key(), 'test']">
+          <button type="button" cf-button variant="ghost">Test agent</button>
+        </a>
+        <a [routerLink]="['/agents', key(), 'edit']">
+          <button type="button" cf-button variant="primary" icon="plus">New version</button>
+        </a>
+        <button type="button" cf-button variant="danger" (click)="retire()" [disabled]="retiring()">
+          {{ retiring() ? 'Retiring…' : 'Retire agent' }}
+        </button>
+      }
+      <a routerLink="/agents"><button type="button" cf-button variant="ghost" icon="back">Back</button></a>
+      <div page-header-body>
+        <div class="trace-header-meta">
+          @if (retired()) { <cf-chip variant="err" dot>Retired</cf-chip> }
+          @if (viewing(); as v) {
+            <cf-chip mono>v{{ v.version }}</cf-chip>
+            <cf-chip>created {{ v.createdAtUtc | date:'medium' }}</cf-chip>
+            <cf-chip mono>&#64;{{ v.createdBy ?? 'unknown' }}</cf-chip>
           }
-        </h1>
-        @if (viewing(); as v) {
-          <p class="muted">Viewing v{{ v.version }} &middot; created {{ v.createdAtUtc | date:'medium' }} by {{ v.createdBy ?? 'unknown' }}</p>
-        }
+        </div>
         @if (retired()) {
-          <p class="muted">This agent is retired. Running workflows continue to use their pinned version, but new workflows cannot reference it.</p>
+          <p class="muted small" style="margin-top: 8px">This agent is retired. Running workflows continue to use their pinned version, but new workflows cannot reference it.</p>
         }
       </div>
-      <div class="row">
-        @if (!retired()) {
-          <a [routerLink]="['/agents', key(), 'test']">
-            <button class="secondary">Test Agent</button>
-          </a>
-          <a [routerLink]="['/agents', key(), 'edit']">
-            <button>New version</button>
-          </a>
-          <button class="secondary" (click)="retire()" [disabled]="retiring()">
-            {{ retiring() ? 'Retiring…' : 'Retire agent' }}
-          </button>
-        }
-        <a routerLink="/agents"><button class="secondary">Back</button></a>
-      </div>
-    </header>
+    </cf-page-header>
 
     @if (retireError()) {
-      <p class="tag error">{{ retireError() }}</p>
+      <div class="trace-failure"><strong>Retire failed:</strong> {{ retireError() }}</div>
     }
 
     <div class="detail-grid">
@@ -129,6 +133,7 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
             [readOnly]="true" />
         }
       </section>
+    </div>
     </div>
   `,
   styles: [`
