@@ -92,7 +92,17 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
 
             @if (importSuccess()) {
               <div class="success-message">
-                {{ importSuccess() }}
+                <span>{{ importSuccess() }}</span>
+                @if (importPreview(); as successPreview) {
+                  <button
+                    type="button"
+                    cf-button
+                    size="sm"
+                    variant="ghost"
+                    (click)="open(successPreview.entryPoint.key)">
+                    Open workflow
+                  </button>
+                }
               </div>
             }
 
@@ -305,6 +315,11 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
       padding: 0.5rem 0.75rem;
       margin-bottom: 0.75rem;
       font-size: 0.8rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
     }
     .warning-list {
       border: 1px solid color-mix(in oklab, var(--sem-amber) 40%, var(--border));
@@ -483,6 +498,8 @@ export class WorkflowsListComponent {
         this.importSuccess.set(
           `Import applied: ${result.createCount} created, ${result.reuseCount} reused.`
         );
+        this.categoryFilter.set('All');
+        this.tagFilter.set([]);
         this.importApplyLoading.set(false);
         this.api.list().subscribe({
           next: workflows => this.workflows.set(workflows)
