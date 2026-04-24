@@ -1,7 +1,9 @@
+using CodeFlow.Persistence;
 using CodeFlow.Runtime.Workspace;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net;
@@ -10,7 +12,7 @@ using System.Net.Http.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
+public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 
@@ -18,6 +20,18 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>
     {
         this.factory = factory;
     }
+
+    public async Task InitializeAsync()
+    {
+        // The CodeFlowApiFactory is a shared class fixture, so the git_host_settings row leaks
+        // between tests. Reset it before each test so the "unconfigured" and "settings missing"
+        // assertions are not corrupted by a sibling test that wrote a row.
+        await using var scope = factory.Services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        await dbContext.GitHostSettings.ExecuteDeleteAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Get_returns_unconfigured_defaults_when_no_settings_exist()

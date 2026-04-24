@@ -29,7 +29,18 @@ interface DecisionTemplateRow {
   previewPending: boolean;
 }
 
-type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
+interface OutputRow {
+  kind: string;
+  description: string | null;
+  payloadExample: unknown;
+  template: string;
+  preview: string;
+  previewError: string | null;
+  previewPending: boolean;
+  expanded: boolean;
+}
+
+type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
 
 @Component({
   selector: 'cf-agent-editor',
@@ -211,14 +222,30 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
           <cf-card>
             <div class="form-section">
               <div class="form-section-head">
-                <h3>Declared outputs</h3>
+                <h3>Decisions</h3>
                 <p>
-                  List the decision kinds this agent emits. Workflow nodes that reference this agent
-                  automatically get a matching set of output ports in the canvas editor. Baseline agents at
-                  least emit <code>Completed</code> and <code>Failed</code>.
+                  Each decision this agent emits becomes an output port on workflow nodes. Optionally attach a
+                  Scriban <strong>decision template</strong> to reshape the artifact passed downstream, and a
+                  <strong>payload example</strong> that documents the JSON shape the agent produces.
+                  Baseline agents at least emit <code>Completed</code> and <code>Failed</code>. See the
+                  <a class="mono-link" href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/decision-output-templates.md" target="_blank" rel="noopener noreferrer">decision template guide ↗</a>.
+                  A routing script that calls <code>setOutput()</code> still wins over any template here.
                 </p>
               </div>
-              <div class="stack">
+
+              <label class="field">
+                <span class="field-label">Preview context <span class="muted small">(JSON — drives the live template previews below)</span></span>
+                <textarea class="textarea mono" rows="5"
+                          [ngModel]="previewContextText()"
+                          (ngModelChange)="previewContextText.set($event)"
+                          name="decisionTemplatePreviewContext"
+                          [placeholder]="previewContextPlaceholder()"></textarea>
+                @if (previewContextError()) {
+                  <cf-chip variant="err" dot>{{ previewContextError() }}</cf-chip>
+                }
+              </label>
+
+              <div class="stack" style="margin-top: 14px">
                 @for (output of outputs(); track $index; let i = $index) {
                   <div class="output-card">
                     <div class="row" style="justify-content: space-between">
@@ -242,70 +269,97 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
                                (ngModelChange)="updateOutput(i, { description: $event || null })"
                                [name]="'output_desc_' + i" placeholder="Normal success" />
                       </label>
-                      <label class="field span-2">
-                        <span class="field-label">Payload example (JSON)</span>
-                        <textarea class="textarea mono" rows="10"
-                                  [ngModel]="payloadExampleText(output)"
-                                  (ngModelChange)="updatePayloadExample(i, $event)"
-                                  [name]="'output_example_' + i"
-                                  placeholder='{"reasons": ["..."]}'></textarea>
-                      </label>
+                      <div class="field span-2 output-advanced">
+                        <button type="button" class="advanced-toggle"
+                                [attr.aria-expanded]="output.expanded"
+                                (click)="toggleOutputExpanded(i)">
+                          <span class="advanced-caret" [attr.data-expanded]="output.expanded ? 'true' : null">▸</span>
+                          <span>{{ output.expanded ? 'Hide' : 'Show' }} decision template &amp; payload example</span>
+                          @if (!output.expanded && output.template) {
+                            <cf-chip mono>template</cf-chip>
+                          }
+                          @if (!output.expanded && output.payloadExample !== null && output.payloadExample !== undefined) {
+                            <cf-chip mono>payload</cf-chip>
+                          }
+                        </button>
+                        @if (output.expanded) {
+                          <div class="advanced-body">
+                            <label class="field">
+                              <span class="field-label">Decision template <span class="muted small">(Scriban — leave blank to pass artifact through unchanged)</span></span>
+                              <textarea class="textarea mono" rows="10"
+                                        [ngModel]="output.template"
+                                        (ngModelChange)="updateOutput(i, { template: $event })"
+                                        [name]="'output_template_' + i"
+                                        placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
+                            </label>
+                            <label class="field">
+                              <span class="field-label">
+                                Template preview
+                                @if (output.previewPending) {
+                                  <span class="muted small">(rendering…)</span>
+                                }
+                              </span>
+                              @if (output.previewError) {
+                                <pre class="preview-error mono">{{ output.previewError }}</pre>
+                              } @else {
+                                <pre class="preview-output mono">{{ output.preview || '(add a template to see the rendered output)' }}</pre>
+                              }
+                            </label>
+                            <label class="field">
+                              <div class="row" style="justify-content: space-between; align-items: center">
+                                <span class="field-label">Payload example (JSON)</span>
+                                <button type="button" cf-button variant="ghost" size="sm" icon="refresh"
+                                        [disabled]="!canGeneratePayload(output)"
+                                        (click)="generatePayloadFromTemplate(i)">
+                                  Generate from template
+                                </button>
+                              </div>
+                              <textarea class="textarea mono" rows="8"
+                                        [ngModel]="payloadExampleText(output)"
+                                        (ngModelChange)="updatePayloadExample(i, $event)"
+                                        [name]="'output_example_' + i"
+                                        placeholder='{"reasons": ["..."]}'></textarea>
+                            </label>
+                          </div>
+                        }
+                      </div>
                     </div>
                   </div>
                 }
                 <button type="button" cf-button size="sm" icon="plus" style="align-self: flex-start"
-                        (click)="addOutput()">Add output</button>
+                        (click)="addOutput()">Add decision</button>
               </div>
             </div>
-          </cf-card>
-        }
 
-        @if (tab() === 'templates') {
-          <cf-card>
             <div class="form-section">
               <div class="form-section-head">
-                <h3>Decision output templates</h3>
+                <h3>Fallback templates</h3>
                 <p>
-                  Reshape the artifact passed downstream once a decision lands. Key each template by the output
-                  port the agent emits, or use <code>*</code> as a wildcard fallback. Scriban syntax.
-                  See the <a class="mono-link" href="https://github.com/michaeltrefry/CodeFlow/blob/main/docs/decision-output-templates.md" target="_blank" rel="noopener noreferrer">guide ↗</a>.
-                  A routing script that calls <code>setOutput()</code> still wins over any template here.
+                  Catch-all templates keyed by <code>*</code> or by a port name not declared above
+                  (e.g. ports emitted only by a routing script). Rarely needed.
                 </p>
               </div>
-
-              <label class="field">
-                <span class="field-label">Preview context <span class="muted small">(JSON — drives the live preview below)</span></span>
-                <textarea class="textarea mono" rows="5"
-                          [ngModel]="previewContextText()"
-                          (ngModelChange)="previewContextText.set($event)"
-                          name="decisionTemplatePreviewContext"
-                          [placeholder]="previewContextPlaceholder()"></textarea>
-                @if (previewContextError()) {
-                  <cf-chip variant="err" dot>{{ previewContextError() }}</cf-chip>
-                }
-              </label>
-
-              <div class="stack" style="margin-top: 14px">
-                @for (row of decisionTemplates(); track $index; let i = $index) {
+              <div class="stack">
+                @for (row of fallbackTemplates(); track $index; let i = $index) {
                   <div class="output-card">
                     <div class="row" style="justify-content: space-between">
                       <cf-chip mono>{{ row.port || '(unnamed port)' }}</cf-chip>
                       <button type="button" cf-button variant="ghost" size="sm" icon="x" iconOnly
-                              (click)="removeDecisionTemplate(i)" [attr.aria-label]="'Remove template'"></button>
+                              (click)="removeFallbackTemplate(i)" [attr.aria-label]="'Remove template'"></button>
                     </div>
                     <label class="field">
                       <span class="field-label">Output port <span class="muted small">(or <code>*</code>)</span></span>
                       <input class="input mono" type="text"
                              [ngModel]="row.port"
-                             (ngModelChange)="updateDecisionTemplate(i, { port: $event })"
-                             [name]="'decision_template_port_' + i" placeholder="Approved" />
+                             (ngModelChange)="updateFallbackTemplate(i, { port: $event })"
+                             [name]="'fallback_template_port_' + i" placeholder="*" />
                     </label>
                     <label class="field">
                       <span class="field-label">Template</span>
-                      <textarea class="textarea mono" rows="6"
+                      <textarea class="textarea mono" rows="5"
                                 [ngModel]="row.template"
-                                (ngModelChange)="updateDecisionTemplate(i, { template: $event })"
-                                [name]="'decision_template_body_' + i"
+                                (ngModelChange)="updateFallbackTemplate(i, { template: $event })"
+                                [name]="'fallback_template_body_' + i"
                                 placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
                     </label>
                     <label class="field">
@@ -324,7 +378,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
                   </div>
                 }
                 <button type="button" cf-button size="sm" icon="plus" style="align-self: flex-start"
-                        (click)="addDecisionTemplate()">Add template</button>
+                        (click)="addFallbackTemplate()">Add fallback template</button>
               </div>
             </div>
           </cf-card>
@@ -361,6 +415,35 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'templates';
       border-color: color-mix(in oklab, var(--sem-red) 40%, transparent);
       background: var(--err-bg);
     }
+    .output-advanced {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .advanced-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      background: transparent;
+      border: 0;
+      color: var(--muted);
+      font: inherit;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    .advanced-toggle:hover { color: var(--fg); }
+    .advanced-caret {
+      display: inline-block;
+      transition: transform 0.12s ease-out;
+      font-size: 0.9em;
+    }
+    .advanced-caret[data-expanded="true"] { transform: rotate(90deg); }
+    .advanced-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
   `]
 })
 export class AgentEditorComponent implements OnInit {
@@ -385,12 +468,12 @@ export class AgentEditorComponent implements OnInit {
   readonly outputTemplate = signal('');
   readonly maxTokens = signal<number | undefined>(undefined);
   readonly temperature = signal<number | undefined>(undefined);
-  readonly outputs = signal<AgentOutputDeclaration[]>([
-    { kind: 'Completed', description: null, payloadExample: null },
-    { kind: 'Failed', description: null, payloadExample: null }
+  readonly outputs = signal<OutputRow[]>([
+    emptyOutputRow('Completed'),
+    emptyOutputRow('Failed'),
   ]);
 
-  readonly decisionTemplates = signal<DecisionTemplateRow[]>([]);
+  readonly fallbackTemplates = signal<DecisionTemplateRow[]>([]);
 
   readonly previewContextText = signal(defaultLlmPreviewContext());
   readonly previewContextPlaceholder = computed(() =>
@@ -405,13 +488,13 @@ export class AgentEditorComponent implements OnInit {
     { value: 'identity', label: 'Identity' },
     { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
     { value: 'model', label: 'Model' },
-    { value: 'outputs', label: 'Declared outputs', count: this.outputs().length },
-    { value: 'templates', label: 'Decision templates', count: this.decisionTemplates().length },
+    { value: 'outputs', label: 'Decisions', count: this.outputs().length },
   ]);
 
   constructor() {
     effect(() => {
-      const rows = this.decisionTemplates();
+      const outputRows = this.outputs();
+      const fallbackRows = this.fallbackTemplates();
       const contextText = this.previewContextText();
       const mode: DecisionOutputTemplateMode = this.type() === 'hitl' ? 'hitl' : 'llm';
 
@@ -430,14 +513,34 @@ export class AgentEditorComponent implements OnInit {
         return;
       }
 
-      rows.forEach((row, index) => {
+      outputRows.forEach((row, index) => {
         if (!row.template.trim()) {
           if (row.preview || row.previewError || row.previewPending) {
-            this.patchDecisionRowSilently(index, { preview: '', previewError: null, previewPending: false });
+            this.patchOutputRowSilently(index, { preview: '', previewError: null, previewPending: false });
           }
           return;
         }
-        this.schedulePreviewRender(index, row, mode, parsedContext);
+        const port = row.kind.trim() || '*';
+        this.schedulePreviewRender(
+          () => this.patchOutputRowSilently(index, { previewPending: true }),
+          row.template, port, mode, parsedContext,
+          patch => this.patchOutputRowSilently(index, patch)
+        );
+      });
+
+      fallbackRows.forEach((row, index) => {
+        if (!row.template.trim()) {
+          if (row.preview || row.previewError || row.previewPending) {
+            this.patchFallbackRowSilently(index, { preview: '', previewError: null, previewPending: false });
+          }
+          return;
+        }
+        const port = row.port.trim() || '*';
+        this.schedulePreviewRender(
+          () => this.patchFallbackRowSilently(index, { previewPending: true }),
+          row.template, port, mode, parsedContext,
+          patch => this.patchFallbackRowSilently(index, patch)
+        );
       });
     });
   }
@@ -479,74 +582,105 @@ export class AgentEditorComponent implements OnInit {
     this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
     this.maxTokens.set(config['maxTokens'] as number | undefined);
     this.temperature.set(config['temperature'] as number | undefined);
+    const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
+    const declaredKinds = new Set<string>();
     if (Array.isArray(declared) && declared.length > 0) {
-      this.outputs.set(declared.map(d => ({
-        kind: d.kind ?? '',
-        description: d.description ?? null,
-        payloadExample: d.payloadExample ?? null
-      })));
+      this.outputs.set(declared.map(d => {
+        const kind = d.kind ?? '';
+        declaredKinds.add(kind);
+        const template = String(templates[kind] ?? '');
+        const payloadExample = d.payloadExample ?? null;
+        return {
+          kind,
+          description: d.description ?? null,
+          payloadExample,
+          template,
+          preview: '',
+          previewError: null,
+          previewPending: false,
+          expanded: template.length > 0 || payloadExample !== null
+        } as OutputRow;
+      }));
+    } else {
+      // Keep defaults but hydrate templates for them
+      this.outputs.update(rows => rows.map(r => {
+        const template = String(templates[r.kind] ?? '');
+        return {
+          ...r,
+          template,
+          expanded: template.length > 0 || r.payloadExample !== null
+        };
+      }));
+      this.outputs().forEach(r => declaredKinds.add(r.kind));
     }
-    const templates = config['decisionOutputTemplates'];
-    if (templates && typeof templates === 'object') {
-      const rows = Object.entries(templates).map(([port, template]) => ({
+    const orphans: DecisionTemplateRow[] = Object.entries(templates)
+      .filter(([port]) => !declaredKinds.has(port))
+      .map(([port, template]) => ({
         port,
         template: String(template ?? ''),
         preview: '',
         previewError: null,
         previewPending: false
-      }) as DecisionTemplateRow);
-      this.decisionTemplates.set(rows);
-    }
+      }));
+    this.fallbackTemplates.set(orphans);
     this.previewContextText.set(
       resolvedType === 'hitl' ? defaultHitlPreviewContext() : defaultLlmPreviewContext());
   }
 
-  addDecisionTemplate(): void {
-    this.decisionTemplates.set([
-      ...this.decisionTemplates(),
+  addFallbackTemplate(): void {
+    this.fallbackTemplates.set([
+      ...this.fallbackTemplates(),
       { port: '', template: '', preview: '', previewError: null, previewPending: false }
     ]);
   }
 
-  removeDecisionTemplate(index: number): void {
-    this.decisionTemplates.set(this.decisionTemplates().filter((_, i) => i !== index));
+  removeFallbackTemplate(index: number): void {
+    this.fallbackTemplates.set(this.fallbackTemplates().filter((_, i) => i !== index));
   }
 
-  updateDecisionTemplate(index: number, patch: Partial<DecisionTemplateRow>): void {
-    this.decisionTemplates.set(this.decisionTemplates().map((row, i) =>
+  updateFallbackTemplate(index: number, patch: Partial<DecisionTemplateRow>): void {
+    this.fallbackTemplates.set(this.fallbackTemplates().map((row, i) =>
       i === index ? { ...row, ...patch } : row));
   }
 
-  private patchDecisionRowSilently(index: number, patch: Partial<DecisionTemplateRow>): void {
-    this.decisionTemplates.update(rows => rows.map((row, i) =>
+  private patchFallbackRowSilently(index: number, patch: Partial<DecisionTemplateRow>): void {
+    this.fallbackTemplates.update(rows => rows.map((row, i) =>
+      i === index ? { ...row, ...patch } : row));
+  }
+
+  private patchOutputRowSilently(index: number, patch: Partial<OutputRow>): void {
+    this.outputs.update(rows => rows.map((row, i) =>
       i === index ? { ...row, ...patch } : row));
   }
 
   private previewTimer: ReturnType<typeof setTimeout> | null = null;
 
   private schedulePreviewRender(
-    index: number,
-    row: DecisionTemplateRow,
+    markPending: () => void,
+    template: string,
+    port: string,
     mode: DecisionOutputTemplateMode,
-    parsedContext: Record<string, unknown>
+    parsedContext: Record<string, unknown>,
+    commit: (patch: { preview?: string; previewError?: string | null; previewPending?: boolean }) => void
   ): void {
     if (this.previewTimer !== null) {
       clearTimeout(this.previewTimer);
     }
-    this.previewTimer = setTimeout(() => this.runPreview(index, row, mode, parsedContext), 200);
+    this.previewTimer = setTimeout(() => this.runPreview(markPending, template, port, mode, parsedContext, commit), 200);
   }
 
   private runPreview(
-    index: number,
-    row: DecisionTemplateRow,
+    markPending: () => void,
+    template: string,
+    port: string,
     mode: DecisionOutputTemplateMode,
-    parsedContext: Record<string, unknown>
+    parsedContext: Record<string, unknown>,
+    commit: (patch: { preview?: string; previewError?: string | null; previewPending?: boolean }) => void
   ): void {
-    const port = row.port.trim() || '*';
-    this.patchDecisionRowSilently(index, { previewPending: true });
+    markPending();
     this.agentsApi.renderDecisionOutputTemplate({
-      template: row.template,
+      template,
       mode,
       decision: port,
       outputPortName: port,
@@ -561,31 +695,30 @@ export class AgentEditorComponent implements OnInit {
       context: parsedContext['context'] as Record<string, unknown> | undefined,
       global: parsedContext['global'] as Record<string, unknown> | undefined
     }).subscribe({
-      next: response => this.patchDecisionRowSilently(index, {
-        preview: response.rendered, previewError: null, previewPending: false
-      }),
-      error: err => this.patchDecisionRowSilently(index, {
-        preview: '', previewError: extractPreviewError(err), previewPending: false
-      })
+      next: response => commit({ preview: response.rendered, previewError: null, previewPending: false }),
+      error: err => commit({ preview: '', previewError: extractPreviewError(err), previewPending: false })
     });
   }
 
   addOutput(): void {
-    this.outputs.set([
-      ...this.outputs(),
-      { kind: '', description: null, payloadExample: null }
-    ]);
+    this.outputs.set([...this.outputs(), emptyOutputRow('')]);
   }
 
   removeOutput(index: number): void {
     this.outputs.set(this.outputs().filter((_, i) => i !== index));
   }
 
-  updateOutput(index: number, patch: Partial<AgentOutputDeclaration>): void {
+  updateOutput(index: number, patch: Partial<OutputRow>): void {
     this.outputs.set(this.outputs().map((o, i) => (i === index ? { ...o, ...patch } : o)));
   }
 
-  payloadExampleText(output: AgentOutputDeclaration): string {
+  toggleOutputExpanded(index: number): void {
+    const row = this.outputs()[index];
+    if (!row) return;
+    this.updateOutput(index, { expanded: !row.expanded });
+  }
+
+  payloadExampleText(output: OutputRow): string {
     if (output.payloadExample === null || output.payloadExample === undefined) return '';
     if (typeof output.payloadExample === 'string') return output.payloadExample;
     return JSON.stringify(output.payloadExample, null, 2);
@@ -603,6 +736,18 @@ export class AgentEditorComponent implements OnInit {
     } catch {
       this.updateOutput(index, { payloadExample: raw });
     }
+  }
+
+  generatePayloadFromTemplate(index: number): void {
+    const row = this.outputs()[index];
+    if (!row) return;
+    const generated = generatePayloadFromTemplate(row.template);
+    if (generated === null) return;
+    this.updateOutput(index, { payloadExample: generated });
+  }
+
+  canGeneratePayload(row: OutputRow): boolean {
+    return !!row.template && /\boutput\.[a-zA-Z_]/.test(row.template);
   }
 
   submit(event: Event): void {
@@ -629,15 +774,8 @@ export class AgentEditorComponent implements OnInit {
       config.outputTemplate = this.outputTemplate() || undefined;
     }
 
-    const cleanedTemplates = this.decisionTemplates()
-      .map(row => ({ port: row.port.trim(), template: row.template }))
-      .filter(row => row.port.length > 0 && row.template.length > 0);
-    if (cleanedTemplates.length > 0) {
-      config.decisionOutputTemplates = Object.fromEntries(
-        cleanedTemplates.map(row => [row.port, row.template]));
-    }
-
-    const cleanedOutputs = this.outputs()
+    const outputRows = this.outputs();
+    const cleanedOutputs: AgentOutputDeclaration[] = outputRows
       .map(o => ({
         kind: (o.kind ?? '').trim(),
         description: o.description?.trim() || null,
@@ -649,6 +787,23 @@ export class AgentEditorComponent implements OnInit {
 
     if (cleanedOutputs.length > 0) {
       config.outputs = cleanedOutputs;
+    }
+
+    const templatesMap: Record<string, string> = {};
+    for (const row of outputRows) {
+      const kind = (row.kind ?? '').trim();
+      if (kind && row.template.trim().length > 0) {
+        templatesMap[kind] = row.template;
+      }
+    }
+    for (const row of this.fallbackTemplates()) {
+      const port = row.port.trim();
+      if (port && row.template.trim().length > 0) {
+        templatesMap[port] = row.template;
+      }
+    }
+    if (Object.keys(templatesMap).length > 0) {
+      config.decisionOutputTemplates = templatesMap;
     }
 
     if (this.embedded()) {
@@ -707,6 +862,51 @@ export class AgentEditorComponent implements OnInit {
 
 function tryParseJson(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return raw; }
+}
+
+function emptyOutputRow(kind: string): OutputRow {
+  return {
+    kind,
+    description: null,
+    payloadExample: null,
+    template: '',
+    preview: '',
+    previewError: null,
+    previewPending: false,
+    expanded: false
+  };
+}
+
+function generatePayloadFromTemplate(template: string): Record<string, unknown> | null {
+  // Match references like `output.foo`, `output.foo.bar`, etc.
+  // Stops at any non-identifier character; ignores bracket access on purpose.
+  const re = /\boutput\.([a-zA-Z_][\w]*(?:\.[a-zA-Z_][\w]*)*)/g;
+  const paths: string[][] = [];
+  const seen = new Set<string>();
+  for (const m of template.matchAll(re)) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    paths.push(m[1].split('.'));
+  }
+  if (paths.length === 0) return null;
+  const result: Record<string, unknown> = {};
+  for (const path of paths) {
+    let cur: Record<string, unknown> = result;
+    for (let i = 0; i < path.length; i++) {
+      const key = path[i];
+      const isLeaf = i === path.length - 1;
+      if (isLeaf) {
+        if (!(key in cur)) cur[key] = `<${path.join('.')}>`;
+      } else {
+        const next = cur[key];
+        if (!next || typeof next !== 'object' || Array.isArray(next)) {
+          cur[key] = {};
+        }
+        cur = cur[key] as Record<string, unknown>;
+      }
+    }
+  }
+  return result;
 }
 
 function defaultHitlPreviewContext(): string {

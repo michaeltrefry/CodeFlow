@@ -84,6 +84,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
         using var host = builder.Build();
         await host.ApplyDatabaseMigrationsAsync();
         await SeedAgentConfigurationAsync(host.Services);
+        await SeedWorkflowAsync(host.Services);
         await host.StartAsync();
 
         HostReceiveEndpointHandle? completionEndpointHandle = null;
