@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine AS build
+FROM node:24-bookworm-slim AS build
 WORKDIR /src
 
 COPY codeflow-ui/package.json codeflow-ui/package-lock.json ./
