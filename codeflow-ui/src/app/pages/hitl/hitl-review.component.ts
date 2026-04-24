@@ -1,4 +1,4 @@
-import { Component, computed, inject, input, output, signal, OnInit } from '@angular/core';
+import { Component, computed, effect, inject, input, output, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../core/agents.api';
 import { TracesApi } from '../../core/traces.api';
@@ -97,10 +97,21 @@ import {
 
         <section class="template-section preview-section">
           <div class="section-header">
-            <h4>Output Preview</h4>
+            <h4>
+              Output Preview
+              @if (serverPreviewPending()) {
+                <span class="muted small"> — rendering…</span>
+              } @else if (resolvedDecisionTemplate()) {
+                <span class="muted small"> — server-rendered from decision-output template</span>
+              }
+            </h4>
             <p class="muted small">This is the exact content that will be submitted for the next node to consume.</p>
           </div>
-          <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
+          @if (serverPreviewError()) {
+            <pre class="monospace preview preview-output preview-error-box">{{ serverPreviewError() }}</pre>
+          } @else {
+            <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
+          }
         </section>
       } @else {
         <div class="form-field">
@@ -191,6 +202,11 @@ import {
     .preview-output {
       border-left: 3px solid var(--color-accent);
     }
+    .preview-error-box {
+      color: #f85149;
+      border-left-color: rgba(248, 81, 73, 0.7);
+      background: rgba(248, 81, 73, 0.08);
+    }
     .readonly-value {
       margin: 0;
       max-height: none;
@@ -237,8 +253,17 @@ export class HitlReviewComponent implements OnInit {
   // Template-driven state
   readonly configLoading = signal(true);
   readonly template = signal<string | null>(null);
+  readonly decisionOutputTemplates = signal<Record<string, string> | null>(null);
   readonly fieldValues = signal<Record<string, string>>({});
   readonly resolvedTemplateValues = signal<Record<string, unknown>>({});
+  readonly contextInputs = signal<Record<string, unknown>>({});
+
+  // Server-rendered preview (populated via /api/agents/templates/render-preview when the agent
+  // declares a decision-output template for the selected port). Falls back to the client-side
+  // renderHitlTemplate when no matching template exists.
+  readonly serverRenderedOutput = signal<string | null>(null);
+  readonly serverPreviewError = signal<string | null>(null);
+  readonly serverPreviewPending = signal(false);
 
   readonly parsedTemplate = computed(() => parseHitlTemplate(this.template()));
   readonly placeholders = computed<HitlPlaceholder[]>(() => this.parsedTemplate().placeholders);
@@ -256,7 +281,29 @@ export class HitlReviewComponent implements OnInit {
     ...this.resolvedTemplateValues(),
     ...this.fieldValues()
   }));
+  readonly selectedPortName = computed(() => {
+    const parsed = this.parsedTemplate();
+    const decisionPh = getDecisionPlaceholder(parsed);
+    if (decisionPh) {
+      const value = this.mergedTemplateValues()[decisionPh.name];
+      if (typeof value === 'string' && value.length > 0) {
+        return value;
+      }
+    }
+    return 'Completed';
+  });
+  readonly resolvedDecisionTemplate = computed(() => {
+    const templates = this.decisionOutputTemplates();
+    if (!templates) { return null; }
+    const port = this.selectedPortName();
+    const match = Object.keys(templates).find(k => k.toLowerCase() === port.toLowerCase());
+    if (match) { return templates[match]; }
+    if (templates['*']) { return templates['*']; }
+    return null;
+  });
   readonly renderedOutput = computed(() => {
+    const server = this.serverRenderedOutput();
+    if (server !== null) { return server; }
     const tpl = this.template();
     if (!tpl) { return ''; }
     return renderHitlTemplate(tpl, this.mergedTemplateValues());
@@ -270,6 +317,30 @@ export class HitlReviewComponent implements OnInit {
   readonly submitting = signal(false);
   readonly error = signal<string | null>(null);
 
+  private previewTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor() {
+    effect(() => {
+      const template = this.resolvedDecisionTemplate();
+      const port = this.selectedPortName();
+      const fields = this.fieldValues();
+      const context = this.contextInputs();
+      void fields; void context; // signals tracked for reactivity
+
+      if (!template) {
+        this.serverRenderedOutput.set(null);
+        this.serverPreviewError.set(null);
+        this.serverPreviewPending.set(false);
+        return;
+      }
+
+      if (this.previewTimer !== null) {
+        clearTimeout(this.previewTimer);
+      }
+      this.previewTimer = setTimeout(() => this.runServerPreview(template, port), 200);
+    });
+  }
+
   ngOnInit(): void {
     const task = this.task();
     this.seedResolvedTemplateValues(task.inputPreview);
@@ -280,12 +351,44 @@ export class HitlReviewComponent implements OnInit {
       next: version => {
         const tpl = version.config?.['outputTemplate'] as string | undefined;
         this.template.set(tpl?.length ? tpl : null);
+        const decisionTemplates = version.config?.['decisionOutputTemplates'] as
+          Record<string, string> | undefined;
+        this.decisionOutputTemplates.set(
+          decisionTemplates && Object.keys(decisionTemplates).length > 0 ? decisionTemplates : null);
         this.seedDefaults();
         this.configLoading.set(false);
       },
       error: () => {
         // Fall back to legacy form on config-load failure.
         this.configLoading.set(false);
+      }
+    });
+  }
+
+  private runServerPreview(template: string, port: string): void {
+    this.serverPreviewPending.set(true);
+    this.serverPreviewError.set(null);
+
+    const fieldValues = { ...this.fieldValues() };
+    const context = this.contextInputs();
+
+    this.agentsApi.renderDecisionOutputTemplate({
+      template,
+      mode: 'hitl',
+      decision: port,
+      outputPortName: port,
+      fieldValues,
+      context: Object.keys(context).length > 0 ? context as Record<string, unknown> : undefined
+    }).subscribe({
+      next: response => {
+        this.serverRenderedOutput.set(response.rendered);
+        this.serverPreviewError.set(null);
+        this.serverPreviewPending.set(false);
+      },
+      error: err => {
+        this.serverRenderedOutput.set(null);
+        this.serverPreviewError.set(extractPreviewError(err));
+        this.serverPreviewPending.set(false);
       }
     });
   }
@@ -349,7 +452,8 @@ export class HitlReviewComponent implements OnInit {
     this.api.submitHitlDecision(this.task().traceId, {
       decision,
       outputPortName,
-      outputText: rendered
+      outputText: rendered,
+      fieldValues: { ...this.fieldValues() }
     }).subscribe({
       next: () => {
         this.submitting.set(false);
@@ -435,15 +539,21 @@ export class HitlReviewComponent implements OnInit {
   private loadResolvedContextValues(traceId: string): void {
     this.api.get(traceId).subscribe({
       next: detail => {
+        // Used for the existing client-side HITL template preview (flattened under the `context.*`
+        // dotted keys hitl-template.ts expects).
         const contextValues = extractScopedTemplateValues('context', detail.contextInputs);
-        if (Object.keys(contextValues).length === 0) {
-          return;
+        if (Object.keys(contextValues).length > 0) {
+          this.resolvedTemplateValues.set({
+            ...this.resolvedTemplateValues(),
+            ...contextValues
+          });
         }
 
-        this.resolvedTemplateValues.set({
-          ...this.resolvedTemplateValues(),
-          ...contextValues
-        });
+        // Used for the new server-side decision-output-template preview (raw structured object
+        // passed through as context.* by DecisionOutputTemplateContext.BuildForHitl).
+        if (detail.contextInputs && typeof detail.contextInputs === 'object') {
+          this.contextInputs.set(detail.contextInputs as Record<string, unknown>);
+        }
       },
       error: () => {
         // Context values are optional for the form; keep rendering even if unavailable.
@@ -557,6 +667,22 @@ function addTemplateValue(target: Record<string, unknown>, key: string, value: u
   for (const [childKey, childValue] of Object.entries(value)) {
     addTemplateValue(target, `${key}.${childKey}`, childValue);
   }
+}
+
+function extractPreviewError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const httpErr = err as { error?: { error?: string } | string; message?: string };
+    if (httpErr.error && typeof httpErr.error === 'object' && 'error' in httpErr.error) {
+      return String((httpErr.error as { error: unknown }).error);
+    }
+    if (typeof httpErr.error === 'string') {
+      return httpErr.error;
+    }
+    if (httpErr.message) {
+      return httpErr.message;
+    }
+  }
+  return 'Preview unavailable';
 }
 
 function formatDisplayValue(value: unknown): string {

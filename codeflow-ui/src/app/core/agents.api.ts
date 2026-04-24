@@ -1,7 +1,14 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import { AgentConfig, AgentSummary, AgentVersion, AgentVersionSummary } from './models';
+import {
+  AgentConfig,
+  AgentSummary,
+  AgentVersion,
+  AgentVersionSummary,
+  DecisionOutputTemplatePreviewRequest,
+  DecisionOutputTemplatePreviewResponse
+} from './models';
 
 @Injectable({ providedIn: 'root' })
 export class AgentsApi {
@@ -38,6 +45,15 @@ export class AgentsApi {
     return this.http.post<{ key: string; isRetired: boolean }>(
       `/api/agents/${encodeURIComponent(key)}/retire`,
       {}
+    );
+  }
+
+  renderDecisionOutputTemplate(
+    request: DecisionOutputTemplatePreviewRequest
+  ): Observable<DecisionOutputTemplatePreviewResponse> {
+    return this.http.post<DecisionOutputTemplatePreviewResponse>(
+      '/api/agents/templates/render-preview',
+      request
     );
   }
 }
