@@ -313,6 +313,25 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             : reviewLoopNode.LoopDecision!.Trim();
 
     /// <summary>
+    /// Builds the AgentKey recorded on the synthetic decision a parent saga writes when a
+    /// Subflow/ReviewLoop child terminates. Subflow nodes have no agent, so we synthesize a
+    /// descriptive label from the node kind plus the subflow it invokes — otherwise the trace UI
+    /// shows the timeline entry with a blank title. Falls back gracefully when the parent node is
+    /// unexpectedly null or lacks a subflow key.
+    /// </summary>
+    private static string BuildSubflowSyntheticAgentKey(WorkflowNode? parentNode)
+    {
+        if (parentNode is null)
+        {
+            return "subflow";
+        }
+
+        var prefix = parentNode.Kind == WorkflowNodeKind.ReviewLoop ? "review-loop" : "subflow";
+        var key = parentNode.SubflowKey?.Trim();
+        return string.IsNullOrEmpty(key) ? prefix : $"{prefix}:{key}";
+    }
+
+    /// <summary>
     /// Maps a child saga's terminal <see cref="SubflowCompleted"/> back onto the ReviewLoop
     /// parent's outcome surface. Priority of signals:
     /// <list type="number">
@@ -499,8 +518,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ? Runtime.AgentDecisionKind.Failed
             : Runtime.AgentDecisionKind.Completed;
 
+        // AgentKey is what the trace UI surfaces as the timeline entry's title. Subflow/ReviewLoop
+        // nodes have no agent of their own, so synthesize a descriptive label from the node kind
+        // plus the subflow key the node invokes — otherwise the parent trace shows a title-less row.
         saga.AppendDecision(new DecisionRecord(
-            AgentKey: string.Empty,
+            AgentKey: BuildSubflowSyntheticAgentKey(parentNode),
             AgentVersion: 0,
             Decision: syntheticDecisionKind,
             DecisionPayload: null,
@@ -698,9 +720,38 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var effectivePortName = portResolution.Port;
         var effectiveOutputRef = portResolution.OverrideOutputRef ?? message.OutputRef;
 
+        // Decision output template: if no setOutput() override was applied and the agent declares
+        // a matching per-decision template, render it server-side and substitute the effective
+        // output ref. Script overrides always win so authors have an explicit escape hatch.
+        string? decisionTemplateFailure = null;
+        if (portResolution.OverrideOutputRef is null
+            && effectiveOutputRef is not null
+            && !string.IsNullOrWhiteSpace(message.AgentKey))
+        {
+            var templateRenderer = services.GetRequiredService<Runtime.IScribanTemplateRenderer>();
+            var templateOutcome = await TryApplyDecisionOutputTemplateAsync(
+                context,
+                agentConfigRepo,
+                artifactStore,
+                templateRenderer,
+                saga,
+                message,
+                effectivePortName,
+                effectiveOutputRef);
+
+            if (templateOutcome.FailureReason is not null)
+            {
+                decisionTemplateFailure = templateOutcome.FailureReason;
+            }
+            else if (templateOutcome.OverrideOutputRef is not null)
+            {
+                effectiveOutputRef = templateOutcome.OverrideOutputRef;
+            }
+        }
+
         // Append decision *after* the script runs so the OutputRef reflects any setOutput()
-        // override. The original output artifact is preserved in the store; only the pointer
-        // recorded on the decision and used for downstream dispatch is swapped.
+        // override or decision-output template. The original artifact is preserved in the store;
+        // only the pointer recorded on the decision and used for downstream dispatch is swapped.
         saga.AppendDecision(new DecisionRecord(
             AgentKey: message.AgentKey,
             AgentVersion: message.AgentVersion,
@@ -712,6 +763,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             OutputPortName: message.OutputPortName,
             InputRef: saga.CurrentInputRef,
             OutputRef: effectiveOutputRef?.ToString()));
+
+        if (decisionTemplateFailure is not null)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason = decisionTemplateFailure;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
 
         // Remember the effective port so the terminal SubflowCompleted can carry it as
         // TerminalPort — the ReviewLoop parent compares that against its configured
@@ -949,6 +1008,139 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ContentType: "text/plain",
             FileName: $"{fileNamePrefix}-scripted-output.txt");
         return await artifactStore.WriteAsync(stream, metadata, cancellationToken);
+    }
+
+    private static async Task<DecisionOutputTemplateOutcome> TryApplyDecisionOutputTemplateAsync(
+        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
+        IAgentConfigRepository agentConfigRepo,
+        IArtifactStore artifactStore,
+        Runtime.IScribanTemplateRenderer templateRenderer,
+        WorkflowSagaStateEntity saga,
+        AgentInvocationCompleted message,
+        string effectivePortName,
+        Uri effectiveOutputRef)
+    {
+        AgentConfig agentConfig;
+        try
+        {
+            agentConfig = await agentConfigRepo.GetAsync(
+                message.AgentKey!,
+                message.AgentVersion,
+                context.CancellationToken);
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            return DecisionOutputTemplateOutcome.None;
+        }
+
+        var template = ResolveDecisionOutputTemplate(
+            agentConfig.Configuration.DecisionOutputTemplates,
+            effectivePortName);
+
+        if (template is null)
+        {
+            return DecisionOutputTemplateOutcome.None;
+        }
+
+        var outputJson = await ReadArtifactAsJsonAsync(
+            artifactStore,
+            effectiveOutputRef,
+            context.CancellationToken);
+        var outputText = TryReadOutputText(outputJson);
+
+        JsonElement? inputJson = null;
+        if (!string.IsNullOrWhiteSpace(saga.CurrentInputRef)
+            && Uri.TryCreate(saga.CurrentInputRef, UriKind.Absolute, out var inputRef))
+        {
+            inputJson = await ReadArtifactAsJsonAsync(
+                artifactStore,
+                inputRef,
+                context.CancellationToken);
+        }
+
+        var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var decisionName = string.IsNullOrWhiteSpace(message.OutputPortName)
+            ? message.Decision.ToString()
+            : message.OutputPortName!;
+
+        var scope = DecisionOutputTemplateContext.Build(
+            decision: decisionName,
+            outputPortName: effectivePortName,
+            outputText: outputText,
+            outputJson: IsStructured(outputJson) ? outputJson : null,
+            inputJson: inputJson,
+            contextInputs: contextInputs,
+            globalInputs: globalInputs);
+
+        string rendered;
+        try
+        {
+            rendered = templateRenderer.Render(template, scope, context.CancellationToken);
+        }
+        catch (Runtime.PromptTemplateException ex)
+        {
+            return new DecisionOutputTemplateOutcome(null, $"Decision output template failed: {ex.Message}");
+        }
+
+        var overrideRef = await WriteOverrideArtifactAsync(
+            artifactStore,
+            saga,
+            message.AgentKey,
+            rendered,
+            context.CancellationToken);
+
+        return new DecisionOutputTemplateOutcome(overrideRef, null);
+    }
+
+    private static string? ResolveDecisionOutputTemplate(
+        IReadOnlyDictionary<string, string>? templates,
+        string portName)
+    {
+        if (templates is null || templates.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var entry in templates)
+        {
+            if (string.Equals(entry.Key, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                return entry.Value;
+            }
+        }
+
+        if (templates.TryGetValue("*", out var wildcard))
+        {
+            return wildcard;
+        }
+
+        return null;
+    }
+
+    private static bool IsStructured(JsonElement element)
+    {
+        return element.ValueKind is JsonValueKind.Object or JsonValueKind.Array;
+    }
+
+    private static string TryReadOutputText(JsonElement element)
+    {
+        // ReadArtifactAsJsonAsync wraps non-JSON text as { "text": "…" } — pull it back out so
+        // `output` in the template context stays the raw submission as the author wrote it.
+        if (element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty("text", out var textProp)
+            && textProp.ValueKind == JsonValueKind.String
+            && element.EnumerateObject().Count() == 1)
+        {
+            return textProp.GetString() ?? string.Empty;
+        }
+
+        return element.GetRawText();
+    }
+
+    private readonly record struct DecisionOutputTemplateOutcome(Uri? OverrideOutputRef, string? FailureReason)
+    {
+        public static readonly DecisionOutputTemplateOutcome None = new(null, null);
     }
 
     private static void ApplyScriptUpdates(
