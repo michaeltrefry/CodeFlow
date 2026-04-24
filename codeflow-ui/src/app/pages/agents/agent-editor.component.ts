@@ -257,7 +257,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
               </div>
 
               <label class="field">
-                <span class="field-label">Preview context <span class="muted small">(JSON — drives the live template previews below)</span></span>
+                <span class="field-label">Preview scope <span class="muted small">(JSON matching the template variables below)</span></span>
                 <textarea class="textarea mono" rows="5"
                           [ngModel]="previewContextText()"
                           (ngModelChange)="previewContextText.set($event)"
@@ -316,12 +316,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                                         placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
                             </label>
                             <label class="field">
-                              <span class="field-label">
-                                Template preview
-                                @if (output.previewPending) {
-                                  <span class="muted small">(rendering…)</span>
-                                }
-                              </span>
+                              <span class="field-label">Template preview</span>
                               @if (output.previewError) {
                                 <pre class="preview-error mono">{{ output.previewError }}</pre>
                               } @else {
@@ -386,12 +381,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                                 placeholder="[{{ '{{ decision }}' }}] {{ '{{ output.headline }}' }}"></textarea>
                     </label>
                     <label class="field">
-                      <span class="field-label">
-                        Preview
-                        @if (row.previewPending) {
-                          <span class="muted small">(rendering…)</span>
-                        }
-                      </span>
+                      <span class="field-label">Preview</span>
                       @if (row.previewError) {
                         <pre class="preview-error mono">{{ row.previewError }}</pre>
                       } @else {
@@ -549,39 +539,55 @@ export class AgentEditorComponent implements OnInit {
           parsedContext = parsed as Record<string, unknown>;
           this.previewContextError.set(null);
         } else {
+          this.clearPreviewTimers();
+          this.previewSignatures.clear();
           this.previewContextError.set('Preview context must be a JSON object.');
           return;
         }
       } catch {
+        this.clearPreviewTimers();
+        this.previewSignatures.clear();
         this.previewContextError.set('Preview context is not valid JSON.');
         return;
       }
 
       outputRows.forEach((row, index) => {
+        const key = `output:${index}`;
         if (!row.template.trim()) {
+          this.cancelPreviewRender(key);
+          this.previewSignatures.delete(key);
           if (row.preview || row.previewError || row.previewPending) {
             this.patchOutputRowSilently(index, { preview: '', previewError: null, previewPending: false });
           }
           return;
         }
         const port = row.kind.trim() || '*';
+        const signature = previewSignature(mode, port, row.template, contextText);
+        if (this.previewSignatures.get(key) === signature) return;
+        this.previewSignatures.set(key, signature);
         this.schedulePreviewRender(
-          () => this.patchOutputRowSilently(index, { previewPending: true }),
+          key,
           row.template, port, mode, parsedContext,
           patch => this.patchOutputRowSilently(index, patch)
         );
       });
 
       fallbackRows.forEach((row, index) => {
+        const key = `fallback:${index}`;
         if (!row.template.trim()) {
+          this.cancelPreviewRender(key);
+          this.previewSignatures.delete(key);
           if (row.preview || row.previewError || row.previewPending) {
             this.patchFallbackRowSilently(index, { preview: '', previewError: null, previewPending: false });
           }
           return;
         }
         const port = row.port.trim() || '*';
+        const signature = previewSignature(mode, port, row.template, contextText);
+        if (this.previewSignatures.get(key) === signature) return;
+        this.previewSignatures.set(key, signature);
         this.schedulePreviewRender(
-          () => this.patchFallbackRowSilently(index, { previewPending: true }),
+          key,
           row.template, port, mode, parsedContext,
           patch => this.patchFallbackRowSilently(index, patch)
         );
@@ -702,46 +708,59 @@ export class AgentEditorComponent implements OnInit {
       i === index ? { ...row, ...patch } : row));
   }
 
-  private previewTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly previewTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly previewSignatures = new Map<string, string>();
 
   private schedulePreviewRender(
-    markPending: () => void,
+    key: string,
     template: string,
     port: string,
     mode: DecisionOutputTemplateMode,
     parsedContext: Record<string, unknown>,
     commit: (patch: { preview?: string; previewError?: string | null; previewPending?: boolean }) => void
   ): void {
-    if (this.previewTimer !== null) {
-      clearTimeout(this.previewTimer);
-    }
-    this.previewTimer = setTimeout(() => this.runPreview(markPending, template, port, mode, parsedContext, commit), 200);
+    this.cancelPreviewRender(key);
+    const timer = setTimeout(() => {
+      this.previewTimers.delete(key);
+      this.runPreview(template, port, mode, parsedContext, commit);
+    }, 200);
+    this.previewTimers.set(key, timer);
+  }
+
+  private cancelPreviewRender(key: string): void {
+    const timer = this.previewTimers.get(key);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.previewTimers.delete(key);
+  }
+
+  private clearPreviewTimers(): void {
+    this.previewTimers.forEach(timer => clearTimeout(timer));
+    this.previewTimers.clear();
   }
 
   private runPreview(
-    markPending: () => void,
     template: string,
     port: string,
     mode: DecisionOutputTemplateMode,
     parsedContext: Record<string, unknown>,
     commit: (patch: { preview?: string; previewError?: string | null; previewPending?: boolean }) => void
   ): void {
-    markPending();
     this.agentsApi.renderDecisionOutputTemplate({
       template,
       mode,
       decision: port,
       outputPortName: port,
-      output: mode === 'llm' ? (parsedContext['output'] as string | undefined) : undefined,
+      output: mode === 'llm' ? stringifyPreviewOutput(parsedContext['output']) : undefined,
       input: mode === 'llm' ? parsedContext['input'] : undefined,
       fieldValues: mode === 'hitl'
-        ? (parsedContext['fieldValues'] as Record<string, unknown> | undefined)
+        ? asRecord(parsedContext['input']) ?? asRecord(parsedContext['fieldValues'])
         : undefined,
-      reason: mode === 'hitl' ? (parsedContext['reason'] as string | undefined) : undefined,
-      reasons: mode === 'hitl' ? (parsedContext['reasons'] as string[] | undefined) : undefined,
-      actions: mode === 'hitl' ? (parsedContext['actions'] as string[] | undefined) : undefined,
-      context: parsedContext['context'] as Record<string, unknown> | undefined,
-      global: parsedContext['global'] as Record<string, unknown> | undefined
+      reason: mode === 'hitl' ? asString(parsedContext['reason']) : undefined,
+      reasons: mode === 'hitl' ? asStringArray(parsedContext['reasons']) : undefined,
+      actions: mode === 'hitl' ? asStringArray(parsedContext['actions']) : undefined,
+      context: asRecord(parsedContext['context']),
+      global: asRecord(parsedContext['global'])
     }).subscribe({
       next: response => commit({ preview: response.rendered, previewError: null, previewPending: false }),
       error: err => commit({ preview: '', previewError: extractPreviewError(err), previewPending: false })
@@ -959,7 +978,7 @@ function generatePayloadFromTemplate(template: string): Record<string, unknown> 
 
 function defaultHitlPreviewContext(): string {
   return JSON.stringify({
-    fieldValues: { feedback: 'looks good' },
+    input: { feedback: 'looks good' },
     reason: 'short explanation',
     reasons: [],
     actions: [],
@@ -970,11 +989,43 @@ function defaultHitlPreviewContext(): string {
 
 function defaultLlmPreviewContext(): string {
   return JSON.stringify({
-    output: '{"headline":"Example headline","summary":"Example summary"}',
+    output: {
+      headline: 'Example headline',
+      summary: 'Example summary'
+    },
     input: {},
     context: {},
     global: {}
   }, null, 2);
+}
+
+function stringifyPreviewOutput(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter(item => typeof item === 'string') as string[];
+}
+
+function previewSignature(
+  mode: DecisionOutputTemplateMode,
+  port: string,
+  template: string,
+  contextText: string
+): string {
+  return JSON.stringify([mode, port, template, contextText]);
 }
 
 function extractPreviewError(err: unknown): string {

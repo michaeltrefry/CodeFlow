@@ -1,5 +1,6 @@
 using CodeFlow.Persistence;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
@@ -182,6 +183,52 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         list.Should().NotBeNull();
         list!.Select(s => s.Key).Should().Contain(sourceKey);
         list.Select(s => s.Key).Should().NotContain(forkPayload.Key);
+    }
+
+    [Fact]
+    public async Task Put_WorkflowScopedFork_CreatesNextForkVersion()
+    {
+        using var client = factory.CreateClient();
+
+        var sourceKey = $"fork-update-src-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = sourceKey,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Base." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var fork = await CreateForkAsync(client, sourceKey, sourceVersion: 1, forkPrompt: "first fork edit");
+
+        var update = await client.PutAsJsonAsync($"/api/agents/{fork.Key}", new
+        {
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "second fork edit" }
+        });
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+        var updatePayload = await update.Content.ReadFromJsonAsync<CreateResponse>();
+        updatePayload!.Key.Should().Be(fork.Key);
+        updatePayload.Version.Should().Be(2);
+
+        var status = await client.GetFromJsonAsync<PublishStatusDto>($"/api/agents/{fork.Key}/publish-status");
+        status!.ForkedFromKey.Should().Be(sourceKey);
+        status.ForkedFromVersion.Should().Be(1);
+        status.IsDrift.Should().BeFalse();
+
+        var versions = await client.GetFromJsonAsync<IReadOnlyList<VersionDto>>($"/api/agents/{fork.Key}/versions");
+        versions.Should().NotBeNull();
+        versions!.Select(v => v.Version).Should().BeEquivalentTo(new[] { 2, 1 }, options => options.WithStrictOrdering());
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
+        list!.Select(s => s.Key).Should().NotContain(fork.Key);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var latestFork = await db.Agents
+            .AsNoTracking()
+            .SingleAsync(agent => agent.Key == fork.Key && agent.Version == 2);
+        latestFork.OwningWorkflowKey.Should().Be(fork.OwningWorkflowKey);
+        latestFork.ForkedFromKey.Should().Be(sourceKey);
+        latestFork.ForkedFromVersion.Should().Be(1);
     }
 
     [Fact]
@@ -482,6 +529,8 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     private sealed record VersionDto(string Key, int Version, DateTime CreatedAtUtc, string? CreatedBy);
+
+    private sealed record CreateResponse(string Key, int Version);
 
     private sealed record SummaryDto(string Key, int LatestVersion, bool IsRetired);
 

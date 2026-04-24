@@ -88,6 +88,7 @@ type ModalPhase = 'warn' | 'edit' | 'saving';
             }
           </div>
           <cf-agent-editor
+            #editor
             [embedded]="true"
             [key]="target.agentKey"
             [initialConfig]="target.initialConfig"
@@ -96,6 +97,14 @@ type ModalPhase = 'warn' | 'edit' | 'saving';
           @if (error()) {
             <div class="banner error">{{ error() }}</div>
           }
+          <div dialog-footer>
+            <button type="button" cf-button variant="ghost" (click)="onClose()" [disabled]="phase() === 'saving'">
+              Cancel
+            </button>
+            <button type="button" cf-button variant="primary" (click)="editor.submit($event)" [disabled]="phase() === 'saving'">
+              {{ phase() === 'saving' ? 'Saving…' : 'Save changes' }}
+            </button>
+          </div>
         }
       }
     </cf-dialog>

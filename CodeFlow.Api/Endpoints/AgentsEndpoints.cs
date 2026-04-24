@@ -292,13 +292,17 @@ public static class AgentsEndpoints
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
-        var keyValidation = AgentConfigValidator.ValidateKey(key);
-        if (!keyValidation.IsValid)
+        var normalizedKey = NormalizeKey(key);
+        if (!IsForkKey(normalizedKey))
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
+            var keyValidation = AgentConfigValidator.ValidateKey(normalizedKey);
+            if (!keyValidation.IsValid)
             {
-                ["key"] = new[] { keyValidation.Error! }
-            });
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["key"] = new[] { keyValidation.Error! }
+                });
+            }
         }
 
         var configValidation = AgentConfigValidator.ValidateConfig(request.Config);
@@ -310,7 +314,6 @@ public static class AgentsEndpoints
             });
         }
 
-        var normalizedKey = NormalizeKey(key);
         var latest = await dbContext.Agents
             .AsNoTracking()
             .Where(agent => agent.Key == normalizedKey)
@@ -338,6 +341,8 @@ public static class AgentsEndpoints
     }
 
     private const string ForkKeyPrefix = "__fork_";
+
+    private static bool IsForkKey(string key) => key.StartsWith(ForkKeyPrefix, StringComparison.Ordinal);
 
     private static async Task<IResult> ForkAgentAsync(
         ForkAgentRequest request,

@@ -73,6 +73,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 .ToListAsync(cancellationToken);
 
             var nextVersion = existingConfigs.Count == 0 ? 1 : existingConfigs[^1].Version + 1;
+            var latestConfig = existingConfigs.LastOrDefault();
 
             foreach (var existingConfig in existingConfigs.Where(agent => agent.IsActive))
             {
@@ -86,7 +87,10 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 ConfigJson = configJson,
                 CreatedAtUtc = DateTime.UtcNow,
                 CreatedBy = normalizedCreatedBy,
-                IsActive = true
+                IsActive = true,
+                OwningWorkflowKey = latestConfig?.OwningWorkflowKey,
+                ForkedFromKey = latestConfig?.ForkedFromKey,
+                ForkedFromVersion = latestConfig?.ForkedFromVersion
             };
 
             dbContext.Agents.Add(entity);

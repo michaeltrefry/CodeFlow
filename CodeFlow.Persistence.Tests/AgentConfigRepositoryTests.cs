@@ -153,6 +153,54 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
         fetched.IsFork.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldPreserveForkLineage()
+    {
+        var sourceKey = $"source-{Guid.NewGuid():N}";
+        var forkKey = $"__fork_{Guid.NewGuid():N}";
+        var workflowKey = $"wf-{Guid.NewGuid():N}";
+        var v1Json = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "first",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+        var v2Json = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "second",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+
+        await using var writeContext = CreateDbContext();
+        writeContext.Agents.Add(new AgentConfigEntity
+        {
+            Key = forkKey,
+            Version = 1,
+            ConfigJson = v1Json,
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedBy = "tester",
+            IsActive = true,
+            OwningWorkflowKey = workflowKey,
+            ForkedFromKey = sourceKey,
+            ForkedFromVersion = 7
+        });
+        await writeContext.SaveChangesAsync();
+
+        var repository = new AgentConfigRepository(writeContext);
+        var version = await repository.CreateNewVersionAsync(forkKey, v2Json, "tester");
+
+        version.Should().Be(2);
+
+        await using var readContext = CreateDbContext();
+        var readRepository = new AgentConfigRepository(readContext);
+        var fetched = await readRepository.GetAsync(forkKey, 2);
+
+        fetched.OwningWorkflowKey.Should().Be(workflowKey);
+        fetched.ForkedFromKey.Should().Be(sourceKey);
+        fetched.ForkedFromVersion.Should().Be(7);
+        fetched.IsWorkflowScoped.Should().BeTrue();
+        fetched.IsFork.Should().BeTrue();
+    }
+
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();

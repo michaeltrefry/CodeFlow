@@ -16,21 +16,25 @@ import {
   standalone: true,
   imports: [FormsModule],
   template: `
-    <article class="hitl-card">
-      <header class="row" style="justify-content: space-between;">
-        <div>
+    <article class="hitl-review-card">
+      <header class="review-header">
+        <div class="review-title">
           <strong>{{ task().agentKey }}</strong>
           <span class="muted small"> v{{ task().agentVersion }}</span>
         </div>
-        <span class="tag warn">Pending</span>
+        <div class="review-actions">
+          <span class="tag warn">Pending</span>
+          <a href="" (click)="downloadReviewArtifact($event)">Download review artifact</a>
+        </div>
       </header>
 
-      <p class="artifact-link-row">
-        <a href="" (click)="downloadReviewArtifact($event)">Download review artifact</a>
-      </p>
-
       @if (task().inputPreview) {
-        <pre class="monospace preview">{{ task().inputPreview }}</pre>
+        <section class="prompt-section">
+          <div class="section-header compact">
+            <h4>Review Prompt</h4>
+          </div>
+          <pre class="monospace preview">{{ task().inputPreview }}</pre>
+        </section>
       } @else {
         <p class="muted small">(no preview — see artifact {{ task().inputRef }})</p>
       }
@@ -141,25 +145,47 @@ import {
         <div class="tag error">{{ error() }}</div>
       }
 
-      <div class="row">
-        <button (click)="submit()" [disabled]="submitting() || configLoading()">
+      <div class="submit-row">
+        <button class="submit-button" (click)="submit()" [disabled]="submitting() || configLoading()">
           {{ submitting() ? 'Submitting…' : 'Submit decision' }}
         </button>
       </div>
     </article>
   `,
   styles: [`
-    .hitl-card {
+    .hitl-review-card {
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 1rem;
       margin-bottom: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      background: var(--surface);
+    }
+    .review-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .review-title,
+    .review-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
     }
     .template-section {
-      margin-top: 1rem;
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.9rem;
+    }
+    .prompt-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
     }
     .display-section {
       background:
@@ -178,6 +204,9 @@ import {
     }
     .section-header {
       margin-bottom: 0.75rem;
+    }
+    .section-header.compact {
+      margin-bottom: 0;
     }
     .section-header h4 {
       margin: 0 0 0.2rem;
@@ -198,6 +227,8 @@ import {
       border-radius: 4px;
       max-height: 240px;
       overflow: auto;
+      margin: 0;
+      word-break: break-word;
     }
     .preview-output {
       border-left: 3px solid var(--accent);
@@ -213,8 +244,23 @@ import {
       border: 1px solid color-mix(in srgb, var(--border) 88%, #8fb7ff 12%);
       background: color-mix(in srgb, var(--surface-2) 88%, #8fb7ff 12%);
     }
-    .artifact-link-row { margin: 0.5rem 0 0.75rem; font-size: 0.9rem; }
     .field-label { display: block; margin-bottom: 0.35rem; }
+    .form-field:last-child { margin-bottom: 0; }
+    textarea {
+      width: 100%;
+      min-height: 4.5rem;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: inherit;
+      padding: 0.6rem 0.7rem;
+    }
+    textarea:focus {
+      outline: none;
+      box-shadow: var(--focus-ring);
+      border-color: var(--accent);
+    }
     .choice-group {
       display: flex;
       flex-wrap: wrap;
@@ -234,9 +280,42 @@ import {
       background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
     }
+    .submit-row {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .submit-button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+      border-radius: 6px;
+      padding: 0.55rem 0.85rem;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 600;
+    }
+    .submit-button:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+    .submit-button:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
     @media (min-width: 860px) {
       .display-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 640px) {
+      .review-header,
+      .review-actions,
+      .submit-row {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .submit-button {
+        width: 100%;
       }
     }
     .muted { color: var(--muted); }
