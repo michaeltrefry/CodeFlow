@@ -9,17 +9,15 @@ import {
 import { WorkflowPayload } from '../../../core/workflows.api';
 import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
-import { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
+import { IMPLICIT_FAILED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
 /**
- * Default output ports when the agent has not published a richer output schema.
- * Every agent emits at least `Completed` (success) or `Failed` (error); workflow
- * authors can add more ports on a specific node if their agent emits other
- * decision kinds.
+ * Default declared ports when a node is first added to the canvas.
+ * Under the user-defined-ports model: Agent/Hitl/Start nodes inherit ports from the pinned
+ * agent's `outputs` declaration, Subflow/ReviewLoop nodes inherit terminal ports from the
+ * pinned child workflow, and Logic nodes are author-driven. The implicit `Failed` port is
+ * always wirable and is never part of `outputPorts`.
  */
-export const DEFAULT_AGENT_OUTPUT_PORTS = ['Completed', 'Failed'];
-export const SUBFLOW_OUTPUT_PORTS = ['Completed', 'Failed', 'Escalated'];
-export const REVIEW_LOOP_OUTPUT_PORTS = ['Approved', 'Exhausted', 'Failed'];
 export const DEFAULT_REVIEW_LOOP_MAX_ROUNDS = 3;
 
 export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
@@ -27,13 +25,16 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
     case 'Start':
     case 'Agent':
     case 'Hitl':
-      return [...DEFAULT_AGENT_OUTPUT_PORTS];
+      // Filled in once the author picks an agent; the picker derives port names from the
+      // agent's declared outputs.
+      return [];
     case 'Logic':
       return ['A', 'B'];
     case 'Subflow':
-      return [...SUBFLOW_OUTPUT_PORTS];
     case 'ReviewLoop':
-      return [...REVIEW_LOOP_OUTPUT_PORTS];
+      // Filled in once the author picks a child workflow; ports inherit from the child's
+      // terminal-port set.
+      return [];
   }
 }
 
@@ -141,6 +142,9 @@ export function serializeEditor(
 ): WorkflowPayload {
   const nodes: WorkflowNode[] = editor.getNodes().map(node => {
     const position = area.nodeViews.get(node.id)?.position ?? { x: 0, y: 0 };
+    // The implicit Failed port is excluded from the serialized declaration — the API rejects
+    // declaring it. `outputPortNames` already filters it; this filter is defensive.
+    const declaredPorts = node.outputPortNames.filter(p => p !== IMPLICIT_FAILED_PORT);
     return {
       id: node.nodeId,
       kind: node.kind,
@@ -148,7 +152,7 @@ export function serializeEditor(
       agentVersion: node.agentVersion,
       outputScript: node.outputScript,
       inputScript: node.inputScript,
-      outputPorts: node.outputPortNames,
+      outputPorts: declaredPorts,
       layoutX: position.x,
       layoutY: position.y,
       subflowKey: node.subflowKey,

@@ -103,6 +103,15 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         return workflow.FindNext(fromNodeId, outputPortName);
     }
 
+    public async Task<IReadOnlyCollection<string>> GetTerminalPortsAsync(
+        string key,
+        int version,
+        CancellationToken cancellationToken = default)
+    {
+        var workflow = await GetAsync(key, version, cancellationToken);
+        return workflow.TerminalPorts;
+    }
+
     public async Task<int> CreateNewVersionAsync(
         WorkflowDraft draft,
         CancellationToken cancellationToken = default)

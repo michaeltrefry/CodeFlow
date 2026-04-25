@@ -31,7 +31,7 @@ A workflow node of kind `Subflow` references another workflow:
 
 - `SubflowKey: string` — the child workflow key.
 - `SubflowVersion: int?` — pinned version, or `null` meaning "latest at parent-save time".
-- Output ports: `Completed`, `Failed`, `Escalated` (fixed; matches existing agent decision ports).
+- Output ports: inherited from the pinned child workflow's terminal-port set (the union of unwired declared ports across the child's nodes), plus the implicit `Failed` port. See [port-model.md](port-model.md).
 
 Version pinning behaves identically to agent versions on a node:
 - `null` is resolved to the current latest at parent-workflow save and rewritten on the node, so a saved parent workflow version is reproducible.
@@ -66,7 +66,7 @@ Pending HITL tasks anywhere in a trace's subtree are surfaced on every ancestor 
 - Static cycle detection at workflow save time (runtime depth cap is sufficient).
 - Embedded sub-trace timeline rendered inside the parent trace UI.
 - Inline HITL answering UI on the parent trace (deep link to the owning trace is enough).
-- Custom named output ports declared by a subflow (only `Completed`/`Failed`/`Escalated` in v1).
+- ~~Custom named output ports declared by a subflow~~ — **delivered by the port-model redesign (2026-04):** Subflow node port sets are inherited from the child's terminal-port set, so any author-declared port name on a child terminal node propagates to the parent verbatim. See [port-model.md](port-model.md).
 
 ## 4. Implementation plan — slices
 
@@ -97,7 +97,7 @@ Each slice is sized to be one Kanban card. Where a slice could plausibly be spli
   - Routes from the child workflow's Start node using the existing pipeline.
 
 ### Slice 5 — Saga: child completion → parent resume
-- When a child saga reaches `Completed`/`Failed`/`Escalated` AND has parent linkage, publish `SubflowCompleted` carrying the child's final `global` (shallow JSON object).
+- When a child saga reaches a terminal state (any unwired declared port, or `Failed`) AND has parent linkage, publish `SubflowCompleted` carrying the child's final `global` (shallow JSON object) and the terminal port name.
 - New event/consumer on the parent saga that:
   - Shallow-merges the child's final `global` into the parent's `global` (last-write-wins per top-level key) before routing.
   - Maps `SubflowCompleted` to an `AgentInvocationCompleted`-equivalent and routes from the Subflow node's matching port.

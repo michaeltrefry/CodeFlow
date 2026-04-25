@@ -9,7 +9,7 @@ that uses it.
 
 ## Mental model
 
-- **Right-click a node** (Agent, HITL, Start, or Escalation) and pick
+- **Right-click a node** (Agent, HITL, or Start) and pick
   **Edit agent in place…**.
 - The first time you do this in a workflow editing session, you'll see a
   confirmation that explains: saving creates a **workflow-scoped fork**, the

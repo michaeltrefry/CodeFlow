@@ -35,6 +35,12 @@ public static class WorkflowsEndpoints
         group.MapGet("/{key}/{version:int}", GetVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
+        group.MapGet("/{key}/{version:int}/terminal-ports", GetTerminalPortsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
+
+        group.MapGet("/{key}/latest/terminal-ports", GetLatestTerminalPortsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
+
         group.MapGet("/{key}/{version:int}/package", ExportPackageAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
@@ -241,9 +247,38 @@ public static class WorkflowsEndpoints
         return workflow is null ? Results.NotFound() : Results.Ok(MapDetail(workflow));
     }
 
+    private static async Task<IResult> GetTerminalPortsAsync(
+        string key,
+        int version,
+        IWorkflowRepository repository,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var ports = await repository.GetTerminalPortsAsync(key, version, cancellationToken);
+            return Results.Ok(ports);
+        }
+        catch (WorkflowNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static async Task<IResult> GetLatestTerminalPortsAsync(
+        string key,
+        IWorkflowRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var workflow = await repository.GetLatestAsync(key, cancellationToken);
+        return workflow is null
+            ? Results.NotFound()
+            : Results.Ok(workflow.TerminalPorts);
+    }
+
     private static async Task<IResult> CreateAsync(
         CreateWorkflowRequest request,
         IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
         CancellationToken cancellationToken)
     {
@@ -255,6 +290,8 @@ public static class WorkflowsEndpoints
             request.Edges,
             request.Inputs,
             dbContext,
+            repository,
+            agentRepository,
             cancellationToken);
 
         if (!validation.IsValid)
@@ -294,6 +331,7 @@ public static class WorkflowsEndpoints
         string key,
         UpdateWorkflowRequest request,
         IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
         CancellationToken cancellationToken)
     {
@@ -305,6 +343,8 @@ public static class WorkflowsEndpoints
             request.Edges,
             request.Inputs,
             dbContext,
+            repository,
+            agentRepository,
             cancellationToken);
 
         if (!validation.IsValid)

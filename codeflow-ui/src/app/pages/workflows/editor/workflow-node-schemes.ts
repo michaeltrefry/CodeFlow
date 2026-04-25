@@ -4,6 +4,12 @@ import { WorkflowNodeKind } from '../../../core/models';
 
 export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
 
+/** The implicit error-sink port present on every node. Authors never declare it; the editor
+ *  always exposes it as a wirable handle so a recovery edge can be attached. Excluded from
+ *  serialized `outputPorts` (the API rejects "Failed" in declarations as of the port-model
+ *  redesign). */
+export const IMPLICIT_FAILED_PORT = 'Failed';
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
@@ -48,11 +54,25 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     }
 
     for (const port of params.outputPorts) {
+      if (port === IMPLICIT_FAILED_PORT) continue; // implicit, added below
       this.addOutput(port, new ClassicPreset.Output(new ClassicPreset.Socket('port'), port));
     }
+
+    // Failed is implicit on every node — always render as a handle so authors can attach a
+    // recovery edge without declaring it. The 'failed' socket kind is what the renderer can
+    // pick up to style the handle distinctly (e.g., dashed red).
+    this.addOutput(
+      IMPLICIT_FAILED_PORT,
+      new ClassicPreset.Output(new ClassicPreset.Socket('failed'), IMPLICIT_FAILED_PORT));
   }
 
+  /** Author-declared output port names. Excludes the implicit Failed handle. */
   get outputPortNames(): string[] {
+    return Object.keys(this.outputs).filter(name => name !== IMPLICIT_FAILED_PORT);
+  }
+
+  /** All output port names including the implicit Failed handle. */
+  get allOutputPortNames(): string[] {
     return Object.keys(this.outputs);
   }
 }

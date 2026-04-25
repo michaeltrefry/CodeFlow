@@ -459,6 +459,14 @@ public sealed class WorkflowSagaSubflowEndToEndTests
                 ? wf.FindNext(fromNodeId, outputPortName)
                 : null);
 
+        public Task<IReadOnlyCollection<string>> GetTerminalPortsAsync(
+            string key,
+            int version,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(byKey.TryGetValue(key, out var wf)
+                ? wf.TerminalPorts
+                : (IReadOnlyCollection<string>)Array.Empty<string>());
+
         public Task<int> CreateNewVersionAsync(WorkflowDraft draft, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

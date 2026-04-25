@@ -1,5 +1,6 @@
 using CodeFlow.Api.Dtos;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
@@ -16,6 +17,15 @@ public static class WorkflowValidator
     /// loops from burning through a lot of LLM budget before the author notices.</summary>
     public const int MaxReviewLoopMaxRounds = 10;
 
+    /// <summary>Implicit error-sink port present on every node. Authors cannot declare it.</summary>
+    internal const string ImplicitFailedPort = "Failed";
+
+    /// <summary>Synthesized port emitted by ReviewLoop nodes when the round budget is exhausted.</summary>
+    internal const string ReviewLoopExhaustedPort = "Exhausted";
+
+    /// <summary>Default loopDecision used by ReviewLoop when an author has not overridden it.</summary>
+    internal const string DefaultLoopDecisionPort = "Rejected";
+
     public static async Task<ValidationResult> ValidateAsync(
         string key,
         string? name,
@@ -24,8 +34,14 @@ public static class WorkflowValidator
         IReadOnlyList<WorkflowEdgeDto>? edges,
         IReadOnlyList<WorkflowInputDto>? inputs,
         CodeFlowDbContext dbContext,
+        IWorkflowRepository workflowRepository,
+        IAgentConfigRepository agentRepository,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        ArgumentNullException.ThrowIfNull(workflowRepository);
+        ArgumentNullException.ThrowIfNull(agentRepository);
+
         var keyValidation = AgentConfigValidator.ValidateKey(key);
         if (!keyValidation.IsValid)
         {
@@ -68,8 +84,16 @@ public static class WorkflowValidator
             return ValidationResult.Fail("Workflow must declare exactly one Start node.");
         }
 
+        // Per-node syntactic validation. Authors must not declare reserved port names ("Failed"
+        // is implicit on every node; "Exhausted" is reserved for ReviewLoop's synthesized port).
         foreach (var node in nodes)
         {
+            var declaredPortViolation = CheckDeclaredPortReservations(node);
+            if (declaredPortViolation is not null)
+            {
+                return ValidationResult.Fail(declaredPortViolation);
+            }
+
             switch (node.Kind)
             {
                 case WorkflowNodeKind.Start:
@@ -142,7 +166,7 @@ public static class WorkflowValidator
                             return ValidationResult.Fail(
                                 $"ReviewLoop node {node.Id} LoopDecision '{loopDecision}' exceeds 64 characters.");
                         }
-                        if (string.Equals(loopDecision, "Failed", StringComparison.Ordinal))
+                        if (string.Equals(loopDecision, ImplicitFailedPort, StringComparison.Ordinal))
                         {
                             return ValidationResult.Fail(
                                 $"ReviewLoop node {node.Id} LoopDecision cannot be '{loopDecision}' — "
@@ -232,6 +256,19 @@ public static class WorkflowValidator
             }
         }
 
+        // Resolve agent declared outputs and child terminal ports for cross-validation.
+        var agentOutputs = await ResolveAgentOutputsAsync(
+            nodes, agentRepository, cancellationToken);
+
+        var crossValidation = CrossValidateAgentPorts(nodes, agentOutputs);
+        if (crossValidation is not null)
+        {
+            return ValidationResult.Fail(crossValidation);
+        }
+
+        var childTerminals = await ResolveChildTerminalPortsAsync(
+            subflowReferenceNodes, dbContext, workflowRepository, cancellationToken);
+
         edges ??= Array.Empty<WorkflowEdgeDto>();
 
         foreach (var edge in edges)
@@ -249,12 +286,18 @@ public static class WorkflowValidator
                 return ValidationResult.Fail($"Edge from {edge.FromNodeId} must have a non-empty FromPort.");
             }
 
-            var nodePorts = AllowedOutputPorts(fromNode);
-            if (nodePorts is not null && !nodePorts.Contains(edge.FromPort, StringComparer.Ordinal))
+            // Implicit Failed is always allowed as an edge source port, regardless of declarations.
+            if (string.Equals(edge.FromPort, ImplicitFailedPort, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var allowed = AllowedOutputPorts(fromNode, childTerminals);
+            if (!allowed.Contains(edge.FromPort, StringComparer.Ordinal))
             {
                 return ValidationResult.Fail(
                     $"Edge from {DescribeNode(fromNode)} uses port '{edge.FromPort}' which is not declared. "
-                    + $"Allowed ports: {string.Join(", ", nodePorts)}.");
+                    + $"Allowed ports: {FormatAllowedPorts(allowed)}.");
             }
         }
 
@@ -319,21 +362,218 @@ public static class WorkflowValidator
     }
 
     /// <summary>
-    /// The only port names a runtime Subflow node can emit. The child saga's terminal state is
-    /// mapped 1:1 to one of these by <c>RouteSubflowCompletionAsync</c>; edges wired from any
-    /// other port name would never match at runtime, so we reject them at save. Slice 6 of the
-    /// port-model redesign replaces this fixed list with terminal-port inheritance from the child.
+    /// Reject reserved port names in a node's declared <see cref="WorkflowNodeDto.OutputPorts"/>:
+    /// <c>Failed</c> is implicit on every node and never declared explicitly; <c>Exhausted</c> is
+    /// reserved for ReviewLoop's synthesized port and must not appear on any node's declared list.
     /// </summary>
-    internal static readonly IReadOnlyCollection<string> SubflowAllowedPorts =
-        new[] { "Completed", "Failed" };
+    private static string? CheckDeclaredPortReservations(WorkflowNodeDto node)
+    {
+        if (node.OutputPorts is null)
+        {
+            return null;
+        }
 
-    /// <summary>
-    /// The only port names a runtime ReviewLoop node can emit. The child saga's terminal decision
-    /// is mapped to one of these by <c>ResolveReviewLoopOutcome</c>; edges wired from any other
-    /// port name would never match at runtime, so we reject them at save.
-    /// </summary>
-    internal static readonly IReadOnlyCollection<string> ReviewLoopAllowedPorts =
-        new[] { "Approved", "Exhausted", "Failed" };
+        foreach (var port in node.OutputPorts)
+        {
+            if (string.IsNullOrWhiteSpace(port))
+            {
+                continue;
+            }
+
+            if (string.Equals(port, ImplicitFailedPort, StringComparison.Ordinal))
+            {
+                return $"Node {node.Id} of kind {node.Kind} declares the implicit '{ImplicitFailedPort}' port "
+                    + "in outputPorts. The Failed port is implicit on every node and must not be declared.";
+            }
+
+            if (string.Equals(port, ReviewLoopExhaustedPort, StringComparison.Ordinal))
+            {
+                return $"Node {node.Id} of kind {node.Kind} declares the reserved '{ReviewLoopExhaustedPort}' port "
+                    + "in outputPorts. The Exhausted port is reserved for ReviewLoop synthesis "
+                    + "and must not be declared on any node.";
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<IReadOnlyDictionary<string, IReadOnlyCollection<string>>> ResolveAgentOutputsAsync(
+        IReadOnlyList<WorkflowNodeDto> nodes,
+        IAgentConfigRepository agentRepository,
+        CancellationToken cancellationToken)
+    {
+        // Cache by (key, resolved-version) so duplicate references share one repo lookup.
+        var byNodeId = new Dictionary<string, IReadOnlyCollection<string>>(StringComparer.Ordinal);
+        var byVersionKey = new Dictionary<(string Key, int Version), IReadOnlyCollection<string>>();
+
+        foreach (var node in nodes)
+        {
+            if (string.IsNullOrWhiteSpace(node.AgentKey))
+            {
+                continue;
+            }
+
+            var nodeId = node.Id.ToString();
+            if (byNodeId.ContainsKey(nodeId))
+            {
+                continue;
+            }
+
+            int version;
+            try
+            {
+                version = node.AgentVersion ?? await agentRepository.GetLatestVersionAsync(
+                    node.AgentKey.Trim(), cancellationToken);
+            }
+            catch (AgentConfigNotFoundException)
+            {
+                // Already surfaced as a "Workflow references unknown agent(s)" error earlier.
+                continue;
+            }
+
+            var versionKey = (node.AgentKey.Trim(), version);
+            if (!byVersionKey.TryGetValue(versionKey, out var ports))
+            {
+                AgentConfig agentConfig;
+                try
+                {
+                    agentConfig = await agentRepository.GetAsync(versionKey.Item1, version, cancellationToken);
+                }
+                catch (AgentConfigNotFoundException)
+                {
+                    continue;
+                }
+
+                ports = agentConfig.DeclaredOutputs
+                    .Select(o => o.Kind)
+                    .Where(k => !string.IsNullOrWhiteSpace(k))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                byVersionKey[versionKey] = ports;
+            }
+
+            byNodeId[nodeId] = ports;
+        }
+
+        return byNodeId;
+    }
+
+    private static string? CrossValidateAgentPorts(
+        IReadOnlyList<WorkflowNodeDto> nodes,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>> agentOutputsByNodeId)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.Kind is not WorkflowNodeKind.Start
+                and not WorkflowNodeKind.Agent
+                and not WorkflowNodeKind.Hitl)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(node.AgentKey))
+            {
+                continue;
+            }
+
+            if (!agentOutputsByNodeId.TryGetValue(node.Id.ToString(), out var declared))
+            {
+                continue;
+            }
+
+            var nodePorts = node.OutputPorts ?? Array.Empty<string>();
+            var undeclared = nodePorts
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Where(p => !string.Equals(p, ImplicitFailedPort, StringComparison.Ordinal))
+                .Where(p => !declared.Contains(p, StringComparer.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            if (undeclared.Length > 0)
+            {
+                return $"{DescribeNode(node)} declares output port(s) {FormatPortList(undeclared)} "
+                    + $"that are not in agent '{node.AgentKey}' declared outputs "
+                    + $"({FormatPortList(declared)}). The agent must declare every routed port.";
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<IReadOnlyDictionary<Guid, IReadOnlyCollection<string>>> ResolveChildTerminalPortsAsync(
+        IReadOnlyList<WorkflowNodeDto> subflowReferenceNodes,
+        CodeFlowDbContext dbContext,
+        IWorkflowRepository workflowRepository,
+        CancellationToken cancellationToken)
+    {
+        if (subflowReferenceNodes.Count == 0)
+        {
+            return new Dictionary<Guid, IReadOnlyCollection<string>>();
+        }
+
+        // For nodes pinning a null version, resolve the latest version in one batched query so we
+        // can call GetTerminalPortsAsync per (key, version) afterward.
+        var keysNeedingLatest = subflowReferenceNodes
+            .Where(n => n.SubflowVersion is null)
+            .Select(n => n.SubflowKey!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var latestByKey = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (keysNeedingLatest.Length > 0)
+        {
+            var rows = await dbContext.Workflows
+                .AsNoTracking()
+                .Where(w => keysNeedingLatest.Contains(w.Key))
+                .GroupBy(w => w.Key)
+                .Select(g => new { Key = g.Key, Latest = g.Max(w => w.Version) })
+                .ToListAsync(cancellationToken);
+            foreach (var row in rows)
+            {
+                latestByKey[row.Key] = row.Latest;
+            }
+        }
+
+        var byNodeId = new Dictionary<Guid, IReadOnlyCollection<string>>();
+        var byVersionKey = new Dictionary<(string Key, int Version), IReadOnlyCollection<string>>();
+
+        foreach (var node in subflowReferenceNodes)
+        {
+            var subflowKey = node.SubflowKey!.Trim();
+            int version;
+            if (node.SubflowVersion is int pinned)
+            {
+                version = pinned;
+            }
+            else if (latestByKey.TryGetValue(subflowKey, out var latest))
+            {
+                version = latest;
+            }
+            else
+            {
+                continue;
+            }
+
+            var versionKey = (subflowKey, version);
+            if (!byVersionKey.TryGetValue(versionKey, out var ports))
+            {
+                try
+                {
+                    ports = await workflowRepository.GetTerminalPortsAsync(subflowKey, version, cancellationToken);
+                }
+                catch (WorkflowNotFoundException)
+                {
+                    continue;
+                }
+
+                byVersionKey[versionKey] = ports;
+            }
+
+            byNodeId[node.Id] = ports;
+        }
+
+        return byNodeId;
+    }
 
     /// <summary>
     /// Format a node for use in validation error messages — kind plus a recognizable identifier
@@ -353,18 +593,71 @@ public static class WorkflowValidator
         return $"{label} ({node.Id})";
     }
 
-    private static IReadOnlyCollection<string>? AllowedOutputPorts(WorkflowNodeDto node)
+    /// <summary>
+    /// Allowed source-port set for an edge leaving the given node. The implicit
+    /// <see cref="ImplicitFailedPort"/> is always allowed and is excluded from this listing — the
+    /// edge-validation loop short-circuits Failed before consulting the set, so callers see a
+    /// declared-port view here for use in error messages.
+    /// </summary>
+    internal static IReadOnlyCollection<string> AllowedOutputPorts(
+        WorkflowNodeDto node,
+        IReadOnlyDictionary<Guid, IReadOnlyCollection<string>>? childTerminals = null)
     {
-        return node.Kind switch
+        switch (node.Kind)
         {
-            WorkflowNodeKind.Logic => node.OutputPorts?.ToArray() ?? Array.Empty<string>(),
-            WorkflowNodeKind.Start or WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl =>
-                node.OutputPorts is { Count: > 0 } declared
-                    ? declared.ToArray()
-                    : null,
-            WorkflowNodeKind.Subflow => SubflowAllowedPorts,
-            WorkflowNodeKind.ReviewLoop => ReviewLoopAllowedPorts,
-            _ => null
-        };
+            case WorkflowNodeKind.Start:
+            case WorkflowNodeKind.Agent:
+            case WorkflowNodeKind.Hitl:
+            case WorkflowNodeKind.Logic:
+                return node.OutputPorts is { Count: > 0 } declared
+                    ? declared.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.Ordinal).ToArray()
+                    : Array.Empty<string>();
+
+            case WorkflowNodeKind.Subflow:
+                {
+                    var terminals = childTerminals is not null && childTerminals.TryGetValue(node.Id, out var t)
+                        ? t
+                        : (IReadOnlyCollection<string>)Array.Empty<string>();
+                    return terminals;
+                }
+
+            case WorkflowNodeKind.ReviewLoop:
+                {
+                    var terminals = childTerminals is not null && childTerminals.TryGetValue(node.Id, out var t)
+                        ? t
+                        : (IReadOnlyCollection<string>)Array.Empty<string>();
+                    var loopDecision = string.IsNullOrWhiteSpace(node.LoopDecision)
+                        ? DefaultLoopDecisionPort
+                        : node.LoopDecision.Trim();
+                    var set = new HashSet<string>(terminals, StringComparer.Ordinal)
+                    {
+                        ReviewLoopExhaustedPort,
+                        loopDecision,
+                    };
+                    return set;
+                }
+
+            default:
+                return Array.Empty<string>();
+        }
+    }
+
+    private static string FormatAllowedPorts(IReadOnlyCollection<string> allowed)
+    {
+        if (allowed.Count == 0)
+        {
+            return $"(none declared); '{ImplicitFailedPort}' is always implicitly available";
+        }
+        return string.Join(", ", allowed.OrderBy(p => p, StringComparer.Ordinal))
+            + $", '{ImplicitFailedPort}' (implicit)";
+    }
+
+    private static string FormatPortList(IEnumerable<string> ports)
+    {
+        var ordered = ports
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToArray();
+        return ordered.Length == 0 ? "(none)" : "[" + string.Join(", ", ordered) + "]";
     }
 }

@@ -60,6 +60,11 @@ import {
   PublishForkResult,
   PublishForkTarget
 } from './publish-fork-dialog.component';
+import {
+  VersionUpdateDialogComponent,
+  VersionUpdateResult,
+  VersionUpdateTarget
+} from './version-update-dialog.component';
 
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
@@ -114,7 +119,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent],
+  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -247,15 +252,40 @@ function defaultStartInput(): WorkflowInput {
                   <input type="number" [ngModel]="sel.editor.agentVersion ?? null"
                          (ngModelChange)="onAgentVersionChanged(sel.editor, $event)" min="1" />
                 </label>
-                <label class="field">
-                  <span>Output ports <span class="muted xsmall">(one per line)</span></span>
-                  <textarea rows="3" class="mono"
-                            [ngModel]="outputPortsText()"
-                            (ngModelChange)="onOutputPortsChanged(sel.editor, $event)"></textarea>
-                  <span class="muted xsmall">
-                    Without a script, ports match the decision kinds this agent returns (baseline: <code>Completed</code>, <code>Failed</code>). With a script, declare whatever ports the script picks.
-                  </span>
-                </label>
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(derived from agent's declared outputs)</span></span>
+                  @if (derivedPortRows().length > 0) {
+                    <ul class="port-list mono">
+                      @for (p of derivedPortRows(); track p.name) {
+                        <li>
+                          <code>{{ p.name }}</code>
+                          @if (p.broken) {
+                            <span class="tag error xsmall">stale (not in agent outputs)</span>
+                          }
+                        </li>
+                      }
+                      <li class="implicit">
+                        <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
+                      </li>
+                    </ul>
+                  } @else {
+                    <p class="muted xsmall">
+                      @if (sel.editor.agentKey) {
+                        The pinned agent declares no outputs yet. Add an entry to the agent's <code>outputs</code> list — the picker will refresh on next selection.
+                      } @else {
+                        Pick an agent above to see its declared output ports.
+                      }
+                      Authors no longer hand-edit ports on Agent/Hitl/Start nodes — port names come from the pinned agent's <code>outputs</code>. The implicit <code>Failed</code> port is always wirable for error recovery.
+                    </p>
+                  }
+                  @if (brokenEdgesForSelected().length > 0) {
+                    <ul class="muted xsmall broken-edges">
+                      @for (msg of brokenEdgesForSelected(); track msg) {
+                        <li class="error">{{ msg }}</li>
+                      }
+                    </ul>
+                  }
+                </div>
               </div>
 
               <div class="inspector-section">
@@ -343,9 +373,35 @@ function defaultStartInput(): WorkflowInput {
                     </div>
                   </div>
                 }
-                <p class="muted xsmall">
-                  Subflow nodes always have the fixed output ports <code>Completed</code>, <code>Failed</code>, <code>Escalated</code>. Route each downstream to determine how the parent continues after the child terminates.
-                </p>
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(inherited from child workflow's terminal ports)</span></span>
+                  @if (sel.editor.outputPortNames.length > 0) {
+                    <ul class="port-list mono">
+                      @for (p of sel.editor.outputPortNames; track p) {
+                        <li><code>{{ p }}</code></li>
+                      }
+                      <li class="implicit">
+                        <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
+                      </li>
+                    </ul>
+                  } @else {
+                    <p class="muted xsmall">
+                      @if (sel.editor.subflowKey) {
+                        The pinned child workflow has no terminal ports yet — wire its terminal nodes' outputs through to a designed exit port.
+                      } @else {
+                        Pick a child workflow above to see its terminal output ports.
+                      }
+                      Subflow nodes inherit ports from the pinned child workflow's terminal ports — authors don't hand-edit them. The implicit <code>Failed</code> port is always wirable.
+                    </p>
+                  }
+                  @if (brokenEdgesForSelected().length > 0) {
+                    <ul class="muted xsmall broken-edges">
+                      @for (msg of brokenEdgesForSelected(); track msg) {
+                        <li class="error">{{ msg }}</li>
+                      }
+                    </ul>
+                  }
+                </div>
               </div>
             }
 
@@ -405,8 +461,37 @@ function defaultStartInput(): WorkflowInput {
                     </div>
                   </div>
                 }
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(child terminal ports ∖ loopDecision, plus synthesized <code>Exhausted</code>)</span></span>
+                  @if (sel.editor.outputPortNames.length > 0) {
+                    <ul class="port-list mono">
+                      @for (p of sel.editor.outputPortNames; track p) {
+                        <li>
+                          <code>{{ p }}</code>
+                          @if (p === 'Exhausted') {
+                            <span class="muted xsmall">(synthesized when round budget is reached)</span>
+                          }
+                        </li>
+                      }
+                      <li class="implicit">
+                        <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
+                      </li>
+                    </ul>
+                  } @else {
+                    <p class="muted xsmall">
+                      Pick a child workflow above to see its terminal ports. ReviewLoop nodes inherit terminal ports from the child, exclude the configured <code>loopDecision</code> (which iterates instead of exiting), and add a synthesized <code>Exhausted</code> port.
+                    </p>
+                  }
+                  @if (brokenEdgesForSelected().length > 0) {
+                    <ul class="muted xsmall broken-edges">
+                      @for (msg of brokenEdgesForSelected(); track msg) {
+                        <li class="error">{{ msg }}</li>
+                      }
+                    </ul>
+                  }
+                </div>
                 <p class="muted xsmall">
-                  Review loop output ports: <code>Approved</code> · <code>Exhausted</code> · <code>Failed</code>. The child workflow can read <code>{{ '{{round}}' }}</code>, <code>{{ '{{maxRounds}}' }}</code>, <code>{{ '{{isLastRound}}' }}</code> from prompts and scripts.
+                  The child workflow can read <code>{{ '{{round}}' }}</code>, <code>{{ '{{maxRounds}}' }}</code>, <code>{{ '{{isLastRound}}' }}</code> from prompts and scripts.
                 </p>
               </div>
             }
@@ -547,6 +632,11 @@ function defaultStartInput(): WorkflowInput {
       [target]="publishTarget()"
       (close)="closePublishFork()"
       (published)="onForkPublished($event)"></cf-publish-fork-dialog>
+
+    <cf-version-update-dialog
+      [target]="versionUpdateTarget()"
+      (confirmed)="onVersionUpdateConfirmed($event)"
+      (cancelled)="versionUpdateTarget.set(null)"></cf-version-update-dialog>
   `,
   styles: [`
     :host { display: block; height: 100%; }
@@ -911,6 +1001,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly editTarget = signal<InPlaceEditTarget | null>(null);
   readonly warningSuppressed = signal(false);
   readonly publishTarget = signal<PublishForkTarget | null>(null);
+  readonly versionUpdateTarget = signal<VersionUpdateTarget | null>(null);
   readonly selectedAgentDocs = signal<SelectedAgentDocs | null>(null);
   readonly selectedAgentDocsLoading = signal(false);
   readonly selectedAgentDocsError = signal<string | null>(null);
@@ -964,6 +1055,39 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
       return { port, source: 'blank', content: '' };
     });
+  });
+
+  /** Per-port rows for the inspector's "derived from agent outputs" listing. Marks any port
+   *  the editor still has but the agent no longer declares as `broken: true` so authors see
+   *  drift inline before saving. */
+  readonly derivedPortRows = computed<{ name: string; broken: boolean }[]>(() => {
+    this.portsRevision();
+    const sel = this.selectedNode();
+    if (!sel) return [];
+    if (!AGENT_BEARING_KINDS.has(sel.editor.kind)) return [];
+
+    const docs = this.selectedAgentDocs();
+    const declared = Array.isArray(docs?.config.outputs)
+      ? docs!.config.outputs.map(o => o.kind).filter((k): k is string => typeof k === 'string' && k.length > 0)
+      : null;
+    const declaredSet = declared ? new Set(declared) : null;
+
+    return sel.editor.outputPortNames.map(name => ({
+      name,
+      broken: declaredSet ? !declaredSet.has(name) : false,
+    }));
+  });
+
+  /** Inline warnings for edges whose source port is no longer declared by the source node. */
+  readonly brokenEdgesForSelected = computed<string[]>(() => {
+    this.portsRevision();
+    const sel = this.selectedNode();
+    if (!sel || !this.editor) return [];
+    const node = sel.editor;
+    const allowed = new Set(node.allOutputPortNames); // declared + implicit Failed
+    return this.editor.getConnections()
+      .filter(c => c.source === node.id && !allowed.has(c.sourceOutput))
+      .map(c => `Edge from port '${c.sourceOutput}' is broken — that port is no longer declared.`);
   });
 
   private asTemplateMap(value: unknown): Record<string, string> {
@@ -1223,6 +1347,20 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       if (node.agentKey?.startsWith(FORK_KEY_PREFIX)) {
         items.push({ id: 'publish-fork', label: 'Publish fork…' });
       }
+      items.push({
+        id: 'update-to-latest',
+        label: 'Update to latest agent version…',
+        disabled: !hasAgent,
+        disabledReason: hasAgent ? undefined : 'Pick an agent on the inspector first.'
+      });
+    } else if (node.kind === 'Subflow' || node.kind === 'ReviewLoop') {
+      const hasChild = !!node.subflowKey;
+      items.push({
+        id: 'update-to-latest',
+        label: 'Update to latest workflow version…',
+        disabled: !hasChild,
+        disabledReason: hasChild ? undefined : 'Pick a child workflow on the inspector first.'
+      });
     }
 
     items.push({ id: 'delete', label: 'Delete node', danger: true });
@@ -1253,7 +1391,110 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       case 'publish-fork':
         this.openPublishFork(node);
         return;
+      case 'update-to-latest':
+        this.openVersionUpdate(node);
+        return;
     }
+  }
+
+  protected openVersionUpdate(node: WorkflowEditorNode): void {
+    const outgoing = (this.editor?.getConnections() ?? [])
+      .filter(c => c.source === node.id)
+      .map(c => ({
+        sourcePort: c.sourceOutput,
+        targetLabel: this.connectionEndpointLabel(c.target, c.targetInput),
+      }));
+
+    if (AGENT_BEARING_KINDS.has(node.kind) && node.agentKey) {
+      const agentKey = node.agentKey;
+      const fromVersion = node.agentVersion ?? 0;
+      this.agentsApi.getLatest(agentKey).subscribe({
+        next: latest => {
+          if (!latest.version || latest.version <= fromVersion) {
+            this.statusMessage.set(`Agent '${agentKey}' v${fromVersion} is already the latest.`);
+            return;
+          }
+          const latestPorts = (latest.config?.outputs ?? [])
+            .map(o => o.kind)
+            .filter((k): k is string => typeof k === 'string' && k.length > 0);
+          this.versionUpdateTarget.set({
+            nodeId: node.id,
+            kind: 'agent',
+            refKey: agentKey,
+            fromVersion,
+            toVersion: latest.version,
+            currentPorts: node.outputPortNames.slice(),
+            latestPorts,
+            outgoing,
+          });
+        },
+        error: err => this.error.set(`Failed to load latest agent version: ${err?.message ?? err}`),
+      });
+      return;
+    }
+
+    if ((node.kind === 'Subflow' || node.kind === 'ReviewLoop') && node.subflowKey) {
+      const subflowKey = node.subflowKey;
+      const fromVersion = node.subflowVersion ?? 0;
+      this.api.getLatest(subflowKey).subscribe({
+        next: latest => {
+          if (!latest.version || latest.version <= fromVersion) {
+            this.statusMessage.set(`Workflow '${subflowKey}' v${fromVersion} is already the latest.`);
+            return;
+          }
+          this.api.getTerminalPorts(subflowKey, latest.version).subscribe({
+            next: terminals => {
+              let latestPorts = terminals.slice();
+              if (node.kind === 'ReviewLoop') {
+                const loopDecision = (node.loopDecision?.trim()) || 'Rejected';
+                latestPorts = latestPorts.filter(p => p !== loopDecision);
+                if (!latestPorts.includes('Exhausted')) latestPorts.push('Exhausted');
+              }
+              this.versionUpdateTarget.set({
+                nodeId: node.id,
+                kind: 'workflow',
+                refKey: subflowKey,
+                fromVersion,
+                toVersion: latest.version,
+                currentPorts: node.outputPortNames.slice(),
+                latestPorts,
+                outgoing,
+              });
+            },
+            error: err => this.error.set(`Failed to load latest workflow's terminal ports: ${err?.message ?? err}`),
+          });
+        },
+        error: err => this.error.set(`Failed to load latest workflow version: ${err?.message ?? err}`),
+      });
+    }
+  }
+
+  onVersionUpdateConfirmed(result: VersionUpdateResult): void {
+    const node = this.editor?.getNode(result.nodeId) as WorkflowEditorNode | undefined;
+    if (!node) {
+      this.versionUpdateTarget.set(null);
+      return;
+    }
+
+    if (AGENT_BEARING_KINDS.has(node.kind)) {
+      node.agentVersion = result.toVersion;
+      this.loadAgentDocsForNode(node);
+    } else if (node.kind === 'Subflow' || node.kind === 'ReviewLoop') {
+      node.subflowVersion = result.toVersion;
+      node.label = labelFor(node);
+      this.area?.update('node', node.id);
+    }
+
+    // Drop edges from removed ports first so applyNodePorts doesn't churn over them.
+    for (const port of result.edgePortsToRemove) {
+      this.editor?.getConnections()
+        .filter(c => c.source === node.id && c.sourceOutput === port)
+        .forEach(c => this.editor?.removeConnection(c.id));
+    }
+
+    this.applyNodePorts(node, result.newPorts);
+    this.versionUpdateTarget.set(null);
+    this.statusMessage.set(`Updated to v${result.toVersion}.`);
   }
 
   closeContextMenu(): void {
@@ -1399,6 +1640,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     if (!value) {
       this.selectedSubflowDetail.set(null);
+      this.applyNodePorts(node, []);
       return;
     }
 
@@ -1406,12 +1648,15 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       next: detail => this.selectedSubflowDetail.set(detail),
       error: () => this.selectedSubflowDetail.set(null)
     });
+
+    this.refreshSubflowPorts(node);
   }
 
   onSubflowVersionChanged(node: WorkflowEditorNode, value: number | null): void {
     node.subflowVersion = value && value > 0 ? value : null;
     node.label = labelFor(node);
     this.area?.update('node', node.id);
+    this.refreshSubflowPorts(node);
   }
 
   onReviewMaxRoundsChanged(node: WorkflowEditorNode, value: number | null): void {
@@ -1432,6 +1677,33 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const trimmed = value?.trim() ?? '';
     node.loopDecision = trimmed.length === 0 ? null : trimmed;
     this.area?.update('node', node.id);
+    // loopDecision is excluded from the ReviewLoop child terminal-port set (it iterates
+    // instead of exiting), so refresh ports when the author changes it.
+    if (node.kind === 'ReviewLoop') {
+      this.refreshSubflowPorts(node);
+    }
+  }
+
+  /** Fetch the child workflow's terminal ports and apply them to this Subflow / ReviewLoop
+   *  node. ReviewLoop additionally synthesizes `Exhausted` and excludes the configured
+   *  loopDecision (since that one iterates rather than exits). */
+  private refreshSubflowPorts(node: WorkflowEditorNode): void {
+    if (node.kind !== 'Subflow' && node.kind !== 'ReviewLoop') return;
+    const subflowKey = node.subflowKey;
+    if (!subflowKey) return;
+
+    this.api.getTerminalPorts(subflowKey, node.subflowVersion ?? null).subscribe({
+      next: terminals => {
+        let ports = terminals.slice();
+        if (node.kind === 'ReviewLoop') {
+          const loopDecision = (node.loopDecision?.trim()) || 'Rejected';
+          ports = ports.filter(p => p !== loopDecision);
+          if (!ports.includes('Exhausted')) ports.push('Exhausted');
+        }
+        this.applyNodePorts(node, ports);
+      },
+      error: () => { /* best-effort; leave existing ports in place */ }
+    });
   }
 
   labelForOutline(node: { kind: string; agentKey?: string | null; subflowKey?: string | null; reviewMaxRounds?: number | null }): string {
@@ -1479,8 +1751,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   private applyNodePorts(node: WorkflowEditorNode, desired: string[]): void {
-    const current = new Set(node.outputPortNames);
-    const desiredSet = new Set(desired);
+    // Failed is implicit: the editor always renders it as a handle and it's never declared.
+    // Strip it from incoming desired sets so it can't be rebuilt as a regular port.
+    const cleaned = desired.filter(p => p !== 'Failed' && p.trim().length > 0);
+    const current = new Set(node.outputPortNames); // already excludes implicit Failed
+    const desiredSet = new Set(cleaned);
 
     for (const port of current) {
       if (!desiredSet.has(port)) {
@@ -1491,7 +1766,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       }
     }
 
-    for (const port of desired) {
+    for (const port of cleaned) {
       if (!current.has(port)) {
         node.addOutput(port, new ClassicPreset.Output(new ClassicPreset.Socket('port'), port));
       }
