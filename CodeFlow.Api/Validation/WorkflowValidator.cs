@@ -265,7 +265,8 @@ public static class WorkflowValidator
             if (nodePorts is not null && !nodePorts.Contains(edge.FromPort, StringComparer.Ordinal))
             {
                 return ValidationResult.Fail(
-                    $"Edge from node {fromNode.Id} uses port '{edge.FromPort}' which is not declared.");
+                    $"Edge from {DescribeNode(fromNode)} uses port '{edge.FromPort}' which is not declared. "
+                    + $"Allowed ports: {string.Join(", ", nodePorts)}.");
             }
         }
 
@@ -275,8 +276,9 @@ public static class WorkflowValidator
 
         if (duplicateOutgoing is not null)
         {
+            var duplicateNode = nodesById[duplicateOutgoing.Key.FromNodeId];
             return ValidationResult.Fail(
-                $"Multiple edges leave node {duplicateOutgoing.Key.FromNodeId} on port '{duplicateOutgoing.Key.FromPort}'.");
+                $"Multiple edges leave {DescribeNode(duplicateNode)} on port '{duplicateOutgoing.Key.FromPort}'.");
         }
 
         var inputValidation = ValidateInputs(inputs);
@@ -343,6 +345,24 @@ public static class WorkflowValidator
     /// </summary>
     internal static readonly IReadOnlyCollection<string> ReviewLoopAllowedPorts =
         new[] { "Approved", "Exhausted", "Failed" };
+
+    /// <summary>
+    /// Format a node for use in validation error messages — kind plus a recognizable identifier
+    /// (agent key for agent-bearing nodes, subflow key for Subflow/ReviewLoop, raw id otherwise).
+    /// The raw id is appended in parens so authors can still locate the node by id when needed.
+    /// </summary>
+    private static string DescribeNode(WorkflowNodeDto node)
+    {
+        var label = node.Kind switch
+        {
+            WorkflowNodeKind.Start or WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation
+                when !string.IsNullOrWhiteSpace(node.AgentKey) => $"{node.Kind} '{node.AgentKey}'",
+            WorkflowNodeKind.Subflow or WorkflowNodeKind.ReviewLoop
+                when !string.IsNullOrWhiteSpace(node.SubflowKey) => $"{node.Kind} '{node.SubflowKey}'",
+            _ => node.Kind.ToString()
+        };
+        return $"{label} ({node.Id})";
+    }
 
     private static IReadOnlyCollection<string>? AllowedOutputPorts(WorkflowNodeDto node)
     {
