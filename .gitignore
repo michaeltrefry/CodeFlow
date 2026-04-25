@@ -58,3 +58,16 @@ nunit-*.xml
 .docker-data/
 .playwright-mcp/
 playwright-agent-*
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
+# Local SQLite databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
