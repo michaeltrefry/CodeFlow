@@ -35,6 +35,13 @@ interface TimelineEntry {
   timestampUtc: string;
   inputRef?: string | null;
   outputRef?: string | null;
+  /** When set, this entry came from a descendant saga; label describes the lineage
+   *  (e.g., "prd-newproject-flow › prd-socratic-loop"). Empty means the entry is
+   *  from the trace being viewed itself. */
+  originPath?: string;
+  /** Trace id this entry was actually recorded on — same as the viewed trace, or a
+   *  descendant. Used to drive "open child trace ↗" links per entry. */
+  originTraceId?: string;
 }
 
 interface ArtifactLoadState {
@@ -263,6 +270,9 @@ type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
                       } @else {
                         <cf-chip variant="accent" mono>{{ entry.kind }}</cf-chip>
                       }
+                      @if (entry.originPath) {
+                        <cf-chip mono>via {{ entry.originPath }}</cf-chip>
+                      }
                       @if (entry.inputRef || entry.outputRef) {
                         <span class="caret">{{ expandedEntries().has(entry.id) ? '▾' : '▸' }}</span>
                       }
@@ -383,6 +393,11 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly actionBusy = signal(false);
   readonly actionError = signal<string | null>(null);
   readonly childTraces = signal<TraceSummary[]>([]);
+  /** Map of descendant traceId → details, populated recursively while a parent saga is
+   *  paused inside a Subflow/ReviewLoop. Used to merge child decisions into the parent
+   *  timeline so the user sees the full execution flow without drilling into each
+   *  child trace manually. */
+  private readonly descendantDetails = signal<Map<string, TraceDetail>>(new Map());
   private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
 
   readonly reviewLoopGroups = computed<ReviewLoopGroup[]>(() => {
@@ -438,6 +453,13 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     }
     for (const evaluation of d.logicEvaluations) {
       ids.add(evaluation.nodeId);
+    }
+    // While a Subflow/ReviewLoop is mid-execution, the parent saga hasn't yet recorded
+    // its synthetic completion decision — so the corresponding parent node is missing
+    // from the set above. Surface it via direct child traces' `parentNodeId` so the
+    // graph highlights "currently in" nodes too, not just "already finished" ones.
+    for (const child of this.childTraces()) {
+      if (child.parentNodeId) ids.add(child.parentNodeId);
     }
     return ids.size > 0 ? Array.from(ids) : [];
   });
@@ -598,8 +620,131 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     ).subscribe({
       next: detail => {
         this.detail.set(detail);
-        const baseline: TimelineEntry[] = detail.decisions.map((d, i) => ({
-          id: `init-${i}`,
+        this.rebuildTimeline();
+        this.loadWorkflowForTrace(detail);
+        this.loadDescendantTracesFor(detail.traceId);
+      }
+    });
+  }
+
+  /** Parent-of mapping for every trace returned by `api.list()` — covers the full
+   *  descendant tree, not just direct children. Rebuilt every reload. */
+  private readonly parentByTraceId = signal<Map<string, string>>(new Map());
+
+  /** Load the full descendant tree (children + grandchildren + ...) so the timeline can
+   *  merge their decisions in chronological order. Without this, the parent's timeline
+   *  appears stuck while a Subflow/ReviewLoop is mid-execution because the parent saga
+   *  doesn't record any decision until the child returns. */
+  private loadDescendantTracesFor(rootTraceId: string): void {
+    this.api.list().subscribe({
+      next: all => {
+        const directChildren = all.filter(t => t.parentTraceId === rootTraceId);
+        this.childTraces.set(directChildren);
+
+        const parentMap = new Map<string, string>();
+        for (const t of all) {
+          if (t.parentTraceId) parentMap.set(t.traceId, t.parentTraceId);
+        }
+        this.parentByTraceId.set(parentMap);
+
+        const descendants = this.collectDescendants(rootTraceId, all);
+        if (descendants.length === 0) {
+          this.descendantDetails.set(new Map());
+          this.rebuildTimeline();
+          return;
+        }
+
+        // Fetch each descendant's detail in parallel; rebuild the timeline once all
+        // arrive (or whichever ones succeed).
+        let pending = descendants.length;
+        const next = new Map<string, TraceDetail>();
+        for (const summary of descendants) {
+          this.api.get(summary.traceId).subscribe({
+            next: childDetail => {
+              next.set(summary.traceId, childDetail);
+              if (--pending === 0) {
+                this.descendantDetails.set(next);
+                this.rebuildTimeline();
+              }
+            },
+            error: () => {
+              if (--pending === 0) {
+                this.descendantDetails.set(next);
+                this.rebuildTimeline();
+              }
+            }
+          });
+        }
+      },
+      error: () => {
+        this.childTraces.set([]);
+        this.descendantDetails.set(new Map());
+        this.rebuildTimeline();
+      }
+    });
+  }
+
+  private collectDescendants(rootId: string, all: TraceSummary[]): TraceSummary[] {
+    const childrenByParent = new Map<string, TraceSummary[]>();
+    for (const t of all) {
+      if (!t.parentTraceId) continue;
+      const list = childrenByParent.get(t.parentTraceId) ?? [];
+      list.push(t);
+      childrenByParent.set(t.parentTraceId, list);
+    }
+
+    const out: TraceSummary[] = [];
+    const stack = [rootId];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      const kids = childrenByParent.get(id) ?? [];
+      for (const kid of kids) {
+        out.push(kid);
+        stack.push(kid.traceId);
+      }
+    }
+    return out;
+  }
+
+  /** Rebuild the timeline from the parent trace's decisions + every descendant's
+   *  decisions, sorted by recorded timestamp. Each non-root entry carries an
+   *  `originPath` describing the lineage so the UI can render a "via X › Y" tag. */
+  private rebuildTimeline(): void {
+    const root = this.detail();
+    if (!root) {
+      this.timeline.set([]);
+      return;
+    }
+
+    const descendants = this.descendantDetails();
+    // workflowKey lookup for the lineage path; falls back to traceId fragments.
+    const detailsByTraceId = new Map<string, TraceDetail>();
+    detailsByTraceId.set(root.traceId, root);
+    for (const [id, d] of descendants) detailsByTraceId.set(id, d);
+
+    const parentMap = this.parentByTraceId();
+
+    const lineagePathFor = (traceId: string): string => {
+      const segments: string[] = [];
+      let current = traceId;
+      // Walk up to the root, prepending each ancestor's workflowKey.
+      while (current && current !== root.traceId) {
+        const detail = detailsByTraceId.get(current);
+        segments.unshift(detail?.workflowKey ?? current.slice(0, 8));
+        const parent = parentMap.get(current);
+        if (!parent) break;
+        current = parent;
+      }
+      return segments.join(' › ');
+    };
+
+    const merged: TimelineEntry[] = [];
+    let counter = 0;
+
+    const pushDecisions = (detail: TraceDetail, originPath: string) => {
+      for (const d of detail.decisions) {
+        merged.push({
+          id: `${detail.traceId}-${counter++}`,
           kind: 'Completed',
           agentKey: d.agentKey,
           agentVersion: d.agentVersion,
@@ -608,20 +753,20 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           decisionPayload: d.decisionPayload,
           timestampUtc: d.recordedAtUtc,
           inputRef: d.inputRef,
-          outputRef: d.outputRef
-        }));
-        this.timeline.set(baseline);
-        this.loadWorkflowForTrace(detail);
-        this.loadChildTracesFor(detail.traceId);
+          outputRef: d.outputRef,
+          originPath: originPath || undefined,
+          originTraceId: detail.traceId
+        });
       }
-    });
-  }
+    };
 
-  private loadChildTracesFor(traceId: string): void {
-    this.api.list().subscribe({
-      next: all => this.childTraces.set(all.filter(t => t.parentTraceId === traceId)),
-      error: () => this.childTraces.set([])
-    });
+    pushDecisions(root, '');
+    for (const [traceId, detail] of descendants) {
+      pushDecisions(detail, lineagePathFor(traceId));
+    }
+
+    merged.sort((a, b) => a.timestampUtc.localeCompare(b.timestampUtc));
+    this.timeline.set(merged);
   }
 
   copyId(id: string): void {

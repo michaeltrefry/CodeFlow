@@ -1,5 +1,5 @@
 import { Component, computed, inject, input, signal, OnInit } from '@angular/core';
-import { DatePipe, JsonPipe } from '@angular/common';
+import { CommonModule, DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
 import { AgentsApi } from '../../core/agents.api';
@@ -7,6 +7,7 @@ import { AgentRolesApi } from '../../core/agent-roles.api';
 import { HostToolsApi } from '../../core/host-tools.api';
 import { McpServersApi } from '../../core/mcp-servers.api';
 import {
+  AgentConfig,
   AgentRole,
   AgentRoleGrant,
   AgentVersion,
@@ -18,13 +19,29 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-pic
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
+import { CardComponent } from '../../ui/card.component';
+import { TabsComponent, TabItem } from '../../ui/tabs.component';
+
+type DetailTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'roles' | 'json';
+
+interface ReadOnlyOutputRow {
+  kind: string;
+  description: string | null;
+  payloadExample: unknown;
+  template: string;
+}
+
+interface ReadOnlyFallbackRow {
+  port: string;
+  template: string;
+}
 
 @Component({
   selector: 'cf-agent-detail',
   standalone: true,
   imports: [
-    RouterLink, DatePipe, JsonPipe, ToolPickerComponent,
-    PageHeaderComponent, ButtonComponent, ChipComponent,
+    CommonModule, RouterLink, DatePipe, ToolPickerComponent,
+    PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, TabsComponent,
   ],
   template: `
     <div class="page">
@@ -44,6 +61,7 @@ import { ChipComponent } from '../../ui/chip.component';
       <div page-header-body>
         <div class="trace-header-meta">
           @if (retired()) { <cf-chip variant="err" dot>Retired</cf-chip> }
+          <cf-chip [variant]="type() === 'hitl' ? 'accent' : 'default'" mono>{{ type() === 'hitl' ? 'HITL' : 'LLM agent' }}</cf-chip>
           @if (viewing(); as v) {
             <cf-chip mono>v{{ v.version }}</cf-chip>
             <cf-chip>created {{ v.createdAtUtc | date:'medium' }}</cf-chip>
@@ -60,113 +78,345 @@ import { ChipComponent } from '../../ui/chip.component';
       <div class="trace-failure"><strong>Retire failed:</strong> {{ retireError() }}</div>
     }
 
-    <div class="detail-grid">
-      <section class="detail-column">
-        <header class="section-header">
-          <h2>Versions</h2>
-        </header>
-        <select
-          class="version-select"
-          [value]="viewing()?.version ?? ''"
-          (change)="selectFromEvent($event)">
-          @for (v of versions(); track v.version) {
-            <option [value]="v.version">
-              v{{ v.version }} · {{ v.createdAtUtc | date:'mediumDate' }}
-            </option>
-          }
-        </select>
-
-        <header class="section-header section-header-spaced">
-          <h2>Configuration</h2>
-        </header>
-        @if (viewing(); as version) {
-          <pre class="card monospace json">{{ version.config | json }}</pre>
-        }
-      </section>
-
-      <section class="detail-column">
-        <header class="section-header">
-          <h2>Roles</h2>
-          <span class="muted small">Tool access = union of grants</span>
-        </header>
-
-        @if (rolesLoading()) {
-          <p>Loading roles&hellip;</p>
-        } @else if (allRoles().length === 0) {
-          <p class="muted">
-            No roles defined yet.
-            <a routerLink="/settings/roles/new">Create one</a> and come back to assign it.
-          </p>
-        } @else {
-          <div class="role-list">
-            @for (role of allRoles(); track role.id) {
-              <label class="role-option" [class.selected]="isAssigned(role.id)">
-                <input type="checkbox" [checked]="isAssigned(role.id)" (change)="toggleRole(role, $event)" [disabled]="assignmentsSaving()" />
-                <div>
-                  <div class="role-key">{{ role.key }}</div>
-                  <div class="role-name muted small">{{ role.displayName }}</div>
-                </div>
-              </label>
+    @if (versions().length > 1) {
+      <div class="version-bar">
+        <label class="field">
+          <span class="field-label">Version</span>
+          <select
+            class="select mono version-select"
+            [value]="viewing()?.version ?? ''"
+            (change)="selectFromEvent($event)">
+            @for (v of versions(); track v.version) {
+              <option [value]="v.version">
+                v{{ v.version }} · {{ v.createdAtUtc | date:'mediumDate' }}
+              </option>
             }
+          </select>
+        </label>
+      </div>
+    }
+
+    <div class="card" style="padding: 0 20px">
+      <cf-tabs [items]="tabs()" [value]="tab()" (valueChange)="tab.set($any($event))"></cf-tabs>
+    </div>
+
+    @if (tab() === 'identity') {
+      <cf-card>
+        <div class="form-section">
+          <div class="form-section-head">
+            <h3>Identity</h3>
+            <p>Read-only view of how this version is configured.</p>
+          </div>
+          <div class="form-grid">
+            <label class="field">
+              <span class="field-label">Agent key</span>
+              <input class="input mono" [value]="key()" readonly />
+            </label>
+            <label class="field">
+              <span class="field-label">Display name</span>
+              <input class="input" [value]="displayName()" readonly placeholder="(no display name)" />
+            </label>
+            <label class="field">
+              <span class="field-label">Type</span>
+              <div class="seg ro" style="width: fit-content">
+                <button type="button" disabled [attr.data-active]="type() === 'agent' ? 'true' : null">LLM agent</button>
+                <button type="button" disabled [attr.data-active]="type() === 'hitl' ? 'true' : null">HITL</button>
+              </div>
+            </label>
+            <label class="field span-2">
+              <span class="field-label">Description</span>
+              <textarea class="textarea" rows="2" readonly
+                        [value]="description()"
+                        placeholder="(no description)"
+                        style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
+            </label>
+          </div>
+        </div>
+      </cf-card>
+    }
+
+    @if (tab() === 'prompt') {
+      @if (type() === 'agent') {
+        <cf-card>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>System prompt</h3>
+              <p>Prepended to every call.</p>
+            </div>
+            <div class="code-field">
+              <div class="code-field-head"><span>system.md</span><span>markdown</span></div>
+              <textarea class="textarea" rows="8" readonly
+                        [value]="systemPrompt()"
+                        placeholder="(no system prompt)"
+                        style="border: 0; border-radius: 0; background: var(--bg)"></textarea>
+            </div>
+          </div>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Prompt template</h3>
+              <p>Rendered per-round with Scriban substitution.</p>
+            </div>
+            <div class="code-field">
+              <div class="code-field-head"><span>input.scriban</span><span>scriban</span></div>
+              <textarea class="textarea mono" rows="18" readonly
+                        [value]="promptTemplate()"
+                        placeholder="(no prompt template)"
+                        style="border: 0; border-radius: 0; background: var(--bg); min-height: 28rem; resize: vertical"></textarea>
+            </div>
+          </div>
+        </cf-card>
+      } @else {
+        <cf-card>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Output template</h3>
+              <p>Defines how reviewers enter their response.</p>
+            </div>
+            <div class="code-field">
+              <div class="code-field-head"><span>hitl.template</span><span>form</span></div>
+              <textarea class="textarea mono" rows="10" readonly
+                        [value]="outputTemplate()"
+                        placeholder="(no output template)"
+                        style="border: 0; border-radius: 0; background: var(--bg)"></textarea>
+            </div>
+          </div>
+        </cf-card>
+      }
+    }
+
+    @if (tab() === 'model') {
+      @if (type() === 'agent') {
+        <cf-card>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Model</h3>
+              <p>Provider, model id and generation parameters.</p>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">Provider</span>
+                <input class="input mono" [value]="providerLabel()" readonly />
+              </label>
+              <label class="field">
+                <span class="field-label">Model</span>
+                <input class="input mono" [value]="model()" readonly />
+              </label>
+              <label class="field">
+                <span class="field-label">Temperature</span>
+                <input class="input mono" [value]="temperature() ?? ''" readonly placeholder="(default)" />
+              </label>
+              <label class="field">
+                <span class="field-label">Max output tokens</span>
+                <input class="input mono" [value]="maxTokens() ?? ''" readonly placeholder="(default)" />
+              </label>
+            </div>
+          </div>
+        </cf-card>
+      } @else {
+        <cf-card>
+          <div class="card-body muted">
+            HITL agents don't use a model.
+          </div>
+        </cf-card>
+      }
+    }
+
+    @if (tab() === 'outputs') {
+      <cf-card>
+        <div class="form-section">
+          <div class="form-section-head">
+            <h3>Decisions</h3>
+            <p>Each decision becomes an output port on workflow nodes.</p>
           </div>
 
-          @if (assignmentsSaving()) {
-            <p class="muted small">Saving assignments…</p>
+          @if (outputs().length === 0) {
+            <p class="muted small">No decisions declared on this version.</p>
+          } @else {
+            <div class="stack">
+              @for (output of outputs(); track $index; let i = $index) {
+                <div class="output-card">
+                  <div class="row" style="justify-content: space-between">
+                    <cf-chip mono>{{ output.kind || '(unnamed)' }}</cf-chip>
+                  </div>
+                  <div class="form-grid">
+                    <label class="field">
+                      <span class="field-label">Kind</span>
+                      <input class="input mono" type="text" [value]="output.kind" readonly />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Description</span>
+                      <input class="input" type="text" [value]="output.description ?? ''" readonly placeholder="(none)" />
+                    </label>
+                    <div class="field span-2 output-advanced">
+                      <button type="button" class="advanced-toggle"
+                              [attr.aria-expanded]="isExpanded(i)"
+                              (click)="toggleExpanded(i)">
+                        <span class="advanced-caret" [attr.data-expanded]="isExpanded(i) ? 'true' : null">▸</span>
+                        <span>{{ isExpanded(i) ? 'Hide' : 'Show' }} decision template &amp; payload example</span>
+                        @if (!isExpanded(i) && output.template) {
+                          <cf-chip mono>template</cf-chip>
+                        }
+                        @if (!isExpanded(i) && output.payloadExample !== null && output.payloadExample !== undefined) {
+                          <cf-chip mono>payload</cf-chip>
+                        }
+                      </button>
+                      @if (isExpanded(i)) {
+                        <div class="advanced-body">
+                          <label class="field">
+                            <span class="field-label">Decision template <span class="muted small">(Scriban)</span></span>
+                            <textarea class="textarea mono" rows="10" readonly
+                                      [value]="output.template"
+                                      placeholder="(no template — artifact passes through unchanged)"></textarea>
+                          </label>
+                          <label class="field">
+                            <span class="field-label">Payload example (JSON)</span>
+                            <textarea class="textarea mono" rows="8" readonly
+                                      [value]="payloadExampleText(output)"
+                                      placeholder="(no example)"></textarea>
+                          </label>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                </div>
+              }
+            </div>
           }
-          @if (assignError()) {
-            <p class="tag error">{{ assignError() }}</p>
-          }
-        }
+        </div>
 
-        <header class="section-header section-header-spaced">
-          <h2>Effective Tools</h2>
-        </header>
-        @if (assignedRoles().length === 0) {
-          <p class="muted small">No roles assigned. This agent runs with no tools.</p>
-        } @else if (effectiveGrants().length === 0) {
-          <p class="muted small">The assigned roles grant no tools.</p>
-        } @else {
-          <cf-tool-picker
-            [hostTools]="grantedHostTools()"
-            [mcpServers]="grantedMcpCatalogs()"
-            [value]="effectiveGrants()"
-            [readOnly]="true" />
+        @if (fallbackTemplates().length > 0) {
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Fallback templates</h3>
+              <p>Catch-all templates keyed by <code>*</code> or by a port name not declared above.</p>
+            </div>
+            <div class="stack">
+              @for (row of fallbackTemplates(); track $index) {
+                <div class="output-card">
+                  <div class="row" style="justify-content: space-between">
+                    <cf-chip mono>{{ row.port || '(unnamed port)' }}</cf-chip>
+                  </div>
+                  <label class="field">
+                    <span class="field-label">Output port</span>
+                    <input class="input mono" type="text" [value]="row.port" readonly />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Template</span>
+                    <textarea class="textarea mono" rows="5" readonly [value]="row.template"></textarea>
+                  </label>
+                </div>
+              }
+            </div>
+          </div>
         }
-      </section>
-    </div>
+      </cf-card>
+    }
+
+    @if (tab() === 'roles') {
+      <cf-card>
+        <div class="form-section">
+          <div class="form-section-head">
+            <h3>Roles</h3>
+            <p>Tool access = union of grants from all assigned roles.</p>
+          </div>
+
+          @if (rolesLoading()) {
+            <p>Loading roles&hellip;</p>
+          } @else if (allRoles().length === 0) {
+            <p class="muted">
+              No roles defined yet.
+              <a routerLink="/settings/roles/new">Create one</a> and come back to assign it.
+            </p>
+          } @else {
+            <div class="role-list">
+              @for (role of allRoles(); track role.id) {
+                <label class="role-option" [class.selected]="isAssigned(role.id)">
+                  <input type="checkbox" [checked]="isAssigned(role.id)" (change)="toggleRole(role, $event)" [disabled]="assignmentsSaving()" />
+                  <div>
+                    <div class="role-key">{{ role.key }}</div>
+                    <div class="role-name muted small">{{ role.displayName }}</div>
+                  </div>
+                </label>
+              }
+            </div>
+
+            @if (assignmentsSaving()) {
+              <p class="muted small">Saving assignments…</p>
+            }
+            @if (assignError()) {
+              <p class="tag error">{{ assignError() }}</p>
+            }
+          }
+        </div>
+
+        <div class="form-section">
+          <div class="form-section-head">
+            <h3>Effective tools</h3>
+            <p>Union of tool grants from currently assigned roles.</p>
+          </div>
+          @if (assignedRoles().length === 0) {
+            <p class="muted small">No roles assigned. This agent runs with no tools.</p>
+          } @else if (effectiveGrants().length === 0) {
+            <p class="muted small">The assigned roles grant no tools.</p>
+          } @else {
+            <cf-tool-picker
+              [hostTools]="grantedHostTools()"
+              [mcpServers]="grantedMcpCatalogs()"
+              [value]="effectiveGrants()"
+              [readOnly]="true" />
+          }
+        </div>
+      </cf-card>
+    }
+
+    @if (tab() === 'json') {
+      <cf-card>
+        <div class="form-section">
+          <div class="form-section-head row" style="justify-content: space-between; align-items: flex-start; gap: 12px">
+            <div>
+              <h3>Configuration JSON</h3>
+              <p>Raw config for the selected version.</p>
+            </div>
+            <button type="button" cf-button size="sm" variant="ghost" icon="copy"
+                    (click)="copyJson()" [disabled]="!configJson()">
+              {{ jsonCopied() ? 'Copied!' : 'Copy JSON' }}
+            </button>
+          </div>
+          @if (configJson()) {
+            <pre class="json-block monospace">{{ configJson() }}</pre>
+          } @else {
+            <p class="muted small">No configuration available for this version.</p>
+          }
+        </div>
+      </cf-card>
+    }
     </div>
   `,
   styles: [`
     .small { font-size: 0.8rem; }
     .muted { color: var(--muted); }
-    pre.json {
+    .version-bar {
+      display: flex;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .version-bar .field { flex-direction: row; align-items: center; gap: 8px; }
+    .version-bar .field-label { margin: 0; }
+    .version-select { min-width: 260px; }
+    .seg.ro button { cursor: default; }
+    .seg.ro button:disabled { color: var(--muted); }
+    .seg.ro button[data-active="true"]:disabled { color: var(--text); }
+    .json-block {
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 480px;
+      max-height: 70vh;
       overflow: auto;
-    }
-    .detail-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 2rem;
-      align-items: start;
-    }
-    .detail-column { display: flex; flex-direction: column; }
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.75rem;
-    }
-    .section-header.section-header-spaced { margin-top: 1.5rem; }
-    .section-header h2 { margin: 0; font-size: 1.1rem; }
-    .version-select {
-      width: 100%;
-      padding: 0.5rem 0.75rem;
-      border-radius: 4px;
+      padding: 12px 14px;
       border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
+      border-radius: var(--radius);
+      background: var(--bg);
+      font-size: var(--fs-sm);
+      margin: 0;
     }
     .role-list { display: flex; flex-direction: column; gap: 0.35rem; }
     .role-option {
@@ -175,7 +425,7 @@ import { ChipComponent } from '../../ui/chip.component';
       gap: 0.5rem;
       padding: 0.5rem 0.75rem;
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: var(--radius);
       cursor: pointer;
       background: var(--surface);
     }
@@ -185,8 +435,43 @@ import { ChipComponent } from '../../ui/chip.component';
     }
     .role-key { font-family: var(--font-mono, monospace); font-weight: 600; }
     .role-name { margin-top: 0.15rem; }
-    @media (max-width: 900px) {
-      .detail-grid { grid-template-columns: minmax(0, 1fr); }
+    .output-card {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .output-advanced {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .advanced-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      background: transparent;
+      border: 0;
+      color: var(--muted);
+      font: inherit;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    .advanced-toggle:hover { color: var(--fg); }
+    .advanced-caret {
+      display: inline-block;
+      transition: transform 0.12s ease-out;
+      font-size: 0.9em;
+    }
+    .advanced-caret[data-expanded="true"] { transform: rotate(90deg); }
+    .advanced-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
   `]
 })
@@ -213,6 +498,86 @@ export class AgentDetailComponent implements OnInit {
   readonly hostTools = signal<HostTool[]>([]);
   readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
   readonly grantsByRole = signal<Record<number, AgentRoleGrant[]>>({});
+
+  readonly tab = signal<DetailTab>('identity');
+  readonly expandedOutputs = signal<Set<number>>(new Set<number>());
+  readonly jsonCopied = signal(false);
+
+  readonly config = computed<AgentConfig | null>(() => this.viewing()?.config ?? null);
+
+  readonly type = computed<'agent' | 'hitl'>(() => {
+    const fromVersion = this.viewing()?.type;
+    if (fromVersion === 'hitl') return 'hitl';
+    const fromConfig = this.config()?.['type'];
+    return fromConfig === 'hitl' ? 'hitl' : 'agent';
+  });
+
+  readonly displayName = computed<string>(() => (this.config()?.['name'] as string) ?? '');
+  readonly description = computed<string>(() => (this.config()?.['description'] as string) ?? '');
+  readonly provider = computed<string>(() => (this.config()?.['provider'] as string) ?? '');
+  readonly providerLabel = computed<string>(() => {
+    switch (this.provider()) {
+      case 'openai': return 'OpenAI';
+      case 'anthropic': return 'Anthropic';
+      case 'lmstudio': return 'LM Studio (local)';
+      default: return this.provider();
+    }
+  });
+  readonly model = computed<string>(() => (this.config()?.['model'] as string) ?? '');
+  readonly temperature = computed<number | undefined>(() => this.config()?.['temperature'] as number | undefined);
+  readonly maxTokens = computed<number | undefined>(() => this.config()?.['maxTokens'] as number | undefined);
+  readonly systemPrompt = computed<string>(() => (this.config()?.['systemPrompt'] as string) ?? '');
+  readonly promptTemplate = computed<string>(() => (this.config()?.['promptTemplate'] as string) ?? '');
+  readonly outputTemplate = computed<string>(() => (this.config()?.['outputTemplate'] as string) ?? '');
+
+  readonly outputs = computed<ReadOnlyOutputRow[]>(() => {
+    const cfg = this.config();
+    if (!cfg) return [];
+    const templates = (cfg['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
+    const declared = cfg['outputs'];
+    if (Array.isArray(declared) && declared.length > 0) {
+      return declared.map(d => ({
+        kind: d.kind ?? '',
+        description: d.description ?? null,
+        payloadExample: d.payloadExample ?? null,
+        template: String(templates[d.kind ?? ''] ?? ''),
+      }));
+    }
+    return [];
+  });
+
+  readonly fallbackTemplates = computed<ReadOnlyFallbackRow[]>(() => {
+    const cfg = this.config();
+    if (!cfg) return [];
+    const templates = (cfg['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
+    const declared = cfg['outputs'];
+    const declaredKinds = new Set<string>(
+      Array.isArray(declared) ? declared.map(d => d.kind ?? '') : []
+    );
+    return Object.entries(templates)
+      .filter(([port]) => !declaredKinds.has(port))
+      .map(([port, template]) => ({ port, template: String(template ?? '') }));
+  });
+
+  readonly configJson = computed<string>(() => {
+    const cfg = this.config();
+    if (!cfg) return '';
+    try { return JSON.stringify(cfg, null, 2); } catch { return ''; }
+  });
+
+  readonly tabs = computed<TabItem[]>(() => {
+    const items: TabItem[] = [
+      { value: 'identity', label: 'Identity' },
+      { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
+    ];
+    if (this.type() === 'agent') {
+      items.push({ value: 'model', label: 'Model' });
+    }
+    items.push({ value: 'outputs', label: 'Decisions', count: this.outputs().length });
+    items.push({ value: 'roles', label: 'Roles & tools' });
+    items.push({ value: 'json', label: 'JSON' });
+    return items;
+  });
 
   readonly effectiveGrants = computed<AgentRoleGrant[]>(() => {
     const grants = this.grantsByRole();
@@ -355,6 +720,7 @@ export class AgentDetailComponent implements OnInit {
       next: v => {
         this.viewing.set(v);
         this.retired.set(v.isRetired);
+        this.expandedOutputs.set(new Set<number>());
       }
     });
   }
@@ -365,6 +731,38 @@ export class AgentDetailComponent implements OnInit {
     if (Number.isFinite(version)) {
       this.select(version);
     }
+  }
+
+  isExpanded(index: number): boolean {
+    return this.expandedOutputs().has(index);
+  }
+
+  toggleExpanded(index: number): void {
+    const next = new Set(this.expandedOutputs());
+    if (next.has(index)) {
+      next.delete(index);
+    } else {
+      next.add(index);
+    }
+    this.expandedOutputs.set(next);
+  }
+
+  payloadExampleText(output: ReadOnlyOutputRow): string {
+    if (output.payloadExample === null || output.payloadExample === undefined) return '';
+    if (typeof output.payloadExample === 'string') return output.payloadExample;
+    try { return JSON.stringify(output.payloadExample, null, 2); } catch { return String(output.payloadExample); }
+  }
+
+  copyJson(): void {
+    const text = this.configJson();
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        this.jsonCopied.set(true);
+        setTimeout(() => this.jsonCopied.set(false), 1500);
+      },
+      () => undefined
+    );
   }
 
   retire(): void {

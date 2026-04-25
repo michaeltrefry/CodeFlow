@@ -6,6 +6,172 @@ namespace CodeFlow.Runtime.Tests;
 public sealed class InvocationLoopTests
 {
     [Fact]
+    public async Task RunAsync_ShouldRePromptOnEmptyContentSubmit_WhenDeclaredOutputsExist()
+    {
+        // Real bug from prd-intake testing: an LLM agent with declared outputs called
+        // `submit` on its very first turn with NO assistant message content. The runtime
+        // used to accept that and write a 0-byte artifact downstream, which then rendered
+        // as an empty HITL form / empty next-agent input. Now the loop must re-prompt
+        // the LLM to produce real content before accepting the terminal submit.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Continue" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.User);
+                request.Messages[^1].Content.Should().Contain("without writing any assistant message");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "What problem are you trying to solve?",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit2", "submit",
+                                new JsonObject { ["decision"] = "Continue" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Interview me.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        result.Decision.PortName.Should().Be("Continue");
+        result.Output.Should().Be("What problem are you trying to solve?",
+            "the second submit succeeds because the assistant produced real content this time");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAcceptEmptyContent_WhenSubmittingFailedPort()
+    {
+        // The Failed port is the implicit error sink — failure messages naturally have
+        // their reason in the payload, not the assistant message. Don't force content.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_fail", "fail",
+                            new JsonObject { ["reason"] = "I cannot continue." })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Try.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        result.Decision.PortName.Should().Be("Failed");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRePromptOnNoToolCall_WhenDeclaredOutputsExist()
+    {
+        // Real bug from prd-intake testing: an interviewer with declared outputs
+        // [Continue, Sufficient] ended its 3rd round with just text and no tool call. The
+        // runtime used to default to port "Completed" — which isn't in the declared set —
+        // silently bypassing downstream routing. Now the loop must re-prompt, and the
+        // LLM's next turn (which DOES submit) determines the routing port.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "I think I have enough information now."),
+                InvocationStopReason.EndTurn),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.User);
+                request.Messages[^1].Content.Should().Contain("submit");
+                request.Messages[^1].Content.Should().Contain("Continue");
+                request.Messages[^1].Content.Should().Contain("Sufficient");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Okay, submitting Sufficient.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", "submit",
+                                new JsonObject { ["decision"] = "Sufficient" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Interview me.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Continue", null, null),
+                new AgentOutputDeclaration("Sufficient", null, null)
+            ]));
+
+        result.Decision.PortName.Should().Be("Sufficient",
+            "the routing port must come from a real submit, not a runtime default");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldKeepLastNonEmptyAssistantContent_AsOutput_AcrossSplitTurns()
+    {
+        // Real-world LLM behavior: the model writes its substantive output (question, PRD, etc.)
+        // alongside a non-terminal tool call (e.g., setContext), then submits in a later round
+        // with empty content. The artifact handed downstream must be the substantive content,
+        // not the empty submit-round content.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "What problem are you trying to solve?",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_setctx", "setContext",
+                            new JsonObject { ["key"] = "lastQuestion", ["value"] = "What problem?" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Continue" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Interview me.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        result.Decision.PortName.Should().Be("Continue");
+        result.Output.Should().Be("What problem are you trying to solve?",
+            "the substantive question must survive past the empty-content submit round");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldExposeSetContextWrites_OnSuccessfulSubmit()
     {
         var modelClient = new ScriptedModelClient(
@@ -216,8 +382,15 @@ public sealed class InvocationLoopTests
             {
                 advertisedTools = request.Tools;
                 return new InvocationResponse(
-                    new ChatMessage(ChatMessageRole.Assistant, "done."),
-                    InvocationStopReason.EndTurn);
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Classified.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", "submit",
+                                new JsonObject { ["decision"] = "NewProject" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
             }
         ]);
         var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));

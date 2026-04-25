@@ -217,7 +217,17 @@ public sealed class InvocationLoop
 
             aggregateTokenUsage = SumTokenUsage(aggregateTokenUsage, response.TokenUsage);
             transcript.Add(response.Message);
-            lastAssistantOutput = response.Message.Content;
+            // Track the most recent NON-EMPTY assistant content as the artifact output. When an
+            // LLM splits its turn across multiple rounds (e.g., `setContext` → tool result →
+            // `submit`), the final round's `Content` is often empty because providers omit
+            // narration alongside terminal tool calls. Overwriting unconditionally would
+            // clobber the substantive content (the question, the PRD, the review) produced in
+            // an earlier round. Keeping the last non-empty content makes the artifact stable
+            // regardless of how the model paces its tool calls.
+            if (!string.IsNullOrEmpty(response.Message.Content))
+            {
+                lastAssistantOutput = response.Message.Content;
+            }
 
             if (observer is not null)
             {
@@ -231,6 +241,37 @@ public sealed class InvocationLoop
 
             if (response.Message.ToolCalls is not { Count: > 0 })
             {
+                if (declaredPortNames.Length > 0)
+                {
+                    // The agent has declared outputs, but the LLM ended its turn without
+                    // calling `submit` (or any tool). Defaulting to a hardcoded "Completed"
+                    // here would route to a port that isn't in the declared set, which
+                    // violates the port-model invariant and silently bypasses downstream
+                    // routing (the workflow appears to "complete" without ever reaching the
+                    // intended next node). Push a reminder back into the transcript and let
+                    // the loop continue; repeated non-compliance hits the
+                    // consecutive-non-mutating budget and fails cleanly with a clear reason.
+                    transcript.Add(new ChatMessage(
+                        ChatMessageRole.User,
+                        "You must call the `submit` tool to terminate this invocation. "
+                        + "`decision` must be one of: "
+                        + string.Join(", ", declaredPortNames)
+                        + ". Write your output as the assistant message content, then call `submit`."));
+                    consecutiveNonMutatingCalls++;
+                    if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
+                    {
+                        return BuildFailureResult(
+                            transcript,
+                            lastAssistantOutput,
+                            InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded,
+                            aggregateTokenUsage,
+                            totalToolCalls);
+                    }
+                    continue;
+                }
+
+                // No declared outputs — legacy / test fixture path. Default to Completed for
+                // backwards compatibility with agents that don't declare a port set.
                 return BuildSuccessResult(
                     lastAssistantOutput,
                     new AgentDecision("Completed"),
@@ -296,6 +337,47 @@ public sealed class InvocationLoop
                 {
                     if (terminalResult is not null)
                     {
+                        // Reject terminal submits with empty/whitespace assistant content when
+                        // the agent has declared outputs and didn't choose the implicit Failed
+                        // port. Without this guard, an LLM that calls `submit` on its very first
+                        // turn (no content, just a tool call) produces a 0-byte artifact —
+                        // downstream agents see empty input, HITL forms render blank fields, and
+                        // the workflow proceeds in a broken state with no diagnostic. Push a
+                        // reminder back into the transcript and let the loop continue; the LLM
+                        // gets another shot at producing real output.
+                        var isFailedPort = string.Equals(
+                            terminalResult.PortName, "Failed", StringComparison.Ordinal);
+                        if (declaredPortNames.Length > 0
+                            && !isFailedPort
+                            && string.IsNullOrWhiteSpace(lastAssistantOutput))
+                        {
+                            transcript.Add(new ChatMessage(
+                                ChatMessageRole.User,
+                                "You called `submit` without writing any assistant message "
+                                + "content. The message content becomes the output artifact "
+                                + "handed to the next node. Write your full output (the "
+                                + "question, the PRD body, the review, etc.) as the assistant "
+                                + "message text, then call `submit` again."));
+                            consecutiveNonMutatingCalls++;
+                            if (observer is not null)
+                            {
+                                await observer.OnToolCallCompletedAsync(
+                                    toolCall,
+                                    new ToolResult(toolCall.Id, "missing assistant content; retry", IsError: true),
+                                    cancellationToken);
+                            }
+                            if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
+                            {
+                                return BuildFailureResult(
+                                    transcript,
+                                    lastAssistantOutput,
+                                    InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded,
+                                    aggregateTokenUsage,
+                                    totalToolCalls);
+                            }
+                            continue;
+                        }
+
                         if (observer is not null)
                         {
                             await observer.OnToolCallCompletedAsync(

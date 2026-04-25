@@ -92,6 +92,27 @@ import {
           }
         </section>
 
+        <div class="submit-row">
+          @if (declaredOutputs().length > 0) {
+            @for (decl of declaredOutputs(); track decl.kind) {
+              <button
+                class="submit-button"
+                type="button"
+                [title]="decl.description ?? ''"
+                [disabled]="submitting() || configLoading()"
+                (mouseenter)="setSelectedPort(decl.kind)"
+                (focus)="setSelectedPort(decl.kind)"
+                (click)="submit(decl.kind)">
+                {{ submitting() && submittingPort() === decl.kind ? 'Submitting…' : decl.kind }}
+              </button>
+            }
+          } @else {
+            <button class="submit-button" type="button" (click)="submit('Completed')" [disabled]="submitting() || configLoading()">
+              {{ submitting() ? 'Submitting…' : 'Submit' }}
+            </button>
+          }
+        </div>
+
         <section class="template-section preview-section">
           <div class="section-header">
             <h4>
@@ -115,27 +136,6 @@ import {
       @if (error()) {
         <div class="tag error">{{ error() }}</div>
       }
-
-      <div class="submit-row">
-        @if (declaredOutputs().length > 0) {
-          @for (decl of declaredOutputs(); track decl.kind) {
-            <button
-              class="submit-button"
-              type="button"
-              [title]="decl.description ?? ''"
-              [disabled]="submitting() || configLoading()"
-              (mouseenter)="setSelectedPort(decl.kind)"
-              (focus)="setSelectedPort(decl.kind)"
-              (click)="submit(decl.kind)">
-              {{ submitting() && submittingPort() === decl.kind ? 'Submitting…' : decl.kind }}
-            </button>
-          }
-        } @else {
-          <button class="submit-button" type="button" (click)="submit('Completed')" [disabled]="submitting() || configLoading()">
-            {{ submitting() ? 'Submitting…' : 'Submit' }}
-          </button>
-        }
-      </div>
     </article>
   `,
   styles: [`
@@ -268,14 +268,17 @@ import {
     }
     .submit-row {
       display: flex;
-      justify-content: flex-end;
+      justify-content: flex-start;
       flex-wrap: wrap;
       gap: 0.5rem;
     }
     .submit-button {
       border: 1px solid var(--accent);
       background: var(--accent);
-      color: var(--accent-ink);
+      /* --accent-ink is a blue-on-neutral token meant for chips/links; reusing it on a
+         solid accent fill leaves both fg and bg in the same hue family and reads as
+         "disabled". Use a near-white instead so the label is high-contrast in both themes. */
+      color: oklch(0.97 0.01 265);
       border-radius: 6px;
       padding: 0.55rem 0.85rem;
       cursor: pointer;
