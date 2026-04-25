@@ -13,7 +13,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 {
     public const string PendingTransitionCompleted = "Completed";
     public const string PendingTransitionFailed = "Failed";
-    public const string PendingTransitionEscalated = "Escalated";
+
+    /// <summary>
+    /// Implicit error sink port name. Every node implicitly carries this port; if wired, the
+    /// saga routes runtime errors and explicit <c>fail</c> tool calls down it. If unwired, the
+    /// saga terminates with <c>FailureReason</c> set.
+    /// </summary>
+    public const string ImplicitFailedPort = "Failed";
 
     private const int MaxLogicChainHops = 32;
 
@@ -29,8 +35,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     public State Completed { get; } = null!;
 
     public State Failed { get; } = null!;
-
-    public State Escalated { get; } = null!;
 
     public Event<AgentInvokeRequested> AgentInvokeRequestedEvent { get; } = null!;
 
@@ -79,7 +83,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         During(Completed, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
         During(Failed, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
-        During(Escalated, Ignore(AgentInvocationCompletedEvent), Ignore(SubflowCompletedEvent));
 
         During(Running,
             When(AgentInvocationCompletedEvent)
@@ -90,17 +93,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                         .Then(ClearPendingTransition)
                         .TransitionTo(Completed),
                     continueBinder => continueBinder
-                        .IfElse(
+                        .If(
                             context => context.Saga.PendingTransition == PendingTransitionFailed,
                             failBinder => failBinder
                                 .Then(ClearPendingTransition)
-                                .TransitionTo(Failed),
-                            continueElseBinder => continueElseBinder
-                                .If(
-                                    context => context.Saga.PendingTransition == PendingTransitionEscalated,
-                                    escalateBinder => escalateBinder
-                                        .Then(ClearPendingTransition)
-                                        .TransitionTo(Escalated)))),
+                                .TransitionTo(Failed))),
             When(SubflowCompletedEvent)
                 .ThenAsync(context => RouteSubflowCompletionAsync(context))
                 .IfElse(
@@ -109,21 +106,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                         .Then(ClearPendingTransition)
                         .TransitionTo(Completed),
                     continueBinder => continueBinder
-                        .IfElse(
+                        .If(
                             context => context.Saga.PendingTransition == PendingTransitionFailed,
                             failBinder => failBinder
                                 .Then(ClearPendingTransition)
-                                .TransitionTo(Failed),
-                            continueElseBinder => continueElseBinder
-                                .If(
-                                    context => context.Saga.PendingTransition == PendingTransitionEscalated,
-                                    escalateBinder => escalateBinder
-                                        .Then(ClearPendingTransition)
-                                        .TransitionTo(Escalated)))));
+                                .TransitionTo(Failed))));
 
         WhenEnter(Completed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Completed")));
         WhenEnter(Failed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Failed")));
-        WhenEnter(Escalated, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Escalated")));
     }
 
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)
@@ -279,10 +269,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
 
         // For ReviewLoop children, the parent drives outcome mapping off Decision (not
-        // OutputPortName). Translate the runtime enum to its Contracts counterpart.
-        AgentDecisionKind? terminalDecision = lastDecision is null
-            ? null
-            : MapRuntimeDecisionKindToContract(lastDecision.Decision);
+        // OutputPortName). Both are now plain port-name strings.
+        var terminalDecision = lastDecision?.Decision;
 
         await context.Publish(new SubflowCompleted(
             ParentTraceId: saga.ParentTraceId.Value,
@@ -295,18 +283,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             Decision: terminalDecision,
             ReviewRound: saga.ParentReviewRound,
             TerminalPort: saga.LastEffectivePort));
-    }
-
-    private static AgentDecisionKind MapRuntimeDecisionKindToContract(Runtime.AgentDecisionKind kind)
-    {
-        return kind switch
-        {
-            Runtime.AgentDecisionKind.Completed => AgentDecisionKind.Completed,
-            Runtime.AgentDecisionKind.Approved => AgentDecisionKind.Approved,
-            Runtime.AgentDecisionKind.Rejected => AgentDecisionKind.Rejected,
-            Runtime.AgentDecisionKind.Failed => AgentDecisionKind.Failed,
-            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported runtime decision kind.")
-        };
     }
 
     private readonly record struct ReviewLoopOutcome(
@@ -348,33 +324,31 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     /// <summary>
     /// Maps a child saga's terminal <see cref="SubflowCompleted"/> back onto the ReviewLoop
-    /// parent's outcome surface. Priority of signals:
+    /// parent's outcome port. The new model:
     /// <list type="number">
-    /// <item><description><c>TerminalPort</c> (the child saga's last effective port — set by a
-    ///   routing script's <c>setNodePath</c> or the decision-kind-derived port name) compared
-    ///   case-sensitive against the ReviewLoop node's <c>LoopDecision</c>. Match → iterate (or
-    ///   Exhausted on last round).</description></item>
-    /// <item><description>Otherwise fall back to <c>Decision</c> — <c>Approved</c>/<c>Completed</c>
-    ///   → Approved port; <c>Failed</c> → Failed port; <c>Rejected</c> that didn't match
-    ///   <c>LoopDecision</c> → Failed port (a <c>Rejected</c> decision on a ReviewLoop whose
-    ///   loop trigger is <em>not</em> "Rejected" is a terminal verdict, not an iterate).</description></item>
-    /// <item><description><c>OutputPortName = Escalated</c>/<c>Failed</c> without a matching
-    ///   Decision → Failed port.</description></item>
+    /// <item><description>If the child's terminal port (<c>TerminalPort</c>, falling back to
+    ///   <c>OutputPortName</c>) matches the ReviewLoop node's configured <c>LoopDecision</c>,
+    ///   spawn the next round (or synthesize <c>Exhausted</c> when the round budget is
+    ///   spent).</description></item>
+    /// <item><description>Otherwise, propagate the child's terminal port name verbatim. The
+    ///   parent saga then looks for an outgoing edge from the ReviewLoop node on that exact
+    ///   port — author-defined names flow straight through, no enum mapping.</description></item>
+    /// <item><description>The implicit <c>Failed</c> port is treated like any other port name —
+    ///   it propagates verbatim and the parent saga's unwired-port logic handles the
+    ///   "no Failed edge → terminate Failed" decision.</description></item>
     /// </list>
-    /// Using TerminalPort as the primary signal lets workflow authors name any port as the
-    /// loop trigger — critical for patterns like a socratic-interview child whose routing
-    /// script picks "Rejected" based on a payload field even though the underlying HITL
-    /// decision kind was "Completed".
     /// </summary>
     private static ReviewLoopOutcome ResolveReviewLoopOutcome(
         SubflowCompleted message,
         WorkflowNode reviewLoopNode)
     {
         var loopDecision = ResolveLoopDecision(reviewLoopNode);
+        var terminalPort = !string.IsNullOrWhiteSpace(message.TerminalPort)
+            ? message.TerminalPort!
+            : message.OutputPortName;
 
-        // 1. TerminalPort match against the configured LoopDecision.
-        if (!string.IsNullOrWhiteSpace(message.TerminalPort)
-            && string.Equals(message.TerminalPort, loopDecision, StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(terminalPort)
+            && string.Equals(terminalPort, loopDecision, StringComparison.Ordinal))
         {
             var justFinishedRound = message.ReviewRound ?? 1;
             var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
@@ -388,44 +362,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
         }
 
-        // 2. Fall back to Decision-kind mapping.
-        if (message.Decision is AgentDecisionKind decision)
-        {
-            switch (decision)
-            {
-                case AgentDecisionKind.Approved:
-                case AgentDecisionKind.Completed:
-                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Approved");
-
-                case AgentDecisionKind.Rejected:
-                    // A Rejected Decision that didn't match a "Rejected"-named LoopDecision means
-                    // the author reconfigured LoopDecision to something else (e.g. "Answered");
-                    // in that case a bare Decision=Rejected is a terminal verdict, not a loop
-                    // signal. Route to Failed so the author can handle it explicitly.
-                    var justFinishedRound = message.ReviewRound ?? 1;
-                    var maxRounds = reviewLoopNode.ReviewMaxRounds ?? 0;
-                    if (string.Equals(loopDecision, "Rejected", StringComparison.Ordinal)
-                        && justFinishedRound < maxRounds)
-                    {
-                        return new ReviewLoopOutcome(
-                            SpawnNextRound: true,
-                            NextRound: justFinishedRound + 1,
-                            PortName: null);
-                    }
-                    if (string.Equals(loopDecision, "Rejected", StringComparison.Ordinal))
-                    {
-                        return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Exhausted");
-                    }
-                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
-
-                case AgentDecisionKind.Failed:
-                default:
-                    return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
-            }
-        }
-
-        // 3. No Decision metadata and no matching TerminalPort — treat as Failed.
-        return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: "Failed");
+        var exitPort = !string.IsNullOrWhiteSpace(terminalPort)
+            ? terminalPort!
+            : ImplicitFailedPort;
+        return new ReviewLoopOutcome(SpawnNextRound: false, NextRound: 0, PortName: exitPort);
     }
 
     /// <summary>
@@ -527,11 +467,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.LastEffectivePort = effectivePortName;
 
         // Synthetic decision record so the parent's history shows the subflow returned a
-        // result. Decision kind is Failed for the Failed port, Completed otherwise — best-effort
-        // mapping for analytics.
-        var syntheticDecisionKind = string.Equals(effectivePortName, "Failed", StringComparison.Ordinal)
-            ? Runtime.AgentDecisionKind.Failed
-            : Runtime.AgentDecisionKind.Completed;
+        // result. The Decision is the effective port name verbatim — author-defined names
+        // propagate through the trace UI.
 
         // AgentKey is what the trace UI surfaces as the timeline entry's title. Subflow/ReviewLoop
         // nodes have no agent of their own, so synthesize a descriptive label from the node kind
@@ -539,7 +476,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.AppendDecision(new DecisionRecord(
             AgentKey: BuildSubflowSyntheticAgentKey(parentNode),
             AgentVersion: 0,
-            Decision: syntheticDecisionKind,
+            Decision: effectivePortName,
             DecisionPayload: null,
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow,
@@ -552,21 +489,20 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (edge is null)
         {
-            // No edge wired from this port — terminate the parent based on the port name.
-            switch (effectivePortName)
+            // Unwired-port exit on the parent's Subflow/ReviewLoop node:
+            //   - The implicit Failed port: parent terminates Failed with FailureReason set.
+            //   - Any other port name: parent terminates cleanly with the port name preserved on
+            //     saga.LastEffectivePort. (If this saga itself is a child, that name rides up via
+            //     SubflowCompleted to its own parent.)
+            if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal))
             {
-                case "Completed":
-                case "Approved":
-                    saga.PendingTransition = PendingTransitionCompleted;
-                    break;
-                case "Escalated":
-                    saga.PendingTransition = PendingTransitionEscalated;
-                    break;
-                default:
-                    saga.PendingTransition = PendingTransitionFailed;
-                    saga.FailureReason ??=
-                        $"No outgoing edge from {(parentNode?.Kind == WorkflowNodeKind.ReviewLoop ? "ReviewLoop" : "Subflow")} node {message.ParentNodeId} port '{effectivePortName}'.";
-                    break;
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason ??=
+                    $"No outgoing edge from {(parentNode?.Kind == WorkflowNodeKind.ReviewLoop ? "ReviewLoop" : "Subflow")} node {message.ParentNodeId} port '{effectivePortName}'.";
+            }
+            else
+            {
+                saga.PendingTransition = PendingTransitionCompleted;
             }
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -612,32 +548,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
-            var escalationNode = workflow.EscalationNode;
-            if (escalationNode is not null)
-            {
-                await PublishHandoffAsync(
-                    context,
-                    agentConfigRepo,
-                    scriptHost,
-                    artifactStore,
-                    saga,
-                    workflow,
-                    escalationNode,
-                    inputRef: message.OutputRef,
-                    roundId: saga.CurrentRoundId,
-                    retryContext: null);
-
-                saga.EscalatedFromNodeId = message.ParentNodeId;
-                saga.CurrentNodeId = escalationNode.Id;
-                saga.CurrentAgentKey = escalationNode.AgentKey ?? string.Empty;
-            }
-            else
-            {
-                saga.PendingTransition = PendingTransitionFailed;
-                saga.FailureReason =
-                    $"Round limit {workflow.MaxRoundsPerRound} exceeded and no escalation node is configured.";
-            }
-
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason ??= $"Round limit {workflow.MaxRoundsPerRound} exceeded.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
@@ -676,7 +588,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         activity?.SetTag(CodeFlowActivity.TagNames.WorkflowKey, saga.WorkflowKey);
         activity?.SetTag(CodeFlowActivity.TagNames.WorkflowVersion, saga.WorkflowVersion);
         activity?.SetTag(CodeFlowActivity.TagNames.AgentKey, message.AgentKey);
-        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, message.Decision.ToString());
+        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, message.OutputPortName);
 
         // Reject completions from stale or duplicate rounds. Correlation by TraceId alone is
         // not enough — a delayed redelivery or a duplicate publish from an earlier round could
@@ -694,41 +606,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var artifactStore = services.GetRequiredService<IArtifactStore>();
         var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
 
-        var runtimeKind = MapDecisionKind(message.Decision);
+        var decisionPortName = message.OutputPortName;
 
         var workflow = await workflowRepo.GetAsync(
             saga.WorkflowKey,
             saga.WorkflowVersion,
             context.CancellationToken);
-
-        if (saga.EscalatedFromNodeId is Guid escalatedFromNodeId)
-        {
-            saga.AppendDecision(new DecisionRecord(
-                AgentKey: message.AgentKey,
-                AgentVersion: message.AgentVersion,
-                Decision: runtimeKind,
-                DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
-                RoundId: saga.CurrentRoundId,
-                RecordedAtUtc: DateTime.UtcNow,
-                NodeId: message.FromNodeId,
-                OutputPortName: message.OutputPortName,
-                InputRef: saga.CurrentInputRef,
-                OutputRef: message.OutputRef?.ToString()));
-
-            await HandleEscalationResponseAsync(
-                context,
-                agentConfigRepo,
-                scriptHost,
-                artifactStore,
-                workflow,
-                saga,
-                message,
-                escalatedFromNodeId,
-                runtimeKind);
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "EscalationRecovered");
-            return;
-        }
 
         var portResolution = await ResolveSourcePortAsync(
             context,
@@ -776,7 +659,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.AppendDecision(new DecisionRecord(
             AgentKey: message.AgentKey,
             AgentVersion: message.AgentVersion,
-            Decision: runtimeKind,
+            Decision: decisionPortName,
             DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
             RoundId: saga.CurrentRoundId,
             RecordedAtUtc: DateTime.UtcNow,
@@ -784,6 +667,12 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             OutputPortName: message.OutputPortName,
             InputRef: saga.CurrentInputRef,
             OutputRef: effectiveOutputRef?.ToString()));
+
+        // Slice 13: apply any setContext / setGlobal writes the agent issued during its turn.
+        // These are committed only when the runtime publishes a non-Failed decision (the loop
+        // already discards them on failure); here we just merge them into the saga's bags so the
+        // next downstream agent sees the new values.
+        ApplyAgentBagWrites(saga, message);
 
         if (decisionTemplateFailure is not null)
         {
@@ -802,32 +691,24 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (edge is null)
         {
-            // Unwired-port exit rules:
-            //   - Completed: always a legal clean exit (top-level and subflow).
-            //   - Approved / Rejected: a legal clean exit *for child sagas* — the decision kind
-            //     is preserved on SubflowCompleted.Decision so parents (especially ReviewLoop)
-            //     can route on the last agent's intent.
-            //   - Match for the parent's ReviewLoop LoopDecision (propagated to the child saga
-            //     at dispatch): also a legal clean exit, so authors can use any port name as
-            //     the loop trigger without the child saga failing on the unwired port.
-            //   - Anything else (Failed, Escalated, top-level with non-Completed, typos): the
-            //     port is unexpectedly unwired; fail with a clear reason.
-            var isChildSaga = saga.ParentTraceId is not null;
-            var matchesParentLoopDecision = isChildSaga
-                && !string.IsNullOrWhiteSpace(saga.ParentLoopDecision)
-                && string.Equals(effectivePortName, saga.ParentLoopDecision, StringComparison.Ordinal);
-
-            if (message.Decision == AgentDecisionKind.Completed
-                || (isChildSaga && (message.Decision == AgentDecisionKind.Approved
-                                    || message.Decision == AgentDecisionKind.Rejected))
-                || matchesParentLoopDecision)
+            // Unwired-port exit rules in the new model:
+            //   - The implicit Failed port: terminate the saga as Failed with FailureReason set.
+            //     Authors can wire a Failed edge to override; if they don't, the saga fails so
+            //     the runtime error doesn't get silently swallowed.
+            //   - Any other port name (author-defined): terminate cleanly. The terminal port name
+            //     is preserved on saga.LastEffectivePort and rides up to the parent saga as
+            //     SubflowCompleted.OutputPortName / TerminalPort, so a parent Subflow node can
+            //     route from that exact port. Top-level workflows just complete with the terminal
+            //     name surfaced on the trace UI.
+            if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal))
             {
-                saga.PendingTransition = PendingTransitionCompleted;
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason ??=
+                    $"No outgoing edge from node {message.FromNodeId} port '{effectivePortName}'.";
             }
             else
             {
-                saga.PendingTransition = PendingTransitionFailed;
-                saga.FailureReason = $"No outgoing edge from node {message.FromNodeId} port '{effectivePortName}'.";
+                saga.PendingTransition = PendingTransitionCompleted;
             }
 
             saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -863,31 +744,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
-            var escalationNode = workflow.EscalationNode;
-            if (escalationNode is not null)
-            {
-                await PublishHandoffAsync(
-                    context,
-                    agentConfigRepo,
-                    scriptHost,
-                    artifactStore,
-                    saga,
-                    workflow,
-                    escalationNode,
-                    inputRef: effectiveOutputRef,
-                    roundId: saga.CurrentRoundId,
-                    retryContext: retryContext);
-
-                saga.EscalatedFromNodeId = message.FromNodeId;
-                saga.CurrentNodeId = escalationNode.Id;
-                saga.CurrentAgentKey = escalationNode.AgentKey ?? string.Empty;
-            }
-            else
-            {
-                saga.PendingTransition = PendingTransitionFailed;
-                saga.FailureReason = $"Round limit {workflow.MaxRoundsPerRound} exceeded and no escalation node is configured.";
-            }
-
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason = $"Round limit {workflow.MaxRoundsPerRound} exceeded.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
@@ -969,7 +827,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             artifactStore,
             message.OutputRef,
             context.CancellationToken);
-        var scriptInput = ComposeAgentScriptInput(artifactJson, message.Decision, message.DecisionPayload);
+        var scriptInput = ComposeAgentScriptInput(artifactJson, message.OutputPortName, message.DecisionPayload);
 
         var eval = scriptHost.Evaluate(
             workflowKey: workflow.Key,
@@ -1163,9 +1021,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
         var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
-        var decisionName = string.IsNullOrWhiteSpace(message.OutputPortName)
-            ? message.Decision.ToString()
-            : message.OutputPortName!;
+        var decisionName = message.OutputPortName ?? string.Empty;
 
         var scope = DecisionOutputTemplateContext.Build(
             decision: decisionName,
@@ -1246,6 +1102,37 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         public static readonly DecisionOutputTemplateOutcome None = new(null, null);
     }
 
+    /// <summary>
+    /// Slice 13: merge an agent's pending <c>setContext</c> / <c>setGlobal</c> writes (carried on
+    /// <see cref="AgentInvocationCompleted"/>) into the saga's local-context and global-context
+    /// bags. Mirrors <see cref="ApplyScriptUpdates"/> for Logic nodes — same merge semantics
+    /// (last-write-wins per top-level key). No-op when the message has no updates.
+    /// </summary>
+    private static void ApplyAgentBagWrites(WorkflowSagaStateEntity saga, AgentInvocationCompleted message)
+    {
+        if (message.ContextUpdates is { Count: > 0 } contextUpdates)
+        {
+            var currentLocal = DeserializeContextInputs(saga.InputsJson);
+            var mergedLocal = new Dictionary<string, JsonElement>(currentLocal, StringComparer.Ordinal);
+            foreach (var (key, value) in contextUpdates)
+            {
+                mergedLocal[key] = value;
+            }
+            saga.InputsJson = SerializeContextInputs(mergedLocal);
+        }
+
+        if (message.GlobalUpdates is { Count: > 0 } globalUpdates)
+        {
+            var currentGlobal = DeserializeContextInputs(saga.GlobalInputsJson);
+            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
+            foreach (var (key, value) in globalUpdates)
+            {
+                mergedGlobal[key] = value;
+            }
+            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+        }
+    }
+
     private static void ApplyScriptUpdates(
         WorkflowSagaStateEntity saga,
         IReadOnlyDictionary<string, JsonElement> currentLocal,
@@ -1275,10 +1162,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     private static JsonElement ComposeAgentScriptInput(
         JsonElement artifactJson,
-        AgentDecisionKind decision,
+        string decisionPortName,
         JsonElement? decisionPayload)
     {
-        var decisionKindText = decision.ToString();
+        var decisionKindText = decisionPortName;
         var outputPortName = TryReadOutputPortName(decisionPayload) ?? decisionKindText;
 
         using var buffer = new MemoryStream();
@@ -1435,14 +1322,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
             var chosenPort = eval.IsSuccess
                 ? eval.OutputPortName!
-                : AgentDecisionPorts.FailedPort;
+                : ImplicitFailedPort;
 
             var nextEdge = workflow.FindNext(currentNode.Id, chosenPort);
             if (nextEdge is null)
             {
                 saga.FailureReason = eval.IsSuccess
                     ? $"Logic node {currentNode.Id} emitted port '{chosenPort}' but no outgoing edge is connected."
-                    : $"Logic node {currentNode.Id} failed ({eval.Failure}) and has no '{AgentDecisionPorts.FailedPort}' edge.";
+                    : $"Logic node {currentNode.Id} failed ({eval.Failure}) and has no '{ImplicitFailedPort}' edge.";
                 return new LogicChainResolution(null, rotates, FailureTerminal: true);
             }
 
@@ -1536,60 +1423,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
     }
 
-    private static async Task HandleEscalationResponseAsync(
-        BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
-        IAgentConfigRepository agentConfigRepo,
-        LogicNodeScriptHost scriptHost,
-        IArtifactStore artifactStore,
-        Workflow workflow,
-        WorkflowSagaStateEntity saga,
-        AgentInvocationCompleted message,
-        Guid resumeFromNodeId,
-        Runtime.AgentDecisionKind decision)
-    {
-        saga.EscalatedFromNodeId = null;
-
-        switch (decision)
-        {
-            case Runtime.AgentDecisionKind.Approved:
-                var resumeNode = workflow.FindNode(resumeFromNodeId)
-                    ?? throw new InvalidOperationException(
-                        $"Escalation recovery target node {resumeFromNodeId} is missing from workflow {workflow.Key} v{workflow.Version}.");
-
-                var recoveryRoundId = Guid.NewGuid();
-                await DispatchToNodeAsync(
-                    context,
-                    agentConfigRepo,
-                    scriptHost,
-                    artifactStore,
-                    saga,
-                    workflow,
-                    resumeNode,
-                    inputRef: message.OutputRef,
-                    roundId: recoveryRoundId,
-                    retryContext: null);
-
-                saga.CurrentNodeId = resumeNode.Id;
-                saga.CurrentAgentKey = resumeNode.AgentKey ?? string.Empty;
-                saga.CurrentRoundId = recoveryRoundId;
-                saga.RoundCount = 0;
-                return;
-
-            case Runtime.AgentDecisionKind.Completed:
-                saga.PendingTransition = PendingTransitionCompleted;
-                return;
-
-            case Runtime.AgentDecisionKind.Rejected:
-                saga.PendingTransition = PendingTransitionEscalated;
-                return;
-
-            case Runtime.AgentDecisionKind.Failed:
-            default:
-                saga.PendingTransition = PendingTransitionFailed;
-                return;
-        }
-    }
-
     private static Task DispatchToNodeAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
@@ -1604,7 +1437,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     {
         return node.Kind switch
         {
-            WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Escalation or WorkflowNodeKind.Start =>
+            WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Start =>
                 PublishHandoffAsync(context, agentConfigRepo, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId, retryContext),
             WorkflowNodeKind.Subflow =>
                 PublishSubflowDispatchAsync(context, saga, workflow, node, inputRef, roundId),
@@ -1740,7 +1573,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message)
     {
-        if (message.Decision != AgentDecisionKind.Failed)
+        if (!string.Equals(message.OutputPortName, "Failed", StringComparison.Ordinal))
         {
             return null;
         }
@@ -1759,7 +1592,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         var history = saga.GetDecisionHistory();
         return history.Count(record =>
             record.RoundId == saga.CurrentRoundId
-            && record.Decision == Runtime.AgentDecisionKind.Failed);
+            && string.Equals(record.Decision, "Failed", StringComparison.Ordinal));
     }
 
     private static (string? Reason, string? Summary) ExtractFailureContext(JsonElement? payload)
@@ -1815,18 +1648,6 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var summary = summaryBuilder.Length == 0 ? null : summaryBuilder.ToString();
         return (reason, summary);
-    }
-
-    private static Runtime.AgentDecisionKind MapDecisionKind(AgentDecisionKind kind)
-    {
-        return kind switch
-        {
-            AgentDecisionKind.Completed => Runtime.AgentDecisionKind.Completed,
-            AgentDecisionKind.Approved => Runtime.AgentDecisionKind.Approved,
-            AgentDecisionKind.Rejected => Runtime.AgentDecisionKind.Rejected,
-            AgentDecisionKind.Failed => Runtime.AgentDecisionKind.Failed,
-            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported decision kind.")
-        };
     }
 
     private static JsonElement? CloneDecisionPayload(JsonElement? payload)

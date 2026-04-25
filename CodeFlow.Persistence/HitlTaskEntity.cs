@@ -1,5 +1,3 @@
-using CodeFlow.Runtime;
-
 namespace CodeFlow.Persistence;
 
 public sealed class HitlTaskEntity
@@ -26,7 +24,7 @@ public sealed class HitlTaskEntity
 
     public HitlTaskState State { get; set; }
 
-    public AgentDecisionKind? Decision { get; set; }
+    public string? Decision { get; set; }
 
     public string? DecisionPayloadJson { get; set; }
 

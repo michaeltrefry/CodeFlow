@@ -81,7 +81,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
             "start",
             tools);
 
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         result.ToolCallsExecuted.Should().Be(2);
 
         mcpClient.Invocations.Should().ContainSingle()
@@ -242,7 +242,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
             "go",
             tools);
 
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         subAgentInvocations.Should().Be(1);
     }
 
@@ -361,7 +361,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
                 toolExecutionContext: new ToolExecutionContext(
                     new ToolWorkspaceContext(Guid.NewGuid(), workspaceRoot)));
 
-            result.Decision.Should().BeOfType<CompletedDecision>();
+            result.Decision.PortName.Should().Be("Completed");
             result.ToolCallsExecuted.Should().Be(3);
             (await File.ReadAllTextAsync(Path.Combine(workspaceRoot, "src", "main.txt")))
                 .Should().Be("alpha\nbeta patched\ngamma\n");

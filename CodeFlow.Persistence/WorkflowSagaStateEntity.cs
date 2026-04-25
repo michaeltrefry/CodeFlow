@@ -54,14 +54,6 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public int Version { get; set; }
 
     /// <summary>
-    /// When non-null, the saga has dispatched the workflow's escalation node and is waiting for
-    /// its completion. Holds the node id of the source whose overflowed edge triggered escalation,
-    /// so the workflow can resume from that point if the escalation agent approves recovery.
-    /// Cleared after the escalation decision is routed.
-    /// </summary>
-    public Guid? EscalatedFromNodeId { get; set; }
-
-    /// <summary>
     /// Set when the saga transitions to a terminal failure state. Describes why routing could not
     /// continue (e.g. missing edge, logic configuration error, max-rounds exceeded) so operators
     /// can diagnose workflow issues without reading raw event logs.

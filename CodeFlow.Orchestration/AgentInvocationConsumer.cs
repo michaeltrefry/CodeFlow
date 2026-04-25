@@ -128,9 +128,9 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             var failureResult = new AgentInvocationResult(
                 Output: BuildInvocationFailureOutput(ex, httpDiagnosticsRef),
-                Decision: new FailedDecision(
-                    BuildFailureReason(ex),
-                    BuildFailureDecisionPayload(ex, httpDiagnosticsRef)),
+                Decision: new AgentDecision(
+                    "Failed",
+                    BuildFailureDecisionPayload(ex, httpDiagnosticsRef, BuildFailureReason(ex))),
                 Transcript: [],
                 TokenUsage: null,
                 ToolCallsExecuted: 0);
@@ -191,7 +191,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 FileName: outputFileName),
             context.CancellationToken);
 
-        var contractsDecision = MapDecisionKind(invocationResult.Decision.Kind);
         await context.Publish(
             new AgentInvocationCompleted(
                 TraceId: message.TraceId,
@@ -199,12 +198,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 FromNodeId: message.NodeId,
                 AgentKey: message.AgentKey,
                 AgentVersion: message.AgentVersion,
-                OutputPortName: AgentDecisionPorts.ToPortName(contractsDecision),
+                OutputPortName: invocationResult.Decision.PortName,
                 OutputRef: outputRef,
-                Decision: contractsDecision,
                 DecisionPayload: BuildDecisionPayload(invocationResult.Decision, invocationResult),
                 Duration: duration,
-                TokenUsage: MapTokenUsage(invocationResult.TokenUsage)),
+                TokenUsage: MapTokenUsage(invocationResult.TokenUsage),
+                ContextUpdates: invocationResult.ContextUpdates,
+                GlobalUpdates: invocationResult.GlobalUpdates),
             context.CancellationToken);
     }
 
@@ -243,10 +243,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return BuildFailureSummary(ex);
     }
 
-    private static JsonObject BuildFailureDecisionPayload(Exception ex, Uri? httpDiagnosticsRef)
+    private static JsonObject BuildFailureDecisionPayload(Exception ex, Uri? httpDiagnosticsRef, string reason)
     {
         var payload = new JsonObject
         {
+            ["reason"] = reason,
             ["failure_code"] = AgentInvocationFailedReason,
             ["exception_type"] = ex.GetType().FullName,
             ["message"] = BuildFailureSummary(ex)
@@ -467,7 +468,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     private static JsonObject? BuildFailureContext(
-        FailedDecision failed,
+        AgentDecision failed,
         AgentInvocationResult result)
     {
         var snippet = result.Output;
@@ -476,9 +477,14 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             snippet = snippet[..1024];
         }
 
+        var reason = (failed.Payload as JsonObject)?["reason"] is JsonValue value
+            && value.TryGetValue<string>(out var reasonStr)
+                ? reasonStr
+                : null;
+
         return new JsonObject
         {
-            ["reason"] = failed.Reason,
+            ["reason"] = reason,
             ["last_output"] = snippet,
             ["tool_calls_executed"] = result.ToolCallsExecuted
         };
@@ -537,18 +543,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return string.IsNullOrEmpty(content) ? null : content;
     }
 
-    private static CodeFlow.Contracts.AgentDecisionKind MapDecisionKind(Runtime.AgentDecisionKind decisionKind)
-    {
-        return decisionKind switch
-        {
-            Runtime.AgentDecisionKind.Completed => CodeFlow.Contracts.AgentDecisionKind.Completed,
-            Runtime.AgentDecisionKind.Approved => CodeFlow.Contracts.AgentDecisionKind.Approved,
-            Runtime.AgentDecisionKind.Rejected => CodeFlow.Contracts.AgentDecisionKind.Rejected,
-            Runtime.AgentDecisionKind.Failed => CodeFlow.Contracts.AgentDecisionKind.Failed,
-            _ => throw new ArgumentOutOfRangeException(nameof(decisionKind), decisionKind, "Unsupported decision kind.")
-        };
-    }
-
     private static CodeFlow.Contracts.TokenUsage MapTokenUsage(Runtime.TokenUsage? tokenUsage)
     {
         return tokenUsage is null
@@ -560,30 +554,21 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     {
         var json = new JsonObject
         {
-            ["kind"] = decision.Kind.ToString()
+            ["portName"] = decision.PortName
         };
 
-        switch (decision)
+        if (decision.Payload is not null)
         {
-            case RejectedDecision rejected:
-                json["reasons"] = new JsonArray(rejected.Reasons
-                    .Select(static reason => (JsonNode?)JsonValue.Create(reason))
-                    .ToArray());
-                break;
-
-            case FailedDecision failed:
-                json["reason"] = failed.Reason;
-                var failureContext = BuildFailureContext(failed, result);
-                if (failureContext is not null)
-                {
-                    json["failure_context"] = failureContext;
-                }
-                break;
+            json["payload"] = decision.Payload.DeepClone();
         }
 
-        if (decision.DecisionPayload is not null)
+        if (string.Equals(decision.PortName, "Failed", StringComparison.Ordinal))
         {
-            json["payload"] = decision.DecisionPayload.DeepClone();
+            var failureContext = BuildFailureContext(decision, result);
+            if (failureContext is not null)
+            {
+                json["failure_context"] = failureContext;
+            }
         }
 
         using var document = JsonDocument.Parse(json.ToJsonString());

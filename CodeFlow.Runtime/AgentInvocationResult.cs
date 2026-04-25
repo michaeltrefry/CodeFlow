@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace CodeFlow.Runtime;
 
 public sealed record AgentInvocationResult(
@@ -5,4 +7,6 @@ public sealed record AgentInvocationResult(
     AgentDecision Decision,
     IReadOnlyList<ChatMessage> Transcript,
     TokenUsage? TokenUsage = null,
-    int ToolCallsExecuted = 0);
+    int ToolCallsExecuted = 0,
+    IReadOnlyDictionary<string, JsonElement>? ContextUpdates = null,
+    IReadOnlyDictionary<string, JsonElement>? GlobalUpdates = null);

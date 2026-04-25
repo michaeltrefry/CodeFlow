@@ -77,7 +77,7 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
                 TraceId = traceId,
                 AgentKey = "writer",
                 AgentVersion = 1,
-                Decision = CodeFlow.Runtime.AgentDecisionKind.Completed,
+                Decision = "Completed",
                 RoundId = roundId,
                 RecordedAtUtc = DateTime.UtcNow,
                 NodeId = nodeId,

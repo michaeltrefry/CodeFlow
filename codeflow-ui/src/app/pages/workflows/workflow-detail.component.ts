@@ -14,7 +14,6 @@ const KIND_CHIP: Record<string, ChipVariant> = {
   Agent: 'accent',
   Logic: 'warn',
   Hitl: 'accent',
-  Escalation: 'err',
   Subflow: 'accent',
   ReviewLoop: 'accent',
 };
@@ -149,7 +148,6 @@ export class WorkflowDetailComponent implements OnInit {
       case 'Agent': return node.agentKey ?? 'agent';
       case 'Logic': return 'Logic';
       case 'Hitl': return 'HITL';
-      case 'Escalation': return 'Esc';
       case 'Subflow': return `Subflow → ${node.subflowKey ?? '?'}`;
       case 'ReviewLoop': return `ReviewLoop ×${node.reviewMaxRounds ?? '?'} → ${node.subflowKey ?? '?'}`;
     }

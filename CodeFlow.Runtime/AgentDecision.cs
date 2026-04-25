@@ -2,22 +2,10 @@ using System.Text.Json.Nodes;
 
 namespace CodeFlow.Runtime;
 
-public abstract record AgentDecision(
-    AgentDecisionKind Kind,
-    JsonNode? DecisionPayload = null);
-
-public sealed record CompletedDecision(JsonNode? DecisionPayload = null)
-    : AgentDecision(AgentDecisionKind.Completed, DecisionPayload);
-
-public sealed record ApprovedDecision(JsonNode? DecisionPayload = null)
-    : AgentDecision(AgentDecisionKind.Approved, DecisionPayload);
-
-public sealed record RejectedDecision(
-    IReadOnlyList<string> Reasons,
-    JsonNode? DecisionPayload = null)
-    : AgentDecision(AgentDecisionKind.Rejected, DecisionPayload);
-
-public sealed record FailedDecision(
-    string Reason,
-    JsonNode? DecisionPayload = null)
-    : AgentDecision(AgentDecisionKind.Failed, DecisionPayload);
+/// <summary>
+/// Flat representation of a terminal agent decision. <see cref="PortName"/> is the
+/// author-defined output port name that drives saga routing. <see cref="Payload"/>
+/// is the LLM-supplied payload (or runtime-supplied failure context for the implicit
+/// <c>Failed</c> port).
+/// </summary>
+public sealed record AgentDecision(string PortName, JsonNode? Payload = null);

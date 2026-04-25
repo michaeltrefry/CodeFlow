@@ -64,8 +64,7 @@ import {
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
   'Hitl',
-  'Start',
-  'Escalation'
+  'Start'
 ] as WorkflowNodeKind[]);
 
 const FORK_KEY_PREFIX = '__fork_';
@@ -216,7 +215,6 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item agent" (click)="addPaletteNode('Agent')">Agent</button>
             <button type="button" class="palette-item logic" (click)="addPaletteNode('Logic')">Logic</button>
             <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
-            <button type="button" class="palette-item escalation" (click)="addPaletteNode('Escalation')">Escalation</button>
             <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
             <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
           </div>
@@ -233,7 +231,7 @@ function defaultStartInput(): WorkflowInput {
               <div class="muted xsmall">ID <code class="mono">{{ sel.editor.nodeId }}</code></div>
             </div>
 
-            @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start' || sel.editor.kind === 'Escalation') {
+            @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start') {
               <div class="inspector-section">
                 <label class="field">
                   <span>Agent</span>
@@ -1183,10 +1181,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     if (kind === 'Start' && this.editor.getNodes().some(n => n.kind === 'Start')) {
       this.error.set('A workflow may only contain one Start node.');
-      return;
-    }
-    if (kind === 'Escalation' && this.editor.getNodes().some(n => n.kind === 'Escalation')) {
-      this.error.set('A workflow may only contain one Escalation node.');
       return;
     }
 

@@ -6,6 +6,138 @@ namespace CodeFlow.Runtime.Tests;
 public sealed class InvocationLoopTests
 {
     [Fact]
+    public async Task RunAsync_ShouldExposeSetContextWrites_OnSuccessfulSubmit()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Saving and submitting.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_setctx", "setContext",
+                            new JsonObject { ["key"] = "foo", ["value"] = 42 }),
+                        new ToolCall("call_setglobal", "setGlobal",
+                            new JsonObject { ["key"] = "bar", ["value"] = "hello" }),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Persist and ship.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.ContextUpdates.Should().NotBeNull();
+        result.ContextUpdates!["foo"].GetInt32().Should().Be(42);
+        result.GlobalUpdates.Should().NotBeNull();
+        result.GlobalUpdates!["bar"].GetString().Should().Be("hello");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldDiscardSetContextWrites_OnFailedTerminal()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Will save then fail.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_setctx", "setContext",
+                            new JsonObject { ["key"] = "foo", ["value"] = 1 }),
+                        new ToolCall("call_fail", "fail",
+                            new JsonObject { ["reason"] = "blew up" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Try.")],
+            "gpt-5"));
+
+        result.Decision.PortName.Should().Be("Failed");
+        result.ContextUpdates.Should().BeNull("failed terminations discard pending writes");
+        result.GlobalUpdates.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRejectSetContextOversizedValue_AsToolError()
+    {
+        var oversized = new string('x', 256 * 1024 + 16);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Trying a big value.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set", "setContext",
+                            new JsonObject { ["key"] = "blob", ["value"] = oversized })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                request.Messages[^1].IsError.Should().BeTrue();
+                request.Messages[^1].Content.Should().Contain("setContext");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Recovered.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Save big stuff.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.ContextUpdates.Should().BeNull("rejected writes never enter the pending bag");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAdvertise_SetContextAndSetGlobalTools()
+    {
+        IReadOnlyList<ToolSchema>? advertisedTools = null;
+        var modelClient = new ScriptedModelClient(
+        [
+            request =>
+            {
+                advertisedTools = request.Tools;
+                return new InvocationResponse(
+                    new ChatMessage(ChatMessageRole.Assistant, "done."),
+                    InvocationStopReason.EndTurn);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "anything")],
+            "gpt-5"));
+
+        advertisedTools.Should().NotBeNull();
+        advertisedTools!.Should().Contain(t => t.Name == "setContext");
+        advertisedTools.Should().Contain(t => t.Name == "setGlobal");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldReturnCompletedDecision_WhenModelReturnsFinalText()
     {
         var modelClient = new ScriptedModelClient(
@@ -22,7 +154,7 @@ public sealed class InvocationLoopTests
             "gpt-5"));
 
         result.Output.Should().Be("All done.");
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         result.ToolCallsExecuted.Should().Be(0);
         result.TokenUsage.Should().BeEquivalentTo(new TokenUsage(12, 6, 18));
     }
@@ -43,7 +175,7 @@ public sealed class InvocationLoopTests
                             "submit",
                             new JsonObject
                             {
-                                ["decision"] = "rejected",
+                                ["decision"] = "Rejected",
                                 ["payload"] = new JsonObject
                                 {
                                     ["reasons"] = new JsonArray("Tighten validation", "Add regression tests"),
@@ -57,17 +189,25 @@ public sealed class InvocationLoopTests
 
         var result = await loop.RunAsync(new InvocationLoopRequest(
             [new ChatMessage(ChatMessageRole.User, "Review this change.")],
-            "gpt-5"));
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Rejected", null, null)
+            ]));
 
         result.Output.Should().Be("Review complete.");
         result.ToolCallsExecuted.Should().Be(1);
-        var decision = result.Decision.Should().BeOfType<RejectedDecision>().Subject;
-        decision.Reasons.Should().Equal("Tighten validation", "Add regression tests");
-        decision.DecisionPayload!["ticket"]!.GetValue<string>().Should().Be("CF-17");
+        result.Decision.PortName.Should().Be("Rejected");
+        var payload = result.Decision.Payload!.AsObject();
+        payload["reasons"]!.AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should().Equal("Tighten validation", "Add regression tests");
+        payload["ticket"]!.GetValue<string>().Should().Be("CF-17");
     }
 
     [Fact]
-    public async Task RunAsync_ShouldAdvertiseSubmitToolSchemaWithoutApprovedWithActions()
+    public async Task RunAsync_ShouldAdvertiseSubmitTool_WithDeclaredOutputsAsEnum()
     {
         IReadOnlyList<ToolSchema>? advertisedTools = null;
         var modelClient = new ScriptedModelClient(
@@ -83,14 +223,105 @@ public sealed class InvocationLoopTests
         var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
 
         await loop.RunAsync(new InvocationLoopRequest(
-            [new ChatMessage(ChatMessageRole.User, "Anything.")],
-            "gpt-5"));
+            [new ChatMessage(ChatMessageRole.User, "Classify it.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("NewProject", null, null),
+                new AgentOutputDeclaration("Feature", null, null),
+                new AgentOutputDeclaration("BugFix", null, null)
+            ]));
 
         advertisedTools.Should().NotBeNull();
         var submitTool = advertisedTools!.Should().ContainSingle(tool => tool.Name == "submit").Subject;
         var decisionEnum = submitTool.Parameters!["properties"]!["decision"]!["enum"]!.AsArray();
         decisionEnum.Select(node => node!.GetValue<string>())
-            .Should().Equal("completed", "approved", "rejected");
+            .Should().Equal("NewProject", "Feature", "BugFix");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRouteToCustomDeclaredPort()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Classified as a bug.",
+                    ToolCalls:
+                    [
+                        new ToolCall(
+                            "call_submit",
+                            "submit",
+                            new JsonObject { ["decision"] = "BugFix" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Triage this.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("NewProject", null, null),
+                new AgentOutputDeclaration("Feature", null, null),
+                new AgentOutputDeclaration("BugFix", null, null)
+            ]));
+
+        result.Decision.PortName.Should().Be("BugFix");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldReturnToolError_WhenSubmittedPortIsNotDeclared()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Picking an unknown port.",
+                    ToolCalls:
+                    [
+                        new ToolCall(
+                            "call_submit",
+                            "submit",
+                            new JsonObject { ["decision"] = "ImaginaryPort" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                request.Messages[^1].IsError.Should().BeTrue();
+                request.Messages[^1].Content.Should().Contain("ImaginaryPort");
+                request.Messages[^1].Content.Should().Contain("Approved");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Retrying with a real port.",
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "call_submit",
+                                "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Decide.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Rejected", null, null)
+            ]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.ToolCallsExecuted.Should().Be(2);
     }
 
     [Fact]
@@ -133,7 +364,7 @@ public sealed class InvocationLoopTests
             [new ChatMessage(ChatMessageRole.User, "Run the flaky tool.")],
             "gpt-5"));
 
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         result.Output.Should().Be("Recovered after the tool failure.");
         provider.InvokedToolNames.Should().ContainSingle().Which.Should().Be("unstable");
     }
@@ -173,7 +404,7 @@ public sealed class InvocationLoopTests
             "gpt-5",
             ToolExecutionContext: expectedContext));
 
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         provider.InvokedContexts.Should().ContainSingle()
             .Which.Should().BeEquivalentTo(expectedContext);
     }
@@ -214,8 +445,9 @@ public sealed class InvocationLoopTests
                 MaxConsecutiveNonMutatingCalls = 10
             }));
 
-        var decision = result.Decision.Should().BeOfType<FailedDecision>().Subject;
-        decision.Reason.Should().Be(InvocationLoopFailureReasons.ToolCallBudgetExceeded);
+        result.Decision.PortName.Should().Be("Failed");
+        result.Decision.Payload!.AsObject()["reason"]!.GetValue<string>()
+            .Should().Be(InvocationLoopFailureReasons.ToolCallBudgetExceeded);
         result.ToolCallsExecuted.Should().Be(2);
     }
 
@@ -253,8 +485,9 @@ public sealed class InvocationLoopTests
                 MaxConsecutiveNonMutatingCalls = 5
             }));
 
-        var decision = result.Decision.Should().BeOfType<FailedDecision>().Subject;
-        decision.Reason.Should().Be(InvocationLoopFailureReasons.LoopDurationExceeded);
+        result.Decision.PortName.Should().Be("Failed");
+        result.Decision.Payload!.AsObject()["reason"]!.GetValue<string>()
+            .Should().Be(InvocationLoopFailureReasons.LoopDurationExceeded);
         modelClient.InvocationCount.Should().Be(1);
     }
 
@@ -294,8 +527,9 @@ public sealed class InvocationLoopTests
                 MaxConsecutiveNonMutatingCalls = 1
             }));
 
-        var decision = result.Decision.Should().BeOfType<FailedDecision>().Subject;
-        decision.Reason.Should().Be(InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded);
+        result.Decision.PortName.Should().Be("Failed");
+        result.Decision.Payload!.AsObject()["reason"]!.GetValue<string>()
+            .Should().Be(InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded);
         result.ToolCallsExecuted.Should().Be(2);
     }
 

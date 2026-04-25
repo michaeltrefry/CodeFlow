@@ -9,9 +9,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json.Nodes;
 using Testcontainers.MariaDb;
 using Testcontainers.RabbitMq;
-using RuntimeDecisionKind = CodeFlow.Runtime.AgentDecisionKind;
 
 namespace CodeFlow.Orchestration.Tests;
 
@@ -57,15 +57,19 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
     {
         var scriptedInvoker = new ScriptedAgentInvoker();
         scriptedInvoker.Queue("evaluator",
-            new CompletedDecision(), output: "evaluator-pass-1");
+            new AgentDecision("Completed"), output: "evaluator-pass-1");
         scriptedInvoker.Queue("reviewer",
-            new RejectedDecision(["needs stronger citations"]), output: "reviewer-rejection");
+            new AgentDecision("Rejected", new JsonObject
+            {
+                ["reasons"] = new JsonArray("needs stronger citations")
+            }),
+            output: "reviewer-rejection");
         scriptedInvoker.Queue("evaluator",
-            new CompletedDecision(), output: "evaluator-pass-2");
+            new AgentDecision("Completed"), output: "evaluator-pass-2");
         scriptedInvoker.Queue("reviewer",
-            new ApprovedDecision(), output: "reviewer-approval");
+            new AgentDecision("Approved"), output: "reviewer-approval");
         scriptedInvoker.Queue("publisher",
-            new CompletedDecision(), output: "publisher-done");
+            new AgentDecision("Completed"), output: "publisher-done");
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -141,11 +145,11 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
             history.Select(record => (record.AgentKey, record.Decision))
                 .Should()
                 .ContainInOrder(
-                    ("evaluator", RuntimeDecisionKind.Completed),
-                    ("reviewer", RuntimeDecisionKind.Rejected),
-                    ("evaluator", RuntimeDecisionKind.Completed),
-                    ("reviewer", RuntimeDecisionKind.Approved),
-                    ("publisher", RuntimeDecisionKind.Completed));
+                    ("evaluator", "Completed"),
+                    ("reviewer", "Rejected"),
+                    ("evaluator", "Completed"),
+                    ("reviewer", "Approved"),
+                    ("publisher", "Completed"));
 
             scriptedInvoker.CallsFor("evaluator").Should().Be(2);
             scriptedInvoker.CallsFor("reviewer").Should().Be(2);
@@ -304,8 +308,7 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
 
             if (saga is not null && saga.CurrentState is
                 nameof(WorkflowSagaStateMachine.Completed)
-                or nameof(WorkflowSagaStateMachine.Failed)
-                or nameof(WorkflowSagaStateMachine.Escalated))
+                or nameof(WorkflowSagaStateMachine.Failed))
             {
                 return saga;
             }

@@ -27,7 +27,7 @@ public sealed class TraceInvocationCompletedObserver : IConsumer<AgentInvocation
                 AgentVersion: message.AgentVersion,
                 OutputRef: message.OutputRef,
                 InputRef: null,
-                Decision: (Runtime.AgentDecisionKind)(int)message.Decision,
+                Decision: message.OutputPortName,
                 DecisionPayload: message.DecisionPayload,
                 TimestampUtc: context.SentTime ?? DateTimeOffset.UtcNow),
             context.CancellationToken);

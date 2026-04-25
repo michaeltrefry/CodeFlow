@@ -1,4 +1,3 @@
-using CodeFlow.Runtime;
 using System.Text.Json;
 
 namespace CodeFlow.Persistence;
@@ -6,7 +5,7 @@ namespace CodeFlow.Persistence;
 public sealed record DecisionRecord(
     string AgentKey,
     int AgentVersion,
-    AgentDecisionKind Decision,
+    string Decision,
     JsonElement? DecisionPayload,
     Guid RoundId,
     DateTime RecordedAtUtc,

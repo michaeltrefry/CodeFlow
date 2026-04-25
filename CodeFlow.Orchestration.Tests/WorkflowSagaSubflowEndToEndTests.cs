@@ -19,7 +19,7 @@ namespace CodeFlow.Orchestration.Tests;
 public sealed class WorkflowSagaSubflowEndToEndTests
 {
     private static readonly IReadOnlyList<string> AllDecisionPorts =
-        Enum.GetNames<AgentDecisionKind>();
+        new[] { "Completed", "Approved", "Rejected", "Failed" };
 
     [Fact]
     public async Task ParentToChild_HappyPath_ShouldRoundTripAndMergeGlobal()
@@ -98,7 +98,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
 
             // 2. Parent Start completes → saga routes to Subflow node → publishes SubflowInvokeRequested.
             await harness.Bus.Publish(BuildCompletion(parentTraceId, parentRoundId, parentStartNodeId, "kickoff", 1,
-                AgentDecisionKind.Completed, "file:///tmp/parent-start-out.bin"));
+                "Completed", "file:///tmp/parent-start-out.bin"));
 
             var spawns = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, 1);
             spawns.Should().ContainSingle();
@@ -121,7 +121,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
 
             // 5. Simulate child.Start completing → child saga terminates Completed (no edges).
             await harness.Bus.Publish(BuildCompletion(childTraceId, childInvoke.RoundId, childStartNodeId,
-                "child-agent", 1, AgentDecisionKind.Completed, "file:///tmp/child-final.bin"));
+                "child-agent", 1, "Completed", "file:///tmp/child-final.bin"));
 
             await sagaHarness.Exists(childTraceId, x => x.Completed);
 
@@ -283,7 +283,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
 
             // D.Start completes → D tries to spawn chain-leaf at depth 4 → DEPTH CAP REJECT.
             await harness.Bus.Publish(BuildCompletion(dTrace, dStartInvoke.RoundId, startNodeIds["chain-D"],
-                "start-chain-D", 1, AgentDecisionKind.Completed, "file:///tmp/d-out.bin"));
+                "start-chain-D", 1, "Completed", "file:///tmp/d-out.bin"));
 
             // D saga should transition to Failed with SubflowDepthExceeded.
             await sagaHarness.Exists(dTrace, x => x.Failed);
@@ -320,7 +320,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
         Guid startNodeId)
     {
         await harness.Bus.Publish(BuildCompletion(traceId, roundId, startNodeId,
-            $"start-{workflowKey}", 1, AgentDecisionKind.Completed,
+            $"start-{workflowKey}", 1, "Completed",
             $"file:///tmp/{workflowKey}-out.bin"));
     }
 
@@ -371,7 +371,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
         Guid fromNodeId,
         string agentKey,
         int agentVersion,
-        AgentDecisionKind decision,
+        string decision,
         string outputRef)
     {
         return new AgentInvocationCompleted(
@@ -380,10 +380,9 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             FromNodeId: fromNodeId,
             AgentKey: agentKey,
             AgentVersion: agentVersion,
-            OutputPortName: AgentDecisionPorts.ToPortName(decision),
+            OutputPortName: decision,
             OutputRef: new Uri(outputRef),
-            Decision: decision,
-            DecisionPayload: JsonDocument.Parse($"{{\"kind\":\"{decision}\"}}").RootElement,
+            DecisionPayload: JsonDocument.Parse($"{{\"portName\":\"{decision}\"}}").RootElement.Clone(),
             Duration: TimeSpan.FromMilliseconds(1),
             TokenUsage: new TokenUsage(0, 0, 0));
     }

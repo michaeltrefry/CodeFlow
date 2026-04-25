@@ -75,15 +75,17 @@ public sealed class Agent : IAgentInvoker
                 configuration.Budget,
                 configuration.MaxTokens,
                 configuration.Temperature,
-                toolExecutionContext),
+                toolExecutionContext,
+                configuration.DeclaredOutputs),
             observer,
             cancellationToken);
 
-        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, loopResult.Decision.Kind.ToString());
-        if (loopResult.Decision is FailedDecision failed)
+        activity?.SetTag(CodeFlowActivity.TagNames.DecisionKind, loopResult.Decision.PortName);
+        if (string.Equals(loopResult.Decision.PortName, "Failed", StringComparison.Ordinal))
         {
-            activity?.SetTag(CodeFlowActivity.TagNames.FailureReason, failed.Reason);
-            activity?.SetStatus(ActivityStatusCode.Error, failed.Reason);
+            var reason = (loopResult.Decision.Payload as System.Text.Json.Nodes.JsonObject)?["reason"]?.GetValue<string>();
+            activity?.SetTag(CodeFlowActivity.TagNames.FailureReason, reason);
+            activity?.SetStatus(ActivityStatusCode.Error, reason);
         }
         else
         {
@@ -95,7 +97,9 @@ public sealed class Agent : IAgentInvoker
             loopResult.Decision,
             loopResult.Transcript,
             loopResult.TokenUsage,
-            loopResult.ToolCallsExecuted);
+            loopResult.ToolCallsExecuted,
+            loopResult.ContextUpdates,
+            loopResult.GlobalUpdates);
     }
 
     private IEnumerable<IToolProvider> BuildProviders(

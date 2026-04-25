@@ -1,4 +1,3 @@
-using CodeFlow.Runtime;
 using System.Text.Json;
 
 namespace CodeFlow.Api.Dtos;
@@ -35,7 +34,7 @@ public sealed record TraceSummaryDto(
 public sealed record TraceDecisionDto(
     string AgentKey,
     int AgentVersion,
-    AgentDecisionKind Decision,
+    string Decision,
     JsonElement? DecisionPayload,
     Guid RoundId,
     DateTime RecordedAtUtc,
@@ -81,15 +80,14 @@ public sealed record HitlTaskDto(
     string? InputPreview,
     DateTime CreatedAtUtc,
     string State,
-    AgentDecisionKind? Decision,
+    string? Decision,
     DateTime? DecidedAtUtc,
     string? DeciderId,
     Guid? OriginTraceId = null,
     IReadOnlyList<string>? SubflowPath = null);
 
 public sealed record HitlDecisionRequest(
-    AgentDecisionKind Decision,
-    string? OutputPortName,
+    string OutputPortName,
     string? Reason,
     IReadOnlyList<string>? Actions,
     IReadOnlyList<string>? Reasons,

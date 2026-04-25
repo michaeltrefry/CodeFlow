@@ -6,7 +6,6 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowsApi } from '../../core/workflows.api';
 import {
-  AgentDecisionKind,
   TraceDetail,
   TraceLogicEvaluation,
   TraceStreamEvent,
@@ -31,7 +30,7 @@ interface TimelineEntry {
   agentKey: string;
   agentVersion: number;
   nodeId?: string | null;
-  decision?: AgentDecisionKind | null;
+  decision?: string | null;
   decisionPayload?: unknown;
   timestampUtc: string;
   inputRef?: string | null;
@@ -686,7 +685,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     return '';
   }
 
-  decisionVariantFor(decision: AgentDecisionKind | null | undefined): 'ok' | 'err' | 'warn' | 'accent' {
+  decisionVariantFor(decision: string | null | undefined): 'ok' | 'err' | 'warn' | 'accent' {
     if (decision === 'Completed' || decision === 'Approved') return 'ok';
     if (decision === 'Failed' || decision === 'Rejected') return 'err';
     return 'accent';

@@ -36,7 +36,7 @@ public sealed class AgentTests
             ResolvedAgentTools.Empty);
 
         result.Output.Should().Be("Runtime kickoff summarized.");
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         result.TokenUsage.Should().BeEquivalentTo(new TokenUsage(8, 4, 12));
     }
 
@@ -78,7 +78,7 @@ public sealed class AgentTests
             ResolvedAgentTools.Empty with { EnableHostTools = true });
 
         result.Output.Should().Be("The current UTC timestamp is captured.");
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         result.ToolCallsExecuted.Should().Be(1);
     }
 
@@ -147,7 +147,7 @@ public sealed class AgentTests
             ResolvedAgentTools.Empty);
 
         result.Output.Should().Be("Children finished.");
-        result.Decision.Should().BeOfType<CompletedDecision>();
+        result.Decision.PortName.Should().Be("Completed");
         childClient.MaxObservedConcurrency.Should().Be(3);
     }
 

@@ -114,7 +114,7 @@ public static class AgentTestEndpoints
                 new
                 {
                     output = result.Output,
-                    decisionKind = result.Decision.Kind.ToString(),
+                    decisionKind = result.Decision.PortName,
                     decisionPayload = BuildDecisionPayload(result.Decision),
                     toolCallsExecuted = result.ToolCallsExecuted,
                     tokenUsage = MapUsage(result.TokenUsage),
@@ -195,24 +195,12 @@ public static class AgentTestEndpoints
     {
         var json = new JsonObject
         {
-            ["kind"] = decision.Kind.ToString()
+            ["portName"] = decision.PortName
         };
 
-        switch (decision)
+        if (decision.Payload is not null)
         {
-            case RejectedDecision rejected:
-                json["reasons"] = new JsonArray(rejected.Reasons
-                    .Select(static r => (JsonNode?)JsonValue.Create(r))
-                    .ToArray());
-                break;
-            case FailedDecision failed:
-                json["reason"] = failed.Reason;
-                break;
-        }
-
-        if (decision.DecisionPayload is not null)
-        {
-            json["payload"] = decision.DecisionPayload.DeepClone();
+            json["payload"] = decision.Payload.DeepClone();
         }
 
         return json;

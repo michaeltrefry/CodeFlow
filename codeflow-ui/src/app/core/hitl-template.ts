@@ -1,19 +1,10 @@
-import { AgentDecisionKind } from './models';
-
-export const ALL_DECISION_KINDS: AgentDecisionKind[] = [
-  'Completed',
-  'Approved',
-  'Rejected',
-  'Failed'
-];
-
-export type HitlPlaceholderKind = 'text' | 'select' | 'decision';
+export type HitlPlaceholderKind = 'text' | 'select';
 
 export interface HitlPlaceholder {
   /** Name exactly as written in the template (used as the form field key). */
   name: string;
   kind: HitlPlaceholderKind;
-  /** For select/decision placeholders, the allowed options. */
+  /** For select placeholders, the allowed options. */
   options?: string[];
 }
 
@@ -63,14 +54,14 @@ export function parseHitlTemplate(template: string | null | undefined): HitlTemp
       if (options && !existing.options) {
         placeholders[existingIdx] = {
           ...existing,
-          kind: classifyKind(existing.name, options),
+          kind: classifyKind(options),
           options
         };
       }
       continue;
     }
 
-    const kind = classifyKind(name, options);
+    const kind = classifyKind(options);
     nameIndex.set(key, placeholders.length);
     placeholders.push({ name, kind, options });
   }
@@ -104,26 +95,7 @@ export function renderHitlTemplate(
   });
 }
 
-/** Get the decision placeholder (if any) from a parsed template. */
-export function getDecisionPlaceholder(
-  result: HitlTemplateParseResult
-): HitlPlaceholder | undefined {
-  const idx = result.nameIndex.get('decision');
-  return idx === undefined ? undefined : result.placeholders[idx];
-}
-
-/** Return the allowed decision kinds for a decision placeholder, falling back to all kinds. */
-export function getDecisionOptions(placeholder: HitlPlaceholder | undefined): AgentDecisionKind[] {
-  if (!placeholder || !placeholder.options || placeholder.options.length === 0) {
-    return ALL_DECISION_KINDS;
-  }
-  const allowed = new Set(placeholder.options);
-  const matching = ALL_DECISION_KINDS.filter(kind => allowed.has(kind));
-  return matching.length > 0 ? matching : ALL_DECISION_KINDS;
-}
-
-function classifyKind(name: string, options: string[] | undefined): HitlPlaceholderKind {
-  if (name.toLowerCase() === 'decision') { return 'decision'; }
+function classifyKind(options: string[] | undefined): HitlPlaceholderKind {
   if (options && options.length > 0) { return 'select'; }
   return 'text';
 }
