@@ -1,30 +1,9 @@
 networks:
   mcp-shared:
     external: true
+  trefry-network:
+    external: true
 services:
-  mariadb:
-    image: mariadb:11.4
-    container_name: codeflow-mariadb
-    restart: unless-stopped
-    command: --lower-case-table-names=1
-    environment:
-      MARIADB_ROOT_PASSWORD: codeflow_root
-      MARIADB_DATABASE: codeflow
-      MARIADB_USER: codeflow
-      MARIADB_PASSWORD: codeflow_dev
-    ports:
-      - "3306:3306"
-    volumes:
-      - ./.docker-data/mariadb:/var/lib/mysql
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - mariadb-admin ping --host=127.0.0.1 --user=$$MARIADB_USER --password=$$MARIADB_PASSWORD
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-
   rabbitmq:
     image: rabbitmq:4.0-management
     container_name: codeflow-rabbitmq
@@ -78,15 +57,13 @@ services:
     container_name: codeflow-api
     restart: unless-stopped
     depends_on:
-      mariadb:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       codeflow-artifacts-init:
         condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
+      CODEFLOW_DB_CONNECTION_STRING: "Server=mariadb;Port=3306;Database=codeflow;User=${CODEFLOW_DB_USER:-root};Password=${CODEFLOW_DB_PASSWORD:?CODEFLOW_DB_PASSWORD must be set in .env};"
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__VirtualHost: codeflow
@@ -118,6 +95,7 @@ services:
     networks:
       - default
       - mcp-shared
+      - trefry-network
 
   codeflow-worker:
     build:
@@ -126,8 +104,6 @@ services:
     container_name: codeflow-worker
     restart: unless-stopped
     depends_on:
-      mariadb:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       codeflow-api:
@@ -136,7 +112,7 @@ services:
         condition: service_completed_successfully
     environment:
       DOTNET_ENVIRONMENT: Development
-      CODEFLOW_DB_CONNECTION_STRING: Server=mariadb;Port=3306;Database=codeflow;User=codeflow;Password=codeflow_dev;
+      CODEFLOW_DB_CONNECTION_STRING: "Server=mariadb;Port=3306;Database=codeflow;User=${CODEFLOW_DB_USER:-root};Password=${CODEFLOW_DB_PASSWORD:?CODEFLOW_DB_PASSWORD must be set in .env};"
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__VirtualHost: codeflow
@@ -157,6 +133,7 @@ services:
     networks:
       - default
       - mcp-shared
+      - trefry-network
 
   codeflow-ui:
     build:
