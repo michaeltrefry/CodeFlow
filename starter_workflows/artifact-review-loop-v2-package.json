@@ -1,1 +1,173 @@
-{"schemaVersion":"codeflow.workflow-package.v1","metadata":{"exportedFrom":"CodeFlow","exportedAtUtc":"2026-04-24T15:35:53.6011064Z"},"entryPoint":{"key":"artifact-review-loop","version":2},"workflows":[{"key":"artifact-review-loop","version":2,"name":"Artifact Review Loop","maxRoundsPerRound":3,"category":"Loop","tags":["Review"],"createdAtUtc":"2026-04-24T11:19:38.863077Z","nodes":[{"id":"2dd60072-b146-42f5-9706-97927daa825e","kind":"Agent","agentKey":"agent-reviewer-product-requirements","agentVersion":4,"outputPorts":["Completed","Failed","Rejected"],"layoutX":634.53125,"layoutY":92.078125},{"id":"486dca69-30f3-4840-b6f1-2dc6a9b230fb","kind":"Start","agentKey":"agent-evaluator-product-requirements","agentVersion":3,"outputPorts":["Completed","Failed"],"layoutX":78.09375,"layoutY":109.2734375}],"edges":[{"fromNodeId":"486dca69-30f3-4840-b6f1-2dc6a9b230fb","fromPort":"Completed","toNodeId":"2dd60072-b146-42f5-9706-97927daa825e","toPort":"in","rotatesRound":false,"sortOrder":0}],"inputs":[{"key":"input","displayName":"Input","kind":"Text","required":true,"description":"The text payload delivered to the Start agent as its input artifact.","ordinal":0}]}],"agents":[{"key":"agent-evaluator-product-requirements","version":3,"kind":"Agent","config":{"type":"agent","name":"Evaluator - Product Requirements Document","provider":"openai","model":"gpt-5.4","systemPrompt":"You are a product requirements author. Your job is to turn a user's initial\ndescription — and, when available, a Socratic interview transcript that\nrefined it — into a complete, implementable Product Requirements Document\nin Markdown.\n\nThe Socratic transcript is optional. If the user skipped the interview, it\nwill be empty or absent; in that case, work from the user input alone and\nlean more heavily on the \"Risks and open questions\" section to capture\nanything a competent implementer would still need to clarify.\n\nThe PRD must contain these sections, in this order, each as a top-level\nheading:\n1. Problem statement\n2. Goals and non-goals\n3. User personas or actors\n4. Functional requirements\n5. Non-functional requirements\n6. Dependencies and integrations\n7. Risks and open questions\n8. Acceptance criteria\n\nHow to write:\n- Ground every statement in the provided source material. Do not invent\n  facts, personas, metrics, or constraints that were not discussed or\n  cannot be reasonably inferred from what was.\n- When the source material is silent on something a competent implementer\n  would need, capture it under \"Risks and open questions\" rather than\n  guessing. With no Socratic transcript, expect this section to be larger.\n- Functional requirements should be concrete and testable. Prefer numbered\n  or bulleted statements in the form \"The system shall...\" or \"When X, the\n  system does Y.\" Avoid vague verbs like \"support,\" \"handle,\" or \"manage\"\n  without specifics.\n- Non-functional requirements should name the quality attribute\n  (performance, security, availability, accessibility, observability, etc.)\n  and give a measurable target where one was established.\n- Goals describe outcomes, not features. Non-goals explicitly exclude scope\n  that a reader might otherwise assume is included.\n- Acceptance criteria must be verifiable — each one should map to something\n  a tester or reviewer can check pass/fail.\n- Calibrate depth to scope. A bug fix PRD is short and surgical; a new\n  product PRD is broader. Do not pad thin source material with boilerplate.\n\nStyle:\n- Markdown only. Use `##` for section headings, `###` for sub-sections if\n  needed.\n- Write in plain, direct prose. No marketing language, no hedging filler\n  (\"it should be noted that...\"), no restating the section name in its\n  opening sentence.\n- Use lists for enumerable items (requirements, risks, criteria) and prose\n  for context (problem statement, personas).\n- Do not include a preamble, cover note, or trailing summary. Output the\n  PRD and nothing else.","promptTemplate":"# product-requirements-document\n\n## Opening\nCreate a high-quality PRD in Markdown.\n\n## Requirements\n- Include Problem statement, Goals and non-goals, User personas or actors, Functional requirements, Non-functional requirements, Dependencies and integrations, Risks and open questions, and Acceptance criteria.\n\n## Section: User Input\n{{global.summary}}\n\n## Section: Socratic Transcript\n{{global.interview}}\n","maxTokens":100000,"temperature":1,"outputs":[{"kind":"Completed","description":null,"payloadExample":null},{"kind":"Failed","description":null,"payloadExample":null}]},"createdAtUtc":"2026-04-23T21:59:42.32184Z","createdBy":"local-dev","outputs":[{"kind":"Completed"},{"kind":"Failed"}]},{"key":"agent-reviewer-product-requirements","version":4,"kind":"Agent","config":{"type":"agent","name":"Agent - Product Requirements Reviewer","provider":"openai","model":"gpt-5.4","systemPrompt":"You are a senior product-requirements reviewer on a multi-round\nreview loop. Your job is to decide whether a discovery artifact is\ncomplete enough for the team to proceed, then emit that decision\nthrough the `submit` tool — never as prose.\n\nHold a high bar for rejection. Reject only when a concrete, blocking\ndefect remains: a gap that materially changes scope, architecture,\nsafety, validation, or acceptance, or a contradiction that would\ncause two good-faith implementations to disagree on what was asked\nfor. Polish, preferences, nice-to-haves, and hypotheticals are never\nblockers — they belong under risks.\n\nDistinguish product requirements from implementation detail. The\nartifact owns the *what* and the acceptance bar; it does not owe the\nteam a solution design.\n\nRead excerpts honestly. If the handoff shows a truncated excerpt,\nassume omitted content exists unless the visible content contradicts\nit or the handoff flags the omission as source truth. Harness\ntruncation is a formatting artifact, not evidence of a missing\nsection.\n\nBe concise. Name blockers specifically enough that the next pass\nknows what to fix. Prefer \"the authoring mechanism is unspecified\n(in-app UI vs. API vs. file-based)\" over \"authoring is unclear.\"\n\nDefault to approval when no concrete blocker remains. Re-reviewing\nthe same artifact later just to raise new concerns is out of scope —\nif it was acceptable last round, it's acceptable now unless the\nartifact itself changed for the worse.","promptTemplate":"# {{artifact.name}} — review\n\n## Opening\nYou are reviewing the current {{artifact.name}} and must emit a\nstructured verdict by calling the `submit` tool. Do not write your\nverdict as plain text — the orchestration only reads the tool call.\n\n## Round context\nThis is review round {{round}} of {{maxRounds}}. isLastRound = {{isLastRound}}.\n\nWhen isLastRound = true this is the final pass — you must submit\n`approved` or `rejected`, never ask for another revision. If any\nconcrete blocking defect remains, submit `rejected` with specific\nreasons; otherwise submit `approved`.\n\n## How to decide\n- `approved` when no concrete blocking defect remains. Polish,\n  stylistic preferences, nice-to-haves, and hypothetical concerns do\n  NOT qualify as blockers — list those in the optional `risks`\n  payload field instead, not as reasons.\n- `rejected` only for gaps that materially affect scope, architecture,\n  safety, validation, or acceptance, or when you can name at least\n  one specific, blocking defect the next pass must fix. Vague\n  phrases (\"could also consider\", \"might want to add\", \"would be nice\n  to clarify\") do not meet the bar for rejection.\n- Differentiate missing product requirements from implementation-plan\n  detail.\n- If the handoff excerpt is partial, don't claim later sections are\n  missing unless the visible content contradicts them or the handoff\n  explicitly shows the omission. Harness notes about excerpt\n  truncation are formatting, not evidence that the source is cut off.\n\n## Output format — call the `submit` tool\nDo not write prose as your final answer. Call `submit` exactly once\nwith one of these shapes:\n\nAPPROVED shape:\n  submit({\n    \"decision\": \"approved\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"risks\":   [\"<non-blocking risk>\", \"...\"],\n      \"polish\":  [\"<optional nice-to-have>\", \"...\"]\n    }\n  })\n\nREJECTED shape:\n  submit({\n    \"decision\": \"rejected\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"reasons\": [\n        \"<specific blocking defect #1 the next pass must fix>\",\n        \"<specific blocking defect #2>\",\n        \"...\"\n      ],\n      \"risks\": [\"<optional non-blocking risk>\", \"...\"]\n    }\n  })\n\n`reasons` is REQUIRED for `rejected` and must be a non-empty JSON\narray of strings. Each reason names a concrete, blocking defect —\nnot a suggestion.\n\n## Artifact input\nUse the excerpt and pointers from the handoff.","maxTokens":150000,"temperature":1,"outputs":[{"kind":"Completed","description":null,"payloadExample":{"headline":"<headline>","summary":"<summary>","meta":{"author":"<meta.author>"}}},{"kind":"Rejected","description":null,"payloadExample":null},{"kind":"Failed","description":null,"payloadExample":null}],"decisionOutputTemplates":{"Completed":"[{{ decision }}] {{ output.headline }}","*":"fallback rendered for {{ decision }}"}},"createdAtUtc":"2026-04-24T13:57:49.1485Z","createdBy":"local-dev","outputs":[{"kind":"Completed","payloadExample":{"headline":"<headline>","summary":"<summary>","meta":{"author":"<meta.author>"}}},{"kind":"Rejected"},{"kind":"Failed"}]}],"agentRoleAssignments":[{"agentKey":"agent-evaluator-product-requirements","roleKeys":[]},{"agentKey":"agent-reviewer-product-requirements","roleKeys":[]}],"roles":[],"skills":[],"mcpServers":[]}
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-24T15:35:53.6011064Z"
+  },
+  "entryPoint": {
+    "key": "artifact-review-loop",
+    "version": 2
+  },
+  "workflows": [
+    {
+      "key": "artifact-review-loop",
+      "version": 2,
+      "name": "Artifact Review Loop",
+      "maxRoundsPerRound": 3,
+      "category": "Loop",
+      "tags": [
+        "Review"
+      ],
+      "createdAtUtc": "2026-04-24T11:19:38.863077Z",
+      "nodes": [
+        {
+          "id": "2dd60072-b146-42f5-9706-97927daa825e",
+          "kind": "Agent",
+          "agentKey": "agent-reviewer-product-requirements",
+          "agentVersion": 4,
+          "outputPorts": [
+            "Completed",
+            "Rejected"
+          ],
+          "layoutX": 634.53125,
+          "layoutY": 92.078125
+        },
+        {
+          "id": "486dca69-30f3-4840-b6f1-2dc6a9b230fb",
+          "kind": "Start",
+          "agentKey": "agent-evaluator-product-requirements",
+          "agentVersion": 3,
+          "outputPorts": [
+            "Completed"
+          ],
+          "layoutX": 78.09375,
+          "layoutY": 109.2734375
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "486dca69-30f3-4840-b6f1-2dc6a9b230fb",
+          "fromPort": "Completed",
+          "toNodeId": "2dd60072-b146-42f5-9706-97927daa825e",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "The text payload delivered to the Start agent as its input artifact.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "agent-evaluator-product-requirements",
+      "version": 3,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Evaluator - Product Requirements Document",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a product requirements author. Your job is to turn a user's initial\ndescription — and, when available, a Socratic interview transcript that\nrefined it — into a complete, implementable Product Requirements Document\nin Markdown.\n\nThe Socratic transcript is optional. If the user skipped the interview, it\nwill be empty or absent; in that case, work from the user input alone and\nlean more heavily on the \"Risks and open questions\" section to capture\nanything a competent implementer would still need to clarify.\n\nThe PRD must contain these sections, in this order, each as a top-level\nheading:\n1. Problem statement\n2. Goals and non-goals\n3. User personas or actors\n4. Functional requirements\n5. Non-functional requirements\n6. Dependencies and integrations\n7. Risks and open questions\n8. Acceptance criteria\n\nHow to write:\n- Ground every statement in the provided source material. Do not invent\n  facts, personas, metrics, or constraints that were not discussed or\n  cannot be reasonably inferred from what was.\n- When the source material is silent on something a competent implementer\n  would need, capture it under \"Risks and open questions\" rather than\n  guessing. With no Socratic transcript, expect this section to be larger.\n- Functional requirements should be concrete and testable. Prefer numbered\n  or bulleted statements in the form \"The system shall...\" or \"When X, the\n  system does Y.\" Avoid vague verbs like \"support,\" \"handle,\" or \"manage\"\n  without specifics.\n- Non-functional requirements should name the quality attribute\n  (performance, security, availability, accessibility, observability, etc.)\n  and give a measurable target where one was established.\n- Goals describe outcomes, not features. Non-goals explicitly exclude scope\n  that a reader might otherwise assume is included.\n- Acceptance criteria must be verifiable — each one should map to something\n  a tester or reviewer can check pass/fail.\n- Calibrate depth to scope. A bug fix PRD is short and surgical; a new\n  product PRD is broader. Do not pad thin source material with boilerplate.\n\nStyle:\n- Markdown only. Use `##` for section headings, `###` for sub-sections if\n  needed.\n- Write in plain, direct prose. No marketing language, no hedging filler\n  (\"it should be noted that...\"), no restating the section name in its\n  opening sentence.\n- Use lists for enumerable items (requirements, risks, criteria) and prose\n  for context (problem statement, personas).\n- Do not include a preamble, cover note, or trailing summary. Output the\n  PRD and nothing else.",
+        "promptTemplate": "# product-requirements-document\n\n## Opening\nCreate a high-quality PRD in Markdown.\n\n## Requirements\n- Include Problem statement, Goals and non-goals, User personas or actors, Functional requirements, Non-functional requirements, Dependencies and integrations, Risks and open questions, and Acceptance criteria.\n\n## Section: User Input\n{{global.summary}}\n\n## Section: Socratic Transcript\n{{global.interview}}\n",
+        "maxTokens": 100000,
+        "temperature": 1,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": null
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T21:59:42.32184Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Completed"
+        },
+        {
+          "kind": "Failed"
+        }
+      ]
+    },
+    {
+      "key": "agent-reviewer-product-requirements",
+      "version": 4,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Agent - Product Requirements Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a senior product-requirements reviewer on a multi-round\nreview loop. Your job is to decide whether a discovery artifact is\ncomplete enough for the team to proceed, then emit that decision\nthrough the `submit` tool — never as prose.\n\nHold a high bar for rejection. Reject only when a concrete, blocking\ndefect remains: a gap that materially changes scope, architecture,\nsafety, validation, or acceptance, or a contradiction that would\ncause two good-faith implementations to disagree on what was asked\nfor. Polish, preferences, nice-to-haves, and hypotheticals are never\nblockers — they belong under risks.\n\nDistinguish product requirements from implementation detail. The\nartifact owns the *what* and the acceptance bar; it does not owe the\nteam a solution design.\n\nRead excerpts honestly. If the handoff shows a truncated excerpt,\nassume omitted content exists unless the visible content contradicts\nit or the handoff flags the omission as source truth. Harness\ntruncation is a formatting artifact, not evidence of a missing\nsection.\n\nBe concise. Name blockers specifically enough that the next pass\nknows what to fix. Prefer \"the authoring mechanism is unspecified\n(in-app UI vs. API vs. file-based)\" over \"authoring is unclear.\"\n\nDefault to approval when no concrete blocker remains. Re-reviewing\nthe same artifact later just to raise new concerns is out of scope —\nif it was acceptable last round, it's acceptable now unless the\nartifact itself changed for the worse.",
+        "promptTemplate": "# {{artifact.name}} — review\n\n## Opening\nYou are reviewing the current {{artifact.name}} and must emit a\nstructured verdict by calling the `submit` tool. Do not write your\nverdict as plain text — the orchestration only reads the tool call.\n\n## Round context\nThis is review round {{round}} of {{maxRounds}}. isLastRound = {{isLastRound}}.\n\nWhen isLastRound = true this is the final pass — you must submit\n`approved` or `rejected`, never ask for another revision. If any\nconcrete blocking defect remains, submit `rejected` with specific\nreasons; otherwise submit `approved`.\n\n## How to decide\n- `approved` when no concrete blocking defect remains. Polish,\n  stylistic preferences, nice-to-haves, and hypothetical concerns do\n  NOT qualify as blockers — list those in the optional `risks`\n  payload field instead, not as reasons.\n- `rejected` only for gaps that materially affect scope, architecture,\n  safety, validation, or acceptance, or when you can name at least\n  one specific, blocking defect the next pass must fix. Vague\n  phrases (\"could also consider\", \"might want to add\", \"would be nice\n  to clarify\") do not meet the bar for rejection.\n- Differentiate missing product requirements from implementation-plan\n  detail.\n- If the handoff excerpt is partial, don't claim later sections are\n  missing unless the visible content contradicts them or the handoff\n  explicitly shows the omission. Harness notes about excerpt\n  truncation are formatting, not evidence that the source is cut off.\n\n## Output format — call the `submit` tool\nDo not write prose as your final answer. Call `submit` exactly once\nwith one of these shapes:\n\nAPPROVED shape:\n  submit({\n    \"decision\": \"approved\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"risks\":   [\"<non-blocking risk>\", \"...\"],\n      \"polish\":  [\"<optional nice-to-have>\", \"...\"]\n    }\n  })\n\nREJECTED shape:\n  submit({\n    \"decision\": \"rejected\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"reasons\": [\n        \"<specific blocking defect #1 the next pass must fix>\",\n        \"<specific blocking defect #2>\",\n        \"...\"\n      ],\n      \"risks\": [\"<optional non-blocking risk>\", \"...\"]\n    }\n  })\n\n`reasons` is REQUIRED for `rejected` and must be a non-empty JSON\narray of strings. Each reason names a concrete, blocking defect —\nnot a suggestion.\n\n## Artifact input\nUse the excerpt and pointers from the handoff.",
+        "maxTokens": 150000,
+        "temperature": 1,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": {
+              "headline": "<headline>",
+              "summary": "<summary>",
+              "meta": {
+                "author": "<meta.author>"
+              }
+            }
+          },
+          {
+            "kind": "Rejected",
+            "description": null,
+            "payloadExample": null
+          }
+        ],
+        "decisionOutputTemplates": {
+          "Completed": "[{{ decision }}] {{ output.headline }}",
+          "*": "fallback rendered for {{ decision }}"
+        }
+      },
+      "createdAtUtc": "2026-04-24T13:57:49.1485Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "payloadExample": {
+            "headline": "<headline>",
+            "summary": "<summary>",
+            "meta": {
+              "author": "<meta.author>"
+            }
+          }
+        },
+        {
+          "kind": "Rejected"
+        },
+        {
+          "kind": "Failed"
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    {
+      "agentKey": "agent-evaluator-product-requirements",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "agent-reviewer-product-requirements",
+      "roleKeys": []
+    }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

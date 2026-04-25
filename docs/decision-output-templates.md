@@ -24,7 +24,7 @@ Templates live on the agent configuration under `decisionOutputTemplates`, keyed
 }
 ```
 
-Applies to every agent kind that produces a decision: LLM, HITL, Escalation, Start, and ReviewLoop children.
+Applies to every agent kind that produces a decision: LLM, HITL, Start, and ReviewLoop children. Template keys are port names; the set of valid port names is whatever the agent declares in its `outputs` (see [port-model.md](port-model.md)).
 
 **Limits** (enforced on save): at most 32 entries, each template ≤ 16 KiB, keys matching `[A-Za-z0-9_-]{1,64}` or the literal `*`.
 
@@ -45,7 +45,7 @@ The Scriban scope exposed to every decision template:
 
 | Name | Type | Notes |
 |---|---|---|
-| `decision` | string | The submitted decision name. For custom decision options (e.g. `{{decision:Approved\|Rejected\|Revise}}`), this is the chosen option; otherwise the canonical `AgentDecisionKind` name. |
+| `decision` | string | The submitted decision name (the agent-declared port name the LLM/HITL picked at submit time). |
 | `outputPortName` | string | The effective port name the saga is routing on (may differ from `decision` for custom HITL options). |
 | `context.<path>` | nested object | Workflow-local inputs (saga's local `context` bag). |
 | `global.<path>` | nested object | Workflow-global inputs (propagated across parent/subflow boundaries). |
@@ -82,7 +82,7 @@ Identical to prompt templates:
 
 Any `PromptTemplateException` during render:
 
-- **Saga path (LLM, Escalation, Start, ReviewLoop child):** the saga appends the decision record with the original output ref, then transitions to `Failed` with `FailureReason = "Decision output template failed: {detail}"`. Downstream dispatch is skipped.
+- **Saga path (LLM, Start, ReviewLoop child):** the saga appends the decision record with the original output ref, then transitions to `Failed` with `FailureReason = "Decision output template failed: {detail}"`. Downstream dispatch is skipped.
 - **HITL submit endpoint:** returns `422 UnprocessableEntity { error: "Decision output template failed: …" }`. The pending task stays `Pending` so the reviewer can correct and resubmit.
 - **Preview endpoint (`POST /api/agents/templates/render-preview`):** returns `422 { error: "…" }`.
 

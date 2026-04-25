@@ -330,6 +330,66 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         nonReviewStart.ReviewMaxRounds.Should().BeNull();
     }
 
+    [Fact]
+    public async Task GetTerminalPortsAsync_ShouldReturnUnwiredDeclaredPortsAcrossNodes()
+    {
+        var workflowKey = $"terminal-ports-{Guid.NewGuid():N}";
+        var startNode = Guid.NewGuid();
+        var fanOutNode = Guid.NewGuid();
+        var leftLeaf = Guid.NewGuid();
+        var rightLeaf = Guid.NewGuid();
+
+        await using var seedContext = CreateDbContext();
+        seedContext.Workflows.Add(new WorkflowEntity
+        {
+            Key = workflowKey,
+            Version = 1,
+            Name = "Terminal-port flow",
+            MaxRoundsPerRound = 1,
+            CreatedAtUtc = DateTime.UtcNow,
+            Nodes =
+            [
+                NodeEntityWithPorts(startNode, WorkflowNodeKind.Start, "kickoff", new[] { "Completed" }),
+                NodeEntityWithPorts(fanOutNode, WorkflowNodeKind.Agent, "router", new[] { "Left", "Right" }),
+                NodeEntityWithPorts(leftLeaf, WorkflowNodeKind.Agent, "leftLeaf", new[] { "Approved", "Rejected" }),
+                NodeEntityWithPorts(rightLeaf, WorkflowNodeKind.Agent, "rightLeaf", new[] { "Done" }),
+            ],
+            Edges =
+            [
+                EdgeEntity(startNode, "Completed", fanOutNode, sortOrder: 0),
+                EdgeEntity(fanOutNode, "Left", leftLeaf, sortOrder: 1),
+                EdgeEntity(fanOutNode, "Right", rightLeaf, sortOrder: 2),
+            ],
+            Inputs = []
+        });
+        await seedContext.SaveChangesAsync();
+
+        await using var readContext = CreateDbContext();
+        var repository = new WorkflowRepository(readContext);
+
+        var terminals = await repository.GetTerminalPortsAsync(workflowKey, 1);
+
+        terminals.Should().BeEquivalentTo(new[] { "Approved", "Rejected", "Done" });
+    }
+
+    private static WorkflowNodeEntity NodeEntityWithPorts(
+        Guid nodeId,
+        WorkflowNodeKind kind,
+        string agentKey,
+        IReadOnlyList<string> ports)
+    {
+        return new WorkflowNodeEntity
+        {
+            NodeId = nodeId,
+            Kind = kind,
+            AgentKey = agentKey,
+            AgentVersion = 1,
+            OutputPortsJson = System.Text.Json.JsonSerializer.Serialize(ports),
+            LayoutX = 0,
+            LayoutY = 0,
+        };
+    }
+
     private static WorkflowNodeEntity NodeEntity(Guid nodeId, WorkflowNodeKind kind, string agentKey)
     {
         return new WorkflowNodeEntity

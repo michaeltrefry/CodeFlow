@@ -1,8 +1,10 @@
 # Review Loop Node
 
-> Requirements LOCKED 2026-04-23 after three review passes. Ready to seed Kanban slices.
+> Requirements LOCKED 2026-04-23 after three review passes. Shipped 2026-04-23.
 >
-> Companion references: [subflows.md](subflows.md) (the parent composition model this node specializes) and [workflows.md](workflows.md).
+> The implementation-plan slices (§4) and "Sequencing notes" (§5) are preserved as the original design — current behaviour matches §2.1–§2.9. Decision-routing semantics changed in 2026-04 with the port-model redesign: port names are author-defined strings (no enum); see [port-model.md](port-model.md) for the canonical rules. Older mentions of `AgentDecisionKind` / `Approved` / `Rejected` / `Escalated` in the implementation-plan body refer to the original enum-based design.
+>
+> Companion references: [port-model.md](port-model.md), [subflows.md](subflows.md), [workflows.md](workflows.md).
 
 ## 1. Goal
 
@@ -19,7 +21,7 @@ The `ReviewLoop` node is a Subflow that:
 1. Re-invokes the referenced child workflow up to `MaxRounds` times.
 2. Feeds each round's terminal output artifact back as the next round's input.
 3. Exposes `{{round}}` / `{{maxRounds}}` / `{{isLastRound}}` to the child's agents, prompts, templates, and scripts.
-4. Maps the child's terminal `AgentDecisionKind` to one of three outcome ports (`Approved` / `Exhausted` / `Failed`).
+4. When the child terminates, compares the terminal port name to the configured `loopDecision`: equal → iterate; otherwise → exit on that port name. Round budget reached without an iterate-match → exit via the synthesized `Exhausted` port. See [port-model.md](port-model.md).
 
 Everything about the child — agents, prompts, logic nodes, scripts, sub-subflows — is authored exactly like any other workflow. The ReviewLoop only adds iteration, counters, and the outcome mapping.
 
@@ -32,8 +34,8 @@ A `ReviewLoop` **is a subflow** with two behavioural additions:
 | Subflow today | ReviewLoop |
 |---|---|
 | Child runs once | Child runs 1..N times (N = `MaxRounds`) |
-| Output ports: `Completed`, `Failed`, `Escalated` | Output ports: `Approved`, `Exhausted`, `Failed` |
-| Child's terminal decision mapped to Completed / Failed / Escalated | Child's terminal decision drives loop control + outcome mapping |
+| Output ports inherited from child terminal-port set + implicit `Failed` | Output ports = child terminal-port set ∪ `{Exhausted}` minus `loopDecision`, + implicit `Failed` |
+| Child's terminal port name routes to a parent edge `fromPort` of the same name | Child's terminal port name drives loop control (matches `loopDecision` → iterate) + becomes the exit port name |
 
 All other subflow behaviour carries over unchanged:
 
@@ -52,26 +54,26 @@ All other subflow behaviour carries over unchanged:
 
 ### 2.3 Outcome mapping
 
-The ReviewLoop inspects the child saga's terminal `AgentDecisionKind`. In a ReviewLoop context, `Rejected` is reinterpreted as "revise and try again" — that's the loop's job. Authors who want an early terminal failure can emit `Failed` (reviewer or a downstream logic node decides "fundamentally unfixable" and sets the decision to `Failed`).
+The ReviewLoop inspects the child saga's terminal port name (the port the child saga walked
+off the graph on, after any routing-script overrides). The configured `LoopDecision` (default
+`"Rejected"`) is the iterate signal: when the terminal port equals `LoopDecision`, the
+ReviewLoop spawns the next round. Anything else exits on the matching parent port.
 
-| Child terminal decision | Rounds remaining | Outcome |
+| Child terminal port name | Rounds remaining | Outcome |
 |---|---|---|
-| `Approved` | any | Exit via **Approved** port, artifact = round's output |
-| `Completed` | any | Exit via **Approved** port (permissive — lets workflows that don't explicitly approve drop in unchanged) |
-| `Rejected` | > 0 | Advance to next round with this round's output as input |
-| `Rejected` | 0 (last round just ran) | Exit via **Exhausted** port, artifact = round's output |
-| `Failed` | any | Exit via **Failed** port |
-| `Escalated` | any | Exit via **Failed** port |
-
-`ApprovedWithActions` is being removed from `AgentDecisionKind` system-wide as a prerequisite to this work (see §2.10). ReviewLoop semantics assume the cleaner two-state model.
+| Equals `LoopDecision` (default `"Rejected"`) | > 0 | Advance to next round with this round's output as input |
+| Equals `LoopDecision` | 0 (last round just ran) | Exit via the synthesized **`Exhausted`** port |
+| `Failed` (FailTool, exception, or MaxSubflowDepth exceeded) | any | Exit via the implicit **`Failed`** port |
+| Any other declared port name | any | Exit via the parent edge with the same `fromPort` name |
 
 ### 2.4 Ports
 
-Three fixed output ports on the `ReviewLoop` node:
+A ReviewLoop node's port set is derived (not author-edited):
 
-- **`Approved`** — child returned `Approved` or `Completed` at some round.
-- **`Exhausted`** — child returned `Rejected` on the final round; loop ran out of rounds.
-- **`Failed`** — child returned `Failed` or `Escalated`, or the round's spawn exceeded `MaxSubflowDepth`.
+- **Inherited** from the pinned child workflow's terminal-port set, **minus** the configured
+  `LoopDecision` port (because that one means "iterate, don't exit").
+- Plus the synthesized **`Exhausted`** port (round budget reached without exit).
+- Plus the implicit **`Failed`** port (always wirable on every node).
 
 ### 2.5 Node configuration
 
@@ -116,20 +118,14 @@ A HITL reviewer for the whole loop goes **outside** the loop in the parent workf
 - The ReviewLoop node row in the parent trace shows `Round N of M` progress and the current round's child trace link.
 - After the loop exits, the trace detail UI renders the ReviewLoop node with expandable per-round child traces underneath.
 
-### 2.10 Prerequisite: remove `ApprovedWithActions`
+### 2.10 Historical note: enum removals
 
-The `ReviewLoop` design treats `Rejected` as the "revise and try again" signal and `Approved` as the only approval. The legacy `AgentDecisionKind.ApprovedWithActions` is semantically "rejected with revisions" whose behaviour in a ReviewLoop context would be identical to `Rejected`. Carrying two decision kinds that drive the same behaviour is confusing, and the user has long considered `ApprovedWithActions` a misnomer.
-
-**Remove `ApprovedWithActions` from `AgentDecisionKind` and all consumers system-wide before the ReviewLoop node ships.** Tracked as its own Kanban epic — ReviewLoop slices assume post-removal semantics.
-
-Scope of the removal (own epic, outlined here for linkage):
-
-- Remove `ApprovedWithActions` from [AgentDecisionKind.cs](../CodeFlow.Contracts/AgentDecisionKind.cs).
-- Remove its port name from [AgentDecisionPorts.cs](../CodeFlow.Contracts/AgentDecisionPorts.cs).
-- Update all `switch` / `if` branches on `AgentDecisionKind` in Orchestration, Runtime, Api.
-- UI: remove `ApprovedWithActions` from agent-editor and trace-detail port labels and decision displays.
-- Migration: existing workflow edges whose `FromPort = "ApprovedWithActions"` are retargeted to `FromPort = "Rejected"` (preserving other edge fields). Saga history rows recording that decision keep their historical value as a string — they are immutable audit records — but new writes cannot produce it.
-- Tests updated to drop the decision kind.
+This section is historical. `ApprovedWithActions` was removed from `AgentDecisionKind` in
+2026-04 (its own epic), and `AgentDecisionKind` itself was deleted as part of the port-model
+redesign — port names are now author-defined strings, not enum values. ReviewLoop's iterate
+signal is the configured `LoopDecision` (default `"Rejected"`); any other terminal port name
+from the child exits the loop on a parent edge of the same name. See
+[port-model.md](port-model.md) for the canonical rules.
 
 ## 3. Out of scope (v1)
 
@@ -143,7 +139,7 @@ Scope of the removal (own epic, outlined here for linkage):
 
 ## 4. Implementation plan — slices
 
-Each slice is sized for one Kanban card. The prerequisite `ApprovedWithActions` removal lives in its own epic and must ship before Slice 2 of this epic.
+Each slice is sized for one Kanban card. (Historical: the `ApprovedWithActions` removal lived in its own epic and shipped before this work; `AgentDecisionKind` itself was later removed by the port-model redesign.)
 
 ### Slice 1 — Persistence: schema for ReviewLoop node
 
@@ -224,7 +220,7 @@ Integration tests covering:
 
 ## 5. Sequencing notes
 
-- The `ApprovedWithActions`-removal epic must ship before Slice 2 of this epic — otherwise contract tests and the saga mapping logic would have to handle both decisions identically, which is the complexity we're removing.
+- (Historical) The `ApprovedWithActions`-removal epic shipped before Slice 2 of this epic. The port-model redesign later removed `AgentDecisionKind` entirely, so the saga mapping table in §2.3 is now described in terms of port-name strings.
 - Slices 1–2 (schema + contracts) land together, no behaviour shipped.
 - Slice 3 depends on 1+2; heaviest backend slice.
 - Slices 4 and 5 can land in parallel after Slice 3.

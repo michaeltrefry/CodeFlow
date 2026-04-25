@@ -31,4 +31,53 @@ public sealed record Workflow(
             .OrderBy(edge => edge.SortOrder)
             .FirstOrDefault();
     }
+
+    /// <summary>
+    /// Port names by which this workflow can exit. A terminal port is any declared
+    /// <see cref="WorkflowNode.OutputPorts"/> entry whose <c>(nodeId, portName)</c> pair has no
+    /// outgoing edge in <see cref="Edges"/>. Names are deduplicated across nodes. The implicit
+    /// <c>Failed</c> port is intentionally excluded — it's an error sink, not a designed exit;
+    /// authors who want a custom failure exit must wire <c>Failed</c> through to a different
+    /// declared port. ReviewLoop nodes' synthesized <c>Exhausted</c> port is included when not
+    /// wired downstream.
+    /// </summary>
+    public IReadOnlyCollection<string> TerminalPorts
+    {
+        get
+        {
+            var wired = new HashSet<(Guid NodeId, string Port)>();
+            foreach (var edge in Edges)
+            {
+                wired.Add((edge.FromNodeId, edge.FromPort));
+            }
+
+            var terminals = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var node in Nodes)
+            {
+                foreach (var port in node.OutputPorts)
+                {
+                    if (string.IsNullOrWhiteSpace(port))
+                    {
+                        continue;
+                    }
+                    if (string.Equals(port, "Failed", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (!wired.Contains((node.Id, port)))
+                    {
+                        terminals.Add(port);
+                    }
+                }
+
+                if (node.Kind == WorkflowNodeKind.ReviewLoop &&
+                    !wired.Contains((node.Id, "Exhausted")))
+                {
+                    terminals.Add("Exhausted");
+                }
+            }
+
+            return terminals;
+        }
+    }
 }

@@ -91,6 +91,15 @@ export class WorkflowsApi {
     return this.http.get<WorkflowDetail>(`/api/workflows/${encodeURIComponent(key)}/${version}`);
   }
 
+  /** Returns the set of port names by which the given workflow version exits — used by the
+   *  editor to populate Subflow/ReviewLoop port pickers without loading the full graph. */
+  getTerminalPorts(key: string, version: number | null): Observable<string[]> {
+    const url = version
+      ? `/api/workflows/${encodeURIComponent(key)}/${version}/terminal-ports`
+      : `/api/workflows/${encodeURIComponent(key)}/latest/terminal-ports`;
+    return this.http.get<string[]>(url);
+  }
+
   listVersions(key: string): Observable<WorkflowDetail[]> {
     return this.http.get<WorkflowDetail[]>(`/api/workflows/${encodeURIComponent(key)}/versions`);
   }

@@ -1,1 +1,552 @@
-{"schemaVersion":"codeflow.workflow-package.v1","metadata":{"exportedFrom":"CodeFlow","exportedAtUtc":"2026-04-24T15:21:00.1615109Z"},"entryPoint":{"key":"product-requirements","version":8},"workflows":[{"key":"artifact-review-loop","version":1,"name":"Artifact Review Loop","maxRoundsPerRound":3,"category":"Workflow","tags":[],"createdAtUtc":"2026-04-23T21:18:22.348194Z","nodes":[{"id":"2dd60072-b146-42f5-9706-97927daa825e","kind":"Agent","agentKey":"agent-reviewer-product-requirements","agentVersion":4,"outputPorts":["Completed","Failed","Rejected"],"layoutX":634.53125,"layoutY":92.078125},{"id":"486dca69-30f3-4840-b6f1-2dc6a9b230fb","kind":"Start","agentKey":"agent-evaluator-product-requirements","agentVersion":3,"outputPorts":["Completed","Failed"],"layoutX":78.09375,"layoutY":109.2734375}],"edges":[{"fromNodeId":"486dca69-30f3-4840-b6f1-2dc6a9b230fb","fromPort":"Completed","toNodeId":"2dd60072-b146-42f5-9706-97927daa825e","toPort":"in","rotatesRound":false,"sortOrder":0}],"inputs":[{"key":"input","displayName":"Input","kind":"Text","required":true,"description":"The text payload delivered to the Start agent as its input artifact.","ordinal":0}]},{"key":"product-requirements","version":8,"name":"Product Requirements","maxRoundsPerRound":5,"category":"Workflow","tags":[],"createdAtUtc":"2026-04-24T00:02:12.643208Z","nodes":[{"id":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","kind":"ReviewLoop","outputPorts":["Approved","Exhausted","Failed"],"layoutX":977.45703125,"layoutY":112.79296875,"subflowKey":"artifact-review-loop","subflowVersion":1,"reviewMaxRounds":3,"loopDecision":"Rejected"},{"id":"52a936bf-2fd0-4672-80e3-86eabe719810","kind":"Hitl","agentKey":"human-escalation-review","agentVersion":1,"outputPorts":["Completed"],"layoutX":1522.91015625,"layoutY":102.9375},{"id":"851f495d-ffc6-47a0-9038-ede5ef71da2b","kind":"Start","agentKey":"agent-evaluator-work-item-request","agentVersion":3,"script":"setGlobal('kind', input.kind);\nsetGlobal('reasoning', input.reasoning);\nsetGlobal('summary', input.summary);\nconst runSocratic = input.shouldRunSocraticInterview === 'true';\ninput = input.summary;\n\nsetNodePath(runSocratic ? 'Interview' : 'Completed');","outputPorts":["Completed","Failed","Interview"],"layoutX":82.96484375,"layoutY":137.796875},{"id":"9c542ac3-68d8-4556-8ab5-1087bab3ec43","kind":"ReviewLoop","outputPorts":["Approved","Exhausted","Failed"],"layoutX":566.4375,"layoutY":194.1328125,"subflowKey":"socratic-interview","subflowVersion":10,"reviewMaxRounds":10,"loopDecision":"Answered"}],"edges":[{"fromNodeId":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","fromPort":"Approved","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":0},{"fromNodeId":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","fromPort":"Exhausted","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":1},{"fromNodeId":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","fromPort":"Failed","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":2},{"fromNodeId":"851f495d-ffc6-47a0-9038-ede5ef71da2b","fromPort":"Completed","toNodeId":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","toPort":"in","rotatesRound":false,"sortOrder":3},{"fromNodeId":"851f495d-ffc6-47a0-9038-ede5ef71da2b","fromPort":"Interview","toNodeId":"9c542ac3-68d8-4556-8ab5-1087bab3ec43","toPort":"in","rotatesRound":false,"sortOrder":4},{"fromNodeId":"9c542ac3-68d8-4556-8ab5-1087bab3ec43","fromPort":"Approved","toNodeId":"0cff227d-3c15-41a6-9f79-a097cfda1ffb","toPort":"in","rotatesRound":false,"sortOrder":5},{"fromNodeId":"9c542ac3-68d8-4556-8ab5-1087bab3ec43","fromPort":"Exhausted","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":6},{"fromNodeId":"9c542ac3-68d8-4556-8ab5-1087bab3ec43","fromPort":"Failed","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":7},{"fromNodeId":"851f495d-ffc6-47a0-9038-ede5ef71da2b","fromPort":"Failed","toNodeId":"52a936bf-2fd0-4672-80e3-86eabe719810","toPort":"in","rotatesRound":false,"sortOrder":8}],"inputs":[{"key":"input","displayName":"Input","kind":"Text","required":true,"description":"The text payload delivered to the Start agent as its input artifact.","ordinal":0}]},{"key":"socratic-interview","version":10,"name":"Socratic Interview","maxRoundsPerRound":20,"category":"Workflow","tags":[],"createdAtUtc":"2026-04-24T00:00:39.242708Z","nodes":[{"id":"1d29a463-43f0-405f-8a5a-aa4a4c10baab","kind":"Hitl","agentKey":"human-socratic-interviewee","agentVersion":3,"script":"var interview = (context.interview || []).slice();\ninterview.push({ q: input.question, a: input.answer});\nsetContext('interview', interview);\n\nsetNodePath(input.decision);\n","outputPorts":["Completed","Rejected"],"layoutX":552.78125,"layoutY":-32.484375},{"id":"944411e2-8a2a-45e8-8571-4fbc468843c8","kind":"Start","agentKey":"agent-socratic-interviewer","agentVersion":8,"script":"if (input === 'READY')\n{\n  setNodePath('Completed');\n} else {\n  setNodePath('Question')\n}","outputPorts":["Completed","Failed","Question"],"layoutX":23.63671875,"layoutY":-35.66796875}],"edges":[{"fromNodeId":"944411e2-8a2a-45e8-8571-4fbc468843c8","fromPort":"Question","toNodeId":"1d29a463-43f0-405f-8a5a-aa4a4c10baab","toPort":"in","rotatesRound":false,"sortOrder":0}],"inputs":[{"key":"input","displayName":"Input","kind":"Text","required":true,"description":"The text payload delivered to the Start agent as its input artifact.","ordinal":0}]}],"agents":[{"key":"agent-evaluator-product-requirements","version":3,"kind":"Agent","config":{"type":"agent","name":"Evaluator - Product Requirements Document","provider":"openai","model":"gpt-5.4","systemPrompt":"You are a product requirements author. Your job is to turn a user's initial\ndescription — and, when available, a Socratic interview transcript that\nrefined it — into a complete, implementable Product Requirements Document\nin Markdown.\n\nThe Socratic transcript is optional. If the user skipped the interview, it\nwill be empty or absent; in that case, work from the user input alone and\nlean more heavily on the \"Risks and open questions\" section to capture\nanything a competent implementer would still need to clarify.\n\nThe PRD must contain these sections, in this order, each as a top-level\nheading:\n1. Problem statement\n2. Goals and non-goals\n3. User personas or actors\n4. Functional requirements\n5. Non-functional requirements\n6. Dependencies and integrations\n7. Risks and open questions\n8. Acceptance criteria\n\nHow to write:\n- Ground every statement in the provided source material. Do not invent\n  facts, personas, metrics, or constraints that were not discussed or\n  cannot be reasonably inferred from what was.\n- When the source material is silent on something a competent implementer\n  would need, capture it under \"Risks and open questions\" rather than\n  guessing. With no Socratic transcript, expect this section to be larger.\n- Functional requirements should be concrete and testable. Prefer numbered\n  or bulleted statements in the form \"The system shall...\" or \"When X, the\n  system does Y.\" Avoid vague verbs like \"support,\" \"handle,\" or \"manage\"\n  without specifics.\n- Non-functional requirements should name the quality attribute\n  (performance, security, availability, accessibility, observability, etc.)\n  and give a measurable target where one was established.\n- Goals describe outcomes, not features. Non-goals explicitly exclude scope\n  that a reader might otherwise assume is included.\n- Acceptance criteria must be verifiable — each one should map to something\n  a tester or reviewer can check pass/fail.\n- Calibrate depth to scope. A bug fix PRD is short and surgical; a new\n  product PRD is broader. Do not pad thin source material with boilerplate.\n\nStyle:\n- Markdown only. Use `##` for section headings, `###` for sub-sections if\n  needed.\n- Write in plain, direct prose. No marketing language, no hedging filler\n  (\"it should be noted that...\"), no restating the section name in its\n  opening sentence.\n- Use lists for enumerable items (requirements, risks, criteria) and prose\n  for context (problem statement, personas).\n- Do not include a preamble, cover note, or trailing summary. Output the\n  PRD and nothing else.","promptTemplate":"# product-requirements-document\n\n## Opening\nCreate a high-quality PRD in Markdown.\n\n## Requirements\n- Include Problem statement, Goals and non-goals, User personas or actors, Functional requirements, Non-functional requirements, Dependencies and integrations, Risks and open questions, and Acceptance criteria.\n\n## Section: User Input\n{{global.summary}}\n\n## Section: Socratic Transcript\n{{global.interview}}\n","maxTokens":100000,"temperature":1,"outputs":[{"kind":"Completed","description":null,"payloadExample":null},{"kind":"Failed","description":null,"payloadExample":null}]},"createdAtUtc":"2026-04-23T21:59:42.32184Z","createdBy":"local-dev","outputs":[{"kind":"Completed"},{"kind":"Failed"}]},{"key":"agent-evaluator-work-item-request","version":3,"kind":"Agent","config":{"type":"agent","name":"Evaluator - Work Item Request","description":"Evaluates a work item request and determines what kind of work it is and whether there is enough information to produce a detailed requirements document.","provider":"openai","model":"gpt-5.4","systemPrompt":"You are the Evaluator agent in a software delivery harness.\n\nYour only job is to classify the requested work item and expand it into a clear, implementation-oriented summary for the next agent.\n\nReturn strict JSON only, with exactly these fields:\n{\n  \"kind\": \"...\",\n  \"summary\": \"...\",\n  \"reasoning\": \"...\",\n  \"shouldRunSocraticInterview\": \"true|false\"\n}\n\nRules:\n- `kind` must be exactly one of: `NewProject`, `Feature`, `BugFix`.\n- `summary` must restate the request as a clear, detailed summary of the work being asked for, including any explicit goals, scope, constraints, affected systems, or outcomes mentioned by the user.\n- `reasoning` must briefly explain why the request was classified that way and identify any important ambiguity or missing information.\n- `shouldRunSocraticInterview` must be `\"true\"` when the next agent would likely lack enough information to produce solid requirements documents without asking follow-up questions. Otherwise return `\"false\"`.\n\nClassification guidance:\n- Use `BugFix` when the request describes a defect, regression, broken behavior, incorrect output, failure, incident, or something that used to work but no longer does.\n- Use `Feature` when the request is about adding or changing behavior in an existing product, service, workflow, or codebase and it is not primarily framed as a defect.\n- Use `NewProject` when the request is for a brand-new product, system, app, service, workflow, or major greenfield initiative rather than an enhancement to an existing one.\n\nInterview guidance:\n- Set `shouldRunSocraticInterview` to `\"true\"` when key details are missing for requirements work, such as users, goals, scope boundaries, constraints, acceptance criteria, dependencies, target environment, or definition of success.\n- Prefer `\"false\"` when the request is already specific enough for a downstream agent to draft useful requirements.\n- Ambiguity alone does not always require `\"true\"`; only set it when the missing information is material.\n\nBehavior rules:\n- Do not write product requirements documents.\n- Do not write root cause analyses.\n- Do not produce Markdown.\n- Do not invent missing facts, dependencies, APIs, or architecture details.\n- If repository or discovery context is provided, use it to avoid bad assumptions.\n- If critical details are missing, reflect that in `reasoning` and in `shouldRunSocraticInterview` rather than guessing.\n- Output valid JSON only. No code fences. No extra keys.\n","promptTemplate":"Analyze the request and return strict JSON only.\n\nOutput schema:\n{\n  \"kind\": \"NewProject | Feature | BugFix\",\n  \"summary\": \"string\",\n  \"reasoning\": \"string\",\n  \"shouldRunSocraticInterview\": \"true | false\"\n}\n\nDecision rules:\n- Use `BugFix` for defects, regressions, broken behavior, failures, or incorrect behavior.\n- Use `Feature` for enhancements or changes to an existing system.\n- Use `NewProject` for brand-new systems, apps, services, or initiatives.\n- Make `summary` detailed enough for a downstream requirements agent to understand the requested work.\n- Make `reasoning` explain the classification and call out important ambiguity or missing inputs.\n- Set `shouldRunSocraticInterview` to `\"true\"` only if the next agent would need materially more information to produce good requirements documents.\n\nUser Input:\n{{input}}\n","maxTokens":10000,"temperature":0.8,"outputs":[{"kind":"Interview","description":null,"payloadExample":{"kind":"NewProject | Feature | BugFix","summary":"string","reasoning":"string","shouldRunSocraticInterview":"true"}},{"kind":"Failed","description":null,"payloadExample":null},{"kind":"Completed","description":null,"payloadExample":{"kind":"NewProject | Feature | BugFix","summary":"string","reasoning":"string","shouldRunSocraticInterview":"false"}}]},"createdAtUtc":"2026-04-23T21:52:21.301126Z","createdBy":"local-dev","outputs":[{"kind":"Interview","payloadExample":{"kind":"NewProject | Feature | BugFix","summary":"string","reasoning":"string","shouldRunSocraticInterview":"true"}},{"kind":"Failed"},{"kind":"Completed","payloadExample":{"kind":"NewProject | Feature | BugFix","summary":"string","reasoning":"string","shouldRunSocraticInterview":"false"}}]},{"key":"agent-reviewer-product-requirements","version":4,"kind":"Agent","config":{"type":"agent","name":"Agent - Product Requirements Reviewer","provider":"openai","model":"gpt-5.4","systemPrompt":"You are a senior product-requirements reviewer on a multi-round\nreview loop. Your job is to decide whether a discovery artifact is\ncomplete enough for the team to proceed, then emit that decision\nthrough the `submit` tool — never as prose.\n\nHold a high bar for rejection. Reject only when a concrete, blocking\ndefect remains: a gap that materially changes scope, architecture,\nsafety, validation, or acceptance, or a contradiction that would\ncause two good-faith implementations to disagree on what was asked\nfor. Polish, preferences, nice-to-haves, and hypotheticals are never\nblockers — they belong under risks.\n\nDistinguish product requirements from implementation detail. The\nartifact owns the *what* and the acceptance bar; it does not owe the\nteam a solution design.\n\nRead excerpts honestly. If the handoff shows a truncated excerpt,\nassume omitted content exists unless the visible content contradicts\nit or the handoff flags the omission as source truth. Harness\ntruncation is a formatting artifact, not evidence of a missing\nsection.\n\nBe concise. Name blockers specifically enough that the next pass\nknows what to fix. Prefer \"the authoring mechanism is unspecified\n(in-app UI vs. API vs. file-based)\" over \"authoring is unclear.\"\n\nDefault to approval when no concrete blocker remains. Re-reviewing\nthe same artifact later just to raise new concerns is out of scope —\nif it was acceptable last round, it's acceptable now unless the\nartifact itself changed for the worse.","promptTemplate":"# {{artifact.name}} — review\n\n## Opening\nYou are reviewing the current {{artifact.name}} and must emit a\nstructured verdict by calling the `submit` tool. Do not write your\nverdict as plain text — the orchestration only reads the tool call.\n\n## Round context\nThis is review round {{round}} of {{maxRounds}}. isLastRound = {{isLastRound}}.\n\nWhen isLastRound = true this is the final pass — you must submit\n`approved` or `rejected`, never ask for another revision. If any\nconcrete blocking defect remains, submit `rejected` with specific\nreasons; otherwise submit `approved`.\n\n## How to decide\n- `approved` when no concrete blocking defect remains. Polish,\n  stylistic preferences, nice-to-haves, and hypothetical concerns do\n  NOT qualify as blockers — list those in the optional `risks`\n  payload field instead, not as reasons.\n- `rejected` only for gaps that materially affect scope, architecture,\n  safety, validation, or acceptance, or when you can name at least\n  one specific, blocking defect the next pass must fix. Vague\n  phrases (\"could also consider\", \"might want to add\", \"would be nice\n  to clarify\") do not meet the bar for rejection.\n- Differentiate missing product requirements from implementation-plan\n  detail.\n- If the handoff excerpt is partial, don't claim later sections are\n  missing unless the visible content contradicts them or the handoff\n  explicitly shows the omission. Harness notes about excerpt\n  truncation are formatting, not evidence that the source is cut off.\n\n## Output format — call the `submit` tool\nDo not write prose as your final answer. Call `submit` exactly once\nwith one of these shapes:\n\nAPPROVED shape:\n  submit({\n    \"decision\": \"approved\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"risks\":   [\"<non-blocking risk>\", \"...\"],\n      \"polish\":  [\"<optional nice-to-have>\", \"...\"]\n    }\n  })\n\nREJECTED shape:\n  submit({\n    \"decision\": \"rejected\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"reasons\": [\n        \"<specific blocking defect #1 the next pass must fix>\",\n        \"<specific blocking defect #2>\",\n        \"...\"\n      ],\n      \"risks\": [\"<optional non-blocking risk>\", \"...\"]\n    }\n  })\n\n`reasons` is REQUIRED for `rejected` and must be a non-empty JSON\narray of strings. Each reason names a concrete, blocking defect —\nnot a suggestion.\n\n## Artifact input\nUse the excerpt and pointers from the handoff.","maxTokens":150000,"temperature":1,"outputs":[{"kind":"Completed","description":null,"payloadExample":{"headline":"<headline>","summary":"<summary>","meta":{"author":"<meta.author>"}}},{"kind":"Rejected","description":null,"payloadExample":null},{"kind":"Failed","description":null,"payloadExample":null}],"decisionOutputTemplates":{"Completed":"[{{ decision }}] {{ output.headline }}","*":"fallback rendered for {{ decision }}"}},"createdAtUtc":"2026-04-24T13:57:49.1485Z","createdBy":"local-dev","outputs":[{"kind":"Completed","payloadExample":{"headline":"<headline>","summary":"<summary>","meta":{"author":"<meta.author>"}}},{"kind":"Rejected"},{"kind":"Failed"}]},{"key":"agent-socratic-interviewer","version":8,"kind":"Agent","config":{"type":"agent","name":"Agent that performs a socratic interview","provider":"openai","model":"gpt-5.4","systemPrompt":"You are a Socratic interviewer. Your job is to sharpen a set of requirements\nby asking one precise question at a time. The work under discussion may be a\ngreenfield project, a feature added to an existing system, a bug fix, or any\nother change — adapt your questions to the scope at hand.\n\nYour goals, in priority order:\n1. Close ambiguity — surface terms, scope, or behaviors that could be\n   interpreted more than one way.\n2. Expose hidden constraints — technical limits, existing system behavior,\n   compliance rules, deadlines, dependencies, or stakeholders that have not\n   been accounted for.\n3. Define success — push for observable, testable outcomes. For a bug, that\n   means clear reproduction and acceptance criteria; for a feature or\n   project, measurable results.\n4. Challenge risky assumptions — especially those that would be expensive to\n   discover late (data availability, user behavior, integration contracts,\n   assumptions about current system state).\n\nHow to ask:\n- One question per turn. Never batch, enumerate, or stack sub-questions\n  behind an \"and\" or a list.\n- Prefer open questions that force a specific answer (\"What happens when X?\",\n  \"How will we know this is fixed?\") over yes/no questions.\n- Target the single highest-leverage gap you can see right now. Do not ask\n  about something minor when a larger unknown is still open.\n- Calibrate depth to scope: a one-line bug fix does not need the same\n  interrogation as a new product. Stop when the work is well-defined, not\n  when a checklist is filled.\n- Do not propose solutions, restate what's been said, or summarize progress.\n  Ask and stop.\n- Never ask a question the user has already answered; build on their prior\n  answers.\n\nStopping:\n- When the remaining gaps are minor and a competent implementer could\n  proceed without further clarification, respond with exactly: READY\n- Do not emit READY prematurely. If a material ambiguity, constraint,\n  success criterion, or assumption is still unresolved, keep asking.\n\nOutput format:\n- Either a single question (one or two sentences, no preamble), or the\n  literal token READY. Nothing else.","promptTemplate":"# socratic-interview\n\n## Opening\nAsk exactly one Socratic question that will materially improve the PRD. The user will answer before you ask the next question, so do not batch multiple questions.\n\n## Requirements\n- Ask exactly one question per round — no enumerated lists, no bundled sub-questions.\n- The question should close ambiguity, uncover a constraint, define a success metric, or reveal a risky assumption.\n- If confidence is already very high, answer with `READY`.\n\n## Section: Current Understanding\n{{global.summary}}\n\n## Section: Conversation So Far\n{{context.interview}}","maxTokens":10000,"temperature":1,"outputs":[{"kind":"Question","description":"The next interview question","payloadExample":null},{"kind":"Completed","description":"Indications the interview gathered enough information","payloadExample":null},{"kind":"Failed","description":"An error has occurred","payloadExample":null}]},"createdAtUtc":"2026-04-23T21:55:37.50749Z","createdBy":"local-dev","outputs":[{"kind":"Question","description":"The next interview question"},{"kind":"Completed","description":"Indications the interview gathered enough information"},{"kind":"Failed","description":"An error has occurred"}]},{"key":"human-escalation-review","version":1,"kind":"Hitl","config":{"type":"hitl","name":"Human - Escalation Review","outputTemplate":"{{input}}\n","outputs":[{"kind":"Completed","description":null,"payloadExample":null}]},"createdAtUtc":"2026-04-23T18:30:29.310016Z","createdBy":"local-dev","outputs":[{"kind":"Completed"}]},{"key":"human-socratic-interviewee","version":3,"kind":"Hitl","config":{"type":"hitl","name":"Human - Socratic Interviewee","description":"Provides human interaction for socratic interviews","outputTemplate":"{\n   \"question\": {{input}},\n   \"answer\": {{Answer}},\n   \"decision\": {{decision:Answered|Completed}}}\n}","outputs":[{"kind":"Answered","description":null,"payloadExample":null},{"kind":"Completed","description":null,"payloadExample":null}]},"createdAtUtc":"2026-04-23T23:59:26.699604Z","createdBy":"local-dev","outputs":[{"kind":"Answered"},{"kind":"Completed"}]}],"agentRoleAssignments":[{"agentKey":"agent-evaluator-product-requirements","roleKeys":[]},{"agentKey":"agent-evaluator-work-item-request","roleKeys":[]},{"agentKey":"agent-reviewer-product-requirements","roleKeys":[]},{"agentKey":"agent-socratic-interviewer","roleKeys":[]},{"agentKey":"human-escalation-review","roleKeys":[]},{"agentKey":"human-socratic-interviewee","roleKeys":[]}],"roles":[],"skills":[],"mcpServers":[]}
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-24T15:21:00.1615109Z"
+  },
+  "entryPoint": {
+    "key": "product-requirements",
+    "version": 8
+  },
+  "workflows": [
+    {
+      "key": "artifact-review-loop",
+      "version": 1,
+      "name": "Artifact Review Loop",
+      "maxRoundsPerRound": 3,
+      "category": "Workflow",
+      "tags": [],
+      "createdAtUtc": "2026-04-23T21:18:22.348194Z",
+      "nodes": [
+        {
+          "id": "2dd60072-b146-42f5-9706-97927daa825e",
+          "kind": "Agent",
+          "agentKey": "agent-reviewer-product-requirements",
+          "agentVersion": 4,
+          "outputPorts": [
+            "Completed",
+            "Rejected"
+          ],
+          "layoutX": 634.53125,
+          "layoutY": 92.078125
+        },
+        {
+          "id": "486dca69-30f3-4840-b6f1-2dc6a9b230fb",
+          "kind": "Start",
+          "agentKey": "agent-evaluator-product-requirements",
+          "agentVersion": 3,
+          "outputPorts": [
+            "Completed"
+          ],
+          "layoutX": 78.09375,
+          "layoutY": 109.2734375
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "486dca69-30f3-4840-b6f1-2dc6a9b230fb",
+          "fromPort": "Completed",
+          "toNodeId": "2dd60072-b146-42f5-9706-97927daa825e",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "The text payload delivered to the Start agent as its input artifact.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "product-requirements",
+      "version": 8,
+      "name": "Product Requirements",
+      "maxRoundsPerRound": 5,
+      "category": "Workflow",
+      "tags": [],
+      "createdAtUtc": "2026-04-24T00:02:12.643208Z",
+      "nodes": [
+        {
+          "id": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "kind": "ReviewLoop",
+          "outputPorts": [
+            "Approved"
+          ],
+          "layoutX": 977.45703125,
+          "layoutY": 112.79296875,
+          "subflowKey": "artifact-review-loop",
+          "subflowVersion": 1,
+          "reviewMaxRounds": 3,
+          "loopDecision": "Rejected"
+        },
+        {
+          "id": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "kind": "Hitl",
+          "agentKey": "human-escalation-review",
+          "agentVersion": 1,
+          "outputPorts": [
+            "Completed"
+          ],
+          "layoutX": 1522.91015625,
+          "layoutY": 102.9375
+        },
+        {
+          "id": "851f495d-ffc6-47a0-9038-ede5ef71da2b",
+          "kind": "Start",
+          "agentKey": "agent-evaluator-work-item-request",
+          "agentVersion": 3,
+          "script": "setGlobal('kind', input.kind);\nsetGlobal('reasoning', input.reasoning);\nsetGlobal('summary', input.summary);\nconst runSocratic = input.shouldRunSocraticInterview === 'true';\ninput = input.summary;\n\nsetNodePath(runSocratic ? 'Interview' : 'Completed');",
+          "outputPorts": [
+            "Completed",
+            "Interview"
+          ],
+          "layoutX": 82.96484375,
+          "layoutY": 137.796875
+        },
+        {
+          "id": "9c542ac3-68d8-4556-8ab5-1087bab3ec43",
+          "kind": "ReviewLoop",
+          "outputPorts": [
+            "Approved"
+          ],
+          "layoutX": 566.4375,
+          "layoutY": 194.1328125,
+          "subflowKey": "socratic-interview",
+          "subflowVersion": 10,
+          "reviewMaxRounds": 10,
+          "loopDecision": "Answered"
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "fromPort": "Approved",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "fromPort": "Exhausted",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 1
+        },
+        {
+          "fromNodeId": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "fromPort": "Failed",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 2
+        },
+        {
+          "fromNodeId": "851f495d-ffc6-47a0-9038-ede5ef71da2b",
+          "fromPort": "Completed",
+          "toNodeId": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 3
+        },
+        {
+          "fromNodeId": "851f495d-ffc6-47a0-9038-ede5ef71da2b",
+          "fromPort": "Interview",
+          "toNodeId": "9c542ac3-68d8-4556-8ab5-1087bab3ec43",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 4
+        },
+        {
+          "fromNodeId": "9c542ac3-68d8-4556-8ab5-1087bab3ec43",
+          "fromPort": "Approved",
+          "toNodeId": "0cff227d-3c15-41a6-9f79-a097cfda1ffb",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 5
+        },
+        {
+          "fromNodeId": "9c542ac3-68d8-4556-8ab5-1087bab3ec43",
+          "fromPort": "Exhausted",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 6
+        },
+        {
+          "fromNodeId": "9c542ac3-68d8-4556-8ab5-1087bab3ec43",
+          "fromPort": "Failed",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 7
+        },
+        {
+          "fromNodeId": "851f495d-ffc6-47a0-9038-ede5ef71da2b",
+          "fromPort": "Failed",
+          "toNodeId": "52a936bf-2fd0-4672-80e3-86eabe719810",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 8
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "The text payload delivered to the Start agent as its input artifact.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "socratic-interview",
+      "version": 10,
+      "name": "Socratic Interview",
+      "maxRoundsPerRound": 20,
+      "category": "Workflow",
+      "tags": [],
+      "createdAtUtc": "2026-04-24T00:00:39.242708Z",
+      "nodes": [
+        {
+          "id": "1d29a463-43f0-405f-8a5a-aa4a4c10baab",
+          "kind": "Hitl",
+          "agentKey": "human-socratic-interviewee",
+          "agentVersion": 3,
+          "script": "var interview = (context.interview || []).slice();\ninterview.push({ q: input.question, a: input.answer});\nsetContext('interview', interview);\n\nsetNodePath(input.decision);\n",
+          "outputPorts": [
+            "Completed",
+            "Rejected"
+          ],
+          "layoutX": 552.78125,
+          "layoutY": -32.484375
+        },
+        {
+          "id": "944411e2-8a2a-45e8-8571-4fbc468843c8",
+          "kind": "Start",
+          "agentKey": "agent-socratic-interviewer",
+          "agentVersion": 8,
+          "script": "if (input === 'READY')\n{\n  setNodePath('Completed');\n} else {\n  setNodePath('Question')\n}",
+          "outputPorts": [
+            "Completed",
+            "Question"
+          ],
+          "layoutX": 23.63671875,
+          "layoutY": -35.66796875
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "944411e2-8a2a-45e8-8571-4fbc468843c8",
+          "fromPort": "Question",
+          "toNodeId": "1d29a463-43f0-405f-8a5a-aa4a4c10baab",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "The text payload delivered to the Start agent as its input artifact.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "agent-evaluator-product-requirements",
+      "version": 3,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Evaluator - Product Requirements Document",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a product requirements author. Your job is to turn a user's initial\ndescription — and, when available, a Socratic interview transcript that\nrefined it — into a complete, implementable Product Requirements Document\nin Markdown.\n\nThe Socratic transcript is optional. If the user skipped the interview, it\nwill be empty or absent; in that case, work from the user input alone and\nlean more heavily on the \"Risks and open questions\" section to capture\nanything a competent implementer would still need to clarify.\n\nThe PRD must contain these sections, in this order, each as a top-level\nheading:\n1. Problem statement\n2. Goals and non-goals\n3. User personas or actors\n4. Functional requirements\n5. Non-functional requirements\n6. Dependencies and integrations\n7. Risks and open questions\n8. Acceptance criteria\n\nHow to write:\n- Ground every statement in the provided source material. Do not invent\n  facts, personas, metrics, or constraints that were not discussed or\n  cannot be reasonably inferred from what was.\n- When the source material is silent on something a competent implementer\n  would need, capture it under \"Risks and open questions\" rather than\n  guessing. With no Socratic transcript, expect this section to be larger.\n- Functional requirements should be concrete and testable. Prefer numbered\n  or bulleted statements in the form \"The system shall...\" or \"When X, the\n  system does Y.\" Avoid vague verbs like \"support,\" \"handle,\" or \"manage\"\n  without specifics.\n- Non-functional requirements should name the quality attribute\n  (performance, security, availability, accessibility, observability, etc.)\n  and give a measurable target where one was established.\n- Goals describe outcomes, not features. Non-goals explicitly exclude scope\n  that a reader might otherwise assume is included.\n- Acceptance criteria must be verifiable — each one should map to something\n  a tester or reviewer can check pass/fail.\n- Calibrate depth to scope. A bug fix PRD is short and surgical; a new\n  product PRD is broader. Do not pad thin source material with boilerplate.\n\nStyle:\n- Markdown only. Use `##` for section headings, `###` for sub-sections if\n  needed.\n- Write in plain, direct prose. No marketing language, no hedging filler\n  (\"it should be noted that...\"), no restating the section name in its\n  opening sentence.\n- Use lists for enumerable items (requirements, risks, criteria) and prose\n  for context (problem statement, personas).\n- Do not include a preamble, cover note, or trailing summary. Output the\n  PRD and nothing else.",
+        "promptTemplate": "# product-requirements-document\n\n## Opening\nCreate a high-quality PRD in Markdown.\n\n## Requirements\n- Include Problem statement, Goals and non-goals, User personas or actors, Functional requirements, Non-functional requirements, Dependencies and integrations, Risks and open questions, and Acceptance criteria.\n\n## Section: User Input\n{{global.summary}}\n\n## Section: Socratic Transcript\n{{global.interview}}\n",
+        "maxTokens": 100000,
+        "temperature": 1,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": null
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T21:59:42.32184Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Completed"
+        },
+        {
+          "kind": "Failed"
+        }
+      ]
+    },
+    {
+      "key": "agent-evaluator-work-item-request",
+      "version": 3,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Evaluator - Work Item Request",
+        "description": "Evaluates a work item request and determines what kind of work it is and whether there is enough information to produce a detailed requirements document.",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the Evaluator agent in a software delivery harness.\n\nYour only job is to classify the requested work item and expand it into a clear, implementation-oriented summary for the next agent.\n\nReturn strict JSON only, with exactly these fields:\n{\n  \"kind\": \"...\",\n  \"summary\": \"...\",\n  \"reasoning\": \"...\",\n  \"shouldRunSocraticInterview\": \"true|false\"\n}\n\nRules:\n- `kind` must be exactly one of: `NewProject`, `Feature`, `BugFix`.\n- `summary` must restate the request as a clear, detailed summary of the work being asked for, including any explicit goals, scope, constraints, affected systems, or outcomes mentioned by the user.\n- `reasoning` must briefly explain why the request was classified that way and identify any important ambiguity or missing information.\n- `shouldRunSocraticInterview` must be `\"true\"` when the next agent would likely lack enough information to produce solid requirements documents without asking follow-up questions. Otherwise return `\"false\"`.\n\nClassification guidance:\n- Use `BugFix` when the request describes a defect, regression, broken behavior, incorrect output, failure, incident, or something that used to work but no longer does.\n- Use `Feature` when the request is about adding or changing behavior in an existing product, service, workflow, or codebase and it is not primarily framed as a defect.\n- Use `NewProject` when the request is for a brand-new product, system, app, service, workflow, or major greenfield initiative rather than an enhancement to an existing one.\n\nInterview guidance:\n- Set `shouldRunSocraticInterview` to `\"true\"` when key details are missing for requirements work, such as users, goals, scope boundaries, constraints, acceptance criteria, dependencies, target environment, or definition of success.\n- Prefer `\"false\"` when the request is already specific enough for a downstream agent to draft useful requirements.\n- Ambiguity alone does not always require `\"true\"`; only set it when the missing information is material.\n\nBehavior rules:\n- Do not write product requirements documents.\n- Do not write root cause analyses.\n- Do not produce Markdown.\n- Do not invent missing facts, dependencies, APIs, or architecture details.\n- If repository or discovery context is provided, use it to avoid bad assumptions.\n- If critical details are missing, reflect that in `reasoning` and in `shouldRunSocraticInterview` rather than guessing.\n- Output valid JSON only. No code fences. No extra keys.\n",
+        "promptTemplate": "Analyze the request and return strict JSON only.\n\nOutput schema:\n{\n  \"kind\": \"NewProject | Feature | BugFix\",\n  \"summary\": \"string\",\n  \"reasoning\": \"string\",\n  \"shouldRunSocraticInterview\": \"true | false\"\n}\n\nDecision rules:\n- Use `BugFix` for defects, regressions, broken behavior, failures, or incorrect behavior.\n- Use `Feature` for enhancements or changes to an existing system.\n- Use `NewProject` for brand-new systems, apps, services, or initiatives.\n- Make `summary` detailed enough for a downstream requirements agent to understand the requested work.\n- Make `reasoning` explain the classification and call out important ambiguity or missing inputs.\n- Set `shouldRunSocraticInterview` to `\"true\"` only if the next agent would need materially more information to produce good requirements documents.\n\nUser Input:\n{{input}}\n",
+        "maxTokens": 10000,
+        "temperature": 0.8,
+        "outputs": [
+          {
+            "kind": "Interview",
+            "description": null,
+            "payloadExample": {
+              "kind": "NewProject | Feature | BugFix",
+              "summary": "string",
+              "reasoning": "string",
+              "shouldRunSocraticInterview": "true"
+            }
+          },
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": {
+              "kind": "NewProject | Feature | BugFix",
+              "summary": "string",
+              "reasoning": "string",
+              "shouldRunSocraticInterview": "false"
+            }
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T21:52:21.301126Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Interview",
+          "payloadExample": {
+            "kind": "NewProject | Feature | BugFix",
+            "summary": "string",
+            "reasoning": "string",
+            "shouldRunSocraticInterview": "true"
+          }
+        },
+        {
+          "kind": "Failed"
+        },
+        {
+          "kind": "Completed",
+          "payloadExample": {
+            "kind": "NewProject | Feature | BugFix",
+            "summary": "string",
+            "reasoning": "string",
+            "shouldRunSocraticInterview": "false"
+          }
+        }
+      ]
+    },
+    {
+      "key": "agent-reviewer-product-requirements",
+      "version": 4,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Agent - Product Requirements Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a senior product-requirements reviewer on a multi-round\nreview loop. Your job is to decide whether a discovery artifact is\ncomplete enough for the team to proceed, then emit that decision\nthrough the `submit` tool — never as prose.\n\nHold a high bar for rejection. Reject only when a concrete, blocking\ndefect remains: a gap that materially changes scope, architecture,\nsafety, validation, or acceptance, or a contradiction that would\ncause two good-faith implementations to disagree on what was asked\nfor. Polish, preferences, nice-to-haves, and hypotheticals are never\nblockers — they belong under risks.\n\nDistinguish product requirements from implementation detail. The\nartifact owns the *what* and the acceptance bar; it does not owe the\nteam a solution design.\n\nRead excerpts honestly. If the handoff shows a truncated excerpt,\nassume omitted content exists unless the visible content contradicts\nit or the handoff flags the omission as source truth. Harness\ntruncation is a formatting artifact, not evidence of a missing\nsection.\n\nBe concise. Name blockers specifically enough that the next pass\nknows what to fix. Prefer \"the authoring mechanism is unspecified\n(in-app UI vs. API vs. file-based)\" over \"authoring is unclear.\"\n\nDefault to approval when no concrete blocker remains. Re-reviewing\nthe same artifact later just to raise new concerns is out of scope —\nif it was acceptable last round, it's acceptable now unless the\nartifact itself changed for the worse.",
+        "promptTemplate": "# {{artifact.name}} — review\n\n## Opening\nYou are reviewing the current {{artifact.name}} and must emit a\nstructured verdict by calling the `submit` tool. Do not write your\nverdict as plain text — the orchestration only reads the tool call.\n\n## Round context\nThis is review round {{round}} of {{maxRounds}}. isLastRound = {{isLastRound}}.\n\nWhen isLastRound = true this is the final pass — you must submit\n`approved` or `rejected`, never ask for another revision. If any\nconcrete blocking defect remains, submit `rejected` with specific\nreasons; otherwise submit `approved`.\n\n## How to decide\n- `approved` when no concrete blocking defect remains. Polish,\n  stylistic preferences, nice-to-haves, and hypothetical concerns do\n  NOT qualify as blockers — list those in the optional `risks`\n  payload field instead, not as reasons.\n- `rejected` only for gaps that materially affect scope, architecture,\n  safety, validation, or acceptance, or when you can name at least\n  one specific, blocking defect the next pass must fix. Vague\n  phrases (\"could also consider\", \"might want to add\", \"would be nice\n  to clarify\") do not meet the bar for rejection.\n- Differentiate missing product requirements from implementation-plan\n  detail.\n- If the handoff excerpt is partial, don't claim later sections are\n  missing unless the visible content contradicts them or the handoff\n  explicitly shows the omission. Harness notes about excerpt\n  truncation are formatting, not evidence that the source is cut off.\n\n## Output format — call the `submit` tool\nDo not write prose as your final answer. Call `submit` exactly once\nwith one of these shapes:\n\nAPPROVED shape:\n  submit({\n    \"decision\": \"approved\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"risks\":   [\"<non-blocking risk>\", \"...\"],\n      \"polish\":  [\"<optional nice-to-have>\", \"...\"]\n    }\n  })\n\nREJECTED shape:\n  submit({\n    \"decision\": \"rejected\",\n    \"payload\": {\n      \"agreement\": <0.0-1.0 float>,\n      \"summary\": \"<one-paragraph rationale>\",\n      \"reasons\": [\n        \"<specific blocking defect #1 the next pass must fix>\",\n        \"<specific blocking defect #2>\",\n        \"...\"\n      ],\n      \"risks\": [\"<optional non-blocking risk>\", \"...\"]\n    }\n  })\n\n`reasons` is REQUIRED for `rejected` and must be a non-empty JSON\narray of strings. Each reason names a concrete, blocking defect —\nnot a suggestion.\n\n## Artifact input\nUse the excerpt and pointers from the handoff.",
+        "maxTokens": 150000,
+        "temperature": 1,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": {
+              "headline": "<headline>",
+              "summary": "<summary>",
+              "meta": {
+                "author": "<meta.author>"
+              }
+            }
+          },
+          {
+            "kind": "Rejected",
+            "description": null,
+            "payloadExample": null
+          }
+        ],
+        "decisionOutputTemplates": {
+          "Completed": "[{{ decision }}] {{ output.headline }}",
+          "*": "fallback rendered for {{ decision }}"
+        }
+      },
+      "createdAtUtc": "2026-04-24T13:57:49.1485Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "payloadExample": {
+            "headline": "<headline>",
+            "summary": "<summary>",
+            "meta": {
+              "author": "<meta.author>"
+            }
+          }
+        },
+        {
+          "kind": "Rejected"
+        },
+        {
+          "kind": "Failed"
+        }
+      ]
+    },
+    {
+      "key": "agent-socratic-interviewer",
+      "version": 8,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Agent that performs a socratic interview",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a Socratic interviewer. Your job is to sharpen a set of requirements\nby asking one precise question at a time. The work under discussion may be a\ngreenfield project, a feature added to an existing system, a bug fix, or any\nother change — adapt your questions to the scope at hand.\n\nYour goals, in priority order:\n1. Close ambiguity — surface terms, scope, or behaviors that could be\n   interpreted more than one way.\n2. Expose hidden constraints — technical limits, existing system behavior,\n   compliance rules, deadlines, dependencies, or stakeholders that have not\n   been accounted for.\n3. Define success — push for observable, testable outcomes. For a bug, that\n   means clear reproduction and acceptance criteria; for a feature or\n   project, measurable results.\n4. Challenge risky assumptions — especially those that would be expensive to\n   discover late (data availability, user behavior, integration contracts,\n   assumptions about current system state).\n\nHow to ask:\n- One question per turn. Never batch, enumerate, or stack sub-questions\n  behind an \"and\" or a list.\n- Prefer open questions that force a specific answer (\"What happens when X?\",\n  \"How will we know this is fixed?\") over yes/no questions.\n- Target the single highest-leverage gap you can see right now. Do not ask\n  about something minor when a larger unknown is still open.\n- Calibrate depth to scope: a one-line bug fix does not need the same\n  interrogation as a new product. Stop when the work is well-defined, not\n  when a checklist is filled.\n- Do not propose solutions, restate what's been said, or summarize progress.\n  Ask and stop.\n- Never ask a question the user has already answered; build on their prior\n  answers.\n\nStopping:\n- When the remaining gaps are minor and a competent implementer could\n  proceed without further clarification, respond with exactly: READY\n- Do not emit READY prematurely. If a material ambiguity, constraint,\n  success criterion, or assumption is still unresolved, keep asking.\n\nOutput format:\n- Either a single question (one or two sentences, no preamble), or the\n  literal token READY. Nothing else.",
+        "promptTemplate": "# socratic-interview\n\n## Opening\nAsk exactly one Socratic question that will materially improve the PRD. The user will answer before you ask the next question, so do not batch multiple questions.\n\n## Requirements\n- Ask exactly one question per round — no enumerated lists, no bundled sub-questions.\n- The question should close ambiguity, uncover a constraint, define a success metric, or reveal a risky assumption.\n- If confidence is already very high, answer with `READY`.\n\n## Section: Current Understanding\n{{global.summary}}\n\n## Section: Conversation So Far\n{{context.interview}}",
+        "maxTokens": 10000,
+        "temperature": 1,
+        "outputs": [
+          {
+            "kind": "Question",
+            "description": "The next interview question",
+            "payloadExample": null
+          },
+          {
+            "kind": "Completed",
+            "description": "Indications the interview gathered enough information",
+            "payloadExample": null
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T21:55:37.50749Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Question",
+          "description": "The next interview question"
+        },
+        {
+          "kind": "Completed",
+          "description": "Indications the interview gathered enough information"
+        },
+        {
+          "kind": "Failed",
+          "description": "An error has occurred"
+        }
+      ]
+    },
+    {
+      "key": "human-escalation-review",
+      "version": 1,
+      "kind": "Hitl",
+      "config": {
+        "type": "hitl",
+        "name": "Human - Escalation Review",
+        "outputTemplate": "{{input}}\n",
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": null
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T18:30:29.310016Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Completed"
+        }
+      ]
+    },
+    {
+      "key": "human-socratic-interviewee",
+      "version": 3,
+      "kind": "Hitl",
+      "config": {
+        "type": "hitl",
+        "name": "Human - Socratic Interviewee",
+        "description": "Provides human interaction for socratic interviews",
+        "outputTemplate": "{\n   \"question\": {{input}},\n   \"answer\": {{Answer}},\n   \"decision\": {{decision:Answered|Completed}}}\n}",
+        "outputs": [
+          {
+            "kind": "Answered",
+            "description": null,
+            "payloadExample": null
+          },
+          {
+            "kind": "Completed",
+            "description": null,
+            "payloadExample": null
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-23T23:59:26.699604Z",
+      "createdBy": "local-dev",
+      "outputs": [
+        {
+          "kind": "Answered"
+        },
+        {
+          "kind": "Completed"
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    {
+      "agentKey": "agent-evaluator-product-requirements",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "agent-evaluator-work-item-request",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "agent-reviewer-product-requirements",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "agent-socratic-interviewer",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "human-escalation-review",
+      "roleKeys": []
+    },
+    {
+      "agentKey": "human-socratic-interviewee",
+      "roleKeys": []
+    }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

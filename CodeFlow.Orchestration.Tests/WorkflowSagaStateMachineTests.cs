@@ -3052,6 +3052,12 @@ public sealed class WorkflowSagaStateMachineTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(workflow.FindNext(fromNodeId, outputPortName));
 
+        public Task<IReadOnlyCollection<string>> GetTerminalPortsAsync(
+            string key,
+            int version,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(workflow.TerminalPorts);
+
         public Task<int> CreateNewVersionAsync(WorkflowDraft draft, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

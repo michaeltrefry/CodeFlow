@@ -17,6 +17,16 @@ public interface IWorkflowRepository
         string outputPortName,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the set of port names by which the given workflow version exits — used by the
+    /// validator and editor to populate Subflow/ReviewLoop parent ports without hauling the full
+    /// graph across every save. Computed by <see cref="Workflow.TerminalPorts"/>.
+    /// </summary>
+    Task<IReadOnlyCollection<string>> GetTerminalPortsAsync(
+        string key,
+        int version,
+        CancellationToken cancellationToken = default);
+
     Task<int> CreateNewVersionAsync(
         WorkflowDraft draft,
         CancellationToken cancellationToken = default);

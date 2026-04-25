@@ -4,7 +4,7 @@ Workflows describe how a trace moves between agents and logic checks to get a jo
 
 ## Node kinds
 
-Every workflow is composed of nodes. The canvas palette exposes seven kinds:
+Every workflow is composed of nodes. The canvas palette exposes six kinds:
 
 | Kind | Purpose | Has agent | Has script |
 |---|---|---|---|
@@ -12,24 +12,29 @@ Every workflow is composed of nodes. The canvas palette exposes seven kinds:
 | `Agent` | Dispatches an agent via `AgentInvokeRequested`. | Yes | No |
 | `Hitl` | Dispatches a human-in-the-loop agent that pauses the saga until a human submits a decision via `/api/traces/:id/hitl-decision`. | Yes | No |
 | `Logic` | In-process JavaScript router. Does not dispatch an agent; evaluates a script that picks an output port. | No | Yes |
-| `Escalation` | Fallback when a round count overflows. At most one per workflow. | Yes | No |
 | `Subflow` | Invokes another workflow as a reusable building block and waits for its terminal state. | No | No |
-| `ReviewLoop` | Invokes another workflow up to `MaxRounds` times; each round's output becomes the next round's input until the child returns `Approved` (or rounds run out). | No | No |
+| `ReviewLoop` | Invokes another workflow up to `MaxRounds` times; each round's output becomes the next round's input until the child returns the configured `loopDecision` (or rounds run out, exiting `Exhausted`). | No | No |
 
 Every node has a stable `Id` (GUID) that persists across saves, a set of named **output ports**, and layout coordinates `(LayoutX, LayoutY)`.
 
 ## Edges and ports
 
-An edge is `(FromNodeId, FromPort) → (ToNodeId, ToPort)` plus a `RotatesRound` flag and a `SortOrder`. Ports are strings — for agent nodes the port name equals the returned `AgentDecisionKind` (`Completed`, `Approved`, `Rejected`, `Failed`). Logic nodes declare their ports explicitly.
+An edge is `(FromNodeId, FromPort) → (ToNodeId, ToPort)` plus a `RotatesRound` flag and a `SortOrder`.
+
+Ports are user-defined strings. For Agent/Hitl/Start nodes, the port set comes from the pinned
+agent's declared `outputs`; for Subflow/ReviewLoop nodes, the port set is inherited from the
+pinned child workflow's terminal ports; for Logic nodes, ports are author-declared free text.
+Every node also has an implicit `Failed` port (always wirable, never declared) and ReviewLoop
+nodes synthesize an `Exhausted` port for the round-budget-exhausted exit. See
+[port-model.md](port-model.md) for the canonical reference.
 
 **Connection rules enforced by the editor:**
 
 - At most one outgoing edge per output port.
 - Fan-in is allowed on input ports.
-- Escalation nodes have no outgoing edges.
 - The `ToPort` defaults to `"in"` — every non-Start node implicitly has one input port.
 
-If the runtime follows an edge that would push the round count past `MaxRoundsPerRound` (and the edge does not rotate), it routes to the Escalation node instead of the intended target. If no Escalation node is configured, the trace terminates as `Failed`.
+If the runtime follows an edge that would push the round count past `MaxRoundsPerRound` (and the edge does not rotate), the trace terminates as `Failed`.
 
 ## Context: local (`context`) vs. shared (`global`)
 
@@ -148,7 +153,7 @@ Every Logic evaluation produces a `LogicEvaluationRecord` on saga state containi
 
 ## Agent-attached routing scripts
 
-Agent, HITL, Escalation, and Start nodes may carry two **optional** scripts that hook the saga's dispatch path — an **input script** that runs *before* the node receives its input, and an **output script** that runs *after* the agent produces its output. Both use the same sandbox as Logic nodes (same limits, same security posture) and share the globals `context`, `global`, `setNodePath`, `setContext`, `setGlobal`, `log`. Each carries one extra verb: input scripts get `setInput(text)`, output scripts get `setOutput(text)`.
+Agent, HITL, and Start nodes may carry two **optional** scripts that hook the saga's dispatch path — an **input script** that runs *before* the node receives its input, and an **output script** that runs *after* the agent produces its output. Both use the same sandbox as Logic nodes (same limits, same security posture) and share the globals `context`, `global`, `setNodePath`, `setContext`, `setGlobal`, `log`. Each carries one extra verb: input scripts get `setInput(text)`, output scripts get `setOutput(text)`.
 
 The two scripts differ in:
 
@@ -162,9 +167,9 @@ The two scripts differ in:
 After the agent emits `AgentInvocationCompleted`, the saga:
 
 1. Finds the source node.
-2. If the node has a non-empty `OutputScript`, reads the agent's output artifact as JSON, attaches `output.decision` (the AgentDecisionKind name: `Completed`, `Approved`, `Rejected`, `Failed`) and `output.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context` and `global`.
+2. If the node has a non-empty `OutputScript`, reads the agent's output artifact as JSON, attaches `output.decision` (the agent's chosen port name — one of the agent's declared output kinds, or `Failed` on FailTool/exception) and `output.decisionPayload` (the raw decision payload or `null`), and evaluates the script with the workflow's current `context` and `global`.
 3. Uses the port chosen by `setNodePath` to find the outgoing edge.
-4. If the script fails (throws, times out, omits `setNodePath`, or picks an undeclared port), routing **falls back** to the `AgentDecisionKind`-named port carried on the completion message (i.e., the pre-script behavior).
+4. If the script fails (throws, times out, omits `setNodePath`, or picks an undeclared port), routing **falls back** to the agent's chosen port carried on the completion message (i.e., the pre-script behavior).
 
 `setContext` and `setGlobal` writes are merged into the saga and flow into every downstream dispatch — same semantics as Logic node writes.
 
@@ -177,7 +182,7 @@ Call `setOutput(text)` inside an output script to substitute a new artifact for 
 
 **Audit semantics.** The original agent submission is never mutated or deleted. It remains in the artifact store with its original URI; only the pointer stored on the decision and handed to downstream nodes is swapped. If an external system already recorded the original URI, it continues to resolve.
 
-**Size cap.** The string is capped at 1 MiB. Exceeding the cap fails the evaluation with `OutputOverrideBudgetExceeded`, which — like any script failure — routes via the `AgentDecisionKind`-named fallback port.
+**Size cap.** The string is capped at 1 MiB. Exceeding the cap fails the evaluation with `OutputOverrideBudgetExceeded`, which — like any script failure — routes via the agent's chosen-port fallback (or the implicit `Failed` port if the agent itself failed).
 
 #### Example: socratic HITL that emits a markdown summary
 
@@ -239,7 +244,7 @@ The saga evaluates the `InputScript` just before publishing the node's invocatio
 
 **Size cap.** 1 MiB of UTF-16 characters. Exceeding it raises `InputOverrideBudgetExceeded`.
 
-**Scope.** Both `setInput` and `setOutput` are only exposed on agent-attached scripts (Agent / HITL / Escalation / Start). Calling either verb from a Logic-node script throws a `TypeError` — Logic nodes are themselves routing scripts and don't own a separate input/output artifact.
+**Scope.** Both `setInput` and `setOutput` are only exposed on agent-attached scripts (Agent / HITL / Start). Calling either verb from a Logic-node script throws a `TypeError` — Logic nodes are themselves routing scripts and don't own a separate input/output artifact.
 
 **Top-level Start note.** Today, the input script runs for every mid-workflow dispatch and for subflow Start nodes. A top-level workflow's Start node does *not* currently run its input script — the first `AgentInvokeRequested` is published from the API endpoint before a saga exists to host the evaluation. For now, normalize the user prompt at submission time or in the first mid-flow node.
 
@@ -273,14 +278,14 @@ A **Subflow** node invokes another workflow as a reusable building block. The co
 **Defining a Subflow node.** In the canvas, drag the Subflow node onto your workflow and fill in the inspector:
 - **Workflow** — the child workflow's key (must already exist; save-time validation rejects unknowns).
 - **Version** — either a specific pinned version or "Latest at save" (null), which is resolved to the current latest at parent-workflow save time, just like agent node versions.
-- **Output ports** — always `Completed`, `Failed`, `Escalated`. Route each to its downstream handler as you would an agent decision.
+- **Output ports** — derived from the pinned child workflow's terminal-port set (the union of unwired `outputPorts` across the child's nodes). The implicit `Failed` port is always wirable. Authors don't hand-edit ports on Subflow nodes; they pick the child and the ports follow.
 
 **What happens at runtime:**
 1. The parent saga reaches the Subflow node and publishes `SubflowInvokeRequested` carrying the parent's current `global` snapshot, the input artifact, and a fresh `ChildTraceId`.
 2. A **child saga** is created with `TraceId = ChildTraceId`. The child has its own local `context` (starts empty) and its own copy of `global` (the snapshot from the parent). It runs its workflow to completion as a normal trace.
 3. Inside the child, any `setGlobal('key', value)` writes land on the child's working `global`.
-4. When the child reaches a terminal state (`Completed`, `Failed`, or `Escalated`) it emits `SubflowCompleted` carrying its final `global` and its last output artifact.
-5. The parent saga **shallow-merges** (last-write-wins per top-level key) the child's `global` into its own, appends a synthetic decision to its history, and routes from the Subflow node's matching output port.
+4. When the child reaches a terminal state it emits `SubflowCompleted` carrying its final `global`, its last output artifact, and the terminal port name (one of the child's terminal ports, or `Failed`).
+5. The parent saga **shallow-merges** (last-write-wins per top-level key) the child's `global` into its own, appends a synthetic decision to its history, and routes from the Subflow node's matching output port (the terminal port name maps directly to a parent edge `fromPort`).
 
 **Entry: the child's Start node.** A subflow workflow must declare exactly one `Start` node (same rule as any other workflow — enforced by the save-time validator and by `Workflow.StartNode`). The child Start receives:
 
@@ -303,32 +308,28 @@ A consequence: **a workflow designed to be callable both top-level and as a subf
 
 ### Exiting a subflow
 
-There is no explicit "exit node" marker — a child saga terminates as soon as it walks off the graph, i.e. reaches a node whose chosen output port has no outgoing edge. Which port gets chosen determines the child's terminal state and the decision kind propagated back to the parent:
+There is no explicit "exit node" marker — a child saga terminates as soon as it walks off the graph, i.e. reaches a node whose chosen output port has no outgoing edge. The terminal port name (one of the child's declared `outputPorts`, or the implicit `Failed`) is propagated to the parent verbatim.
 
-| Child's last agent emits | Unwired port behaviour | Child terminal state | `SubflowCompleted.Decision` |
+| Child's last agent emits | Unwired port behaviour | Child terminal state | Propagated port name |
 |---|---|---|---|
-| `Completed` | Legal clean exit | `Completed` | `Completed` |
-| `Approved` | Legal clean exit (signals approval to the parent) | `Completed` | `Approved` |
-| `Rejected` | Legal clean exit (signals "revise" to a ReviewLoop parent, or a terminal rejection otherwise) | `Completed` | `Rejected` |
-| `Failed` | Terminates the child as `Failed` with a "no outgoing edge" reason | `Failed` | `Failed` |
-| Escalation node resolves with `Rejected` | Escalation-recovery flow | `Escalated` | (unchanged; escalation path) |
+| Any author-declared port (e.g. `Completed`, `Approved`, `Rejected`, or any user-named decision) | Legal clean exit | `Completed` | The exact port name the agent picked |
+| `Failed` (FailTool, exception, or implicit error sink) | Terminates the child as `Failed` | `Failed` | `Failed` |
 
-A plain `Subflow` parent maps the child's terminal state to its three output ports (`Completed` / `Failed` / `Escalated`), so `Approved` / `Rejected` unwired exits both surface as `Subflow.Completed` — the `Decision` field is metadata the parent can inspect but not a distinct port. A `ReviewLoop` parent uses `Decision` directly: `Approved` or `Completed` → Approved port; `Rejected` with rounds remaining → next round; `Rejected` on the last round → Exhausted port; `Failed` / missing decision → Failed port.
+A `Subflow` parent has its port set inherited from the child's terminal-port set, so the propagated port name maps directly to a parent edge `fromPort`. A `ReviewLoop` parent compares the propagated port name against the configured `loopDecision` — equal → iterate; otherwise → exit on that port name; round budget reached → synthesize `Exhausted`.
 
 The child's **last output artifact** — the artifact produced by the final agent before termination — becomes the input to whatever the parent routes to next. The child's final `global` is shallow-merged back into the parent's `global` regardless of which port fired.
 
 **Common patterns:**
 
-- **Single happy exit.** Route every success path to one final agent, and leave its `Completed` port unwired. That node becomes the de-facto exit — when it completes, the child terminates `Completed` and the parent continues from `Subflow.Completed`.
-- **Multi-exit.** Any node with an unwired `Completed`, `Approved`, or `Rejected` port is a legal exit. The first one the saga reaches terminates the subflow; there is no priority mechanism beyond execution order.
-- **ReviewLoop child pattern.** A reviewer agent inside a ReviewLoop child typically leaves its `Approved` and `Rejected` ports unwired — the parent ReviewLoop routes on the emitted decision kind to either exit Approved or spawn the next round. No wiring needed inside the child for the loop to work.
-- **Explicit failure exit.** Wire the error-handling branch to an agent whose `Failed` port is left open. That terminates the child `Failed`, routing the parent from `Subflow.Failed`.
-- **Use Escalation for recoverable failures only.** A child `Escalated` terminal is specifically the Escalation node resolving with `Rejected`. Reserve it for cases where the child truly couldn't recover despite escalation — for ordinary failure, use `Failed`.
+- **Single happy exit.** Route every success path to one final agent, and leave its primary success port (e.g. `Completed`) unwired. That node becomes the de-facto exit — when it completes, the child terminates and the parent continues from the matching port.
+- **Multi-exit.** Any node with an unwired declared port is a legal exit. The first one the saga reaches terminates the subflow; there is no priority mechanism beyond execution order.
+- **ReviewLoop child pattern.** A reviewer agent inside a ReviewLoop child typically leaves its decision ports unwired — the parent ReviewLoop routes on the propagated port name (matching against `loopDecision` for iterate, otherwise exiting). No wiring needed inside the child for the loop to work.
+- **Explicit failure exit.** Wire the error-handling branch to an agent and leave its `Failed` handle open (it's the implicit one on every node). That terminates the child `Failed`, routing the parent from `Subflow → Failed`.
 
 **Gotchas:**
 
-- Only `Completed` / `Approved` / `Rejected` have the "unwired = clean exit" semantics. Unwired `Failed` still fails the child (that's the design — `Failed` means something actually went wrong). Any other custom port name that's unwired also fails the child with a "no outgoing edge" reason.
-- The save-time validator rejects unknown Subflow output ports on the parent (only `Completed`, `Failed`, `Escalated` are allowed on the Subflow node itself), but doesn't verify the child workflow's exit shape — a child with only unwired `Failed` ports will always return `Failed` to the parent.
+- Only declared ports have the "unwired = clean exit" semantics. Unwired `Failed` still fails the child (that's the design — `Failed` means something actually went wrong).
+- The save-time validator computes the child workflow's terminal-port set and rejects any parent Subflow edge whose `fromPort` isn't in that set (or `Failed`). Drift (the child renamed a port but the parent still references the old one) surfaces as a save-time error.
 
 ### Example: shared review subflow
 
@@ -344,8 +345,11 @@ Now compose a larger `publish-flow`:
 Start(writer-agent)  → Completed → Subflow(key="quick-review-v1", version=null)
                                     Completed → Publish(publisher-agent) → [terminal]
                                     Failed    → HandleFailure(fallback-agent) → [terminal]
-                                    Escalated → Escalation(editor-in-chief) → [terminal]
 ```
+
+If `quick-review-v1` adds an `Escalated` terminal port (e.g. an agent declares an `Escalated`
+output and leaves it unwired), the parent's Subflow node port set automatically includes it
+and the editor surfaces the new port for wiring.
 
 At save time, `publish-flow`'s Subflow node has its `SubflowVersion` rewritten from `null` to the latest `quick-review-v1` version (e.g. `3`), so re-running a saved parent version is reproducible even if the child workflow gains new versions later.
 
@@ -371,7 +375,7 @@ root-flow (depth 0)
 - **Treat `setGlobal` as an output**, not an event. Writes only become visible on completion, and only once. Parallel subflows would race; don't design around mid-run shared state.
 - **Stay under depth 3.** If you find yourself wanting a fourth level, flatten the deepest composition into the caller instead.
 - **Version pins should be explicit for anything production-critical.** Leave `null` ("latest at save") for subflows you iterate on often; pin an integer when you need reproducibility across re-saves.
-- **Self-references are rejected at save time.** A workflow can't have a Subflow node that points at itself; use an Escalation node for guarded self-invocation patterns if you need them.
+- **Self-references are rejected at save time.** A workflow can't have a Subflow node that points at itself.
 
 ## Review Loops (bounded iterate-until-approved subflows)
 
@@ -380,14 +384,13 @@ A **ReviewLoop** node is a specialized subflow that re-invokes a child workflow 
 | Child terminal signal | Rounds remaining | Outcome |
 |---|---|---|
 | Effective port equals `LoopDecision` | > 0 | **Advance to the next round.** Round N's output becomes Round N+1's input artifact |
-| Effective port equals `LoopDecision` | 0 (last round) | Exit the `Exhausted` port |
-| `Decision` is `Approved` / `Completed` (and port didn't match `LoopDecision`) | any | Exit the `Approved` port |
-| `Decision` is `Failed`, or port is `Failed` / `Escalated` | any | Exit the `Failed` port |
-| `Decision` is `Rejected` and `LoopDecision` ≠ `"Rejected"` | any | Exit the `Failed` port (bare Rejected with a custom LoopDecision is a terminal verdict, not an iterate) |
+| Effective port equals `LoopDecision` | 0 (last round) | Exit via the synthesized `Exhausted` port |
+| Effective port is `Failed` (FailTool, exception, or MaxSubflowDepth exceeded) | any | Exit via the implicit `Failed` port |
+| Any other declared port name | any | Exit via the parent edge with the same `fromPort` name |
 
-A ReviewLoop node's **output ports are fixed**: `Approved`, `Exhausted`, `Failed`. The canvas editor enforces that.
+A ReviewLoop node's **output ports are derived**: child terminal ports ∪ `{Exhausted}` minus the configured `loopDecision`, plus the implicit `Failed`. The editor surfaces those automatically when the author picks a child workflow.
 
-**Effective port** means: the port the child saga actually picked when terminating. If the terminal node had a routing script, that's the script's `setNodePath(...)` choice; otherwise it's the port name derived from the agent's `AgentDecisionKind`. This lets routing-script patterns like a socratic-interview loop drive iteration off any port name without the underlying agent decision kind needing to match.
+**Effective port** means: the port the child saga actually picked when terminating. If the terminal node had a routing script, that's the script's `setNodePath(...)` choice; otherwise it's the port name the agent submitted. This lets routing-script patterns like a socratic-interview loop drive iteration off any port name without modifying the underlying agent.
 
 ### Round variables
 
@@ -412,7 +415,7 @@ A ReviewLoop node has four settings:
 - `SubflowKey` — child workflow key (required).
 - `SubflowVersion` — pinned child version, or `null` for "latest at save" (resolved identically to plain Subflow nodes at save time).
 - `MaxRounds` — integer in `[1, 10]`. Required.
-- `LoopDecision` — port name that triggers another iteration when the child's effective terminal port matches. Defaults to `"Rejected"`. Case-sensitive, 1–64 chars, cannot be `"Failed"` or `"Escalated"` (those are reserved for error propagation). Use a custom value like `"Answered"` for socratic-style loops where the routing script picks a non-standard port name.
+- `LoopDecision` — port name that triggers another iteration when the child's effective terminal port matches. Defaults to `"Rejected"`. Case-sensitive, 1–64 chars, cannot be `"Failed"` (reserved for error propagation). Use a custom value like `"Answered"` for socratic-style loops where the routing script picks a non-standard port name.
 
 Self-references are rejected at save time, same rule as Subflow.
 
@@ -443,10 +446,10 @@ Start ─▶ Writer (agent) ─▶ Reviewer (agent)
 Parent workflow that uses it:
 
 ```
-Start ─▶ ReviewLoop(critique-revise, MaxRounds=3)
+Start ─▶ ReviewLoop(critique-revise, MaxRounds=3, LoopDecision="Rejected")
             ├─ Approved  ─▶ Publish
             ├─ Exhausted ─▶ Human Editor (Hitl)
-            └─ Failed    ─▶ Escalation
+            └─ Failed    ─▶ Fallback handler
 ```
 
 With `MaxRounds = 3`, the reviewer agent sees `isLastRound === true` only on round 3. Authors can use that to change tone, skip low-priority nits, or force a terminal decision.
@@ -472,7 +475,7 @@ At a glance:
 - `WorkflowNode` — `{ Id, Kind, AgentKey?, AgentVersion?, Script?, OutputPorts[], LayoutX, LayoutY, SubflowKey?, SubflowVersion?, ReviewMaxRounds?, LoopDecision? }`.
 - `WorkflowEdge` — `{ FromNodeId, FromPort, ToNodeId, ToPort, RotatesRound, SortOrder }`.
 - `WorkflowInput` — `{ Key, DisplayName, Kind, Required, DefaultValueJson?, Description?, Ordinal }`.
-- `WorkflowSagaStateEntity` — carries `CurrentNodeId`, `CurrentAgentKey`, `EscalatedFromNodeId`, `InputsJson`, and append-only `DecisionHistoryJson` + `LogicEvaluationHistoryJson`.
+- `WorkflowSagaStateEntity` — carries `CurrentNodeId`, `CurrentAgentKey`, `InputsJson`, and append-only `DecisionHistoryJson` + `LogicEvaluationHistoryJson`.
 - `AgentInvokeRequested` — `{ TraceId, RoundId, WorkflowKey, WorkflowVersion, NodeId, AgentKey, AgentVersion, InputRef, ContextInputs, RetryContext?, GlobalContext?, ReviewRound?, ReviewMaxRounds? }`.
 - `AgentInvocationCompleted` — `{ TraceId, RoundId, FromNodeId, AgentKey, AgentVersion, OutputPortName, OutputRef, Decision, DecisionPayload, Duration, TokenUsage }`.
 - `SubflowInvokeRequested` — `{ ParentTraceId, ParentNodeId, ParentRoundId, ChildTraceId, SubflowKey, SubflowVersion, InputRef, SharedContext, Depth, ReviewRound?, ReviewMaxRounds?, LoopDecision? }`.
