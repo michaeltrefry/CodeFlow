@@ -2,11 +2,9 @@ import { Component, computed, effect, inject, input, output, signal, OnInit } fr
 import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../core/agents.api';
 import { TracesApi } from '../../core/traces.api';
-import { AgentDecisionKind, HitlTask } from '../../core/models';
+import { AgentOutputDeclaration, HitlTask } from '../../core/models';
 import {
-  ALL_DECISION_KINDS,
   HitlPlaceholder,
-  getDecisionPlaceholder,
   parseHitlTemplate,
   renderHitlTemplate
 } from '../../core/hitl-template';
@@ -70,13 +68,8 @@ import {
 
           @for (ph of editablePlaceholders(); track ph.name) {
             <div class="form-field">
-              <label class="field-label">
-                {{ placeholderLabel(ph.name) }}
-                @if (ph.kind === 'decision') {
-                  <span class="muted small"> — sets decision kind</span>
-                }
-              </label>
-              @if (ph.kind === 'decision' || ph.kind === 'select') {
+              <label class="field-label">{{ placeholderLabel(ph.name) }}</label>
+              @if (ph.kind === 'select') {
                 <div class="choice-group" [attr.aria-label]="placeholderLabel(ph.name)">
                   @for (opt of optionsFor(ph); track opt) {
                     <button
@@ -106,7 +99,7 @@ import {
               @if (serverPreviewPending()) {
                 <span class="muted small"> — rendering…</span>
               } @else if (resolvedDecisionTemplate()) {
-                <span class="muted small"> — server-rendered from decision-output template</span>
+                <span class="muted small"> — server-rendered for port "{{ selectedPortName() }}"</span>
               }
             </h4>
             <p class="muted small">This is the exact content that will be submitted for the next node to consume.</p>
@@ -117,28 +110,6 @@ import {
             <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
           }
         </section>
-      } @else {
-        <div class="form-field">
-          <label>Decision</label>
-          <select [(ngModel)]="decision" name="decision-{{ task().id }}">
-            <option value="Approved">Approve</option>
-            <option value="Rejected">Reject</option>
-            <option value="Completed">Mark completed</option>
-            <option value="Failed">Mark failed</option>
-          </select>
-        </div>
-
-        @if (decision() === 'Rejected') {
-          <div class="form-field">
-            <label>Reasons (one per line)</label>
-            <textarea [(ngModel)]="reasonText" name="reasons-{{ task().id }}" rows="3"></textarea>
-          </div>
-        }
-
-        <div class="form-field">
-          <label>Output text (optional)</label>
-          <textarea [(ngModel)]="outputText" name="output-{{ task().id }}" rows="4" placeholder="Explain the decision or paste updated content…"></textarea>
-        </div>
       }
 
       @if (error()) {
@@ -146,9 +117,24 @@ import {
       }
 
       <div class="submit-row">
-        <button class="submit-button" (click)="submit()" [disabled]="submitting() || configLoading()">
-          {{ submitting() ? 'Submitting…' : 'Submit decision' }}
-        </button>
+        @if (declaredOutputs().length > 0) {
+          @for (decl of declaredOutputs(); track decl.kind) {
+            <button
+              class="submit-button"
+              type="button"
+              [title]="decl.description ?? ''"
+              [disabled]="submitting() || configLoading()"
+              (mouseenter)="setSelectedPort(decl.kind)"
+              (focus)="setSelectedPort(decl.kind)"
+              (click)="submit(decl.kind)">
+              {{ submitting() && submittingPort() === decl.kind ? 'Submitting…' : decl.kind }}
+            </button>
+          }
+        } @else {
+          <button class="submit-button" type="button" (click)="submit('Completed')" [disabled]="submitting() || configLoading()">
+            {{ submitting() ? 'Submitting…' : 'Submit' }}
+          </button>
+        }
       </div>
     </article>
   `,
@@ -283,6 +269,8 @@ import {
     .submit-row {
       display: flex;
       justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
     .submit-button {
       border: 1px solid var(--accent);
@@ -333,9 +321,13 @@ export class HitlReviewComponent implements OnInit {
   readonly configLoading = signal(true);
   readonly template = signal<string | null>(null);
   readonly decisionOutputTemplates = signal<Record<string, string> | null>(null);
+  readonly declaredOutputs = signal<AgentOutputDeclaration[]>([]);
   readonly fieldValues = signal<Record<string, string>>({});
   readonly resolvedTemplateValues = signal<Record<string, unknown>>({});
   readonly contextInputs = signal<Record<string, unknown>>({});
+
+  /** Tracks which port is currently driving the preview (hovered/focused/last-clicked). */
+  readonly selectedPortName = signal<string>('Completed');
 
   // Server-rendered preview (populated via /api/agents/templates/render-preview when the agent
   // declares a decision-output template for the selected port). Falls back to the client-side
@@ -353,24 +345,10 @@ export class HitlReviewComponent implements OnInit {
     this.placeholders().filter(ph => !isDisplayOnlyPlaceholder(ph.name))
   );
   readonly hasTemplate = computed(() => this.placeholders().length > 0);
-  readonly decisionOptions = computed<string[]>(() =>
-    getDecisionOptionsForPlaceholder(getDecisionPlaceholder(this.parsedTemplate()))
-  );
   readonly mergedTemplateValues = computed<Record<string, unknown>>(() => ({
     ...this.resolvedTemplateValues(),
     ...this.fieldValues()
   }));
-  readonly selectedPortName = computed(() => {
-    const parsed = this.parsedTemplate();
-    const decisionPh = getDecisionPlaceholder(parsed);
-    if (decisionPh) {
-      const value = this.mergedTemplateValues()[decisionPh.name];
-      if (typeof value === 'string' && value.length > 0) {
-        return value;
-      }
-    }
-    return 'Completed';
-  });
   readonly resolvedDecisionTemplate = computed(() => {
     const templates = this.decisionOutputTemplates();
     if (!templates) { return null; }
@@ -388,12 +366,8 @@ export class HitlReviewComponent implements OnInit {
     return renderHitlTemplate(tpl, this.mergedTemplateValues());
   });
 
-  // Legacy (no-template) state
-  readonly decision = signal<AgentDecisionKind>('Approved');
-  readonly reasonText = signal('');
-  readonly outputText = signal('');
-
   readonly submitting = signal(false);
+  readonly submittingPort = signal<string | null>(null);
   readonly error = signal<string | null>(null);
 
   private previewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -434,11 +408,21 @@ export class HitlReviewComponent implements OnInit {
           Record<string, string> | undefined;
         this.decisionOutputTemplates.set(
           decisionTemplates && Object.keys(decisionTemplates).length > 0 ? decisionTemplates : null);
+
+        const outputs = (version.config?.['outputs'] as AgentOutputDeclaration[] | undefined) ?? [];
+        this.declaredOutputs.set(outputs);
+        // Initial preview keys off the first declared port (or 'Completed' if none).
+        if (outputs.length > 0) {
+          this.selectedPortName.set(outputs[0].kind);
+        } else {
+          this.selectedPortName.set('Completed');
+        }
+
         this.seedDefaults();
         this.configLoading.set(false);
       },
       error: () => {
-        // Fall back to legacy form on config-load failure.
+        // Fall back to default form on config-load failure.
         this.configLoading.set(false);
       }
     });
@@ -484,20 +468,20 @@ export class HitlReviewComponent implements OnInit {
     this.fieldValues.set({ ...this.fieldValues(), [name]: value });
   }
 
-  optionsFor(placeholder: HitlPlaceholder): string[] {
-    if (placeholder.kind === 'decision') {
-      return this.decisionOptions();
+  setSelectedPort(port: string): void {
+    if (this.selectedPortName() !== port) {
+      this.selectedPortName.set(port);
     }
+  }
 
+  optionsFor(placeholder: HitlPlaceholder): string[] {
     return placeholder.options ?? [];
   }
 
   private seedDefaults(): void {
     const next: Record<string, string> = {};
     for (const ph of this.editablePlaceholders()) {
-      if (ph.kind === 'decision') {
-        next[ph.name] = this.decisionOptions()[0] ?? 'Completed';
-      } else if (ph.kind === 'select') {
+      if (ph.kind === 'select') {
         next[ph.name] = ph.options?.[0] ?? '';
       } else {
         next[ph.name] = '';
@@ -506,62 +490,69 @@ export class HitlReviewComponent implements OnInit {
     this.fieldValues.set(next);
   }
 
-  submit(): void {
+  submit(portName: string): void {
+    if (this.submitting()) {
+      return;
+    }
+
+    this.setSelectedPort(portName);
     this.submitting.set(true);
+    this.submittingPort.set(portName);
     this.error.set(null);
 
     if (this.hasTemplate()) {
-      this.submitTemplated();
+      this.submitTemplated(portName);
     } else {
-      this.submitLegacy();
+      this.submitDefault(portName);
     }
   }
 
-  private submitTemplated(): void {
-    const parsed = this.parsedTemplate();
-    const decisionPh = getDecisionPlaceholder(parsed);
-    const rendered = this.renderedOutput();
-    const rawDecisionValue = decisionPh ? this.mergedTemplateValues()[decisionPh.name] : '';
-    const rawDecisionChoice = typeof rawDecisionValue === 'string' ? rawDecisionValue : '';
-    const decision = getCanonicalDecision(rawDecisionChoice);
-    const outputPortName = !isBuiltInDecisionKind(rawDecisionChoice) && rawDecisionChoice
-      ? rawDecisionChoice
-      : undefined;
+  private submitTemplated(portName: string): void {
+    // For templated submissions, render with the clicked port so the output the next node
+    // consumes matches that port's decision-output template (when one exists).
+    const rendered = this.renderForPort(portName);
 
     this.api.submitHitlDecision(this.task().traceId, {
-      decision,
-      outputPortName,
+      outputPortName: portName,
       outputText: rendered,
       fieldValues: { ...this.fieldValues() }
     }).subscribe({
       next: () => {
         this.submitting.set(false);
+        this.submittingPort.set(null);
         this.decided.emit();
       },
       error: err => {
         this.submitting.set(false);
+        this.submittingPort.set(null);
         this.error.set(err?.message ?? 'Failed to submit');
       }
     });
   }
 
-  private submitLegacy(): void {
-    const lines = this.reasonText()
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
+  private renderForPort(portName: string): string {
+    // The server preview signal is keyed by selectedPortName; if that already matches the
+    // clicked port and is fresh, prefer it. Otherwise fall back to the client-side render.
+    if (this.selectedPortName() === portName && this.serverRenderedOutput() !== null) {
+      return this.serverRenderedOutput() ?? '';
+    }
+    const tpl = this.template();
+    if (!tpl) { return ''; }
+    return renderHitlTemplate(tpl, this.mergedTemplateValues());
+  }
 
+  private submitDefault(portName: string): void {
     this.api.submitHitlDecision(this.task().traceId, {
-      decision: this.decision(),
-      reasons: this.decision() === 'Rejected' ? lines : undefined,
-      outputText: this.outputText() || undefined
+      outputPortName: portName
     }).subscribe({
       next: () => {
         this.submitting.set(false);
+        this.submittingPort.set(null);
         this.decided.emit();
       },
       error: err => {
         this.submitting.set(false);
+        this.submittingPort.set(null);
         this.error.set(err?.message ?? 'Failed to submit');
       }
     });
@@ -660,14 +651,6 @@ export class HitlReviewComponent implements OnInit {
   }
 }
 
-function getDecisionOptionsForPlaceholder(placeholder: HitlPlaceholder | undefined): string[] {
-  if (!placeholder || !placeholder.options || placeholder.options.length === 0) {
-    return [...ALL_DECISION_KINDS];
-  }
-
-  return placeholder.options;
-}
-
 function isTemplateInputReference(name: string): boolean {
   const normalized = name.toLowerCase();
   return normalized === 'input' || normalized.startsWith('input.');
@@ -680,14 +663,6 @@ function isTemplateContextReference(name: string): boolean {
 
 function isDisplayOnlyPlaceholder(name: string): boolean {
   return isTemplateInputReference(name) || isTemplateContextReference(name);
-}
-
-function isBuiltInDecisionKind(value: string): value is AgentDecisionKind {
-  return (ALL_DECISION_KINDS as string[]).includes(value);
-}
-
-function getCanonicalDecision(choice: string): AgentDecisionKind {
-  return isBuiltInDecisionKind(choice) ? choice : 'Completed';
 }
 
 function humanizePlaceholderLabel(name: string): string {

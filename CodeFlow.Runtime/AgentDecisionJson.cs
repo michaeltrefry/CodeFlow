@@ -10,25 +10,12 @@ internal static class AgentDecisionJson
 
         var json = new JsonObject
         {
-            ["kind"] = decision.Kind.ToString()
+            ["portName"] = decision.PortName
         };
 
-        switch (decision)
+        if (decision.Payload is not null)
         {
-            case RejectedDecision rejected:
-                json["reasons"] = new JsonArray(rejected.Reasons
-                    .Select(static reason => (JsonNode?)JsonValue.Create(reason))
-                    .ToArray());
-                break;
-
-            case FailedDecision failed:
-                json["reason"] = failed.Reason;
-                break;
-        }
-
-        if (decision.DecisionPayload is not null)
-        {
-            json["payload"] = decision.DecisionPayload.DeepClone();
+            json["payload"] = decision.Payload.DeepClone();
         }
 
         return json;

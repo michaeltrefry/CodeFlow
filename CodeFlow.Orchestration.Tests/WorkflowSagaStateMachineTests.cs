@@ -8,7 +8,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text;
 using System.Text.Json;
-using RuntimeDecisionKind = CodeFlow.Runtime.AgentDecisionKind;
+using System.Text.Json.Nodes;
 
 namespace CodeFlow.Orchestration.Tests;
 
@@ -26,7 +26,7 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "evaluator",
             edges:
             [
-                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: false)
+                Edge("evaluator", "Completed", "reviewer", rotatesRound: false)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 4 });
@@ -42,7 +42,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaInstance = await sagaHarness.Exists(traceId, x => x.Running);
             sagaInstance.Should().NotBeNull();
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Completed"));
 
             var handoffs = harness.Published.Select<AgentInvokeRequested>()
                 .Where(x => x.Context.Message.AgentKey == "reviewer")
@@ -61,7 +61,7 @@ public sealed class WorkflowSagaStateMachineTests
             saga.RoundCount.Should().Be(1);
             saga.GetPinnedVersion("reviewer").Should().Be(4);
             saga.GetDecisionHistory().Should().ContainSingle()
-                .Which.Decision.Should().Be(RuntimeDecisionKind.Completed);
+                .Which.Decision.Should().Be("Completed");
         }
         finally
         {
@@ -80,7 +80,7 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "evaluator",
             edges:
             [
-                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: true)
+                Edge("evaluator", "Completed", "reviewer", rotatesRound: true)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 2 });
@@ -93,7 +93,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Completed"));
 
             var reviewerPublish = harness.Published.Select<AgentInvokeRequested>()
                 .Single(x => x.Context.Message.AgentKey == "reviewer");
@@ -121,8 +121,8 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "evaluator",
             edges:
             [
-                Edge("reviewer", RuntimeDecisionKind.Rejected, "evaluator", rotatesRound: false),
-                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: false)
+                Edge("reviewer", "Rejected", "evaluator", rotatesRound: false),
+                Edge("evaluator", "Completed", "reviewer", rotatesRound: false)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int>
@@ -139,12 +139,12 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Completed"));
 
             await sagaHarness.Exists(traceId, s => s.Running);
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "reviewer", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "reviewer", 1, "Rejected"));
 
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
 
@@ -172,7 +172,7 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "evaluator",
             edges:
             [
-                Edge("evaluator", RuntimeDecisionKind.Completed, "reviewer", rotatesRound: false)
+                Edge("evaluator", "Completed", "reviewer", rotatesRound: false)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 1 });
@@ -188,7 +188,7 @@ public sealed class WorkflowSagaStateMachineTests
             // Publish a completion whose RoundId does not match the saga's current round
             // (simulates a delayed redelivery or duplicate completion from a prior round).
             await harness.Bus.Publish(BuildCompletion(
-                workflow, traceId, staleRoundId, "evaluator", 1, AgentDecisionKind.Completed));
+                workflow, traceId, staleRoundId, "evaluator", 1, "Completed"));
 
             // Give the saga a moment to process (or reject) the message.
             await Task.Delay(200);
@@ -201,7 +201,7 @@ public sealed class WorkflowSagaStateMachineTests
 
             // Sanity: a completion with the correct RoundId still advances the saga.
             await harness.Bus.Publish(BuildCompletion(
-                workflow, traceId, currentRoundId, "evaluator", 1, AgentDecisionKind.Completed));
+                workflow, traceId, currentRoundId, "evaluator", 1, "Completed"));
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.CurrentAgentKey == "reviewer");
             sagaHarness.Sagas.Contains(traceId)!.GetDecisionHistory().Should().ContainSingle();
         }
@@ -212,8 +212,11 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
-    public async Task UnmappedDecision_ShouldTerminateFailed()
+    public async Task UnmappedDecision_ShouldTerminateCompleted()
     {
+        // Slice 5 / new port model: any non-"Failed" port name with no outgoing edge terminates
+        // the saga cleanly as Completed. The terminal port name is preserved on
+        // saga.LastEffectivePort. Only the implicit "Failed" port produces a Failed terminal.
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
         var workflow = BuildWorkflow(
@@ -232,12 +235,14 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Rejected"));
 
-            await sagaHarness.Exists(traceId, s => s.Failed);
+            await sagaHarness.Exists(traceId, s => s.Completed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Failed));
+            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
             saga.PendingTransition.Should().BeNull("state machine clears the pending flag after transitioning");
+            saga.LastEffectivePort.Should().Be("Rejected",
+                "the terminal port name is preserved verbatim so it can ride up to a parent saga");
         }
         finally
         {
@@ -261,7 +266,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, s => s.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "publisher", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "publisher", 1, "Completed"));
 
             await sagaHarness.Exists(traceId, s => s.Completed);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
@@ -274,166 +279,7 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
-    public async Task RoundCountExceeded_WithEscalationAgent_ShouldDispatchAndStayRunning()
-    {
-        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
-        try
-        {
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running),
-                "saga stays running until the escalation agent completes");
-            saga.EscalatedFromNodeId.Should().Be(NodeIdFor(workflow, "looper"));
-            saga.CurrentAgentKey.Should().Be("triage");
-            saga.CurrentNodeId.Should().Be(NodeIdFor(workflow, "triage"));
-            saga.GetPinnedVersion("triage").Should().Be(7);
-
-            var triagePublish = harness.Published.Select<AgentInvokeRequested>()
-                .SingleOrDefault(x => x.Context.Message.AgentKey == "triage");
-            triagePublish.Should().NotBeNull();
-            triagePublish!.Context.Message.AgentVersion.Should().Be(7);
-        }
-        finally
-        {
-            await harness.Stop();
-        }
-    }
-
-    [Fact]
-    public async Task EscalationAgent_Approved_ShouldRecoverByResumingOverflowedAgent()
-    {
-        var (traceId, roundId, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
-        try
-        {
-            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Approved));
-
-            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
-                .Any(x => x.Context.Message.AgentKey == "looper" && x.Context.Message.RoundId != roundId));
-
-            var recoveryPublishes = harness.Published.Select<AgentInvokeRequested>()
-                .Where(x => x.Context.Message.AgentKey == "looper" && x.Context.Message.RoundId != roundId)
-                .ToList();
-            recoveryPublishes.Should().ContainSingle("recovery re-invokes the overflowed agent once");
-            recoveryPublishes[0].Context.Message.RoundId.Should().NotBe(escalationRoundId,
-                "recovery starts a fresh round so the cap resets");
-
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
-            saga.EscalatedFromNodeId.Should().BeNull("escalation flag is cleared on recovery");
-            saga.CurrentAgentKey.Should().Be("looper");
-            saga.RoundCount.Should().Be(0);
-        }
-        finally
-        {
-            await harness.Stop();
-        }
-    }
-
-    [Fact]
-    public async Task EscalationAgent_Completed_ShouldTerminateAsCompleted()
-    {
-        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
-        try
-        {
-            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Completed));
-
-            await sagaHarness.Exists(traceId, s => s.Completed);
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromNodeId.Should().BeNull();
-        }
-        finally
-        {
-            await harness.Stop();
-        }
-    }
-
-    [Fact]
-    public async Task EscalationAgent_Rejected_ShouldTerminateAsEscalated()
-    {
-        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
-        try
-        {
-            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Rejected));
-
-            await sagaHarness.Exists(traceId, s => s.Escalated);
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromNodeId.Should().BeNull();
-        }
-        finally
-        {
-            await harness.Stop();
-        }
-    }
-
-    [Fact]
-    public async Task EscalationAgent_Failed_ShouldTerminateAsFailed()
-    {
-        var (traceId, _, sagaHarness, harness, workflow) = await RunUntilEscalationDispatchedAsync();
-        try
-        {
-            var escalationRoundId = sagaHarness.Sagas.Contains(traceId)!.CurrentRoundId;
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, escalationRoundId, "triage", 7, AgentDecisionKind.Failed));
-
-            await sagaHarness.Exists(traceId, s => s.Failed);
-            var saga = sagaHarness.Sagas.Contains(traceId)!;
-            saga.EscalatedFromNodeId.Should().BeNull();
-        }
-        finally
-        {
-            await harness.Stop();
-        }
-    }
-
-    private static async Task<(Guid TraceId, Guid RoundId,
-        ISagaStateMachineTestHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity> SagaHarness,
-        ITestHarness Harness,
-        Workflow Workflow)> RunUntilEscalationDispatchedAsync()
-    {
-        var traceId = Guid.NewGuid();
-        var roundId = Guid.NewGuid();
-        var workflow = BuildWorkflow(
-            key: "escalate",
-            maxRounds: 3,
-            startAgentKey: "looper",
-            escalationAgentKey: "triage",
-            edges:
-            [
-                Edge("looper", RuntimeDecisionKind.Rejected, "looper", rotatesRound: false)
-            ]);
-
-        var harness = BuildHarness(workflow, new Dictionary<string, int>
-        {
-            ["looper"] = 1,
-            ["triage"] = 7
-        });
-
-        await harness.Start();
-
-        await PublishStart(harness, workflow, traceId, roundId);
-
-        var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
-        await sagaHarness.Exists(traceId, s => s.Running);
-
-        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
-
-        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
-
-        await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
-        SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.EscalatedFromNodeId == NodeIdFor(workflow, "looper"));
-
-        return (traceId, roundId, sagaHarness, harness, workflow);
-    }
-
-    [Fact]
-    public async Task RoundCountExceeded_WithoutEscalationAgent_ShouldFail()
+    public async Task RoundCountExceeded_ShouldFail()
     {
         var traceId = Guid.NewGuid();
         var roundId = Guid.NewGuid();
@@ -443,7 +289,7 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "looper",
             edges:
             [
-                Edge("looper", RuntimeDecisionKind.Rejected, "looper", rotatesRound: false)
+                Edge("looper", "Rejected", "looper", rotatesRound: false)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["looper"] = 1 });
@@ -455,11 +301,11 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, s => s.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, "Rejected"));
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 1);
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, "Rejected"));
             SpinWaitUntil(() => sagaHarness.Sagas.Contains(traceId)?.RoundCount == 2);
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, AgentDecisionKind.Rejected));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "looper", 1, "Rejected"));
 
             await sagaHarness.Exists(traceId, s => s.Failed);
         }
@@ -521,7 +367,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: outputRef,
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -565,12 +410,12 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "classifier",
             logicNodeId: logicNodeId,
             logicScript: script,
-            logicOutputPorts: new[] { AgentDecisionPorts.FailedPort },
+            logicOutputPorts: new[] { "Failed" },
             downstreamAgents: new[] { "fallback" },
             classifierToLogicPort: "Completed",
             logicPortToAgent: new Dictionary<string, string>
             {
-                [AgentDecisionPorts.FailedPort] = "fallback"
+                ["Failed"] = "fallback"
             });
 
         var artifactStore = new StubArtifactStore(defaultJson: "{}");
@@ -592,7 +437,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -678,7 +522,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/interviewer-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -801,7 +644,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/classifier-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -860,7 +702,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/classifier-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -922,7 +763,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
-                Decision: AgentDecisionKind.Rejected,
                 DecisionPayload: JsonDocument.Parse("""{"reasons":["needs work"]}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1000,7 +840,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/interviewer-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1070,7 +909,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/interviewer-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1087,7 +925,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Approved",
                 OutputRef: new Uri("file:///tmp/hitl-out.bin"),
-                Decision: AgentDecisionKind.Approved,
                 DecisionPayload: JsonDocument.Parse("""{"answer":"yes"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1150,7 +987,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/interviewer-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1166,7 +1002,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Answered",
                 OutputRef: new Uri("file:///tmp/hitl-out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("""{"answer":"yes","outputPortName":"Answered"}""").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1234,7 +1069,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1328,7 +1162,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1419,7 +1252,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1494,7 +1326,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Approved",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Approved,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1569,7 +1400,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Approved",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Approved,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1637,7 +1467,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Approved",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Approved,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1702,7 +1531,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Approved",
                 OutputRef: originalOutputRef,
-                Decision: AgentDecisionKind.Approved,
                 DecisionPayload: null,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1847,7 +1675,7 @@ public sealed class WorkflowSagaStateMachineTests
             startAgentKey: "reviewer",
             edges:
             [
-                Edge("reviewer", RuntimeDecisionKind.Failed, "reviewer", rotatesRound: false)
+                Edge("reviewer", "Failed", "reviewer", rotatesRound: false)
             ]);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 2 });
@@ -1877,9 +1705,8 @@ public sealed class WorkflowSagaStateMachineTests
                 FromNodeId: NodeIdFor(workflow, "reviewer"),
                 AgentKey: "reviewer",
                 AgentVersion: 2,
-                OutputPortName: AgentDecisionPorts.ToPortName(AgentDecisionKind.Failed),
+                OutputPortName: "Failed",
                 OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
-                Decision: AgentDecisionKind.Failed,
                 DecisionPayload: failurePayload,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -1930,7 +1757,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, "Completed"));
 
             var dispatches = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
             dispatches.Should().HaveCount(1);
@@ -1992,7 +1819,7 @@ public sealed class WorkflowSagaStateMachineTests
             var saga = sagaHarness.Sagas.Contains(traceId)!;
             saga.SubflowDepth = WorkflowSagaStateMachine.MaxSubflowDepth;
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, "Completed"));
 
             await sagaHarness.Exists(traceId, x => x.Failed);
 
@@ -2041,7 +1868,7 @@ public sealed class WorkflowSagaStateMachineTests
 
             // Drive the parent to dispatch the Subflow (round id stays = parentRoundId because
             // the edge does not rotate).
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
 
             // Sanity: parent is now sitting on the Subflow node.
@@ -2111,7 +1938,7 @@ public sealed class WorkflowSagaStateMachineTests
             await PublishStart(harness, workflow, traceId, parentRoundId);
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
 
             await harness.Bus.Publish(new SubflowCompleted(
@@ -2162,7 +1989,7 @@ public sealed class WorkflowSagaStateMachineTests
             await PublishStart(harness, workflow, traceId, parentRoundId);
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
 
             await harness.Bus.Publish(new SubflowCompleted(
@@ -2219,7 +2046,7 @@ public sealed class WorkflowSagaStateMachineTests
             await sagaHarness.Exists(traceId, x => x.Running);
 
             // Drive Start → ReviewLoop; round 1 SubflowInvokeRequested fires.
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
 
             var round1Requests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
             round1Requests.Should().HaveCount(1);
@@ -2240,8 +2067,9 @@ public sealed class WorkflowSagaStateMachineTests
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/round1-out.bin"),
                 SharedContext: round1Global,
-                Decision: AgentDecisionKind.Rejected,
-                ReviewRound: 1));
+                Decision: "Rejected",
+                ReviewRound: 1,
+                TerminalPort: "Rejected"));
 
             // Parent must not terminate — it should spawn round 2 instead.
             var round2Requests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
@@ -2269,7 +2097,7 @@ public sealed class WorkflowSagaStateMachineTests
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/round2-out.bin"),
                 SharedContext: round2Global,
-                Decision: AgentDecisionKind.Approved,
+                Decision: "Approved",
                 ReviewRound: 2));
 
             // Approved port has no outgoing edge in this workflow, so the parent falls through
@@ -2291,21 +2119,24 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Theory]
-    [InlineData(AgentDecisionKind.Approved)]
-    [InlineData(AgentDecisionKind.Completed)]
-    public async Task ReviewLoopCompleted_ApprovedOrCompletedOnRound1_ShouldExitApprovedPort(
-        AgentDecisionKind childDecision)
+    [InlineData("Approved")]
+    [InlineData("Completed")]
+    public async Task ReviewLoopCompleted_NonLoopDecisionOnRound1_ShouldExitVerbatimPort(
+        string childTerminalPort)
     {
-        // Slice 10 scenarios 1 + 2: the permissive-mapping leg of ResolveReviewLoopOutcome.
-        // Both Approved and Completed at any round exit the parent via the Approved port; with
-        // no downstream edge from Approved, the parent falls through to Completed.
+        // Slice 5 / new port model: any terminal port name that doesn't match the configured
+        // LoopDecision propagates verbatim to the parent's ReviewLoop node — there is no
+        // Approved/Completed → Approved enum mapping anymore. With no downstream edge from
+        // either "Approved" or "Completed" on the parent's ReviewLoop node, the parent falls
+        // through to a clean Completed terminal (since neither port name is the implicit
+        // "Failed" sink).
         var traceId = Guid.NewGuid();
         var parentRoundId = Guid.NewGuid();
         var startNodeId = Guid.NewGuid();
         var reviewLoopNodeId = Guid.NewGuid();
 
         var workflow = BuildWorkflowWithReviewLoop(
-            "rl-approved-round1", startNodeId, "kickoff", reviewLoopNodeId,
+            "rl-nonloop-round1", startNodeId, "kickoff", reviewLoopNodeId,
             subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
 
         var harness = BuildHarness(workflow, new Dictionary<string, int>());
@@ -2316,7 +2147,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
             await harness.Bus.Publish(new SubflowCompleted(
@@ -2324,22 +2155,23 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentNodeId: reviewLoopNodeId,
                 ParentRoundId: parentRoundId,
                 ChildTraceId: round1.ChildTraceId,
-                OutputPortName: "Completed",
+                OutputPortName: childTerminalPort,
                 OutputRef: new Uri("file:///tmp/round1-out.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: childDecision,
-                ReviewRound: 1));
+                Decision: childTerminalPort,
+                ReviewRound: 1,
+                TerminalPort: childTerminalPort));
 
             await sagaHarness.Exists(traceId, x => x.Completed);
 
-            // Exactly one round spawned — no second round for an approved/completed outcome.
+            // Exactly one round spawned — non-loopDecision terminal exits the loop immediately.
             var allRequests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1);
             allRequests.Should().HaveCount(1);
 
             var resumed = sagaHarness.Sagas.Contains(traceId)!;
             resumed.GetDecisionHistory().Should()
-                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Approved",
-                    "synthetic parent decision for the ReviewLoop must record the mapped port");
+                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == childTerminalPort,
+                    "synthetic parent decision for the ReviewLoop records the verbatim child terminal port");
         }
         finally { await harness.Stop(); }
     }
@@ -2347,9 +2179,12 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task ReviewLoopCompleted_RejectOnEveryRound_ShouldExitExhaustedPort()
     {
-        // Slice 10 scenario 4: with MaxRounds=2, a Rejected on round 1 spawns round 2; a
-        // Rejected on round 2 has no rounds left and exits via the Exhausted port (which has
-        // no downstream edge here, so the parent transitions to Failed with a clear reason).
+        // Slice 10 scenario 4 (post-Slice-5 port-model redesign): with MaxRounds=2, a Rejected on
+        // round 1 spawns round 2; a Rejected on round 2 has no rounds left and exits via the
+        // synthesized Exhausted port. Per the new port model, Exhausted is just a port name —
+        // unwired, the saga terminates cleanly (Completed) with `LastEffectivePort = "Exhausted"`
+        // so authors can read the terminal port from the trace. Authors who want round-budget
+        // exhaustion to fail-loud must wire an Exhausted → Failed edge explicitly.
         var traceId = Guid.NewGuid();
         var parentRoundId = Guid.NewGuid();
         var startNodeId = Guid.NewGuid();
@@ -2367,16 +2202,16 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
-            // Round 1: Rejected → next round.
+            // Round 1: child's terminal port = "Rejected" matches loopDecision → next round.
             await harness.Bus.Publish(new SubflowCompleted(
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
-                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r1-out.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Rejected, ReviewRound: 1));
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
 
             var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
             round2.ReviewRound.Should().Be(2);
@@ -2384,16 +2219,16 @@ public sealed class WorkflowSagaStateMachineTests
             // Round 2 (last): Rejected → Exhausted port (no outgoing edge → Failed terminal).
             await harness.Bus.Publish(new SubflowCompleted(
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
-                ChildTraceId: round2.ChildTraceId, OutputPortName: "Completed",
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r2-out.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Rejected, ReviewRound: 2));
+                Decision: "Rejected", ReviewRound: 2, TerminalPort: "Rejected"));
 
-            await sagaHarness.Exists(traceId, x => x.Failed);
+            await sagaHarness.Exists(traceId, x => x.Completed);
 
             var resumed = sagaHarness.Sagas.Contains(traceId)!;
-            resumed.FailureReason.Should().Contain("Exhausted",
-                "an unwired Exhausted port produces a Failed terminal with the port name surfaced");
+            resumed.LastEffectivePort.Should().Be("Exhausted",
+                "the synthesized Exhausted port name is preserved on the terminal saga state");
 
             resumed.GetDecisionHistory().Should()
                 .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Exhausted");
@@ -2424,19 +2259,19 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
-            // Round 1: Rejected with a setGlobal write; next round spawns.
+            // Round 1: Rejected (the loopDecision) with a setGlobal write; next round spawns.
             await harness.Bus.Publish(new SubflowCompleted(
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
-                ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
                 SharedContext: new Dictionary<string, JsonElement>
                 {
                     ["fromRound1"] = JsonDocument.Parse("\"carried\"").RootElement.Clone()
                 },
-                Decision: AgentDecisionKind.Rejected, ReviewRound: 1));
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
 
             var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
 
@@ -2446,7 +2281,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round2.ChildTraceId, OutputPortName: "Failed",
                 OutputRef: new Uri("file:///tmp/r2-failed.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Failed, ReviewRound: 2));
+                Decision: "Failed", ReviewRound: 2, TerminalPort: "Failed"));
 
             await sagaHarness.Exists(traceId, x => x.Failed);
 
@@ -2458,102 +2293,14 @@ public sealed class WorkflowSagaStateMachineTests
         finally { await harness.Stop(); }
     }
 
-    [Fact]
-    public async Task ReviewLoopCompleted_EscalatedFromChild_ShouldExitFailedPort()
-    {
-        // Slice 10 scenario 6: if the child saga hits its own escalation node, the completion
-        // arrives with OutputPortName = "Escalated". ReviewLoop collapses Escalated to the
-        // Failed port regardless of Decision metadata — escalation signals "went sideways,"
-        // not "please revise."
-        var traceId = Guid.NewGuid();
-        var parentRoundId = Guid.NewGuid();
-        var startNodeId = Guid.NewGuid();
-        var reviewLoopNodeId = Guid.NewGuid();
+    // ReviewLoopCompleted_EscalatedFromChild_ShouldExitFailedPort was deleted in Slice 5: the
+    // Escalation node was removed in Slice 2, and the new port model propagates terminal port
+    // names verbatim — there is no Escalated → Failed collapse.
 
-        var workflow = BuildWorkflowWithReviewLoop(
-            "rl-escalated", startNodeId, "kickoff", reviewLoopNodeId,
-            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
-
-        var harness = BuildHarness(workflow, new Dictionary<string, int>());
-        await harness.Start();
-        try
-        {
-            await PublishStart(harness, workflow, traceId, parentRoundId);
-            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
-            await sagaHarness.Exists(traceId, x => x.Running);
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
-            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
-
-            await harness.Bus.Publish(new SubflowCompleted(
-                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
-                ChildTraceId: round1.ChildTraceId, OutputPortName: "Escalated",
-                OutputRef: new Uri("file:///tmp/escalated.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: null, ReviewRound: 1));
-
-            await sagaHarness.Exists(traceId, x => x.Failed);
-
-            var resumed = sagaHarness.Sagas.Contains(traceId)!;
-            resumed.GetDecisionHistory().Should()
-                .Contain(d => d.NodeId == reviewLoopNodeId && d.OutputPortName == "Failed",
-                    "Escalated from a ReviewLoop child must surface on the parent as the Failed port");
-        }
-        finally { await harness.Stop(); }
-    }
-
-    [Fact]
-    public async Task ReviewLoopCompleted_RejectedDecisionOnFailedSaga_ShouldAdvanceToNextRound()
-    {
-        // Regression: in production trace aafafbde-b0eb-44d2-bf96-642ceba34b05, the child
-        // workflow's reviewer emitted Decision = Rejected via the submit tool correctly, but
-        // the reviewer node's Rejected output port had no outgoing edge. The child saga
-        // transitioned to Failed per the Subflow unwired-port rule, even though the last
-        // decision was Rejected. Before the priority flip, the ReviewLoop saw
-        // OutputPortName = "Failed" and exited the Failed port; the correct behaviour is to
-        // trust Decision = Rejected and advance to the next round, because the ReviewLoop
-        // contract is "the child's terminal decision drives the loop."
-        var traceId = Guid.NewGuid();
-        var parentRoundId = Guid.NewGuid();
-        var startNodeId = Guid.NewGuid();
-        var reviewLoopNodeId = Guid.NewGuid();
-
-        var workflow = BuildWorkflowWithReviewLoop(
-            "rl-rejected-on-failed-saga", startNodeId, "kickoff", reviewLoopNodeId,
-            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3);
-
-        var harness = BuildHarness(workflow, new Dictionary<string, int>());
-        await harness.Start();
-        try
-        {
-            await PublishStart(harness, workflow, traceId, parentRoundId);
-            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
-            await sagaHarness.Exists(traceId, x => x.Running);
-
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
-            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
-
-            // Simulates the production trace: child's reviewer decided Rejected, but the child
-            // saga terminated as Failed because the Rejected port was unwired.
-            await harness.Bus.Publish(new SubflowCompleted(
-                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
-                ChildTraceId: round1.ChildTraceId,
-                OutputPortName: "Failed",
-                OutputRef: new Uri("file:///tmp/r1-reviewer-rejected.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Rejected,
-                ReviewRound: 1));
-
-            // Parent should have spawned round 2, not exited the Failed port.
-            var allRequests = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
-            allRequests.Should().HaveCount(2,
-                "Decision = Rejected must outrank OutputPortName = Failed when there are rounds remaining");
-            var round2 = allRequests[1].Context.Message;
-            round2.ReviewRound.Should().Be(2);
-            round2.InputRef.Should().Be(new Uri("file:///tmp/r1-reviewer-rejected.bin"));
-        }
-        finally { await harness.Stop(); }
-    }
+    // ReviewLoopCompleted_RejectedDecisionOnFailedSaga_ShouldAdvanceToNextRound was deleted in
+    // Slice 5: ResolveReviewLoopOutcome no longer consults the Decision field. It now uses
+    // TerminalPort (with OutputPortName as a fallback). The Decision-vs-OutputPortName
+    // precedence rule that this regression test asserted no longer exists.
 
     [Fact]
     public async Task ReviewLoopCompleted_CustomLoopDecision_ShouldIterateOnMatchingTerminalPort()
@@ -2579,7 +2326,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
             // Spawned SubflowInvokeRequested must carry the configured LoopDecision so the
@@ -2594,7 +2341,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Completed,
+                Decision: "Completed",
                 ReviewRound: 1,
                 TerminalPort: "Answered"));
 
@@ -2609,7 +2356,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round2.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r2.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Approved,
+                Decision: "Approved",
                 ReviewRound: 2,
                 TerminalPort: "Approved"));
 
@@ -2646,7 +2393,7 @@ public sealed class WorkflowSagaStateMachineTests
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(traceId, x => x.Running);
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
             round1.LoopDecision.Should().Be("Rejected", "default LoopDecision is propagated as Rejected");
@@ -2657,7 +2404,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
                 SharedContext: new Dictionary<string, JsonElement>(),
-                Decision: AgentDecisionKind.Rejected,
+                Decision: "Rejected",
                 ReviewRound: 1,
                 TerminalPort: "Rejected"));
 
@@ -2729,7 +2476,6 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/out.bin"),
-                Decision: AgentDecisionKind.Completed,
                 DecisionPayload: JsonDocument.Parse("{\"kind\":\"Completed\"}").RootElement,
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
@@ -2775,7 +2521,7 @@ public sealed class WorkflowSagaStateMachineTests
             var saga = sagaHarness.Sagas.Contains(traceId)!;
             saga.SubflowDepth = WorkflowSagaStateMachine.MaxSubflowDepth;
 
-            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, AgentDecisionKind.Completed));
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "kickoff", 1, "Completed"));
 
             await sagaHarness.Exists(traceId, x => x.Failed);
 
@@ -2792,10 +2538,10 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Theory]
-    [InlineData(AgentDecisionKind.Rejected)]
-    [InlineData(AgentDecisionKind.Approved)]
+    [InlineData("Rejected")]
+    [InlineData("Approved")]
     public async Task ChildSaga_WithUnwiredApprovedOrRejectedPort_ShouldTerminateCompletedWithDecisionPreserved(
-        AgentDecisionKind childDecision)
+        string childDecision)
     {
         // Subflow exit rule: an unwired Approved or Rejected port on a CHILD saga is a legal
         // clean exit — the saga terminates in Completed state and the agent's decision kind is
@@ -2853,10 +2599,9 @@ public sealed class WorkflowSagaStateMachineTests
                 FromNodeId: childStartNodeId,
                 AgentKey: "reviewer-agent",
                 AgentVersion: 1,
-                OutputPortName: AgentDecisionPorts.ToPortName(childDecision),
+                OutputPortName: childDecision,
                 OutputRef: new Uri("file:///tmp/reviewer-out.bin"),
-                Decision: childDecision,
-                DecisionPayload: JsonDocument.Parse($"{{\"kind\":\"{childDecision}\"}}").RootElement,
+                DecisionPayload: JsonDocument.Parse($"{{\"portName\":\"{childDecision}\"}}").RootElement.Clone(),
                 Duration: TimeSpan.FromMilliseconds(1),
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
 
@@ -3159,14 +2904,14 @@ public sealed class WorkflowSagaStateMachineTests
 
     private sealed record EdgeSpec(
         string From,
-        RuntimeDecisionKind Decision,
+        string Decision,
         string To,
         bool RotatesRound,
         int SortOrder);
 
     private static EdgeSpec Edge(
         string from,
-        RuntimeDecisionKind decision,
+        string decision,
         string to,
         bool rotatesRound,
         int sortOrder = 0)
@@ -3178,8 +2923,7 @@ public sealed class WorkflowSagaStateMachineTests
         string key,
         int maxRounds,
         string startAgentKey,
-        IReadOnlyList<EdgeSpec> edges,
-        string? escalationAgentKey = null)
+        IReadOnlyList<EdgeSpec> edges)
     {
         var agentKeys = new HashSet<string>(StringComparer.Ordinal) { startAgentKey };
         foreach (var edge in edges)
@@ -3188,32 +2932,16 @@ public sealed class WorkflowSagaStateMachineTests
             agentKeys.Add(edge.To);
         }
 
-        if (escalationAgentKey is not null)
-        {
-            agentKeys.Add(escalationAgentKey);
-        }
-
         var nodes = new List<WorkflowNode>();
         var nodeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
 
         foreach (var agentKey in agentKeys)
         {
+            var kind = string.Equals(agentKey, startAgentKey, StringComparison.Ordinal)
+                ? WorkflowNodeKind.Start
+                : WorkflowNodeKind.Agent;
             var id = Guid.NewGuid();
             nodeIds[agentKey] = id;
-
-            WorkflowNodeKind kind;
-            if (string.Equals(agentKey, startAgentKey, StringComparison.Ordinal))
-            {
-                kind = WorkflowNodeKind.Start;
-            }
-            else if (string.Equals(agentKey, escalationAgentKey, StringComparison.Ordinal))
-            {
-                kind = WorkflowNodeKind.Escalation;
-            }
-            else
-            {
-                kind = WorkflowNodeKind.Agent;
-            }
 
             nodes.Add(new WorkflowNode(id, kind, agentKey, AgentVersion: null, OutputScript: null,
                 OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0));
@@ -3222,7 +2950,7 @@ public sealed class WorkflowSagaStateMachineTests
         var workflowEdges = edges
             .Select((edge, index) => new WorkflowEdge(
                 FromNodeId: nodeIds[edge.From],
-                FromPort: edge.Decision.ToString(),
+                FromPort: edge.Decision,
                 ToNodeId: nodeIds[edge.To],
                 ToPort: WorkflowEdge.DefaultInputPort,
                 RotatesRound: edge.RotatesRound,
@@ -3241,7 +2969,7 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     private static readonly IReadOnlyList<string> AllDecisionPorts =
-        Enum.GetNames<AgentDecisionKind>();
+        new[] { "Completed", "Approved", "Rejected", "Failed" };
 
     private static Guid NodeIdFor(Workflow workflow, string agentKey) =>
         workflow.Nodes.Single(n => string.Equals(n.AgentKey, agentKey, StringComparison.Ordinal)).Id;
@@ -3271,7 +2999,7 @@ public sealed class WorkflowSagaStateMachineTests
         Guid roundId,
         string agentKey,
         int agentVersion,
-        AgentDecisionKind decision)
+        string decision)
     {
         return new AgentInvocationCompleted(
             TraceId: traceId,
@@ -3279,10 +3007,9 @@ public sealed class WorkflowSagaStateMachineTests
             FromNodeId: NodeIdFor(workflow, agentKey),
             AgentKey: agentKey,
             AgentVersion: agentVersion,
-            OutputPortName: AgentDecisionPorts.ToPortName(decision),
+            OutputPortName: decision,
             OutputRef: new Uri($"file:///tmp/{agentKey}-out.bin"),
-            Decision: decision,
-            DecisionPayload: JsonDocument.Parse($"{{\"kind\":\"{decision}\"}}").RootElement,
+            DecisionPayload: JsonDocument.Parse($"{{\"portName\":\"{decision}\"}}").RootElement.Clone(),
             Duration: TimeSpan.FromMilliseconds(1),
             TokenUsage: new Contracts.TokenUsage(0, 0, 0));
     }

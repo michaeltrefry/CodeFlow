@@ -62,9 +62,8 @@ public sealed class ContractSerializationTests
         var decisionPayload = JsonDocument.Parse(
             """
             {
-              "kind": "Rejected",
-              "reasons": ["Needs stronger citations"],
-              "payload": { "severity": "medium" }
+              "portName": "Rejected",
+              "payload": { "reasons": ["Needs stronger citations"], "severity": "medium" }
             }
             """).RootElement.Clone();
         var message = new AgentInvocationCompleted(
@@ -75,7 +74,6 @@ public sealed class ContractSerializationTests
             AgentVersion: 2,
             OutputPortName: "Rejected",
             OutputRef: new Uri("file:///tmp/codeflow/trace/output.bin"),
-            Decision: AgentDecisionKind.Rejected,
             DecisionPayload: decisionPayload,
             Duration: TimeSpan.FromSeconds(4.5),
             TokenUsage: new TokenUsage(120, 45, 165));
@@ -91,7 +89,6 @@ public sealed class ContractSerializationTests
         roundTripped.AgentVersion.Should().Be(2);
         roundTripped.OutputPortName.Should().Be("Rejected");
         roundTripped.OutputRef.Should().Be(message.OutputRef);
-        roundTripped.Decision.Should().Be(AgentDecisionKind.Rejected);
         JsonElement.DeepEquals(roundTripped.DecisionPayload!.Value, decisionPayload).Should().BeTrue();
         roundTripped.Duration.Should().Be(TimeSpan.FromSeconds(4.5));
         roundTripped.TokenUsage.Should().BeEquivalentTo(new TokenUsage(120, 45, 165));
@@ -231,21 +228,23 @@ public sealed class ContractSerializationTests
     }
 
     [Theory]
-    [InlineData(AgentDecisionKind.Approved)]
-    [InlineData(AgentDecisionKind.Rejected)]
-    [InlineData(AgentDecisionKind.Completed)]
-    [InlineData(AgentDecisionKind.Failed)]
-    public void SubflowCompleted_ShouldRoundTripTerminalDecisionKind(AgentDecisionKind decision)
+    [InlineData("Approved")]
+    [InlineData("Rejected")]
+    [InlineData("Completed")]
+    [InlineData("Failed")]
+    [InlineData("CustomBranch")]
+    public void SubflowCompleted_ShouldRoundTripTerminalDecisionKind(string decision)
     {
         // ReviewLoop parents need the child's terminal decision on SubflowCompleted so they can
         // drive their outcome mapping without re-reading saga state. Plain Subflow completions
-        // omit the field, which must deserialize to null.
+        // omit the field, which must deserialize to null. Decision is now an arbitrary
+        // author-defined port name string.
         var message = new SubflowCompleted(
             ParentTraceId: Guid.NewGuid(),
             ParentNodeId: Guid.NewGuid(),
             ParentRoundId: Guid.NewGuid(),
             ChildTraceId: Guid.NewGuid(),
-            OutputPortName: decision.ToString(),
+            OutputPortName: decision,
             OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
             SharedContext: new Dictionary<string, JsonElement>(),
             Decision: decision);
@@ -274,12 +273,4 @@ public sealed class ContractSerializationTests
         roundTripped!.Decision.Should().BeNull("plain Subflow completions leave Decision unset");
     }
 
-    [Fact]
-    public void AgentDecisionPorts_ToPortName_UsesDecisionKindString()
-    {
-        AgentDecisionPorts.ToPortName(AgentDecisionKind.Completed).Should().Be("Completed");
-        AgentDecisionPorts.ToPortName(AgentDecisionKind.Approved).Should().Be("Approved");
-        AgentDecisionPorts.ToPortName(AgentDecisionKind.Rejected).Should().Be("Rejected");
-        AgentDecisionPorts.ToPortName(AgentDecisionKind.Failed).Should().Be("Failed");
-    }
 }

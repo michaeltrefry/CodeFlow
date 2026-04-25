@@ -152,7 +152,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
             completion.RoundId.Should().Be(request.RoundId);
             completion.AgentKey.Should().Be("echo-agent");
             completion.AgentVersion.Should().Be(1);
-            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Completed);
+            completion.OutputPortName.Should().Be("Completed");
             completion.TokenUsage.Should().BeEquivalentTo(new CodeFlow.Contracts.TokenUsage(5, 7, 12));
             fakeAgentInvoker.InvocationCount.Should().Be(1);
 
@@ -334,7 +334,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
 
             return Task.FromResult(new AgentInvocationResult(
                 Output: input ?? string.Empty,
-                Decision: new CompletedDecision(),
+                Decision: new AgentDecision("Completed"),
                 Transcript: [],
                 TokenUsage: new Runtime.TokenUsage(5, 7, 12),
                 ToolCallsExecuted: 0));

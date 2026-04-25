@@ -28,8 +28,6 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
     case 'Agent':
     case 'Hitl':
       return [...DEFAULT_AGENT_OUTPUT_PORTS];
-    case 'Escalation':
-      return [];
     case 'Logic':
       return ['A', 'B'];
     case 'Subflow':
@@ -122,7 +120,6 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
     case 'Hitl': return `HITL — ${node.agentKey ?? '(pick agent)'}`;
-    case 'Escalation': return `Escalation — ${node.agentKey ?? '(pick agent)'}`;
     case 'Logic': return 'Logic';
     case 'Subflow': {
       const key = node.subflowKey ?? '(pick workflow)';

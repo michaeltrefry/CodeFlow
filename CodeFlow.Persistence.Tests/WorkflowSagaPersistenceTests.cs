@@ -61,7 +61,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             saga.AppendDecision(new DecisionRecord(
                 AgentKey: "evaluator",
                 AgentVersion: 1,
-                Decision: AgentDecisionKind.Completed,
+                Decision: "Completed",
                 DecisionPayload: null,
                 RoundId: currentRoundId,
                 RecordedAtUtc: DateTime.UtcNow));
@@ -93,7 +93,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             var history = loaded.GetDecisionHistory();
             history.Should().ContainSingle();
             history[0].AgentKey.Should().Be("evaluator");
-            history[0].Decision.Should().Be(AgentDecisionKind.Completed);
+            history[0].Decision.Should().Be("Completed");
         }
 
         // Saga must implement MassTransit's state-machine interface for EF saga repository binding.

@@ -99,9 +99,6 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .IsRequired()
             .IsConcurrencyToken();
 
-        builder.Property(saga => saga.EscalatedFromNodeId)
-            .HasColumnName("escalated_from_node_id");
-
         builder.Property(saga => saga.FailureReason)
             .HasColumnName("failure_reason")
             .HasMaxLength(512);

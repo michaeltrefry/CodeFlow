@@ -68,12 +68,6 @@ public static class WorkflowValidator
             return ValidationResult.Fail("Workflow must declare exactly one Start node.");
         }
 
-        var escalationCount = nodes.Count(n => n.Kind == WorkflowNodeKind.Escalation);
-        if (escalationCount > 1)
-        {
-            return ValidationResult.Fail("Workflow may declare at most one Escalation node.");
-        }
-
         foreach (var node in nodes)
         {
             switch (node.Kind)
@@ -81,7 +75,6 @@ public static class WorkflowValidator
                 case WorkflowNodeKind.Start:
                 case WorkflowNodeKind.Agent:
                 case WorkflowNodeKind.Hitl:
-                case WorkflowNodeKind.Escalation:
                     if (string.IsNullOrWhiteSpace(node.AgentKey))
                     {
                         return ValidationResult.Fail($"Node {node.Id} of kind {node.Kind} must reference an AgentKey.");
@@ -149,8 +142,7 @@ public static class WorkflowValidator
                             return ValidationResult.Fail(
                                 $"ReviewLoop node {node.Id} LoopDecision '{loopDecision}' exceeds 64 characters.");
                         }
-                        if (string.Equals(loopDecision, "Failed", StringComparison.Ordinal)
-                            || string.Equals(loopDecision, "Escalated", StringComparison.Ordinal))
+                        if (string.Equals(loopDecision, "Failed", StringComparison.Ordinal))
                         {
                             return ValidationResult.Fail(
                                 $"ReviewLoop node {node.Id} LoopDecision cannot be '{loopDecision}' — "
@@ -256,16 +248,13 @@ public static class WorkflowValidator
             {
                 return ValidationResult.Fail($"Edge from {edge.FromNodeId} must have a non-empty FromPort.");
             }
-            if (fromNode.Kind == WorkflowNodeKind.Escalation)
-            {
-                return ValidationResult.Fail("Escalation node must not have outgoing edges.");
-            }
 
             var nodePorts = AllowedOutputPorts(fromNode);
             if (nodePorts is not null && !nodePorts.Contains(edge.FromPort, StringComparer.Ordinal))
             {
                 return ValidationResult.Fail(
-                    $"Edge from node {fromNode.Id} uses port '{edge.FromPort}' which is not declared.");
+                    $"Edge from {DescribeNode(fromNode)} uses port '{edge.FromPort}' which is not declared. "
+                    + $"Allowed ports: {string.Join(", ", nodePorts)}.");
             }
         }
 
@@ -275,8 +264,9 @@ public static class WorkflowValidator
 
         if (duplicateOutgoing is not null)
         {
+            var duplicateNode = nodesById[duplicateOutgoing.Key.FromNodeId];
             return ValidationResult.Fail(
-                $"Multiple edges leave node {duplicateOutgoing.Key.FromNodeId} on port '{duplicateOutgoing.Key.FromPort}'.");
+                $"Multiple edges leave {DescribeNode(duplicateNode)} on port '{duplicateOutgoing.Key.FromPort}'.");
         }
 
         var inputValidation = ValidateInputs(inputs);
@@ -330,11 +320,12 @@ public static class WorkflowValidator
 
     /// <summary>
     /// The only port names a runtime Subflow node can emit. The child saga's terminal state is
-    /// mapped 1:1 to one of these three ports by <c>RouteSubflowCompletionAsync</c>; edges
-    /// wired from any other port name would never match at runtime, so we reject them at save.
+    /// mapped 1:1 to one of these by <c>RouteSubflowCompletionAsync</c>; edges wired from any
+    /// other port name would never match at runtime, so we reject them at save. Slice 6 of the
+    /// port-model redesign replaces this fixed list with terminal-port inheritance from the child.
     /// </summary>
     internal static readonly IReadOnlyCollection<string> SubflowAllowedPorts =
-        new[] { "Completed", "Failed", "Escalated" };
+        new[] { "Completed", "Failed" };
 
     /// <summary>
     /// The only port names a runtime ReviewLoop node can emit. The child saga's terminal decision
@@ -343,6 +334,24 @@ public static class WorkflowValidator
     /// </summary>
     internal static readonly IReadOnlyCollection<string> ReviewLoopAllowedPorts =
         new[] { "Approved", "Exhausted", "Failed" };
+
+    /// <summary>
+    /// Format a node for use in validation error messages — kind plus a recognizable identifier
+    /// (agent key for agent-bearing nodes, subflow key for Subflow/ReviewLoop, raw id otherwise).
+    /// The raw id is appended in parens so authors can still locate the node by id when needed.
+    /// </summary>
+    private static string DescribeNode(WorkflowNodeDto node)
+    {
+        var label = node.Kind switch
+        {
+            WorkflowNodeKind.Start or WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl
+                when !string.IsNullOrWhiteSpace(node.AgentKey) => $"{node.Kind} '{node.AgentKey}'",
+            WorkflowNodeKind.Subflow or WorkflowNodeKind.ReviewLoop
+                when !string.IsNullOrWhiteSpace(node.SubflowKey) => $"{node.Kind} '{node.SubflowKey}'",
+            _ => node.Kind.ToString()
+        };
+        return $"{label} ({node.Id})";
+    }
 
     private static IReadOnlyCollection<string>? AllowedOutputPorts(WorkflowNodeDto node)
     {

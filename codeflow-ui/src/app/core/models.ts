@@ -1,4 +1,8 @@
-export type AgentDecisionKind = 'Completed' | 'Approved' | 'Rejected' | 'Failed';
+/**
+ * Author-defined output port name. Built-in ports include 'Completed', 'Approved',
+ * 'Rejected', 'Failed', 'Exhausted', but any string an agent declares is valid.
+ */
+export type DecisionPortName = string;
 
 export interface AgentSummary {
   key: string;
@@ -266,7 +270,7 @@ export interface LlmProviderModelOption {
   model: string;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Escalation' | 'Subflow' | 'ReviewLoop';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -358,7 +362,7 @@ export interface TraceSummary {
 export interface TraceDecision {
   agentKey: string;
   agentVersion: number;
-  decision: AgentDecisionKind;
+  decision: DecisionPortName;
   decisionPayload?: unknown;
   roundId: string;
   recordedAtUtc: string;
@@ -389,7 +393,7 @@ export interface HitlTask {
   inputPreview?: string | null;
   createdAtUtc: string;
   state: 'Pending' | 'Decided' | 'Cancelled';
-  decision?: AgentDecisionKind | null;
+  decision?: DecisionPortName | null;
   decidedAtUtc?: string | null;
   deciderId?: string | null;
   /** Set when this HITL lives on a descendant saga — the trace that actually owns it. */
@@ -438,8 +442,7 @@ export interface BulkDeleteTracesResponse {
 }
 
 export interface HitlDecisionRequest {
-  decision: AgentDecisionKind;
-  outputPortName?: string;
+  outputPortName: string;
   reason?: string;
   actions?: string[];
   reasons?: string[];
@@ -457,7 +460,7 @@ export interface TraceStreamEvent {
   agentVersion: number;
   outputRef?: string | null;
   inputRef?: string | null;
-  decision?: AgentDecisionKind | null;
+  decision?: DecisionPortName | null;
   decisionPayload?: unknown;
   timestampUtc: string;
 }

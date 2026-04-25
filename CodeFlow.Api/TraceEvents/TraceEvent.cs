@@ -1,4 +1,3 @@
-using CodeFlow.Runtime;
 using System.Text.Json;
 
 namespace CodeFlow.Api.TraceEvents;
@@ -17,6 +16,6 @@ public sealed record TraceEvent(
     int AgentVersion,
     Uri? OutputRef,
     Uri? InputRef,
-    AgentDecisionKind? Decision,
+    string? Decision,
     JsonElement? DecisionPayload,
     DateTimeOffset TimestampUtc);

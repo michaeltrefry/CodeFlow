@@ -52,7 +52,7 @@ public sealed class ObservabilityTests
         var artifactStore = new RecordingArtifactStore("Initial draft");
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "Reviewed draft",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()

@@ -1,5 +1,3 @@
-using CodeFlow.Runtime;
-
 namespace CodeFlow.Persistence;
 
 public sealed class WorkflowSagaDecisionEntity
@@ -14,7 +12,7 @@ public sealed class WorkflowSagaDecisionEntity
 
     public int AgentVersion { get; set; }
 
-    public AgentDecisionKind Decision { get; set; }
+    public string Decision { get; set; } = string.Empty;
 
     public string? DecisionPayloadJson { get; set; }
 

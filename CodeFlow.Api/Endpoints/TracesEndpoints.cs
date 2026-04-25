@@ -17,7 +17,7 @@ namespace CodeFlow.Api.Endpoints;
 
 public static class TracesEndpoints
 {
-    private static readonly string[] TerminalTraceStates = ["Completed", "Failed", "Escalated"];
+    private static readonly string[] TerminalTraceStates = ["Completed", "Failed"];
 
     public static IEndpointRouteBuilder MapTracesEndpoints(this IEndpointRouteBuilder routes)
     {
@@ -629,11 +629,13 @@ public static class TracesEndpoints
 
         var startedAt = DateTimeOffset.UtcNow;
 
-        var contractsDecision = (Contracts.AgentDecisionKind)(int)request.Decision;
-        var outputPortName = string.IsNullOrWhiteSpace(request.OutputPortName)
-            ? AgentDecisionPorts.ToPortName(contractsDecision)
-            : request.OutputPortName.Trim();
-        var decisionPayload = BuildDecisionPayload(request);
+        if (string.IsNullOrWhiteSpace(request.OutputPortName))
+        {
+            return Results.BadRequest(new { error = "OutputPortName is required." });
+        }
+
+        var outputPortName = request.OutputPortName.Trim();
+        var decisionPayload = BuildDecisionPayload(request, outputPortName);
 
         // Resolve a per-decision output template (if the agent declares one) and render server-side.
         // Fall back to the client-rendered OutputText / BuildDefaultOutput when no template matches,
@@ -668,7 +670,7 @@ public static class TracesEndpoints
             cancellationToken);
 
         task.State = HitlTaskState.Decided;
-        task.Decision = request.Decision;
+        task.Decision = outputPortName;
         task.DecisionPayloadJson = decisionPayload.GetRawText();
         task.DeciderId = currentUser.Id;
         task.DecidedAtUtc = DateTime.UtcNow;
@@ -682,7 +684,6 @@ public static class TracesEndpoints
                 AgentVersion: task.AgentVersion,
                 OutputPortName: outputPortName,
                 OutputRef: outputRef,
-                Decision: contractsDecision,
                 DecisionPayload: decisionPayload,
                 Duration: DateTimeOffset.UtcNow - startedAt,
                 TokenUsage: new Contracts.TokenUsage(0, 0, 0)),
@@ -756,9 +757,7 @@ public static class TracesEndpoints
             }
         }
 
-        var decisionName = string.IsNullOrWhiteSpace(request.OutputPortName)
-            ? request.Decision.ToString()
-            : request.OutputPortName!.Trim();
+        var decisionName = outputPortName;
 
         var scope = CodeFlow.Orchestration.DecisionOutputTemplateContext.BuildForHitl(
             decision: decisionName,
@@ -812,7 +811,7 @@ public static class TracesEndpoints
     private static string BuildDefaultOutput(HitlDecisionRequest request)
     {
         var builder = new StringBuilder();
-        builder.AppendLine($"HITL decision: {request.Decision}");
+        builder.AppendLine($"HITL decision: {request.OutputPortName}");
 
         if (!string.IsNullOrWhiteSpace(request.Reason))
         {
@@ -840,17 +839,12 @@ public static class TracesEndpoints
         return builder.ToString().Trim();
     }
 
-    private static JsonElement BuildDecisionPayload(HitlDecisionRequest request)
+    private static JsonElement BuildDecisionPayload(HitlDecisionRequest request, string outputPortName)
     {
         var json = new JsonObject
         {
-            ["kind"] = request.Decision.ToString()
+            ["portName"] = outputPortName
         };
-
-        if (!string.IsNullOrWhiteSpace(request.OutputPortName))
-        {
-            json["outputPortName"] = request.OutputPortName.Trim();
-        }
 
         if (!string.IsNullOrWhiteSpace(request.Reason))
         {

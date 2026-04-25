@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260425122059_UseStringPortNamesForDecisions")]
+    partial class UseStringPortNamesForDecisions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1008,6 +1011,10 @@ namespace CodeFlow.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("longtext")
                         .HasColumnName("decision_history_json");
+
+                    b.Property<Guid?>("EscalatedFromNodeId")
+                        .HasColumnType("char(36)")
+                        .HasColumnName("escalated_from_node_id");
 
                     b.Property<string>("FailureReason")
                         .HasMaxLength(512)

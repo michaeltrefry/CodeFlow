@@ -7,4 +7,5 @@ public sealed record InvocationLoopRequest(
     InvocationLoopBudget? Budget = null,
     int? MaxTokens = null,
     double? Temperature = null,
-    ToolExecutionContext? ToolExecutionContext = null);
+    ToolExecutionContext? ToolExecutionContext = null,
+    IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null);

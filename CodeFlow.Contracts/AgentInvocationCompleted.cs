@@ -10,7 +10,8 @@ public sealed record AgentInvocationCompleted(
     int AgentVersion,
     string OutputPortName,
     Uri OutputRef,
-    AgentDecisionKind Decision,
     JsonElement? DecisionPayload,
     TimeSpan Duration,
-    TokenUsage TokenUsage);
+    TokenUsage TokenUsage,
+    IReadOnlyDictionary<string, JsonElement>? ContextUpdates = null,
+    IReadOnlyDictionary<string, JsonElement>? GlobalUpdates = null);

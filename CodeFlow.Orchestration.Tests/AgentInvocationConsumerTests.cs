@@ -42,7 +42,11 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Initial draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "Reviewed draft",
-            Decision: new RejectedDecision(["Needs stronger citations"], JsonNode.Parse("""{"severity":"medium"}""")),
+            Decision: new AgentDecision("Rejected", new JsonObject
+            {
+                ["reasons"] = new JsonArray("Needs stronger citations"),
+                ["severity"] = "medium"
+            }),
             Transcript: [],
             TokenUsage: new Runtime.TokenUsage(120, 45, 165),
             ToolCallsExecuted: 0));
@@ -90,12 +94,11 @@ public sealed class AgentInvocationConsumerTests
             completion.AgentVersion.Should().Be(request.AgentVersion);
             completion.FromNodeId.Should().Be(nodeId);
             completion.OutputPortName.Should().Be("Rejected");
-            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Rejected);
             completion.TokenUsage.Should().BeEquivalentTo(new CodeFlow.Contracts.TokenUsage(120, 45, 165));
             completion.OutputRef.Should().Be(artifactStore.Writes[0].Uri);
             completion.DecisionPayload.Should().NotBeNull();
-            completion.DecisionPayload!.Value.GetProperty("kind").GetString().Should().Be("Rejected");
-            completion.DecisionPayload!.Value.GetProperty("reasons")[0].GetString().Should().Be("Needs stronger citations");
+            completion.DecisionPayload!.Value.GetProperty("portName").GetString().Should().Be("Rejected");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("reasons")[0].GetString().Should().Be("Needs stronger citations");
         }
         finally
         {
@@ -135,7 +138,7 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "Review done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -206,7 +209,7 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -271,7 +274,10 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "Partial draft from a failed attempt",
-            Decision: new FailedDecision("tool_call_budget_exceeded"),
+            Decision: new AgentDecision("Failed", new JsonObject
+            {
+                ["reason"] = "tool_call_budget_exceeded"
+            }),
             Transcript: [],
             ToolCallsExecuted: 7));
 
@@ -301,9 +307,10 @@ public sealed class AgentInvocationConsumerTests
                 .Single()
                 .Context.Message;
 
-            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Failed);
+            completion.OutputPortName.Should().Be("Failed");
             completion.DecisionPayload.Should().NotBeNull();
-            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
+            completion.DecisionPayload!.Value.GetProperty("portName").GetString().Should().Be("Failed");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
             var failureContext = completion.DecisionPayload.Value.GetProperty("failure_context");
             failureContext.GetProperty("reason").GetString().Should().Be("tool_call_budget_exceeded");
             failureContext.GetProperty("last_output").GetString().Should().Contain("Partial draft");
@@ -372,10 +379,10 @@ public sealed class AgentInvocationConsumerTests
                 .Single()
                 .Context.Message;
 
-            completion.Decision.Should().Be(CodeFlow.Contracts.AgentDecisionKind.Failed);
             completion.OutputPortName.Should().Be("Failed");
             completion.DecisionPayload.Should().NotBeNull();
-            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("Response status code does not indicate success: 400 (Bad Request).");
+            completion.DecisionPayload!.Value.GetProperty("portName").GetString().Should().Be("Failed");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("reason").GetString().Should().Be("Response status code does not indicate success: 400 (Bad Request).");
             completion.DecisionPayload!.Value.GetProperty("failure_context").GetProperty("reason").GetString().Should().Be("Response status code does not indicate success: 400 (Bad Request).");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("failure_code").GetString().Should().Be("AgentInvocationFailed");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("message").GetString().Should().Contain("400 (Bad Request)");
@@ -465,7 +472,8 @@ public sealed class AgentInvocationConsumerTests
                 .Context.Message;
 
             completion.DecisionPayload.Should().NotBeNull();
-            completion.DecisionPayload!.Value.GetProperty("reason").GetString().Should().Be("boom");
+            completion.DecisionPayload!.Value.GetProperty("portName").GetString().Should().Be("Failed");
+            completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("reason").GetString().Should().Be("boom");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("message").GetString().Should().Be("boom");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("provider_error_message").GetString().Should().Be("boom");
             completion.DecisionPayload!.Value.GetProperty("payload").GetProperty("http_diagnostics_ref").GetString().Should().Be(diagnostics.Uri.ToString());
@@ -510,7 +518,7 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -592,7 +600,7 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -659,7 +667,7 @@ public sealed class AgentInvocationConsumerTests
             ("""{"summary":"Create a new blog website","reasoning":"greenfield"}""", "application/json"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -724,7 +732,7 @@ public sealed class AgentInvocationConsumerTests
             ("Create a new blog website using .NET 10 and React.", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -789,7 +797,7 @@ public sealed class AgentInvocationConsumerTests
         var artifactStore = new RecordingArtifactStore(("draft payload", "text/plain"));
         var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
             Output: "done",
-            Decision: new CompletedDecision(),
+            Decision: new AgentDecision("Completed"),
             Transcript: []));
 
         await using var provider = new ServiceCollection()
@@ -850,7 +858,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question text", "text/plain")))
             .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
                 Output: "unused",
-                Decision: new CompletedDecision(),
+                Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
@@ -921,7 +929,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question text", "text/plain")))
             .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
                 Output: "unused",
-                Decision: new CompletedDecision(),
+                Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options

@@ -39,7 +39,6 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var publisherNode = Guid.NewGuid();
         var archivePrimaryNode = Guid.NewGuid();
         var archiveSecondaryNode = Guid.NewGuid();
-        var escalationNode = Guid.NewGuid();
 
         await using var seedContext = CreateDbContext();
         seedContext.Workflows.Add(new WorkflowEntity
@@ -57,8 +56,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
                 NodeEntity(legalNode, WorkflowNodeKind.Agent, "legal-review"),
                 NodeEntity(publisherNode, WorkflowNodeKind.Agent, "publisher"),
                 NodeEntity(archivePrimaryNode, WorkflowNodeKind.Agent, "archive-primary"),
-                NodeEntity(archiveSecondaryNode, WorkflowNodeKind.Agent, "archive-secondary"),
-                NodeEntity(escalationNode, WorkflowNodeKind.Escalation, "editor-in-chief")
+                NodeEntity(archiveSecondaryNode, WorkflowNodeKind.Agent, "archive-secondary")
             ],
             Edges =
             [
@@ -86,10 +84,8 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var workflow = await repository.GetAsync(workflowKey, 2);
 
         workflow.Name.Should().Be("Article flow");
-        workflow.Nodes.Should().HaveCount(8);
+        workflow.Nodes.Should().HaveCount(7);
         workflow.StartNode.AgentKey.Should().Be("writer");
-        workflow.EscalationNode.Should().NotBeNull();
-        workflow.EscalationNode!.AgentKey.Should().Be("editor-in-chief");
         workflow.Inputs.Should().ContainSingle(input => input.Key == "topic");
 
         var rejectedEdge = await repository.FindNextAsync(workflowKey, 2, reviewerNode, "Rejected");

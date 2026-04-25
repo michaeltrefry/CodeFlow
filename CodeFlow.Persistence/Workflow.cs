@@ -17,9 +17,6 @@ public sealed record Workflow(
     public WorkflowNode StartNode =>
         Nodes.Single(node => node.Kind == WorkflowNodeKind.Start);
 
-    public WorkflowNode? EscalationNode =>
-        Nodes.SingleOrDefault(node => node.Kind == WorkflowNodeKind.Escalation);
-
     public WorkflowNode? FindNode(Guid nodeId) =>
         Nodes.FirstOrDefault(node => node.Id == nodeId);
 
