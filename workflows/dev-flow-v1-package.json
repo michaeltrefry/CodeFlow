@@ -1,0 +1,604 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-26T17:30:00Z"
+  },
+  "entryPoint": {
+    "key": "dev-flow",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "dev-review-pair",
+      "version": 1,
+      "name": "Dev/Reviewer Pair (inner loop body)",
+      "maxRoundsPerRound": 8,
+      "category": "Loop",
+      "tags": ["dev", "code", "loop"],
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "nodes": [
+        {
+          "id": "cccccccc-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "developer",
+          "agentVersion": 1,
+          "outputPorts": ["Drafted"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "cccccccc-0001-0001-0001-000000000002",
+          "kind": "Agent",
+          "agentKey": "code-reviewer",
+          "agentVersion": 1,
+          "outputPorts": ["Approved", "Rejected"],
+          "layoutX": 400,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "cccccccc-0001-0001-0001-000000000001",
+          "fromPort": "Drafted",
+          "toNodeId": "cccccccc-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "On round 1, the task brief from PM. On rounds 2+, the prior reviewer's findings.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "per-task-flow",
+      "version": 1,
+      "name": "Per-Task Flow (outer loop body)",
+      "maxRoundsPerRound": 8,
+      "category": "Subflow",
+      "tags": ["dev", "code", "task"],
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "nodes": [
+        {
+          "id": "dddddddd-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "pm-pick-next",
+          "agentVersion": 1,
+          "outputPorts": ["TaskReady", "AllTasksDone"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "dddddddd-0001-0001-0001-000000000002",
+          "kind": "ReviewLoop",
+          "outputPorts": ["Approved", "Exhausted"],
+          "layoutX": 400,
+          "layoutY": 200,
+          "subflowKey": "dev-review-pair",
+          "subflowVersion": 1,
+          "reviewMaxRounds": 5,
+          "loopDecision": "Rejected"
+        },
+        {
+          "id": "dddddddd-0001-0001-0001-000000000003",
+          "kind": "Agent",
+          "agentKey": "task-committer",
+          "agentVersion": 1,
+          "outputPorts": ["TaskApproved"],
+          "layoutX": 750,
+          "layoutY": 100
+        },
+        {
+          "id": "dddddddd-0001-0001-0001-000000000004",
+          "kind": "Agent",
+          "agentKey": "task-blocker",
+          "agentVersion": 1,
+          "outputPorts": ["TaskApproved"],
+          "layoutX": 750,
+          "layoutY": 300
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "dddddddd-0001-0001-0001-000000000001",
+          "fromPort": "TaskReady",
+          "toNodeId": "dddddddd-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "dddddddd-0001-0001-0001-000000000002",
+          "fromPort": "Approved",
+          "toNodeId": "dddddddd-0001-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "dddddddd-0001-0001-0001-000000000002",
+          "fromPort": "Exhausted",
+          "toNodeId": "dddddddd-0001-0001-0001-000000000004",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "Pass-through; the per-task flow reads task state from global.taskStatus.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "dev-flow",
+      "version": 1,
+      "name": "Dev Flow (PM + Developer + Reviewer)",
+      "maxRoundsPerRound": 8,
+      "category": "Workflow",
+      "tags": ["dev", "code", "lifecycle"],
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "nodes": [
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "code-setup",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "// Alias the implementation plan into a stable global key for downstream agents. If we're\n// invoked as a subflow after impl-plan-flow, the plan is already in global.currentPlan; if\n// we're invoked standalone, the plan arrives as the input artifact.\nvar plan = (global && global.currentPlan) ? global.currentPlan : (input && input.text) ? input.text : '';\nif (plan) { setGlobal('implPlan', plan); }\n\n// Extract a PRD title for the feature-branch helper. Look in global.prd's first heading or\n// in global.prdTitle if a parent workflow already populated it. Falls through silently when\n// neither is present — branch_name() degrades to `branch-<8hex>`.\nif (!(global && global.prdTitle)) {\n  var prdSource = (global && global.prd) ? String(global.prd) : '';\n  var match = prdSource.match(/^\\s*#\\s+(.+?)\\s*$/m);\n  if (match) { setGlobal('prdTitle', match[1]); }\n}"
+        },
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000002",
+          "kind": "ReviewLoop",
+          "outputPorts": ["AllTasksDone"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "subflowKey": "per-task-flow",
+          "subflowVersion": 1,
+          "reviewMaxRounds": 50,
+          "loopDecision": "TaskApproved"
+        },
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000003",
+          "kind": "Logic",
+          "outputPorts": ["HasBlocked", "AllGood"],
+          "layoutX": 650,
+          "layoutY": 200,
+          "outputScript": "var ts = global.taskStatus;\nvar tasks = (ts && ts.tasks) ? ts.tasks : [];\nvar hasBlockedOrDeferred = false;\nfor (var i = 0; i < tasks.length; i++) {\n  if (tasks[i].status === 'blocked' || tasks[i].status === 'deferred') {\n    hasBlockedOrDeferred = true;\n    break;\n  }\n}\nsetNodePath(hasBlockedOrDeferred ? 'HasBlocked' : 'AllGood');"
+        },
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000004",
+          "kind": "Hitl",
+          "agentKey": "dev-escalate-form",
+          "agentVersion": 1,
+          "outputPorts": ["Approved", "Abandoned"],
+          "layoutX": 950,
+          "layoutY": 100
+        },
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000005",
+          "kind": "Agent",
+          "agentKey": "publish",
+          "agentVersion": 1,
+          "outputPorts": ["Published"],
+          "layoutX": 1250,
+          "layoutY": 200
+        },
+        {
+          "id": "eeeeeeee-0001-0001-0001-000000000006",
+          "kind": "Agent",
+          "agentKey": "post-mortem",
+          "agentVersion": 1,
+          "outputPorts": ["Done"],
+          "layoutX": 1550,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000002",
+          "fromPort": "AllTasksDone",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000003",
+          "fromPort": "HasBlocked",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000004",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000003",
+          "fromPort": "AllGood",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000005",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000004",
+          "fromPort": "Approved",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000005",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000004",
+          "fromPort": "Abandoned",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000006",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "eeeeeeee-0001-0001-0001-000000000005",
+          "fromPort": "Published",
+          "toNodeId": "eeeeeeee-0001-0001-0001-000000000006",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Approved Implementation Plan",
+          "kind": "Text",
+          "required": true,
+          "description": "Markdown implementation plan, typically piped from impl-plan-flow's Approved exit.",
+          "ordinal": 0
+        },
+        {
+          "key": "repositories",
+          "displayName": "Repositories",
+          "kind": "Json",
+          "required": true,
+          "description": "Array of {url, branch?} objects identifying the repos to clone and operate on.",
+          "ordinal": 1
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "code-setup",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Code Setup",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for a dev workflow. The platform has already created `global.workDir` for this trace and pre-computed the canonical feature-branch name (shown in the prompt). Your job:\n\n1. Read `context.repositories` (an array of `{url, branch?}` objects).\n2. For each repository, use shell tools (working under `global.workDir`):\n   a. `git clone <url>` (creates a subdirectory named after the repo).\n   b. `cd` into the cloned directory and `git checkout <branch>` if a branch was specified, otherwise stay on the default branch — that's the upstream base.\n   c. `git checkout -b <feature_branch>` using the EXACT pre-computed branch name from the prompt's `## Feature branch` section. Do not invent or modify the slug — using the platform-computed name is what keeps every repo (and any downstream PR-publishing agent) in sync.\n3. Mid-turn, call setContext to enrich `repositories` with resolved local paths and the feature branch name. The merged context shape:\n   ```json\n   [{\"url\": \"...\", \"branch\": \"main\", \"localPath\": \"/work/.../repo\", \"featureBranch\": \"<feature_branch>\"}]\n   ```\n4. Also call setGlobal(key=\"taskStatus\", value=null) to initialize an empty task-status holder; PM will populate it on first invocation.\n5. Also call setGlobal(key=\"kanbanAvailable\", value=<true if you have access to Kanban tools (mcp__kanban__*), else false>).\n6. Submit with port `Continue`. Your message body should be a one-paragraph summary of what was set up (which repos, which branch, where).\n\n## CRITICAL OUTPUT RULE\nWrite the setup summary as your message content BEFORE calling submit.",
+        "promptTemplate": "## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Feature branch\n{{ branch_name global.prdTitle global.traceId }}",
+        "maxTokens": 4000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Repos cloned, feature branch created, context enriched. Hand off to the task loop."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Repos cloned, feature branch created, context enriched. Hand off to the task loop."
+        }
+      ]
+    },
+    {
+      "key": "pm-pick-next",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Project Manager (Pick Next Task)",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the Project Manager for a software development workflow. Your responsibility on this invocation is to pick the next ready task from the implementation plan and hand it off to the developer.\n\n## On the FIRST invocation (when global.taskStatus is null/empty)\n\nParse the implementation plan from `{{ input }}` (or `{{ global.implPlan }}` if available) into discrete tasks. Each task is a single phase-task pair from the architect's plan. For each task, capture:\n- `id`: stable string like `phase-1-task-1`\n- `title`: short title\n- `phase`: phase name\n- `description`: full task description from the plan\n- `dependsOn`: array of other task ids; if the architect declared `Depends on: ...`, parse it; otherwise infer from task ordering and content (default to depending on the immediately prior task in sequence if unsure)\n- `status`: `\"pending\"`\n\nIf Kanban is available (`global.kanbanAvailable == true`), also create a Kanban project (if needed), epic for this plan with the PRD and impl plan as documents, and a Story per task — but task status tracking still happens primarily in `global.taskStatus` for fast access during the loop.\n\nCall setGlobal(key=\"taskStatus\", value=<the full tasks object>) with the structure `{\"tasks\": [...]}`.\n\n## On EVERY invocation\n\nRead `global.taskStatus`. Pick the next \"ready\" task: status is `pending` AND every task in its `dependsOn` array has status `completed`.\n\n- If a ready task exists:\n  1. Mark it `inProgress` (call setGlobal updating taskStatus).\n  2. Call setGlobal(key=\"currentTask\", value=<the chosen task object>).\n  3. Write a brief description of what the developer needs to do as your message content.\n  4. Submit with port `TaskReady`.\n- If NO ready tasks exist (all completed, blocked, or deferred):\n  1. Write a brief summary of the run state as your message content.\n  2. Submit with port `AllTasksDone`.\n\n## CRITICAL OUTPUT RULE\nMessage content must be substantive (not blank). For TaskReady: the developer's task brief. For AllTasksDone: the run summary.",
+        "promptTemplate": "## Implementation Plan\n{{ input }}\n\n## Current task status\n{{ global.taskStatus }}\n\n## Kanban available?\n{{ global.kanbanAvailable }}\n\n## Repositories (with local paths)\n{{ context.repositories }}",
+        "maxTokens": 8000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "TaskReady",
+            "description": "A ready task has been selected and global.currentTask is set. Hand to developer."
+          },
+          {
+            "kind": "AllTasksDone",
+            "description": "No more pending tasks (all completed, blocked, or deferred). Exit the per-task flow."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "TaskReady",
+          "description": "A ready task has been selected and global.currentTask is set. Hand to developer."
+        },
+        {
+          "kind": "AllTasksDone",
+          "description": "No more pending tasks. Exit the per-task flow."
+        }
+      ]
+    },
+    {
+      "key": "developer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Developer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a software developer. Your job is to implement the current task end-to-end: write the code, write tests for any meaningful business logic or data transformations, run the project's test suite, and hand the result to a code reviewer.\n\n## Working directory\nAll your file work happens under `global.workDir`. The repositories you have available are in `context.repositories` — each has a `localPath`. Stay within those paths.\n\n## Test policy\nCreate tests for things that could actually break: business logic, data transformations, integrations between modules. Do NOT create tests just to pad coverage. Trivial getters/setters and pass-through code do not need their own tests.\n\n## Test command discovery\nInfer the project's test command from its tooling files:\n- `package.json` with a `test` script → `npm test` (or `yarn test`/`pnpm test` matching the lockfile)\n- `*.csproj` / `*.sln` → `dotnet test`\n- `pyproject.toml` / `setup.py` → `pytest` (or whatever the project configures)\n- `Cargo.toml` → `cargo test`\n- `go.mod` → `go test ./...`\n\nIf no project structure exists yet AND this is the first task in the plan (you can tell from `global.taskStatus`), you are scaffolding a greenfield project. Initialize the project (e.g. `npm init -y`, `dotnet new`), set up the test framework (e.g. install jest/vitest, xunit), and THEN implement the task's feature code.\n\n## Round behavior\n- Round 1 (`{{ if round == 1 }}`): start fresh on `global.currentTask`. Read `{{ input }}` for the PM's brief.\n- Rounds 2+: the reviewer rejected your prior work. Read `{{ input }}` for the findings and address them. The code you wrote in the prior round is still in the workdir.\n\n## Submit\nWrite a summary of what you did as your message content: which files changed, what tests you added, what the test run output was. Submit with port `Drafted`.\n\n## CRITICAL OUTPUT RULE\nMessage content must be substantive — list the files you touched, summarize the test results, mention anything notable. The reviewer reads this before re-running the tests themselves.",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }}\n\n## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Current task\n{{ global.currentTask }}\n\n## Implementation plan (for surrounding context)\n{{ global.implPlan }}\n\n{{ if round > 1 }}## Reviewer's latest findings\n{{ input }}\n{{ else }}## Task brief from PM\n{{ input }}\n{{ end }}",
+        "maxTokens": 16000,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Drafted",
+            "description": "Code and tests written; tests run; summary in message body."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Drafted",
+          "description": "Code and tests written; tests run; summary in message body."
+        }
+      ]
+    },
+    {
+      "key": "code-reviewer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Code Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a code reviewer. Your job is to verify that the developer's code for the current task is correct, well-tested, and doesn't break anything. You DO NOT trust the developer's claim that tests pass — you re-run them yourself.\n\n## What you check\n1. **Correctness against the task description**: does the code do what the current task says it should?\n2. **Test coverage of meaningful logic**: does new/changed business logic and data transformations have tests? (Don't demand coverage of trivial code.)\n3. **Tests pass**: re-run the project's test suite (infer the command from project tooling) and verify all tests pass.\n4. **No regressions**: existing tests still pass.\n5. **Reasonable code quality**: idiomatic for the language/framework, no glaring smells.\n\n## Approval bias\nApprove when the task is genuinely done and tests pass. Nitpicks (style, alternative approaches you'd prefer) are NOT blocking.\n\n## Last-round behavior\nThe variable `{{ isLastRound }}` is true on the final allowed iteration. When true: if all your prior concerns are addressed AND tests pass, APPROVE. Only reject on the last round if there's a critical regression or the code clearly doesn't do what the task asked for.\n\n## Submit ports\n- `Approved`: write a short approval note as your message content (1–2 sentences). The developer's work and tests stay in the workdir for the committer to commit.\n- `Rejected`: write a `## Findings` markdown block listing each concrete issue with `[critical|major|minor]` tags. The developer reads this in the next round.\n\n## CRITICAL OUTPUT RULE\nMessage content must be substantive (not blank).",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }} — {{ if isLastRound }}**LAST ROUND** — approve unless there is a critical regression.{{ else }}lean toward approval; only reject if there are major issues.{{ end }}\n\n## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Current task\n{{ global.currentTask }}\n\n## Developer's submission\n{{ input }}",
+        "maxTokens": 4000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Approved",
+            "description": "Code passes review. Hand off to the committer."
+          },
+          {
+            "kind": "Rejected",
+            "description": "Code needs changes. Findings in message body."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Approved",
+          "description": "Code passes review."
+        },
+        {
+          "kind": "Rejected",
+          "description": "Code needs changes."
+        }
+      ]
+    },
+    {
+      "key": "task-committer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Task Committer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You commit the developer's approved work for the current task.\n\n1. For each repository in `context.repositories` that has uncommitted changes, run from its `localPath`:\n   - `git add -A`\n   - `git commit -m \"<task title>\"` where `<task title>` is `global.currentTask.title`\n2. Update `global.taskStatus`: find the task with id `global.currentTask.id` and mark its status as `completed`.\n3. If Kanban is available, move the corresponding Story to Done.\n4. Submit with port `TaskApproved`.\n\nMessage content: a one-line summary like `Committed task: <title> (commit abc1234)`.",
+        "promptTemplate": "## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Current task\n{{ global.currentTask }}\n\n## Task status\n{{ global.taskStatus }}\n\n## Kanban available?\n{{ global.kanbanAvailable }}",
+        "maxTokens": 2000,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "TaskApproved",
+            "description": "Task committed and marked completed. Continue to next task."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "TaskApproved",
+          "description": "Task committed and marked completed."
+        }
+      ]
+    },
+    {
+      "key": "task-blocker",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Task Blocker",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "The dev/reviewer loop hit max rounds without approval on the current task. Mark the task as blocked, mark any tasks that depend on it (transitively) as deferred, and clean the workdir for the next task.\n\n1. For each repository in `context.repositories`, run from its `localPath`: `git checkout .` AND `git clean -fd` to discard the failed dev's uncommitted changes.\n2. Update `global.taskStatus`:\n   - Mark the task with id `global.currentTask.id` as `blocked` and stash the last-round reviewer findings (from `{{ input }}`) in its `lastFindings` field.\n   - Walk the task list: for any task whose `dependsOn` array contains this blocked task (or any other blocked/deferred task), mark it `deferred` with a note about which dependency caused it.\n3. If Kanban is available, move the Story to Blocked with the findings as a comment, and the deferred Stories to a Deferred status (or add a 'deferred' label).\n4. Submit with port `TaskApproved` — yes, the same port as success. The outer loop just iterates; the end-of-run HITL handles cleanup.\n\nMessage content: a one-line summary like `Blocked task: <title>. Deferred 2 dependents.`.",
+        "promptTemplate": "## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Current task (now blocked)\n{{ global.currentTask }}\n\n## Reviewer's final findings\n{{ input }}\n\n## Task status\n{{ global.taskStatus }}\n\n## Kanban available?\n{{ global.kanbanAvailable }}",
+        "maxTokens": 2000,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "TaskApproved",
+            "description": "Task marked blocked + dependents deferred + workdir cleaned. Continue to next task."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "TaskApproved",
+          "description": "Task marked blocked + dependents deferred + workdir cleaned."
+        }
+      ]
+    },
+    {
+      "key": "publish",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Publisher",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You push the workflow's feature branch and open a Pull Request (or Merge Request on GitLab) summarizing the work.\n\nFor each repository in `context.repositories`:\n1. From its `localPath`, run `git push -u origin <featureBranch>`.\n2. Parse `<owner>` and `<name>` from the repo's `url` (e.g. `https://github.com/foo/bar.git` → owner=foo, name=bar; same for GitLab paths).\n3. Call the `vcs.open_pr` host tool with `{ owner, name, head: <featureBranch>, base: <branch from context, defaulting to the upstream default branch>, title, body }`. The platform manages auth — do NOT try to compose REST calls or pass tokens yourself.\n4. The tool returns `{ url, number }` on success. Mid-turn, call `setContext` to update `repositories` so each entry has `prUrl` set to the URL the tool returned. Keep the rest of the entry intact.\n\nPR description (the `body` argument) should include:\n- A summary line based on the PRD title.\n- Bullet list of completed tasks (read from `global.taskStatus` — only tasks with status `completed`).\n- If any tasks are `deferred` or `blocked`, list them under a 'Not in this PR' section so the human reviewer knows what's missing.\n- A link back to the trace UI if obvious from context.\n\nIf any push or `vcs.open_pr` call fails (the tool returns a tool-error result with structured `error` codes like `unauthorized`, `repo_not_found`, `conflict`, `rate_limited`), fall through to the implicit Failed port. The workdir cleanup hook only deletes when this agent reaches the `Published` port AND every repo's `prUrl` is populated.\n\nMessage content: a one-line summary including the PR URL(s).\n\nSubmit with port `Published`.",
+        "promptTemplate": "## Working directory\n{{ global.workDir }}\n\n## Repositories\n{{ context.repositories }}\n\n## Task status\n{{ global.taskStatus }}\n\n## PRD\n{{ global.prd }}",
+        "maxTokens": 4000,
+        "temperature": 0.1,
+        "outputs": [
+          {
+            "kind": "Published",
+            "description": "PR(s) opened successfully."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Published",
+          "description": "PR(s) opened successfully."
+        }
+      ]
+    },
+    {
+      "key": "post-mortem",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Post-mortem",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "Write a brief retrospective on this workflow run. Audience: the human who triggered it. Length: 3–6 short paragraphs.\n\nCover:\n- What got built (completed tasks).\n- What didn't get built and why (blocked / deferred tasks with their findings).\n- What the architect's plan got right or wrong (any tasks that were misshaped, missing steps the dev had to invent, etc.).\n- Patterns worth noting for next time (over/under-decomposition, common failure modes, etc.).\n- Pointer to the PR if one was opened.\n\nDo NOT regurgitate the PRD or full plan. The reader has them.\n\nSubmit with port `Done`. Message content is the retrospective itself.",
+        "promptTemplate": "## PRD\n{{ global.prd }}\n\n## Implementation plan\n{{ global.implPlan }}\n\n## Task status (final)\n{{ global.taskStatus }}\n\n## Repositories\n{{ context.repositories }}",
+        "maxTokens": 4000,
+        "temperature": 0.5,
+        "outputs": [
+          {
+            "kind": "Done",
+            "description": "Retrospective written."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Done",
+          "description": "Retrospective written."
+        }
+      ]
+    },
+    {
+      "key": "dev-escalate-form",
+      "version": 1,
+      "kind": "Hitl",
+      "config": {
+        "type": "hitl",
+        "name": "Dev Run — Blocked Tasks",
+        "description": "The dev workflow finished with one or more tasks marked blocked or deferred. Review the situation and decide whether to publish what's done or abandon.",
+        "outputTemplate": "{{ global.taskStatus }}",
+        "outputs": [
+          {
+            "kind": "Approved",
+            "description": "Publish what's done; the deferred/blocked tasks will be called out in the PR description."
+          },
+          {
+            "kind": "Abandoned",
+            "description": "Skip publishing; route directly to post-mortem with the workdir kept for forensics."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T17:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Approved",
+          "description": "Publish what's done."
+        },
+        {
+          "kind": "Abandoned",
+          "description": "Skip publishing."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    {"agentKey": "code-setup", "roleKeys": ["code-worker"]},
+    {"agentKey": "pm-pick-next", "roleKeys": []},
+    {"agentKey": "developer", "roleKeys": ["code-worker"]},
+    {"agentKey": "code-reviewer", "roleKeys": ["code-worker"]},
+    {"agentKey": "task-committer", "roleKeys": ["code-worker"]},
+    {"agentKey": "task-blocker", "roleKeys": ["code-worker"]},
+    {"agentKey": "publish", "roleKeys": ["code-worker"]},
+    {"agentKey": "post-mortem", "roleKeys": ["code-worker"]},
+    {"agentKey": "dev-escalate-form", "roleKeys": []}
+  ],
+  "roles": [
+    {
+      "key": "code-worker",
+      "displayName": "Code Worker",
+      "description": "Grants the host tools needed to read, edit, run commands, and publish PRs inside the trace's working directory: read_file, apply_patch, run_command, vcs.get_repo, vcs.open_pr, plus echo/now.",
+      "isArchived": false,
+      "toolGrants": [
+        {"category": "Host", "toolIdentifier": "read_file"},
+        {"category": "Host", "toolIdentifier": "apply_patch"},
+        {"category": "Host", "toolIdentifier": "run_command"},
+        {"category": "Host", "toolIdentifier": "vcs.open_pr"},
+        {"category": "Host", "toolIdentifier": "vcs.get_repo"},
+        {"category": "Host", "toolIdentifier": "echo"},
+        {"category": "Host", "toolIdentifier": "now"}
+      ],
+      "skillNames": []
+    }
+  ],
+  "skills": [],
+  "mcpServers": []
+}

@@ -70,6 +70,62 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task InitialAgentInvokeRequested_WithGlobalContext_ShouldSeedSagaGlobalInputsJson()
+    {
+        // Top-level traces enter via AgentInvokeRequested → Initially → ApplyInitialRequest.
+        // The /api/traces endpoint runs the start node's InputScript and passes the script's
+        // setGlobal writes via the GlobalContext field. ApplyInitialRequest must seed
+        // saga.GlobalInputsJson from that field so the start agent's prompt template can
+        // resolve {{ global.* }} and downstream nodes inherit the seeded state — paralleling
+        // the same behavior on subflow Start nodes (ApplyInitialSubflowAsync).
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflow(
+            key: "global-seed",
+            maxRounds: 5,
+            startAgentKey: "evaluator",
+            edges: Array.Empty<EdgeSpec>());
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>());
+        await harness.Start();
+        try
+        {
+            var globalContext = new Dictionary<string, JsonElement>
+            {
+                ["seedKey"] = JsonDocument.Parse("\"seedValue\"").RootElement.Clone()
+            };
+
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: workflow.StartNode.Id,
+                AgentKey: workflow.StartNode.AgentKey!,
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                GlobalContext: globalContext));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            var sagaInstance = await sagaHarness.Exists(traceId, x => x.Running);
+            sagaInstance.Should().NotBeNull();
+
+            var saga = sagaHarness.Sagas.Contains(sagaInstance!.Value);
+            saga.Should().NotBeNull();
+            saga!.GlobalInputsJson.Should().NotBeNullOrWhiteSpace(
+                "ApplyInitialRequest must seed GlobalInputsJson from message.GlobalContext");
+            saga.GlobalInputsJson!.Should().Contain("seedKey",
+                "setGlobal writes from a top-level Start input script (passed via GlobalContext) must land in the saga");
+            saga.GlobalInputsJson.Should().Contain("seedValue");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task RotatingEdge_ShouldRotateRoundAndResetCount()
     {
         var traceId = Guid.NewGuid();

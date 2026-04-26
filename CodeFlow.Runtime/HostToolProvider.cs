@@ -7,13 +7,16 @@ public sealed class HostToolProvider : IToolProvider
 {
     private readonly Func<DateTimeOffset> nowProvider;
     private readonly WorkspaceHostToolService workspaceTools;
+    private readonly VcsHostToolService? vcsTools;
 
     public HostToolProvider(
         Func<DateTimeOffset>? nowProvider = null,
-        WorkspaceHostToolService? workspaceTools = null)
+        WorkspaceHostToolService? workspaceTools = null,
+        VcsHostToolService? vcsTools = null)
     {
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
         this.workspaceTools = workspaceTools ?? new WorkspaceHostToolService();
+        this.vcsTools = vcsTools;
     }
 
     public ToolCategory Category => ToolCategory.Host;
@@ -45,11 +48,17 @@ public sealed class HostToolProvider : IToolProvider
             "read_file" => workspaceTools.ReadFileAsync(toolCall, context, cancellationToken),
             "apply_patch" => workspaceTools.ApplyPatchAsync(toolCall, context, cancellationToken),
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
+            "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, cancellationToken),
+            "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
 
         return content;
     }
+
+    private VcsHostToolService RequireVcs() =>
+        vcsTools ?? throw new InvalidOperationException(
+            "vcs.* tools are not configured: HostToolProvider was constructed without a VcsHostToolService.");
 
     public static IReadOnlyList<ToolSchema> GetCatalog()
     {
@@ -139,7 +148,42 @@ public sealed class HostToolProvider : IToolProvider
                     },
                     ["required"] = new JsonArray("command")
                 },
-                IsMutating: true)
+                IsMutating: true),
+            new ToolSchema(
+                "vcs.open_pr",
+                "Opens a pull request (or merge request, on GitLab) on the configured Git host. "
+                + "Returns the URL and number of the created request. Auth is platform-managed via "
+                + "GitHostSettings; agents do not handle the token themselves.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["owner"] = new JsonObject { ["type"] = "string" },
+                        ["name"] = new JsonObject { ["type"] = "string" },
+                        ["head"] = new JsonObject { ["type"] = "string" },
+                        ["base"] = new JsonObject { ["type"] = "string" },
+                        ["title"] = new JsonObject { ["type"] = "string" },
+                        ["body"] = new JsonObject { ["type"] = "string" }
+                    },
+                    ["required"] = new JsonArray("owner", "name", "head", "base", "title")
+                },
+                IsMutating: true),
+            new ToolSchema(
+                "vcs.get_repo",
+                "Reads basic metadata for a repository on the configured Git host (default branch, "
+                + "clone URL, visibility). Useful before opening a PR to confirm the upstream "
+                + "default branch.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["owner"] = new JsonObject { ["type"] = "string" },
+                        ["name"] = new JsonObject { ["type"] = "string" }
+                    },
+                    ["required"] = new JsonArray("owner", "name")
+                })
         ];
     }
 

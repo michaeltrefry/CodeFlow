@@ -193,6 +193,140 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task Delete_ShouldRemoveTraceWorkdirIfPresent()
+    {
+        var workDirRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"codeflow-workdir-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDirRoot);
+
+        try
+        {
+            await ConfigureWorkingDirectoryRootAsync(workDirRoot);
+
+            var traceId = Guid.NewGuid();
+            var traceWorkDir = Path.Combine(workDirRoot, traceId.ToString("N"));
+            Directory.CreateDirectory(traceWorkDir);
+            await File.WriteAllTextAsync(Path.Combine(traceWorkDir, "marker.txt"), "hello");
+
+            await SeedTraceAsync(
+                traceId,
+                Guid.NewGuid(),
+                currentState: "Completed",
+                includePendingHitl: false);
+
+            using var client = factory.CreateClient();
+            var response = await client.DeleteAsync($"/api/traces/{traceId}");
+            response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            Directory.Exists(traceWorkDir).Should().BeFalse(
+                "the trace-delete cleanup hook must remove the per-trace workdir");
+        }
+        finally
+        {
+            await ResetGitHostSettingsAsync();
+            try { Directory.Delete(workDirRoot, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task BulkDelete_ShouldRemoveWorkdirsForEveryDeletedTrace()
+    {
+        var workDirRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"codeflow-workdir-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDirRoot);
+
+        try
+        {
+            await ConfigureWorkingDirectoryRootAsync(workDirRoot);
+
+            var deletedTraceA = Guid.NewGuid();
+            var deletedTraceB = Guid.NewGuid();
+            var keptTrace = Guid.NewGuid();
+
+            var workDirA = Path.Combine(workDirRoot, deletedTraceA.ToString("N"));
+            var workDirB = Path.Combine(workDirRoot, deletedTraceB.ToString("N"));
+            var workDirKept = Path.Combine(workDirRoot, keptTrace.ToString("N"));
+            Directory.CreateDirectory(workDirA);
+            Directory.CreateDirectory(workDirB);
+            Directory.CreateDirectory(workDirKept);
+
+            await SeedTraceAsync(
+                deletedTraceA, Guid.NewGuid(),
+                currentState: "Completed",
+                includePendingHitl: false,
+                updatedAtUtc: DateTime.UtcNow.AddDays(-10));
+            await SeedTraceAsync(
+                deletedTraceB, Guid.NewGuid(),
+                currentState: "Completed",
+                includePendingHitl: false,
+                updatedAtUtc: DateTime.UtcNow.AddDays(-10));
+            await SeedTraceAsync(
+                keptTrace, Guid.NewGuid(),
+                currentState: "Completed",
+                includePendingHitl: false,
+                updatedAtUtc: DateTime.UtcNow.AddDays(-2));
+
+            using var client = factory.CreateClient();
+            var response = await client.PostAsJsonAsync("/api/traces/bulk-delete", new
+            {
+                state = "Completed",
+                olderThanDays = 7
+            });
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            Directory.Exists(workDirA).Should().BeFalse();
+            Directory.Exists(workDirB).Should().BeFalse();
+            Directory.Exists(workDirKept).Should().BeTrue(
+                "the recent trace was not deleted, so its workdir must remain");
+        }
+        finally
+        {
+            await ResetGitHostSettingsAsync();
+            try { Directory.Delete(workDirRoot, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Delete_ShouldSucceedWhenWorkingDirectoryRootIsUnconfigured()
+    {
+        await ResetGitHostSettingsAsync();
+
+        var traceId = Guid.NewGuid();
+        await SeedTraceAsync(
+            traceId,
+            Guid.NewGuid(),
+            currentState: "Completed",
+            includePendingHitl: false);
+
+        using var client = factory.CreateClient();
+        var response = await client.DeleteAsync($"/api/traces/{traceId}");
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent,
+            "trace-delete must succeed when no workdir root is configured (non-code workflows)");
+    }
+
+    private async Task ConfigureWorkingDirectoryRootAsync(string root)
+    {
+        using var scope = factory.Services.CreateScope();
+        var repository = scope.ServiceProvider
+            .GetRequiredService<IGitHostSettingsRepository>();
+        await repository.SetAsync(new CodeFlow.Runtime.Workspace.GitHostSettingsWrite(
+            Mode: CodeFlow.Runtime.Workspace.GitHostMode.GitHub,
+            BaseUrl: null,
+            Token: CodeFlow.Runtime.Workspace.GitHostTokenUpdate.Replace("ghp_workdir_test_token"),
+            UpdatedBy: "test",
+            WorkingDirectoryRoot: root));
+    }
+
+    private async Task ResetGitHostSettingsAsync()
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        await db.GitHostSettings.ExecuteDeleteAsync();
+    }
+
+    [Fact]
     public async Task GetArtifact_ShouldServeDescendantArtifactFromAncestorTrace()
     {
         var rootTraceId = Guid.NewGuid();
@@ -697,6 +831,63 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
             State = HitlTaskState.Pending,
             CreatedAtUtc = DateTime.UtcNow,
         };
+    }
+
+    [Fact]
+    public async Task CreateTrace_ShouldSeedGlobalTraceId_AndExposeItToStartNodeScripts()
+    {
+        // Top-level Start nodes must see `global.traceId` (the N-format hex) so any code-aware
+        // workflow can call the `branch_name(prd_title, trace_id)` Scriban filter or read the id
+        // from a Logic-node script. We exercise the wiring by writing global.traceId straight into
+        // the dispatched input artifact via setInput(); the artifact content is the easiest piece
+        // to read back through the existing artifact store.
+        var agentKey = $"traceid-script-writer-{Guid.NewGuid():N}";
+        var workflowKey = $"traceid-script-flow-{Guid.NewGuid():N}";
+
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, agentKey);
+
+        var startId = Guid.NewGuid();
+        var createWorkflow = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = workflowKey,
+            name = "TraceId script flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    inputScript = "setInput(global.traceId);",
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        createWorkflow.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var createTrace = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey,
+            input = "raw input"
+        });
+        createTrace.StatusCode.Should().Be(HttpStatusCode.Created);
+        var tracePayload = await createTrace.Content.ReadFromJsonAsync<CreateTracePayload>();
+        tracePayload.Should().NotBeNull();
+
+        var artifacts = await ReadTraceArtifactsAsync(tracePayload!.TraceId);
+        var override_ = artifacts.SingleOrDefault(a =>
+            a.FileName.EndsWith("scripted-input.txt", StringComparison.Ordinal));
+        override_.Should().NotBeNull("setInput(global.traceId) must produce a scripted-input artifact");
+        override_!.Content.Should().Be(
+            tracePayload.TraceId.ToString("N"),
+            "global.traceId must be the trace's id in N (hex, no hyphens) format");
     }
 
     [Fact]

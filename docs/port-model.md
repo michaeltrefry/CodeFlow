@@ -103,3 +103,8 @@ declared `outputs`. The transformation that produced the new starters lives in
 6. Edges from a `ReviewLoop` node must use a port in the child's terminal-port set ∪
    `{Exhausted, loopDecision}` (or `Failed`).
 7. Two edges may not leave the same `(node, port)` pair.
+
+## See also
+
+- `docs/code-aware-workflows.md` — code-aware workflows use the implicit `Failed` port heavily;
+  the publish agent there is a good case study of falling through to `Failed` on tool errors.

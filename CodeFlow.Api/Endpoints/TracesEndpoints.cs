@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -181,6 +182,7 @@ public static class TracesEndpoints
         CodeFlowDbContext dbContext,
         ICurrentUser currentUser,
         LogicNodeScriptHost scriptHost,
+        IGitHostSettingsRepository gitHostSettingsRepository,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.WorkflowKey))
@@ -253,6 +255,35 @@ public static class TracesEndpoints
                 FileName: request.InputFileName ?? "input.txt"),
             cancellationToken);
 
+        // Seed framework-managed globals before the start-node input script runs so that scripts
+        // and the start agent's prompt template can reference them. These keys are listed in
+        // `ProtectedGlobals.ReservedKeys` and cannot be overwritten by scripts or agents. Top-
+        // level traces only — child sagas inherit via the global snapshot, which means subflow
+        // and ReviewLoop children see the *parent's* traceId (the right answer for branch
+        // naming and any other identity-anchored work).
+        var seededGlobals = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        seededGlobals["traceId"] = JsonDocument.Parse(
+            JsonSerializer.Serialize(traceId.ToString("N"))).RootElement.Clone();
+
+        var gitHostSettings = await gitHostSettingsRepository.GetAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(gitHostSettings?.WorkingDirectoryRoot))
+        {
+            var traceWorkDir = Path.Combine(
+                gitHostSettings.WorkingDirectoryRoot,
+                traceId.ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(traceWorkDir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Results.Problem(
+                    detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}",
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
+            seededGlobals["workDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
+        }
+
         // Mid-workflow dispatches run a node's InputScript via the saga's TryEvaluateInputScriptAsync
         // helper, but a top-level Start has no saga yet at this point, so we evaluate the script
         // here. The corresponding LogicEvaluationRecord is intentionally dropped — capturing it
@@ -260,6 +291,7 @@ public static class TracesEndpoints
         // state from the endpoint. Per-saga hooks still record evaluations for child Start
         // dispatches and every other node.
         var effectiveInputRef = inputRef;
+        var effectiveContextInputs = resolvedInputsResult.Values;
         if (!string.IsNullOrWhiteSpace(startNode.InputScript))
         {
             var artifactJson = await ReadArtifactAsJsonAsync(artifactStore, inputRef, cancellationToken);
@@ -272,7 +304,7 @@ public static class TracesEndpoints
                 input: artifactJson,
                 context: resolvedInputsResult.Values,
                 cancellationToken: cancellationToken,
-                global: null,
+                global: seededGlobals,
                 allowInputOverride: true,
                 requireSetNodePath: false);
 
@@ -296,7 +328,33 @@ public static class TracesEndpoints
                         FileName: $"{startNode.AgentKey}-scripted-input.txt"),
                     cancellationToken);
             }
+
+            // Apply setContext / setGlobal writes from the script onto the published message.
+            // Without this, scripts can override the input artifact but cannot seed shared state
+            // for the start agent — the saga's own input-script handler does the same merge, so
+            // doing it here keeps top-level Start parity with mid-workflow dispatches.
+            if (eval.ContextUpdates.Count > 0)
+            {
+                var merged = new Dictionary<string, JsonElement>(effectiveContextInputs, StringComparer.Ordinal);
+                foreach (var (key, value) in eval.ContextUpdates)
+                {
+                    merged[key] = value;
+                }
+                effectiveContextInputs = merged;
+            }
+
+            if (eval.GlobalUpdates.Count > 0)
+            {
+                foreach (var (key, value) in eval.GlobalUpdates)
+                {
+                    seededGlobals[key] = value;
+                }
+            }
         }
+
+        IReadOnlyDictionary<string, JsonElement>? effectiveGlobalContext = seededGlobals.Count > 0
+            ? seededGlobals
+            : null;
 
         await publishEndpoint.Publish(
             new AgentInvokeRequested(
@@ -308,11 +366,12 @@ public static class TracesEndpoints
                 AgentKey: startNode.AgentKey,
                 AgentVersion: startAgentVersion,
                 InputRef: effectiveInputRef,
-                ContextInputs: resolvedInputsResult.Values,
+                ContextInputs: effectiveContextInputs,
                 CorrelationHeaders: new Dictionary<string, string>
                 {
                     ["x-submitted-by"] = currentUser.Id ?? "unknown"
-                }),
+                },
+                GlobalContext: effectiveGlobalContext),
             cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -365,6 +424,8 @@ public static class TracesEndpoints
     private static async Task<IResult> DeleteTraceAsync(
         Guid id,
         CodeFlowDbContext dbContext,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var saga = await dbContext.WorkflowSagas
@@ -383,7 +444,7 @@ public static class TracesEndpoints
             });
         }
 
-        await DeleteTracesAsync(dbContext, [saga], cancellationToken);
+        await DeleteTracesAsync(dbContext, [saga], gitHostSettingsRepository, loggerFactory, cancellationToken);
 
         return Results.NoContent();
     }
@@ -391,6 +452,8 @@ public static class TracesEndpoints
     private static async Task<IResult> BulkDeleteTracesAsync(
         BulkDeleteTracesRequest request,
         CodeFlowDbContext dbContext,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (request.OlderThanDays < 1 || request.OlderThanDays > 3650)
@@ -425,7 +488,8 @@ public static class TracesEndpoints
         }
 
         var sagas = await query.ToListAsync(cancellationToken);
-        var deletedCount = await DeleteTracesAsync(dbContext, sagas, cancellationToken);
+        var deletedCount = await DeleteTracesAsync(
+            dbContext, sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
 
         return Results.Ok(new BulkDeleteTracesResponse(deletedCount));
     }
@@ -1104,6 +1168,8 @@ public static class TracesEndpoints
     private static async Task<int> DeleteTracesAsync(
         CodeFlowDbContext dbContext,
         IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (sagas.Count == 0)
@@ -1141,7 +1207,54 @@ public static class TracesEndpoints
         dbContext.WorkflowSagas.RemoveRange(sagas);
         await dbContext.SaveChangesAsync(cancellationToken);
 
+        await TryRemoveTraceWorkdirsAsync(
+            sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
+
         return sagas.Count;
+    }
+
+    // Best-effort cleanup of per-trace working directories after the DB rows have been removed.
+    // Subflow children share the parent's workdir, so only top-level sagas trigger the delete.
+    // All failures (missing config, unset root, missing dir, IO/permission errors) are swallowed
+    // and logged — the API call must not fail because the filesystem cleanup couldn't complete.
+    // Slice F (periodic sweep) catches anything left behind.
+    private static async Task TryRemoveTraceWorkdirsAsync(
+        IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var topLevel = sagas.Where(s => s.ParentTraceId is null).ToArray();
+        if (topLevel.Length == 0)
+        {
+            return;
+        }
+
+        Runtime.Workspace.GitHostSettings? settings;
+        try
+        {
+            settings = await gitHostSettingsRepository.GetAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            loggerFactory.CreateLogger(typeof(TracesEndpoints))
+                .LogWarning(ex, "Could not read GitHostSettings for trace-delete workdir cleanup; skipping.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings?.WorkingDirectoryRoot))
+        {
+            return;
+        }
+
+        var logger = loggerFactory.CreateLogger(typeof(TracesEndpoints));
+        foreach (var saga in topLevel)
+        {
+            CodeFlow.Runtime.Workspace.TraceWorkdirCleanup.TryRemove(
+                settings.WorkingDirectoryRoot,
+                saga.TraceId,
+                logger);
+        }
     }
 }
 

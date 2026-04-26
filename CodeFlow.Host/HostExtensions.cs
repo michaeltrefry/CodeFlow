@@ -107,6 +107,14 @@ public static class HostExtensions
             client.Timeout = TimeSpan.FromSeconds(15);
         });
 
+        services.AddHttpClient(VcsProviderFactory.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddSingleton<IVcsProviderFactory, VcsProviderFactory>();
+
+        services.AddHostedService<WorkdirSweepService>();
+
         services.AddSingleton<DbBackedLlmProviderConfigResolver>();
         services.AddSingleton<ILlmProviderConfigResolver>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());
         services.AddSingleton<ILlmProviderConfigInvalidator>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());
@@ -131,7 +139,9 @@ public static class HostExtensions
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
                 workspaceTools: new WorkspaceHostToolService(
-                    sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value)));
+                    sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
+                vcsTools: new VcsHostToolService(
+                    sp.GetRequiredService<IVcsProviderFactory>())));
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 

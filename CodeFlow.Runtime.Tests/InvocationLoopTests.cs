@@ -54,6 +54,91 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldAddToolOutputForRejectedEmptyContentSubmit_BeforeRePromptingUser()
+    {
+        // Regression: the empty-content retry path used to push only a User reminder back into
+        // the transcript, leaving the prior assistant turn's `submit` function_call without a
+        // matching `function_call_output`. The next request to OpenAI's Responses API failed
+        // with "No tool output found for function call <id>". The fix adds a Tool message
+        // (function_call_output) for the rejected submit before the User reminder.
+        var capturedSecondRequest = (InvocationRequest?)null;
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_submit_first", "submit",
+                            new JsonObject { ["decision"] = "Continue" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                capturedSecondRequest = request;
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Real content this time.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit_second", "submit",
+                                new JsonObject { ["decision"] = "Continue" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Interview me.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        capturedSecondRequest.Should().NotBeNull("the second round must occur for the retry to land");
+        var messages = capturedSecondRequest!.Messages;
+
+        // Sanity: prior assistant turn with the rejected submit is in the transcript.
+        var assistantSubmit = messages.Single(m =>
+            m.Role == ChatMessageRole.Assistant
+            && m.ToolCalls is not null
+            && m.ToolCalls.Any(t => t.Id == "call_submit_first"));
+        assistantSubmit.Should().NotBeNull();
+
+        // The fix: a Tool message paired by ToolCallId must follow the assistant turn before the
+        // User reminder, satisfying the Responses-API requirement that every prior function_call
+        // has a function_call_output.
+        var toolOutputs = messages
+            .Where(m => m.Role == ChatMessageRole.Tool && m.ToolCallId == "call_submit_first")
+            .ToList();
+        toolOutputs.Should().HaveCount(1,
+            "the rejected submit must have a matching function_call_output to satisfy the provider protocol");
+        toolOutputs[0].IsError.Should().BeTrue();
+
+        // The User reminder is still pushed back so the model knows what to fix. (Search by
+        // content rather than position — the InvocationRequest holds the transcript by
+        // reference, so the loop's later writes are visible on capturedSecondRequest.Messages.)
+        messages.Should().Contain(m =>
+            m.Role == ChatMessageRole.User
+            && m.Content != null
+            && m.Content.Contains("without writing any assistant message"));
+
+        // Order check: the rejected submit's tool output and the User reminder must both come
+        // BEFORE the next assistant turn (round 2's response). Otherwise the protocol breaks.
+        var indexed = messages.Select((m, i) => (m, i)).ToList();
+        var rejectedSubmitIdx = indexed.Single(t => ReferenceEquals(t.m, assistantSubmit)).i;
+        var toolOutputIdx = indexed.Single(t =>
+            t.m.Role == ChatMessageRole.Tool && t.m.ToolCallId == "call_submit_first").i;
+        var userReminderIdx = indexed.Single(t =>
+            t.m.Role == ChatMessageRole.User
+            && t.m.Content != null
+            && t.m.Content.Contains("without writing any assistant message")).i;
+        toolOutputIdx.Should().BeGreaterThan(rejectedSubmitIdx);
+        userReminderIdx.Should().BeGreaterThan(toolOutputIdx);
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldAcceptEmptyContent_WhenSubmittingFailedPort()
     {
         // The Failed port is the implicit error sink — failure messages naturally have
@@ -203,6 +288,49 @@ public sealed class InvocationLoopTests
         result.ContextUpdates!["foo"].GetInt32().Should().Be(42);
         result.GlobalUpdates.Should().NotBeNull();
         result.GlobalUpdates!["bar"].GetString().Should().Be("hello");
+    }
+
+    [Fact]
+    public async Task RunAsync_SetGlobalReservedKey_ReturnsToolErrorAndDoesNotPersist()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Trying to overwrite workDir.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_reserved", "setGlobal",
+                            new JsonObject { ["key"] = "workDir", ["value"] = "/etc/evil" }),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Continue" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Try the reserved key.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        result.Decision.PortName.Should().Be("Continue",
+            "the rejected setGlobal returns an error tool result; the loop continues to submit");
+
+        var setGlobalToolMessage = result.Transcript
+            .OfType<ChatMessage>()
+            .FirstOrDefault(m => m.Role == ChatMessageRole.Tool
+                && m.ToolCallId == "call_reserved");
+        setGlobalToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
+        setGlobalToolMessage!.Content.Should().Contain("workDir");
+        setGlobalToolMessage.Content.Should().Contain("framework-managed global");
+
+        if (result.GlobalUpdates is { } globals)
+        {
+            globals.ContainsKey("workDir").Should().BeFalse(
+                "the rejected write must not be persisted into the global bag");
+        }
     }
 
     [Fact]

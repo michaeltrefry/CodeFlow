@@ -14,6 +14,10 @@ public sealed class GitHostSettingsEntity
 
     public byte[] EncryptedToken { get; set; } = [];
 
+    public string? WorkingDirectoryRoot { get; set; }
+
+    public int? WorkingDirectoryMaxAgeDays { get; set; }
+
     public DateTime? LastVerifiedAtUtc { get; set; }
 
     public string? UpdatedBy { get; set; }

@@ -2,8 +2,10 @@ using CodeFlow.Contracts;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
+using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 
@@ -113,7 +115,104 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                                 .TransitionTo(Failed))));
 
         WhenEnter(Completed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Completed")));
+        WhenEnter(Completed, binder => binder.ThenAsync(TryCleanupHappyPathWorkdirAsync));
         WhenEnter(Failed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Failed")));
+    }
+
+    /// <summary>
+    /// Happy-path workdir cleanup. Fires when a top-level saga reaches <see cref="Completed"/>
+    /// AND every entry in <c>context.repositories</c> has a non-empty <c>prUrl</c> (set by the
+    /// publish agent via <c>setContext</c>). If either condition fails — child saga, no
+    /// repositories array, or any repo missing a PR URL — the workdir is left in place so an
+    /// operator can inspect what went wrong. Slice F's periodic sweep catches anything that's
+    /// genuinely orphaned past the configured TTL.
+    /// </summary>
+    private static async Task TryCleanupHappyPathWorkdirAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context)
+    {
+        var saga = context.Saga;
+
+        // Subflow children share the parent's workdir — cleanup happens once at the top level.
+        if (saga.ParentTraceId is not null)
+        {
+            return;
+        }
+
+        if (!AllRepositoriesHavePrUrl(saga.InputsJson))
+        {
+            return;
+        }
+
+        var services = context.GetPayload<IServiceProvider>();
+        var settingsRepo = services.GetRequiredService<IGitHostSettingsRepository>();
+        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
+
+        Runtime.Workspace.GitHostSettings? settings;
+        try
+        {
+            settings = await settingsRepo.GetAsync();
+        }
+        catch (Exception ex)
+        {
+            loggerFactory.CreateLogger<WorkflowSagaStateMachine>().LogWarning(
+                ex,
+                "Could not read GitHostSettings for happy-path workdir cleanup of trace {TraceId}; skipping.",
+                saga.TraceId);
+            return;
+        }
+
+        TraceWorkdirCleanup.TryRemove(
+            settings?.WorkingDirectoryRoot,
+            saga.TraceId,
+            loggerFactory.CreateLogger<WorkflowSagaStateMachine>());
+    }
+
+    /// <summary>
+    /// Returns true iff <paramref name="inputsJson"/> contains a non-empty <c>repositories</c>
+    /// array AND every entry has a non-empty <c>prUrl</c> string. Any other shape returns false
+    /// (i.e. workflow had no repos, or some repo failed to publish, or the field is missing).
+    /// Public for unit-testability — small pure predicate, no security implications.
+    /// </summary>
+    public static bool AllRepositoriesHavePrUrl(string? inputsJson)
+    {
+        if (string.IsNullOrWhiteSpace(inputsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(inputsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!document.RootElement.TryGetProperty("repositories", out var repos)
+                || repos.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            var seen = false;
+            foreach (var entry in repos.EnumerateArray())
+            {
+                seen = true;
+                if (entry.ValueKind != JsonValueKind.Object
+                    || !entry.TryGetProperty("prUrl", out var prUrl)
+                    || prUrl.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(prUrl.GetString()))
+                {
+                    return false;
+                }
+            }
+
+            return seen;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)
@@ -127,6 +226,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
+        if (message.GlobalContext is not null)
+        {
+            saga.GlobalInputsJson = SerializeContextInputs(message.GlobalContext);
+        }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
         if (saga.CreatedAtUtc == default)

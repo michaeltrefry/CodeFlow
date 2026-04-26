@@ -34,6 +34,20 @@ public sealed class ScribanTemplateRendererTests
     }
 
     [Fact]
+    public void Render_ExposesBranchNameHelperToTemplates()
+    {
+        var scope = new ScriptObject
+        {
+            ["prd_title"] = "Add todo list",
+            ["trace_id"] = "3b70fc02-1234-5678-9abc-def012345678"
+        };
+
+        var result = renderer.Render("{{ branch_name prd_title trace_id }}", scope);
+
+        result.Should().Be("add-todo-list-3b70fc02");
+    }
+
+    [Fact]
     public void Render_ShouldThrowPromptTemplateException_WhenTemplateIsMalformed()
     {
         var scope = new ScriptObject();

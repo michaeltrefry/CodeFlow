@@ -46,6 +46,21 @@ import { CardComponent } from '../../../ui/card.component';
           }
 
           <div class="field span-2">
+            <span class="field-label">Working directory root</span>
+            <input class="input mono" [ngModel]="workingDirectoryRoot()" (ngModelChange)="workingDirectoryRoot.set($event)"
+                   name="workingDirectoryRoot" placeholder="/var/lib/codeflow/workdirs" />
+            <span class="field-hint">Absolute path on the server. Code-aware workflows materialize per-trace working directories under <code>{{ '{root}/{traceId}/' }}</code>. Leave blank to disable.</span>
+          </div>
+
+          <div class="field">
+            <span class="field-label">Workdir TTL (days)</span>
+            <input class="input mono" type="number" min="1"
+                   [ngModel]="workingDirectoryMaxAgeDays()" (ngModelChange)="workingDirectoryMaxAgeDays.set($event)"
+                   name="workingDirectoryMaxAgeDays" placeholder="14" />
+            <span class="field-hint">How long an orphan workdir survives before the periodic sweep deletes it. Default 14 days when unset.</span>
+          </div>
+
+          <div class="field span-2">
             <span class="field-label">Personal access token</span>
             @if (hasToken() && !replacingToken()) {
               <div class="row">
@@ -120,6 +135,8 @@ export class GitHostSettingsComponent implements OnInit {
 
   protected readonly mode = signal<GitHostMode>('GitHub');
   protected readonly baseUrl = signal<string>('');
+  protected readonly workingDirectoryRoot = signal<string>('');
+  protected readonly workingDirectoryMaxAgeDays = signal<number | null>(null);
   protected readonly hasToken = signal(false);
   protected readonly replacingToken = signal(false);
   protected readonly tokenValue = signal<string>('');
@@ -169,10 +186,14 @@ export class GitHostSettingsComponent implements OnInit {
     this.saving.set(true);
     this.error.set(null);
     const isReplacing = !this.hasToken() || this.replacingToken();
+    const trimmedRoot = this.workingDirectoryRoot()?.trim() ?? '';
+    const ttl = this.workingDirectoryMaxAgeDays();
     this.api
       .set({
         mode: this.mode(),
         baseUrl: this.mode() === 'GitLab' ? this.baseUrl() : null,
+        workingDirectoryRoot: trimmedRoot.length > 0 ? trimmedRoot : null,
+        workingDirectoryMaxAgeDays: ttl != null && ttl > 0 ? ttl : null,
         token: isReplacing
           ? { action: 'Replace', value: this.tokenValue() }
           : { action: 'Preserve' },
@@ -228,15 +249,36 @@ export class GitHostSettingsComponent implements OnInit {
   private applyResponse(response: GitHostSettingsResponse): void {
     this.mode.set(response.mode);
     this.baseUrl.set(response.baseUrl ?? '');
+    this.workingDirectoryRoot.set(response.workingDirectoryRoot ?? '');
+    this.workingDirectoryMaxAgeDays.set(response.workingDirectoryMaxAgeDays ?? null);
     this.hasToken.set(response.hasToken);
     this.lastVerifiedAtUtc.set(response.lastVerifiedAtUtc ?? null);
   }
 
   private formatError(err: unknown): string {
+    // ASP.NET ValidationProblemDetails: { errors: { fieldName: ["msg", ...], ... }, title, ... }.
+    // Surface field-level messages (joined) when present so workingDirectoryRoot etc. show
+    // their specific complaint rather than the generic "One or more validation errors occurred."
     if (err && typeof err === 'object' && 'error' in err) {
       const body = (err as { error: unknown }).error;
-      if (body && typeof body === 'object' && 'title' in body) {
-        return String((body as { title: unknown }).title);
+      if (body && typeof body === 'object') {
+        const errors = (body as { errors?: unknown }).errors;
+        if (errors && typeof errors === 'object') {
+          const messages: string[] = [];
+          for (const value of Object.values(errors as Record<string, unknown>)) {
+            if (Array.isArray(value)) {
+              for (const m of value) {
+                if (typeof m === 'string') messages.push(m);
+              }
+            }
+          }
+          if (messages.length > 0) {
+            return messages.join('; ');
+          }
+        }
+        if ('title' in body) {
+          return String((body as { title: unknown }).title);
+        }
       }
       if (typeof body === 'string') {
         return body;

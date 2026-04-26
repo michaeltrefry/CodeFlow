@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using CodeFlow.Runtime;
 using Jint;
 using Jint.Runtime;
 using Microsoft.Extensions.Caching.Memory;
@@ -289,6 +290,22 @@ public sealed class LogicNodeScriptHost
 
             var contextUpdates = ParseContextUpdates(updatesJson);
             var globalUpdates = ParseContextUpdates(globalUpdatesJson);
+
+            // Reserved-global enforcement runs after parsing so the failure message can name the
+            // offending key. The script has already finished — pending writes are discarded
+            // because we return Fail(...) and the caller drops the result on failure.
+            foreach (var reservedKey in globalUpdates.Keys)
+            {
+                if (ProtectedGlobals.IsReserved(reservedKey))
+                {
+                    return LogicNodeEvaluationResult.Fail(
+                        LogicNodeFailureKind.ReservedGlobalKeyWrite,
+                        $"setGlobal('{reservedKey}', ...) is rejected: '{reservedKey}' is a "
+                        + "framework-managed global and cannot be overwritten by scripts.",
+                        logs,
+                        stopwatch.Elapsed);
+                }
+            }
 
             if (chosenPort is null)
             {
