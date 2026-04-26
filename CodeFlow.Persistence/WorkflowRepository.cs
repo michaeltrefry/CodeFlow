@@ -171,7 +171,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         ToNodeId = edge.ToNodeId,
                         ToPort = string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                         RotatesRound = edge.RotatesRound,
-                        SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder
+                        SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder,
+                        IntentionalBackedge = edge.IntentionalBackedge,
                     })
                     .ToList(),
                 Inputs = draft.Inputs
@@ -273,7 +274,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.ToNodeId,
             string.IsNullOrWhiteSpace(entity.ToPort) ? WorkflowEdge.DefaultInputPort : entity.ToPort,
             entity.RotatesRound,
-            entity.SortOrder);
+            entity.SortOrder,
+            entity.IntentionalBackedge);
     }
 
     private static WorkflowInput Map(WorkflowInputEntity entity)

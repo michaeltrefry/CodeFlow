@@ -63,7 +63,8 @@ public sealed record WorkflowEdgeDraft(
     Guid ToNodeId,
     string ToPort,
     bool RotatesRound,
-    int SortOrder);
+    int SortOrder,
+    bool IntentionalBackedge = false);
 
 public sealed record WorkflowInputDraft(
     string Key,

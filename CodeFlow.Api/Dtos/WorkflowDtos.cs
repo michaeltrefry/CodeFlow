@@ -34,7 +34,8 @@ public sealed record WorkflowEdgeDto(
     Guid ToNodeId,
     string ToPort,
     bool RotatesRound,
-    int SortOrder);
+    int SortOrder,
+    bool IntentionalBackedge = false);
 
 public sealed record WorkflowInputDto(
     string Key,

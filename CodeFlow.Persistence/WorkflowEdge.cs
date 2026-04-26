@@ -6,7 +6,8 @@ public sealed record WorkflowEdge(
     Guid ToNodeId,
     string ToPort,
     bool RotatesRound,
-    int SortOrder)
+    int SortOrder,
+    bool IntentionalBackedge = false)
 {
     public const string DefaultInputPort = "in";
 }

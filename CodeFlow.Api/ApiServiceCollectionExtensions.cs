@@ -62,6 +62,7 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IWorkflowValidationRule, StartNodeAdvisoryRule>();
         services.AddScoped<IWorkflowValidationRule, PortCouplingRule>();
         services.AddScoped<IWorkflowValidationRule, RoleAssignmentRule>();
+        services.AddScoped<IWorkflowValidationRule, BackedgeRule>();
         services.AddScoped<WorkflowValidationPipeline>();
 
         // Authoring telemetry (O1). Singleton sink — stateless logger wrapper with stable event

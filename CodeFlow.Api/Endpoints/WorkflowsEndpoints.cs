@@ -632,7 +632,8 @@ public static class WorkflowsEndpoints
                     ToNodeId: edge.ToNodeId,
                     ToPort: string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                     RotatesRound: edge.RotatesRound,
-                    SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder))
+                    SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder,
+                    IntentionalBackedge: edge.IntentionalBackedge))
                 .ToArray(),
             Inputs: inputs is null
                 ? Array.Empty<WorkflowInputDraft>()
@@ -690,7 +691,8 @@ public static class WorkflowsEndpoints
                 ToNodeId: edge.ToNodeId,
                 ToPort: edge.ToPort,
                 RotatesRound: edge.RotatesRound,
-                SortOrder: edge.SortOrder))
+                SortOrder: edge.SortOrder,
+                IntentionalBackedge: edge.IntentionalBackedge))
             .ToArray(),
         Inputs: workflow.Inputs
             .Select(input => new WorkflowInputDto(
