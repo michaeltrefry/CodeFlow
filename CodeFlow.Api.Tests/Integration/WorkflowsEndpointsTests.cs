@@ -75,7 +75,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Approved", "Rejected", "Failed" },
+                    outputPorts = new[] { "Completed", "Approved", "Rejected" },
                     layoutX = 0,
                     layoutY = 0
                 },
@@ -86,7 +86,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-reviewer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Approved", "Rejected", "Failed" },
+                    outputPorts = new[] { "Completed", "Approved", "Rejected" },
                     layoutX = 200,
                     layoutY = 0
                 }
@@ -137,7 +137,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-export-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -189,7 +189,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-preview-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -235,7 +235,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-apply-source-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -306,7 +306,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-conflict-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -360,7 +360,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-missing-closure-writer",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -405,7 +405,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey,
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -439,7 +439,21 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var response = await client.PostAsJsonAsync("/api/agents", new
         {
             key,
-            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Do work." }
+            config = new
+            {
+                provider = "openai",
+                model = "gpt-5",
+                systemPrompt = "Do work.",
+                outputs = new object[]
+                {
+                    new { kind = "Completed" },
+                    new { kind = "Approved" },
+                    new { kind = "Rejected" },
+                    new { kind = "Escalated" },
+                    new { kind = "Accept" },
+                    new { kind = "Reject" }
+                }
+            }
         });
         response.EnsureSuccessStatusCode();
     }
@@ -557,7 +571,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-accept-flow",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 200,
                     layoutY = 0
                 },
@@ -568,7 +582,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey = "wf-reject-flow",
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 200,
                     layoutY = 200
                 }
@@ -590,7 +604,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var reloadedAccept = detail.Nodes.Single(n => n.Id == acceptId);
         reloadedAccept.OutputScript.Should().BeNull();
-        reloadedAccept.OutputPorts.Should().Equal("Completed", "Failed");
+        reloadedAccept.OutputPorts.Should().Equal("Completed");
     }
 
     [Fact]
@@ -756,7 +770,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = (string?)null,
@@ -796,7 +810,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "does-not-exist",
@@ -860,7 +874,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "child-for-pinning",
@@ -900,7 +914,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "self-ref-flow",
@@ -972,7 +986,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = subflowNodeId,
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "child-for-invalid-port",
@@ -1051,7 +1065,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = subflowNodeId,
                     kind = "Subflow",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Completed", "Failed", "Escalated" },
+                    outputPorts = new[] { "Completed", "Escalated" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "valid-child-flow",
@@ -1095,7 +1109,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "ReviewLoop",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    outputPorts = new[] { "Approved" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "any-child",
@@ -1140,7 +1154,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "ReviewLoop",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    outputPorts = new[] { "Approved" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "any-child",
@@ -1181,7 +1195,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = Guid.NewGuid(),
                     kind = "ReviewLoop",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    outputPorts = new[] { "Approved" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "rl-self-ref",
@@ -1249,7 +1263,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     id = reviewLoopNodeId,
                     kind = "ReviewLoop",
                     agentKey = (string?)null,
-                    outputPorts = new[] { "Approved", "Exhausted", "Failed" },
+                    outputPorts = new[] { "Approved" },
                     layoutX = 250,
                     layoutY = 0,
                     subflowKey = "rl-valid-child",
