@@ -121,6 +121,25 @@ Caddy automatically sets `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forward
 
 After editing, reload Caddy: `caddy reload --config /etc/caddy/Caddyfile`.
 
+### Optional: expose the API on a dedicated subdomain for M2M clients
+
+If other apps need to call CodeFlow's API server-to-server (CI bots, sibling services, scheduled jobs), it's cleaner to give the API its own subdomain so the URLs are unambiguous and you can rate-limit / monitor it independently:
+
+```caddyfile
+codeflow-api.trefry.net {
+    reverse_proxy 127.0.0.1:5080 {
+        flush_interval -1
+        transport http {
+            read_timeout 1h
+        }
+    }
+}
+```
+
+The exposed surface is fully OAuth-protected — Slice 1's startup guard refuses to start the API in production unless `Auth__Authority` and `Auth__Audience` are set, and every endpoint requires an authenticated principal. External callers authenticate with Keycloak service-account tokens (see [docs/deployment-keycloak.md](deployment-keycloak.md#machine-to-machine-clients-other-apps-calling-codeflows-api)).
+
+CORS does NOT need to be widened for server-to-server callers (CORS is a browser-only mechanism). Only add origins to `Cors__AllowedOrigins__N` if external **browser** SPAs need to call the API cross-origin.
+
 ---
 
 ## GitHub repository configuration

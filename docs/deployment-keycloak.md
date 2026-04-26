@@ -123,6 +123,39 @@ Permission matrix (defined in `CodeFlowApiDefaults.PermissionRoleMatrix`, summar
 
 ---
 
+## Machine-to-machine clients (other apps calling CodeFlow's API)
+
+If you want to call `/api/*` from another service (a CI bot, a sibling app, a scheduled job), do NOT reuse `codeflow-ui`. Create a dedicated **service-account client** per external app:
+
+| Field | Value |
+|---|---|
+| Client ID | e.g. `codeflow-bot-jenkins`, `codeflow-bot-ingest`, etc. — one per caller |
+| Client authentication | **On** (confidential) |
+| Authorization | Off |
+| Authentication flow | ✅ **Service accounts roles** only — turn off Standard flow, Direct grants, Implicit, OAuth 2.0 Device, OIDC CIBA |
+
+Then on this client:
+
+1. **Client scopes** tab → click `<client>-dedicated` → **Mappers** → **Add mapper → By configuration**:
+   - **Audience** mapper exactly like the one on `codeflow-ui`: Included Client Audience = `codeflow-api`, Add to access token = ON. (Without this the API will 401 the bot's tokens.)
+   - **User Realm Role** mapper if the bot needs roles: claim name `roles`, multivalued ON. Service accounts can have realm roles assigned.
+2. **Service account roles** tab → click **Assign role** → pick whichever realm roles this bot needs (`viewer`, `author`, `operator`, `admin`). The CodeFlow permission matrix from earlier in this doc applies identically.
+3. **Credentials** tab → copy the Client secret for the bot's deployment config.
+
+The bot then mints tokens with the OAuth 2.0 client_credentials grant:
+
+```bash
+curl -s -X POST https://identity.trefry.net/realms/trefry/protocol/openid-connect/token \
+  -d 'grant_type=client_credentials' \
+  -d 'client_id=codeflow-bot-jenkins' \
+  -d 'client_secret=<from Credentials tab>' \
+  | jq -r .access_token
+```
+
+…and uses each token until it expires (typical 5–60 minutes; tunable on the client's Advanced tab → Access Token Lifespan). Tokens are JWT and can be inspected at jwt.io to confirm `aud` includes `codeflow-api` and `roles` matches what was assigned.
+
+**Why per-app and not a shared service account?** Per-app clients give you a kill switch (revoke one client without affecting others), per-app role scoping (the ingest bot doesn't need admin), and per-app audit trail in Keycloak's events log.
+
 ## Verification checklist
 
 After saving the above:
