@@ -46,6 +46,15 @@ Every agent has a built-in `submit` tool that terminates its turn. The submit ca
 
 If the model calls submit with empty content, the loop pushes back a reminder and burns a round. Don't tempt this — make it explicit.
 
+For sentinel ports (e.g. `Cancelled`, `Skip`) where the decision is the meaning and downstream consumers don't read the artifact body, set `contentOptional: true` on the output declaration:
+
+```json
+{ "kind": "Approved" },
+{ "kind": "Cancelled", "contentOptional": true }
+```
+
+The implicit `Failed` port is always content-optional regardless of the flag.
+
 ### Mid-turn `setWorkflow` / `setContext`
 
 The `setWorkflow` and `setContext` tools are also built-in. Use them to write small, structured values. Examples from the PRD pipeline: `setWorkflow("requestKind", "NewProject")`, `setWorkflow("requestSummary", "<one-paragraph>")`.

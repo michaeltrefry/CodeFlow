@@ -98,7 +98,15 @@ internal static class AgentConfigJson
                     payloadExample = exampleElement.Clone();
                 }
 
-                result.Add(new AgentOutputDeclaration(kind.Trim(), description, payloadExample));
+                var contentOptional = false;
+                if (element.TryGetProperty("contentOptional", out var contentOptionalElement)
+                    && (contentOptionalElement.ValueKind == JsonValueKind.True
+                        || contentOptionalElement.ValueKind == JsonValueKind.False))
+                {
+                    contentOptional = contentOptionalElement.GetBoolean();
+                }
+
+                result.Add(new AgentOutputDeclaration(kind.Trim(), description, payloadExample, contentOptional));
             }
 
             return result;

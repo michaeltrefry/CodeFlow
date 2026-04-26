@@ -167,6 +167,134 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldAcceptEmptyContent_WhenSubmittingPortFlaggedContentOptional()
+    {
+        // V2: sentinel ports like Cancelled/Skip declare ContentOptional=true so the empty-
+        // content guard skips them. The decision itself carries the meaning; downstream
+        // consumers don't read the artifact body.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_cancel", "submit",
+                            new JsonObject { ["decision"] = "Cancelled" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Cancel if you must.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Cancelled", null, null, ContentOptional: true)
+            ]));
+
+        result.Decision.PortName.Should().Be("Cancelled");
+        modelClient.InvocationCount.Should().Be(1, "no retry should fire when the port is content-optional");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldStillRejectEmptyContent_OnNonOptionalPort_WhenSiblingIsContentOptional()
+    {
+        // Mirror of the prior test: the sibling Approved port is NOT content-optional, so an
+        // empty submit there still triggers the retry. Confirms the per-port lookup is correct
+        // (not "any contentOptional port disables the guard for the whole agent").
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_approve", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Real artifact body.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_approve2", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Approve.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Cancelled", null, null, ContentOptional: true)
+            ]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.Output.Should().Be("Real artifact body.");
+        modelClient.InvocationCount.Should().Be(2, "the empty Approved submit must trigger one retry");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNameTheOffendingPort_InEmptyContentToolError()
+    {
+        // V2 acceptance: the tool error returned to the model names the port and tells the
+        // model to write content BEFORE submit. Helps the LLM self-correct in one turn.
+        InvocationRequest? capturedSecondRequest = null;
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_first", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                capturedSecondRequest = request;
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Body content.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_second", "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Approve.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        capturedSecondRequest.Should().NotBeNull();
+        var toolMessage = capturedSecondRequest!.Messages.Single(m =>
+            m.Role == ChatMessageRole.Tool && m.ToolCallId == "call_first");
+        toolMessage.IsError.Should().BeTrue();
+        toolMessage.Content.Should().Contain("\"Approved\"");
+        toolMessage.Content.Should().Contain("non-empty");
+        toolMessage.Content.Should().Contain("BEFORE calling submit");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldRePromptOnNoToolCall_WhenDeclaredOutputsExist()
     {
         // Real bug from prd-intake testing: an interviewer with declared outputs

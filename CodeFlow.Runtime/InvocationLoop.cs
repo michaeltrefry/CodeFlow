@@ -175,11 +175,18 @@ public sealed class InvocationLoop
         var budget = request.Budget ?? InvocationLoopBudget.Default;
         var startedAt = nowProvider();
         var transcript = request.Messages.ToList();
-        var declaredPortNames = (request.DeclaredOutputs ?? [])
-            .Select(o => o.Kind)
-            .Where(static name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.Ordinal)
+        var declaredOutputs = (request.DeclaredOutputs ?? [])
+            .Where(static o => !string.IsNullOrWhiteSpace(o.Kind))
+            .GroupBy(o => o.Kind, StringComparer.Ordinal)
+            .Select(g => g.First())
             .ToArray();
+        var declaredPortNames = declaredOutputs.Select(o => o.Kind).ToArray();
+        // Per-port content-optional opt-out (V2). Sentinel ports like Cancelled/Skip whose
+        // decision carries the meaning may declare ContentOptional=true so the empty-content
+        // submit guard skips them.
+        var contentOptionalByPort = declaredOutputs
+            .Where(o => o.ContentOptional)
+            .ToDictionary(o => o.Kind, _ => true, StringComparer.Ordinal);
         var submitTool = BuildSubmitTool(declaredPortNames);
         var externalTools = toolRegistry.AvailableTools(request.ToolAccessPolicy);
         var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetWorkflowTool };
@@ -360,16 +367,19 @@ public sealed class InvocationLoop
                     {
                         // Reject terminal submits with empty/whitespace assistant content when
                         // the agent has declared outputs and didn't choose the implicit Failed
-                        // port. Without this guard, an LLM that calls `submit` on its very first
-                        // turn (no content, just a tool call) produces a 0-byte artifact —
-                        // downstream agents see empty input, HITL forms render blank fields, and
-                        // the workflow proceeds in a broken state with no diagnostic. Push a
+                        // port (or another port the author flagged content-optional). Without
+                        // this guard, an LLM that calls `submit` on its very first turn (no
+                        // content, just a tool call) produces a 0-byte artifact — downstream
+                        // agents see empty input, HITL forms render blank fields, and the
+                        // workflow proceeds in a broken state with no diagnostic. Push a
                         // reminder back into the transcript and let the loop continue; the LLM
                         // gets another shot at producing real output.
                         var isFailedPort = string.Equals(
                             terminalResult.PortName, "Failed", StringComparison.Ordinal);
+                        var isContentOptionalPort = contentOptionalByPort.ContainsKey(terminalResult.PortName);
                         if (declaredPortNames.Length > 0
                             && !isFailedPort
+                            && !isContentOptionalPort
                             && string.IsNullOrWhiteSpace(lastAssistantOutput))
                         {
                             // Without this tool message, the next round's request would carry the
@@ -378,9 +388,13 @@ public sealed class InvocationLoop
                             // request: "No tool output found for function call <id>". Provider
                             // protocol requires every prior `function_call` to be paired with a
                             // `function_call_output` before the next assistant turn.
+                            var toolErrorMessage =
+                                $"Port \"{terminalResult.PortName}\" requires non-empty assistant "
+                                + "message content. Write your output as message text BEFORE "
+                                + "calling submit.";
                             transcript.Add(new ChatMessage(
                                 ChatMessageRole.Tool,
-                                "missing assistant content; retry",
+                                toolErrorMessage,
                                 ToolCallId: toolCall.Id,
                                 IsError: true));
                             transcript.Add(new ChatMessage(
@@ -395,7 +409,7 @@ public sealed class InvocationLoop
                             {
                                 await observer.OnToolCallCompletedAsync(
                                     toolCall,
-                                    new ToolResult(toolCall.Id, "missing assistant content; retry", IsError: true),
+                                    new ToolResult(toolCall.Id, toolErrorMessage, IsError: true),
                                     cancellationToken);
                             }
                             if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
