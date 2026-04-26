@@ -18,11 +18,32 @@ public sealed record WorkflowPackage(
     IReadOnlyList<WorkflowPackageAgentRoleAssignment> AgentRoleAssignments,
     IReadOnlyList<WorkflowPackageRole> Roles,
     IReadOnlyList<WorkflowPackageSkill> Skills,
-    IReadOnlyList<WorkflowPackageMcpServer> McpServers);
+    IReadOnlyList<WorkflowPackageMcpServer> McpServers,
+    WorkflowPackageManifest? Manifest = null);
 
 public sealed record WorkflowPackageMetadata(
     string ExportedFrom,
     DateTime ExportedAtUtc);
+
+/// <summary>
+/// Flat enumeration of every (key, version) included in the package. The same data is implied
+/// by the typed collections on <see cref="WorkflowPackage"/>; the manifest is a single
+/// at-a-glance summary the editor's package preview surfaces (V8 / R5.5).
+/// </summary>
+/// <param name="Workflows">Every workflow included by transitive subflow expansion (entry
+/// point first, sorted by key/version after).</param>
+/// <param name="Agents">Every agent referenced by a node in any included workflow at its
+/// pinned version.</param>
+/// <param name="Roles">Every role assigned to any included agent. Versions are absent — roles
+/// are unversioned.</param>
+/// <param name="Skills">Every skill granted by any included role. Versions absent.</param>
+/// <param name="McpServers">Every MCP server granted to any included role. Versions absent.</param>
+public sealed record WorkflowPackageManifest(
+    IReadOnlyList<WorkflowPackageReference> Workflows,
+    IReadOnlyList<WorkflowPackageReference> Agents,
+    IReadOnlyList<string> Roles,
+    IReadOnlyList<string> Skills,
+    IReadOnlyList<string> McpServers);
 
 public sealed record WorkflowPackageReference(
     string Key,

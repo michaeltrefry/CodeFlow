@@ -21,7 +21,41 @@ public sealed class WorkflowPackageResolver(
         var normalizedWorkflowKey = workflowKey.Trim();
         var state = new ResolutionState();
 
-        await AddWorkflowAsync(normalizedWorkflowKey, workflowVersion, state, cancellationToken);
+        await AddWorkflowAsync(
+            normalizedWorkflowKey,
+            workflowVersion,
+            referencedBy: "package entry point",
+            state,
+            cancellationToken);
+
+        if (state.MissingReferences.Count > 0)
+        {
+            // V8: fail with the full list, not just the first missing reference. Authors fixing
+            // the package can address everything in one pass instead of N round-trips.
+            throw new WorkflowPackageResolutionException(
+                "Workflow package export failed self-containment check. "
+                    + $"Missing {state.MissingReferences.Count} reference(s): "
+                    + string.Join("; ", state.MissingReferences.Select(FormatMissing)),
+                state.MissingReferences);
+        }
+
+        var workflows = state.Workflows.Values
+            .OrderBy(workflow => workflow.Key, StringComparer.Ordinal)
+            .ThenBy(workflow => workflow.Version)
+            .ToArray();
+        var agents = state.Agents.Values
+            .OrderBy(agent => agent.Key, StringComparer.Ordinal)
+            .ThenBy(agent => agent.Version)
+            .ToArray();
+        var roles = state.Roles.Values
+            .OrderBy(role => role.Key, StringComparer.Ordinal)
+            .ToArray();
+        var skills = state.Skills.Values
+            .OrderBy(skill => skill.Name, StringComparer.Ordinal)
+            .ToArray();
+        var mcpServers = state.McpServers.Values
+            .OrderBy(server => server.Key, StringComparer.Ordinal)
+            .ToArray();
 
         return new WorkflowPackage(
             SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
@@ -29,31 +63,36 @@ public sealed class WorkflowPackageResolver(
                 ExportedFrom: "CodeFlow",
                 ExportedAtUtc: DateTime.UtcNow),
             EntryPoint: new WorkflowPackageReference(normalizedWorkflowKey, workflowVersion),
-            Workflows: state.Workflows.Values
-                .OrderBy(workflow => workflow.Key, StringComparer.Ordinal)
-                .ThenBy(workflow => workflow.Version)
-                .ToArray(),
-            Agents: state.Agents.Values
-                .OrderBy(agent => agent.Key, StringComparer.Ordinal)
-                .ThenBy(agent => agent.Version)
-                .ToArray(),
+            Workflows: workflows,
+            Agents: agents,
             AgentRoleAssignments: state.AgentRoleAssignments.Values
                 .OrderBy(assignment => assignment.AgentKey, StringComparer.Ordinal)
                 .ToArray(),
-            Roles: state.Roles.Values
-                .OrderBy(role => role.Key, StringComparer.Ordinal)
-                .ToArray(),
-            Skills: state.Skills.Values
-                .OrderBy(skill => skill.Name, StringComparer.Ordinal)
-                .ToArray(),
-            McpServers: state.McpServers.Values
-                .OrderBy(server => server.Key, StringComparer.Ordinal)
-                .ToArray());
+            Roles: roles,
+            Skills: skills,
+            McpServers: mcpServers,
+            Manifest: new WorkflowPackageManifest(
+                Workflows: workflows
+                    .Select(workflow => new WorkflowPackageReference(workflow.Key, workflow.Version))
+                    .ToArray(),
+                Agents: agents
+                    .Select(agent => new WorkflowPackageReference(agent.Key, agent.Version))
+                    .ToArray(),
+                Roles: roles.Select(role => role.Key).ToArray(),
+                Skills: skills.Select(skill => skill.Name).ToArray(),
+                McpServers: mcpServers.Select(server => server.Key).ToArray()));
+    }
+
+    private static string FormatMissing(MissingPackageReference reference)
+    {
+        var version = reference.Version is int v ? $" v{v}" : string.Empty;
+        return $"{reference.Kind} '{reference.Key}'{version} (referenced by {reference.ReferencedBy})";
     }
 
     private async Task AddWorkflowAsync(
         string workflowKey,
         int workflowVersion,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -63,21 +102,32 @@ public sealed class WorkflowPackageResolver(
             return;
         }
 
-        var workflow = await workflowRepository.GetAsync(workflowKey, workflowVersion, cancellationToken);
+        Workflow workflow;
+        try
+        {
+            workflow = await workflowRepository.GetAsync(workflowKey, workflowVersion, cancellationToken);
+        }
+        catch (WorkflowNotFoundException)
+        {
+            state.MissingReferences.Add(new MissingPackageReference(
+                PackageReferenceKind.Workflow, workflowKey, workflowVersion, referencedBy));
+            return;
+        }
         var nodes = new List<WorkflowPackageWorkflowNode>(workflow.Nodes.Count);
 
         foreach (var node in workflow.Nodes)
         {
-            var resolvedAgentVersion = await ResolveAgentVersionAsync(node, state, cancellationToken);
+            var nodeOrigin = $"workflow '{workflow.Key}' v{workflow.Version} node {node.Id}";
+            var resolvedAgentVersion = await ResolveAgentVersionAsync(node, nodeOrigin, state, cancellationToken);
             if (!string.IsNullOrWhiteSpace(node.AgentKey) && resolvedAgentVersion is int concreteAgentVersion)
             {
-                await AddAgentAsync(node.AgentKey!, concreteAgentVersion, state, cancellationToken);
+                await AddAgentAsync(node.AgentKey!, concreteAgentVersion, nodeOrigin, state, cancellationToken);
             }
 
-            var resolvedSubflowVersion = await ResolveSubflowVersionAsync(node, state, cancellationToken);
+            var resolvedSubflowVersion = await ResolveSubflowVersionAsync(node, nodeOrigin, state, cancellationToken);
             if (!string.IsNullOrWhiteSpace(node.SubflowKey) && resolvedSubflowVersion is int concreteSubflowVersion)
             {
-                await AddWorkflowAsync(node.SubflowKey!, concreteSubflowVersion, state, cancellationToken);
+                await AddWorkflowAsync(node.SubflowKey!, concreteSubflowVersion, nodeOrigin, state, cancellationToken);
             }
 
             nodes.Add(new WorkflowPackageWorkflowNode(
@@ -128,6 +178,7 @@ public sealed class WorkflowPackageResolver(
 
     private async Task<int?> ResolveAgentVersionAsync(
         WorkflowNode node,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -146,13 +197,24 @@ public sealed class WorkflowPackageResolver(
             return cachedAgentVersion;
         }
 
-        var latestAgentVersion = await agentConfigRepository.GetLatestVersionAsync(node.AgentKey, cancellationToken);
-        state.LatestAgentVersions[node.AgentKey] = latestAgentVersion;
-        return latestAgentVersion;
+        try
+        {
+            var latestAgentVersion = await agentConfigRepository.GetLatestVersionAsync(
+                node.AgentKey, cancellationToken);
+            state.LatestAgentVersions[node.AgentKey] = latestAgentVersion;
+            return latestAgentVersion;
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            state.MissingReferences.Add(new MissingPackageReference(
+                PackageReferenceKind.Agent, node.AgentKey, Version: null, referencedBy));
+            return null;
+        }
     }
 
     private async Task<int?> ResolveSubflowVersionAsync(
         WorkflowNode node,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -171,9 +233,13 @@ public sealed class WorkflowPackageResolver(
             return cachedWorkflowVersion;
         }
 
-        var latestWorkflow = await workflowRepository.GetLatestAsync(node.SubflowKey, cancellationToken)
-            ?? throw new WorkflowPackageResolutionException(
-                $"Workflow package export could not resolve latest version for subflow '{node.SubflowKey}'.");
+        var latestWorkflow = await workflowRepository.GetLatestAsync(node.SubflowKey, cancellationToken);
+        if (latestWorkflow is null)
+        {
+            state.MissingReferences.Add(new MissingPackageReference(
+                PackageReferenceKind.Workflow, node.SubflowKey, Version: null, referencedBy));
+            return null;
+        }
 
         state.LatestWorkflowVersions[node.SubflowKey] = latestWorkflow.Version;
         return latestWorkflow.Version;
@@ -182,6 +248,7 @@ public sealed class WorkflowPackageResolver(
     private async Task AddAgentAsync(
         string agentKey,
         int agentVersion,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -189,7 +256,17 @@ public sealed class WorkflowPackageResolver(
         var agentIdentity = new AgentIdentity(normalizedAgentKey, agentVersion);
         if (state.VisitedAgents.Add(agentIdentity))
         {
-            var agent = await agentConfigRepository.GetAsync(normalizedAgentKey, agentVersion, cancellationToken);
+            AgentConfig agent;
+            try
+            {
+                agent = await agentConfigRepository.GetAsync(normalizedAgentKey, agentVersion, cancellationToken);
+            }
+            catch (AgentConfigNotFoundException)
+            {
+                state.MissingReferences.Add(new MissingPackageReference(
+                    PackageReferenceKind.Agent, normalizedAgentKey, agentVersion, referencedBy));
+                return;
+            }
             state.Agents[agentIdentity] = new WorkflowPackageAgent(
                 Key: agent.Key,
                 Version: agent.Version,
@@ -220,12 +297,13 @@ public sealed class WorkflowPackageResolver(
 
         foreach (var role in roles)
         {
-            await AddRoleAsync(role, state, cancellationToken);
+            await AddRoleAsync(role, $"agent '{normalizedAgentKey}'", state, cancellationToken);
         }
     }
 
     private async Task AddRoleAsync(
         AgentRole role,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -240,9 +318,16 @@ public sealed class WorkflowPackageResolver(
 
         foreach (var skillId in skillIds.Distinct())
         {
-            var skill = await skillRepository.GetAsync(skillId, cancellationToken)
-                ?? throw new WorkflowPackageResolutionException(
-                    $"Workflow package export could not resolve skill id '{skillId}' for role '{role.Key}'.");
+            var skill = await skillRepository.GetAsync(skillId, cancellationToken);
+            if (skill is null)
+            {
+                state.MissingReferences.Add(new MissingPackageReference(
+                    PackageReferenceKind.Skill,
+                    Key: skillId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Version: null,
+                    ReferencedBy: $"role '{role.Key}'"));
+                continue;
+            }
 
             skillNames.Add(skill.Name);
             state.Skills[skill.Name] = new WorkflowPackageSkill(
@@ -260,7 +345,7 @@ public sealed class WorkflowPackageResolver(
                      .Select(grant => ParseMcpServerKey(grant.ToolIdentifier))
                      .Distinct(StringComparer.Ordinal))
         {
-            await AddMcpServerAsync(mcpServerKey, state, cancellationToken);
+            await AddMcpServerAsync(mcpServerKey, $"role '{role.Key}'", state, cancellationToken);
         }
 
         state.Roles[role.Key] = new WorkflowPackageRole(
@@ -281,6 +366,7 @@ public sealed class WorkflowPackageResolver(
 
     private async Task AddMcpServerAsync(
         string serverKey,
+        string referencedBy,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -289,9 +375,13 @@ public sealed class WorkflowPackageResolver(
             return;
         }
 
-        var server = await mcpServerRepository.GetByKeyAsync(serverKey, cancellationToken)
-            ?? throw new WorkflowPackageResolutionException(
-                $"Workflow package export could not resolve MCP server '{serverKey}'.");
+        var server = await mcpServerRepository.GetByKeyAsync(serverKey, cancellationToken);
+        if (server is null)
+        {
+            state.MissingReferences.Add(new MissingPackageReference(
+                PackageReferenceKind.McpServer, serverKey, Version: null, referencedBy));
+            return;
+        }
 
         var tools = await mcpServerRepository.GetToolsAsync(server.Id, cancellationToken);
         state.McpServers[server.Key] = new WorkflowPackageMcpServer(
@@ -369,6 +459,8 @@ public sealed class WorkflowPackageResolver(
         public Dictionary<string, WorkflowPackageSkill> Skills { get; } = new(StringComparer.Ordinal);
 
         public Dictionary<string, WorkflowPackageMcpServer> McpServers { get; } = new(StringComparer.Ordinal);
+
+        public List<MissingPackageReference> MissingReferences { get; } = new();
     }
 
     private readonly record struct WorkflowIdentity(string Key, int Version);

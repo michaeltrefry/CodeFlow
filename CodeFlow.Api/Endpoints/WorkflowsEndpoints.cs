@@ -89,10 +89,19 @@ public static class WorkflowsEndpoints
         }
         catch (WorkflowPackageResolutionException exception)
         {
+            // V8: surface the full structured list of missing references in `extensions` so
+            // editors / package-preview UIs can render each one with click-to-jump anchors.
+            var extensions = exception.MissingReferences.Count == 0
+                ? null
+                : new Dictionary<string, object?>
+                {
+                    ["missingReferences"] = exception.MissingReferences,
+                };
             return Results.Problem(
                 title: "Workflow package export failed",
                 detail: exception.Message,
-                statusCode: StatusCodes.Status422UnprocessableEntity);
+                statusCode: StatusCodes.Status422UnprocessableEntity,
+                extensions: extensions);
         }
     }
 
