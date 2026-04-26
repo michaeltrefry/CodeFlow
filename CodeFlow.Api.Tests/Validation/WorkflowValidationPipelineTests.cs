@@ -29,7 +29,7 @@ public sealed class WorkflowValidationPipelineTests
                 Finding("rule-b", WorkflowValidationSeverity.Error, "blocker from b")
             }),
         };
-        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance);
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, new RecordingTelemetry());
         var context = await BuildContextAsync();
 
         var report = await pipeline.RunAsync(context, CancellationToken.None);
@@ -53,7 +53,7 @@ public sealed class WorkflowValidationPipelineTests
             new StubRule("early", Array.Empty<WorkflowValidationFinding>(), Order: 1, OnRun: () => executionOrder.Add("early")),
             new StubRule("middle", Array.Empty<WorkflowValidationFinding>(), Order: 100, OnRun: () => executionOrder.Add("middle")),
         };
-        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance);
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, new RecordingTelemetry());
 
         await pipeline.RunAsync(await BuildContextAsync(), CancellationToken.None);
 
@@ -71,7 +71,7 @@ public sealed class WorkflowValidationPipelineTests
                 Finding("survives", WorkflowValidationSeverity.Warning, "I still ran")
             }),
         };
-        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance);
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, new RecordingTelemetry());
 
         var report = await pipeline.RunAsync(await BuildContextAsync(), CancellationToken.None);
 
@@ -86,7 +86,7 @@ public sealed class WorkflowValidationPipelineTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         var rules = new IWorkflowValidationRule[] { new StubRule("never-runs", Array.Empty<WorkflowValidationFinding>()) };
-        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance);
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, new RecordingTelemetry());
 
         var act = async () => await pipeline.RunAsync(await BuildContextAsync(), cts.Token);
 
@@ -126,7 +126,7 @@ public sealed class WorkflowValidationPipelineTests
         // canary rule is O(n); we just need to confirm registration + dispatch overhead leaves
         // plenty of headroom.
         var rules = new IWorkflowValidationRule[] { new StartNodeAdvisoryRule() };
-        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance);
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, new RecordingTelemetry());
         var nodes = Enumerable.Range(0, 50)
             .Select(i => new WorkflowNodeDto(
                 Id: Guid.NewGuid(),
@@ -171,6 +171,45 @@ public sealed class WorkflowValidationPipelineTests
         findings.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task RunAsync_EmitsValidatorFiredTelemetry_PerFinding()
+    {
+        // O1: every finding must produce one workflow.validator.fired event so error-prevention
+        // and per-rule firing can be aggregated downstream.
+        var rules = new IWorkflowValidationRule[]
+        {
+            new StubRule("rule-a", new[]
+            {
+                Finding("rule-a", WorkflowValidationSeverity.Warning, "warn"),
+                Finding("rule-a", WorkflowValidationSeverity.Error, "block"),
+            }),
+        };
+        var telemetry = new RecordingTelemetry();
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, telemetry);
+
+        await pipeline.RunAsync(await BuildContextAsync(), CancellationToken.None);
+
+        telemetry.Fired.Should().HaveCount(2);
+        telemetry.Fired.Should().AllSatisfy(t => t.WorkflowKey.Should().Be("test-flow"));
+        telemetry.Fired.Select(t => t.Finding.Severity)
+            .Should().BeEquivalentTo(new[] { WorkflowValidationSeverity.Error, WorkflowValidationSeverity.Warning });
+    }
+
+    [Fact]
+    public async Task RunAsync_EmitsNoTelemetry_WhenAllRulesPass()
+    {
+        var rules = new IWorkflowValidationRule[]
+        {
+            new StubRule("clean-rule", Array.Empty<WorkflowValidationFinding>()),
+        };
+        var telemetry = new RecordingTelemetry();
+        var pipeline = new WorkflowValidationPipeline(rules, NullLogger<WorkflowValidationPipeline>.Instance, telemetry);
+
+        await pipeline.RunAsync(await BuildContextAsync(), CancellationToken.None);
+
+        telemetry.Fired.Should().BeEmpty("no findings → no telemetry");
+    }
+
     private static WorkflowValidationFinding Finding(
         string ruleId,
         WorkflowValidationSeverity severity,
@@ -199,6 +238,22 @@ public sealed class WorkflowValidationPipelineTests
             DbContext: db,
             WorkflowRepository: workflowRepo,
             AgentRepository: agentRepo);
+    }
+
+    private sealed class RecordingTelemetry : IAuthoringTelemetry
+    {
+        public List<(string WorkflowKey, WorkflowValidationFinding Finding)> Fired { get; } = new();
+        public List<(string WorkflowKey, IReadOnlyList<string> RuleIds)> Blocked { get; } = new();
+        public List<(string WorkflowKey, string FeatureId, int Instances)> Features { get; } = new();
+
+        public void ValidatorFired(string workflowKey, WorkflowValidationFinding finding) =>
+            Fired.Add((workflowKey, finding));
+
+        public void ValidatorBlockedSave(string workflowKey, IReadOnlyList<string> errorRuleIds) =>
+            Blocked.Add((workflowKey, errorRuleIds));
+
+        public void FeatureUsed(string workflowKey, string featureId, int instances = 1) =>
+            Features.Add((workflowKey, featureId, instances));
     }
 
     private sealed class StubRule : IWorkflowValidationRule

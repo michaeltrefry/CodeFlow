@@ -284,6 +284,7 @@ public static class WorkflowsEndpoints
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
+        IAuthoringTelemetry telemetry,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -300,6 +301,9 @@ public static class WorkflowsEndpoints
 
         if (!validation.IsValid)
         {
+            telemetry.ValidatorBlockedSave(
+                request.Key ?? string.Empty,
+                new[] { "workflow-validator" });
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["workflow"] = new[] { validation.Error! }
@@ -337,6 +341,7 @@ public static class WorkflowsEndpoints
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
+        IAuthoringTelemetry telemetry,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -353,6 +358,7 @@ public static class WorkflowsEndpoints
 
         if (!validation.IsValid)
         {
+            telemetry.ValidatorBlockedSave(key, new[] { "workflow-validator" });
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["workflow"] = new[] { validation.Error! }

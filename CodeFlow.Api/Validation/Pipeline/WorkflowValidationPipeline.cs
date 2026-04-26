@@ -28,15 +28,19 @@ public sealed class WorkflowValidationPipeline
 {
     private readonly IReadOnlyList<IWorkflowValidationRule> orderedRules;
     private readonly ILogger<WorkflowValidationPipeline> logger;
+    private readonly IAuthoringTelemetry telemetry;
 
     public WorkflowValidationPipeline(
         IEnumerable<IWorkflowValidationRule> rules,
-        ILogger<WorkflowValidationPipeline> logger)
+        ILogger<WorkflowValidationPipeline> logger,
+        IAuthoringTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(rules);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(telemetry);
         orderedRules = rules.OrderBy(r => r.Order).ToArray();
         this.logger = logger;
+        this.telemetry = telemetry;
     }
 
     public async Task<WorkflowValidationReport> RunAsync(
@@ -79,6 +83,15 @@ public sealed class WorkflowValidationPipeline
         var ordered = findings
             .OrderByDescending(f => f.Severity)
             .ToArray();
+
+        // O1: emit one telemetry event per finding so error-prevention rate and per-rule firing
+        // can be aggregated downstream. The aggregate "save was blocked" event is emitted by the
+        // caller (save endpoint) — the pipeline runs interactively too, where blocking is a
+        // non-event.
+        foreach (var finding in ordered)
+        {
+            telemetry.ValidatorFired(context.Key, finding);
+        }
 
         return new WorkflowValidationReport(ordered);
     }
