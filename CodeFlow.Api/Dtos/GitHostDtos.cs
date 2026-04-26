@@ -6,6 +6,7 @@ public sealed record GitHostSettingsResponse(
     GitHostMode Mode,
     string? BaseUrl,
     bool HasToken,
+    string? WorkingDirectoryRoot,
     DateTime? LastVerifiedAtUtc,
     string? UpdatedBy,
     DateTime? UpdatedAtUtc);
@@ -13,6 +14,7 @@ public sealed record GitHostSettingsResponse(
 public sealed record GitHostSettingsRequest(
     GitHostMode Mode,
     string? BaseUrl,
+    string? WorkingDirectoryRoot,
     GitHostTokenUpdateRequest? Token);
 
 public sealed record GitHostTokenUpdateRequest(

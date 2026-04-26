@@ -6,13 +6,15 @@ public sealed record GitHostSettings(
     bool HasToken,
     DateTime? LastVerifiedAtUtc,
     string? UpdatedBy,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    string? WorkingDirectoryRoot = null);
 
 public sealed record GitHostSettingsWrite(
     GitHostMode Mode,
     string? BaseUrl,
     GitHostTokenUpdate Token,
-    string? UpdatedBy);
+    string? UpdatedBy,
+    string? WorkingDirectoryRoot = null);
 
 /// <summary>
 /// Explicit preserve/replace semantics for the git-host personal access token, mirroring the

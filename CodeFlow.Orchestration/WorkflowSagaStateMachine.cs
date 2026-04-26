@@ -127,6 +127,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
+        if (message.GlobalContext is not null)
+        {
+            saga.GlobalInputsJson = SerializeContextInputs(message.GlobalContext);
+        }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
         if (saga.CreatedAtUtc == default)

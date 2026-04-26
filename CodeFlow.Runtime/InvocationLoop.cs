@@ -351,6 +351,17 @@ public sealed class InvocationLoop
                             && !isFailedPort
                             && string.IsNullOrWhiteSpace(lastAssistantOutput))
                         {
+                            // Without this tool message, the next round's request would carry the
+                            // assistant's `function_call` (the submit) with no matching
+                            // `function_call_output`, and the OpenAI Responses API rejects the
+                            // request: "No tool output found for function call <id>". Provider
+                            // protocol requires every prior `function_call` to be paired with a
+                            // `function_call_output` before the next assistant turn.
+                            transcript.Add(new ChatMessage(
+                                ChatMessageRole.Tool,
+                                "missing assistant content; retry",
+                                ToolCallId: toolCall.Id,
+                                IsError: true));
                             transcript.Add(new ChatMessage(
                                 ChatMessageRole.User,
                                 "You called `submit` without writing any assistant message "

@@ -39,6 +39,7 @@ public static class GitHostEndpoints
                 Mode: GitHostMode.GitHub,
                 BaseUrl: null,
                 HasToken: false,
+                WorkingDirectoryRoot: null,
                 LastVerifiedAtUtc: null,
                 UpdatedBy: null,
                 UpdatedAtUtc: null));
@@ -48,6 +49,7 @@ public static class GitHostEndpoints
             Mode: settings.Mode,
             BaseUrl: settings.BaseUrl,
             HasToken: settings.HasToken,
+            WorkingDirectoryRoot: settings.WorkingDirectoryRoot,
             LastVerifiedAtUtc: settings.LastVerifiedAtUtc,
             UpdatedBy: settings.UpdatedBy,
             UpdatedAtUtc: settings.UpdatedAtUtc));
@@ -80,6 +82,7 @@ public static class GitHostEndpoints
                 Mode: request.Mode,
                 BaseUrl: request.BaseUrl,
                 Token: tokenUpdate,
+                WorkingDirectoryRoot: request.WorkingDirectoryRoot,
                 UpdatedBy: currentUser.Id), cancellationToken);
         }
         catch (InvalidOperationException ex)
@@ -95,6 +98,7 @@ public static class GitHostEndpoints
             Mode: updated!.Mode,
             BaseUrl: updated.BaseUrl,
             HasToken: updated.HasToken,
+            WorkingDirectoryRoot: updated.WorkingDirectoryRoot,
             LastVerifiedAtUtc: updated.LastVerifiedAtUtc,
             UpdatedBy: updated.UpdatedBy,
             UpdatedAtUtc: updated.UpdatedAtUtc));
