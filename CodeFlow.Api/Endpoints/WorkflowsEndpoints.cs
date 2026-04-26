@@ -285,6 +285,7 @@ public static class WorkflowsEndpoints
         IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
         IAuthoringTelemetry telemetry,
+        WorkflowValidationPipeline pipeline,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -308,6 +309,24 @@ public static class WorkflowsEndpoints
             {
                 ["workflow"] = new[] { validation.Error! }
             });
+        }
+
+        var pipelineBlock = await RunSaveTimePipelineAsync(
+            request.Key ?? string.Empty,
+            request.Name,
+            request.MaxRoundsPerRound,
+            request.Nodes,
+            request.Edges,
+            request.Inputs,
+            dbContext,
+            repository,
+            agentRepository,
+            pipeline,
+            telemetry,
+            cancellationToken);
+        if (pipelineBlock is not null)
+        {
+            return pipelineBlock;
         }
 
         var normalizedKey = request.Key!.Trim();
@@ -342,6 +361,7 @@ public static class WorkflowsEndpoints
         IAgentConfigRepository agentRepository,
         CodeFlowDbContext dbContext,
         IAuthoringTelemetry telemetry,
+        WorkflowValidationPipeline pipeline,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -363,6 +383,24 @@ public static class WorkflowsEndpoints
             {
                 ["workflow"] = new[] { validation.Error! }
             });
+        }
+
+        var pipelineBlock = await RunSaveTimePipelineAsync(
+            key,
+            request.Name,
+            request.MaxRoundsPerRound,
+            request.Nodes,
+            request.Edges,
+            request.Inputs,
+            dbContext,
+            repository,
+            agentRepository,
+            pipeline,
+            telemetry,
+            cancellationToken);
+        if (pipelineBlock is not null)
+        {
+            return pipelineBlock;
         }
 
         var normalizedKey = key.Trim();
@@ -391,11 +429,69 @@ public static class WorkflowsEndpoints
     }
 
     /// <summary>
+    /// Run the pluggable validation pipeline at workflow save and convert any Error findings into
+    /// a ValidationProblem result. Returns null if the pipeline produced no errors (save proceeds).
+    /// Warning-only findings do not block save — the editor surfaces them via the
+    /// <c>POST /validate</c> endpoint, which is what authoring UIs call interactively.
+    /// </summary>
+    private static async Task<IResult?> RunSaveTimePipelineAsync(
+        string key,
+        string? name,
+        int? maxRoundsPerRound,
+        IReadOnlyList<WorkflowNodeDto>? nodes,
+        IReadOnlyList<WorkflowEdgeDto>? edges,
+        IReadOnlyList<WorkflowInputDto>? inputs,
+        CodeFlowDbContext dbContext,
+        IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
+        WorkflowValidationPipeline pipeline,
+        IAuthoringTelemetry telemetry,
+        CancellationToken cancellationToken)
+    {
+        var context = new WorkflowValidationContext(
+            Key: key ?? string.Empty,
+            Name: name,
+            MaxRoundsPerRound: maxRoundsPerRound,
+            Nodes: nodes ?? Array.Empty<WorkflowNodeDto>(),
+            Edges: edges ?? Array.Empty<WorkflowEdgeDto>(),
+            Inputs: inputs,
+            DbContext: dbContext,
+            WorkflowRepository: repository,
+            AgentRepository: agentRepository);
+
+        var report = await pipeline.RunAsync(context, cancellationToken);
+
+        if (!report.HasErrors)
+        {
+            return null;
+        }
+
+        var errorFindings = report.Findings
+            .Where(f => f.Severity == WorkflowValidationSeverity.Error)
+            .ToArray();
+        var blockingRuleIds = errorFindings
+            .Select(f => f.RuleId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        telemetry.ValidatorBlockedSave(key ?? string.Empty, blockingRuleIds);
+
+        var problems = errorFindings
+            .GroupBy(f => f.RuleId, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(f => f.Message).ToArray(),
+                StringComparer.Ordinal);
+
+        return Results.ValidationProblem(problems);
+    }
+
+    /// <summary>
     /// Run the pluggable validation pipeline against an arbitrary workflow draft and return the
-    /// aggregated findings. Authoring DX surface — the editor calls this on save (or as the user
-    /// edits) to drive the results panel without committing the draft. Hard errors block save in
-    /// the existing fail-fast <see cref="WorkflowValidator"/>; this endpoint exposes the broader,
-    /// pluggable rule set.
+    /// aggregated findings. Authoring DX surface — the editor calls this as the user edits to
+    /// drive the results panel without committing the draft. Save endpoints additionally run the
+    /// pipeline and convert Error findings into a blocking ValidationProblem (see
+    /// <see cref="RunSaveTimePipelineAsync"/>).
     /// </summary>
     private static async Task<IResult> ValidateWorkflowAsync(
         ValidateWorkflowRequest request,
