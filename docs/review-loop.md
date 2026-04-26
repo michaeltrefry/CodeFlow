@@ -40,7 +40,7 @@ A `ReviewLoop` **is a subflow** with two behavioural additions:
 All other subflow behaviour carries over unchanged:
 
 - Child workflow reference: `SubflowKey` + `SubflowVersion` (same pinning semantics).
-- Two-tier context: each round's child saga has its own fresh local `context`; `global` is snapshotted at node entry, carried across rounds, shallow-merged back on loop exit.
+- Two-tier context: each round's child saga has its own fresh local `context`; `workflow` is snapshotted at node entry, carried across rounds, shallow-merged back on loop exit.
 - Counts toward `MaxSubflowDepth = 3` exactly like a plain Subflow.
 - Version pinning + save-time resolution identical.
 
@@ -48,8 +48,8 @@ All other subflow behaviour carries over unchanged:
 
 - **Round 1 input** = the `ReviewLoop` node's input artifact (the artifact routed into the node by its predecessor).
 - **Round N+1 input** (when the child exited "please revise") = **Round N's terminal output artifact**. The workflow author decides what that artifact contains — typically the revised artifact plus the reviewer's feedback, shaped however the next round's agents expect to consume it. No auto-wrapping / no envelope.
-- Each round is a fresh child saga — new `TraceId`, fresh local `context` — so scripts don't accidentally carry state between rounds. The author opts into state-carrying by writing to `global`.
-- `global` is shallow-merged between rounds (round N's writes visible to round N+1) and merged back into the parent only when the loop exits.
+- Each round is a fresh child saga — new `TraceId`, fresh local `context` — so scripts don't accidentally carry state between rounds. The author opts into state-carrying by writing to `workflow`.
+- `workflow` is shallow-merged between rounds (round N's writes visible to round N+1) and merged back into the parent only when the loop exits.
 - Per-round artifacts are captured for free: each round is its own child saga with its own `TraceId`, so existing saga-history persistence records every round's inputs and outputs.
 
 ### 2.3 Outcome mapping
@@ -89,7 +89,7 @@ The child workflow owns prompt authoring and uses `{{isLastRound}}` to shape its
 
 ### 2.6 Template variables + script bindings exposed to the child
 
-In addition to the existing `context.*` and `global.*` bindings available inside any subflow, a child saga spawned by a `ReviewLoop` node gains:
+In addition to the existing `context.*` and `workflow.*` bindings available inside any subflow, a child saga spawned by a `ReviewLoop` node gains:
 
 | Name | Type | Scope |
 |---|---|---|
@@ -133,7 +133,7 @@ from the child exits the loop on a parent edge of the same name. See
 - Structured, machine-typed reviewer output. The child workflow decides what its output artifact contains.
 - Round-conditional child workflow versions (e.g. "use workflow A on rounds 1–2, workflow B on round 3"). Single child workflow per ReviewLoop node.
 - Retry-on-failure inside the loop — any failed round exits `Failed`.
-- Round-over-round history arrays exposed to the child. Only the previous round's output artifact flows in; the child can persist anything else it wants via `global`.
+- Round-over-round history arrays exposed to the child. Only the previous round's output artifact flows in; the child can persist anything else it wants via `workflow`.
 - Parallel rounds / quorum reviewers.
 - Mid-run mutation of `MaxRounds`.
 
@@ -163,16 +163,16 @@ Each slice is sized for one Kanban card. (Historical: the `ApprovedWithActions` 
 - Extend `DispatchToNodeAsync` in [WorkflowSagaStateMachine.cs](../CodeFlow.Orchestration/WorkflowSagaStateMachine.cs) so `WorkflowNodeKind.ReviewLoop` spawns a child saga the same way Subflow does, but with `ReviewRound = 1` and `ReviewMaxRounds = node.MaxRounds`.
 - On `SubflowCompleted` from a child saga whose parent node is a `ReviewLoop`, apply the §2.3 mapping:
   - `Approved` / `Completed` → route from `Approved` port with the round's output.
-  - `Rejected` with rounds remaining → spawn a new child saga with `ReviewRound = prevRound + 1`, input = prev round's output, and the carried-forward `global` snapshot.
+  - `Rejected` with rounds remaining → spawn a new child saga with `ReviewRound = prevRound + 1`, input = prev round's output, and the carried-forward `workflow` snapshot.
   - `Rejected` on the last round → route from `Exhausted` port.
   - `Failed` / `Escalated` → route from `Failed` port.
 - Depth cap check runs on each round's spawn (reuses the existing Subflow depth-cap path).
 
 ### Slice 4 — Saga: global merge across rounds
 
-- Between rounds, the previous child's final `global` is shallow-merged into the ReviewLoop's carried `global` before spawning the next round. Writes from round N are visible to round N+1 via `global.*`.
-- On loop exit (Approved / Exhausted / Failed), the carried `global` is shallow-merged into the parent saga's `global` using the existing `SubflowCompleted` merge path.
-- Unit test: a child workflow that does `setGlobal('counter', round)` across rounds is observed correctly at parent resume.
+- Between rounds, the previous child's final `workflow` is shallow-merged into the ReviewLoop's carried `workflow` before spawning the next round. Writes from round N are visible to round N+1 via `workflow.*`.
+- On loop exit (Approved / Exhausted / Failed), the carried `workflow` is shallow-merged into the parent saga's `workflow` using the existing `SubflowCompleted` merge path.
+- Unit test: a child workflow that does `setWorkflow('counter', round)` across rounds is observed correctly at parent resume.
 
 ### Slice 5 — Scripting + templating: round variables
 
@@ -213,7 +213,7 @@ Integration tests covering:
 2. Child returns `Completed` on round 1 → parent exits `Approved` (permissive mapping).
 3. Child revises on round 1, approves on round 2 → parent exits `Approved` with round-2 output.
 4. Child revises on all rounds with `MaxRounds = 2` → parent exits `Exhausted` with round-2 output.
-5. Child returns `Failed` on round 2 → parent exits `Failed`; any `global` writes from round 1 still merged back.
+5. Child returns `Failed` on round 2 → parent exits `Failed`; any `workflow` writes from round 1 still merged back.
 6. Child returns `Escalated` on round 1 → parent exits `Failed`.
 7. Child workflow that reads `{{round}}` and `{{isLastRound}}` verifies the values per round.
 8. ReviewLoop nested inside another ReviewLoop exceeds depth cap → `Failed` via `SubflowDepthExceeded`.

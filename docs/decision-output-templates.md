@@ -2,7 +2,7 @@
 
 Decision-based output templates rewrite an agent's artifact *after* a decision is submitted, per decision value. Different decision → different template. Useful when the same agent needs to emit Markdown for approvals, a JIRA comment for rejections, or a structured JSON packet for a custom port.
 
-> Companion references: [prompt-templates.md](prompt-templates.md) documents the Scriban engine and sandbox — decision templates use the exact same engine, sandbox, and syntax. [workflows.md](workflows.md) explains where `context.*` and `global.*` come from.
+> Companion references: [prompt-templates.md](prompt-templates.md) documents the Scriban engine and sandbox — decision templates use the exact same engine, sandbox, and syntax. [workflows.md](workflows.md) explains where `context.*` and `workflow.*` come from.
 
 Decision-output templates are **distinct** from:
 - **Prompt templates** — the system/user prompt fed *into* an LLM agent (see [prompt-templates.md](prompt-templates.md)).
@@ -48,7 +48,7 @@ The Scriban scope exposed to every decision template:
 | `decision` | string | The submitted decision name (the agent-declared port name the LLM/HITL picked at submit time). |
 | `outputPortName` | string | The effective port name the saga is routing on (may differ from `decision` for custom HITL options). |
 | `context.<path>` | nested object | Workflow-local inputs (saga's local `context` bag). |
-| `global.<path>` | nested object | Workflow-global inputs (propagated across parent/subflow boundaries). |
+| `workflow.<path>` | nested object | Workflow-global inputs (propagated across parent/subflow boundaries). |
 
 LLM-only:
 

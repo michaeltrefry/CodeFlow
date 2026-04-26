@@ -81,7 +81,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 Variables = MergeVariables(
                     agentConfig.Configuration.Variables,
                     BuildContextTemplateVariables(message.ContextInputs),
-                    BuildGlobalTemplateVariables(message.GlobalContext),
+                    BuildWorkflowTemplateVariables(message.WorkflowContext),
                     BuildReviewLoopTemplateVariables(message.ReviewRound, message.ReviewMaxRounds),
                     BuildInputTemplateVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
@@ -204,7 +204,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 Duration: duration,
                 TokenUsage: MapTokenUsage(invocationResult.TokenUsage),
                 ContextUpdates: invocationResult.ContextUpdates,
-                GlobalUpdates: invocationResult.GlobalUpdates),
+                WorkflowUpdates: invocationResult.WorkflowUpdates),
             context.CancellationToken);
     }
 
@@ -269,13 +269,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private static IReadOnlyDictionary<string, string?>? MergeVariables(
         IReadOnlyDictionary<string, string?>? configured,
         IReadOnlyDictionary<string, string?> contextVariables,
-        IReadOnlyDictionary<string, string?> globalVariables,
+        IReadOnlyDictionary<string, string?> workflowVariables,
         IReadOnlyDictionary<string, string?> reviewLoopVariables,
         IReadOnlyDictionary<string, string?> inputVariables)
     {
         if ((configured is null || configured.Count == 0)
             && contextVariables.Count == 0
-            && globalVariables.Count == 0
+            && workflowVariables.Count == 0
             && reviewLoopVariables.Count == 0
             && inputVariables.Count == 0)
         {
@@ -296,7 +296,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             merged[entry.Key] = entry.Value;
         }
 
-        foreach (var entry in globalVariables)
+        foreach (var entry in workflowVariables)
         {
             merged[entry.Key] = entry.Value;
         }
@@ -331,23 +331,23 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return variables;
     }
 
-    private static IReadOnlyDictionary<string, string?> BuildGlobalTemplateVariables(
-        IReadOnlyDictionary<string, JsonElement>? globalContext)
+    private static IReadOnlyDictionary<string, string?> BuildWorkflowTemplateVariables(
+        IReadOnlyDictionary<string, JsonElement>? workflowContext)
     {
         var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        if (globalContext is null)
+        if (workflowContext is null)
         {
             return variables;
         }
 
-        foreach (var (key, value) in globalContext)
+        foreach (var (key, value) in workflowContext)
         {
             if (string.IsNullOrWhiteSpace(key))
             {
                 continue;
             }
 
-            AddContextTemplateVariables(variables, $"global.{key}", value);
+            AddContextTemplateVariables(variables, $"workflow.{key}", value);
         }
 
         return variables;
@@ -443,13 +443,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     // Tool plumbing for an agent invocation. Code-aware workflows expose a per-trace working
-    // directory through `global.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
+    // directory through `workflow.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
     // present, that path-jails every host tool to the trace workdir and supersedes the legacy
     // per-repo `ToolExecutionContext` carried on the message. Non-code workflows fall through
     // to the legacy plumbing unchanged.
     private static RuntimeToolExecutionContext? BuildToolExecutionContext(AgentInvokeRequested message)
     {
-        if (TryGetGlobalWorkDir(message.GlobalContext, out var workDir))
+        if (TryGetWorkflowWorkDir(message.WorkflowContext, out var workDir))
         {
             return new RuntimeToolExecutionContext(
                 new RuntimeToolWorkspaceContext(message.TraceId, workDir));
@@ -458,13 +458,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return MapToolExecutionContext(message.ToolExecutionContext);
     }
 
-    private static bool TryGetGlobalWorkDir(
-        IReadOnlyDictionary<string, JsonElement>? globalContext,
+    private static bool TryGetWorkflowWorkDir(
+        IReadOnlyDictionary<string, JsonElement>? workflowContext,
         out string workDir)
     {
         workDir = string.Empty;
-        if (globalContext is null
-            || !globalContext.TryGetValue("workDir", out var element)
+        if (workflowContext is null
+            || !workflowContext.TryGetValue("workDir", out var element)
             || element.ValueKind != JsonValueKind.String)
         {
             return false;

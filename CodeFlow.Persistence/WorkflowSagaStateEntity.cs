@@ -79,13 +79,13 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public int SubflowDepth { get; set; }
 
     /// <summary>
-    /// JSON-serialized "global" context bag shared with descendant subflows. Treated as <c>{}</c>
-    /// when null. Distinct from <see cref="InputsJson"/>, which holds the local context exposed
-    /// to scripts as <c>context</c>; <c>global</c> is exposed as a separate object and may be
-    /// mutated by <c>setGlobal</c> in scripts. On subflow completion the child's final global is
-    /// shallow-merged into the parent's global before routing.
+    /// JSON-serialized "workflow" context bag shared with descendant subflows. Treated as
+    /// <c>{}</c> when null. Distinct from <see cref="InputsJson"/>, which holds the local
+    /// context exposed to scripts as <c>context</c>; <c>workflow</c> is exposed as a separate
+    /// object and may be mutated by <c>setWorkflow</c> in scripts. On subflow completion the
+    /// child's final workflow bag is shallow-merged into the parent's before routing.
     /// </summary>
-    public string? GlobalInputsJson { get; set; }
+    public string? WorkflowInputsJson { get; set; }
 
     /// <summary>
     /// Set when this saga is a ReviewLoop iteration: 1-indexed round number within the parent's

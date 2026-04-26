@@ -117,8 +117,8 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasDefaultValue(0)
             .IsRequired();
 
-        builder.Property(saga => saga.GlobalInputsJson)
-            .HasColumnName("global_inputs_json")
+        builder.Property(saga => saga.WorkflowInputsJson)
+            .HasColumnName("workflow_inputs_json")
             .HasColumnType("longtext");
 
         builder.Property(saga => saga.ParentReviewRound)

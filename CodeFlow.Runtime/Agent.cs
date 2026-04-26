@@ -99,7 +99,7 @@ public sealed class Agent : IAgentInvoker
             loopResult.TokenUsage,
             loopResult.ToolCallsExecuted,
             loopResult.ContextUpdates,
-            loopResult.GlobalUpdates);
+            loopResult.WorkflowUpdates);
     }
 
     private IEnumerable<IToolProvider> BuildProviders(

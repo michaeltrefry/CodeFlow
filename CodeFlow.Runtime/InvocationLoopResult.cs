@@ -9,4 +9,4 @@ public sealed record InvocationLoopResult(
     TokenUsage? TokenUsage = null,
     int ToolCallsExecuted = 0,
     IReadOnlyDictionary<string, JsonElement>? ContextUpdates = null,
-    IReadOnlyDictionary<string, JsonElement>? GlobalUpdates = null);
+    IReadOnlyDictionary<string, JsonElement>? WorkflowUpdates = null);

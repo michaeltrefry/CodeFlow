@@ -26,7 +26,7 @@
           "outputPorts": ["Continue"],
           "layoutX": 50,
           "layoutY": 200,
-          "inputScript": "setGlobal('prd', input.text);"
+          "inputScript": "setWorkflow('prd', input.text);"
         },
         {
           "id": "aaaaaaaa-0001-0001-0001-000000000002",
@@ -95,7 +95,7 @@
           "outputPorts": ["Drafted"],
           "layoutX": 50,
           "layoutY": 200,
-          "outputScript": "setGlobal('currentPlan', output.text);"
+          "outputScript": "setWorkflow('currentPlan', output.text);"
         },
         {
           "id": "bbbbbbbb-0001-0001-0001-000000000002",
@@ -105,7 +105,7 @@
           "outputPorts": ["Approved", "Rejected"],
           "layoutX": 400,
           "layoutY": 200,
-          "outputScript": "if (output.decision === 'Approved') {\n  setOutput(global.currentPlan);\n} else if (output.decision === 'Rejected') {\n  setGlobal('latestRejection', output.text);\n  var prior = global.rejectionHistory || '';\n  var entry = '## Round ' + round + '\\n' + output.text;\n  setGlobal('rejectionHistory', prior ? prior + '\\n\\n' + entry : entry);\n}"
+          "outputScript": "if (output.decision === 'Approved') {\n  setOutput(workflow.currentPlan);\n} else if (output.decision === 'Rejected') {\n  setWorkflow('latestRejection', output.text);\n  var prior = workflow.rejectionHistory || '';\n  var entry = '## Round ' + round + '\\n' + output.text;\n  setWorkflow('rejectionHistory', prior ? prior + '\\n\\n' + entry : entry);\n}"
         }
       ],
       "edges": [
@@ -141,13 +141,13 @@
         "provider": "openai",
         "model": "gpt-5.4",
         "systemPrompt": "You are the entry-point agent for the Implementation Plan flow. The PRD has already been seeded into shared state by an input script — you do not need to do anything with it.\n\nYour only job: write the single word `Initialized.` as your message content, then submit with port `Continue`.",
-        "promptTemplate": "PRD has been seeded into globals. Acknowledge and continue.",
+        "promptTemplate": "PRD has been seeded into the workflow bag. Acknowledge and continue.",
         "maxTokens": 200,
         "temperature": 0.0,
         "outputs": [
           {
             "kind": "Continue",
-            "description": "Seeds the PRD into globals and hands off to the architect/reviewer loop."
+            "description": "Seeds the PRD into the workflow bag and hands off to the architect/reviewer loop."
           }
         ]
       },
@@ -156,7 +156,7 @@
       "outputs": [
         {
           "kind": "Continue",
-          "description": "Seeds the PRD into globals and hands off to the architect/reviewer loop."
+          "description": "Seeds the PRD into the workflow bag and hands off to the architect/reviewer loop."
         }
       ]
     },
@@ -169,8 +169,8 @@
         "name": "Implementation Plan Architect",
         "provider": "openai",
         "model": "gpt-5.4",
-        "systemPrompt": "You are a software architect. You produce a complete implementation plan from an approved PRD that a developer agent can execute without further design input.\n\nYour output is a single Markdown plan document — nothing else.\n\n## Plan structure\n\nOrganize as **Phases → Tasks**. Each task must be:\n- **Small enough** that a developer agent can complete it end-to-end without asking design questions.\n- **Large enough** that it covers a complete testable surface — a meaningful, verifiable behavior, not a single line edit.\n- Detailed enough that the developer agent's only inputs are the task description, the PRD, and the surrounding plan context.\n\nFor each phase: a brief intro and an ordered list of tasks.\nFor each task: title, scope summary, and acceptance criteria.\n\n## Round behavior\n\n- **Round 1** (`global.currentPlan` is empty): produce the first draft from `global.prd`.\n- **Rounds 2+**: this is a REVISION pass. Read the current plan from `global.currentPlan` and the reviewer's latest findings from `{{ input }}`. Address every finding. Produce a new clean standalone plan — NEVER narrate the revision history, NEVER include a \"changes since last round\" section, NEVER reference the prior rejection in the plan body. The plan must read as if it were the first and only draft.\n\nYou do not see prior rejection rounds beyond the latest one. The current plan already embodies your response to every prior round; that is sufficient context.\n\n## Submit\n\nWrite the full Markdown plan as your message content, then submit with port `Drafted`. An output script will mirror your message body into `global.currentPlan` automatically — do NOT call setGlobal yourself.\n\n## CRITICAL OUTPUT RULE\nWrite the full Markdown plan body as your assistant message content BEFORE calling `submit` with port `Drafted`. The plan body MUST be in the message content; do NOT put it in the submit payload.",
-        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }}\n\n## PRD\n{{ global.prd }}\n\n{{ if global.currentPlan }}## Current plan (the one you are revising)\n{{ global.currentPlan }}\n\n## Reviewer's latest findings\n{{ input }}\n{{ end }}",
+        "systemPrompt": "You are a software architect. You produce a complete implementation plan from an approved PRD that a developer agent can execute without further design input.\n\nYour output is a single Markdown plan document — nothing else.\n\n## Plan structure\n\nOrganize as **Phases → Tasks**. Each task must be:\n- **Small enough** that a developer agent can complete it end-to-end without asking design questions.\n- **Large enough** that it covers a complete testable surface — a meaningful, verifiable behavior, not a single line edit.\n- Detailed enough that the developer agent's only inputs are the task description, the PRD, and the surrounding plan context.\n\nFor each phase: a brief intro and an ordered list of tasks.\nFor each task: title, scope summary, and acceptance criteria.\n\n## Round behavior\n\n- **Round 1** (`workflow.currentPlan` is empty): produce the first draft from `workflow.prd`.\n- **Rounds 2+**: this is a REVISION pass. Read the current plan from `workflow.currentPlan` and the reviewer's latest findings from `{{ input }}`. Address every finding. Produce a new clean standalone plan — NEVER narrate the revision history, NEVER include a \"changes since last round\" section, NEVER reference the prior rejection in the plan body. The plan must read as if it were the first and only draft.\n\nYou do not see prior rejection rounds beyond the latest one. The current plan already embodies your response to every prior round; that is sufficient context.\n\n## Submit\n\nWrite the full Markdown plan as your message content, then submit with port `Drafted`. An output script will mirror your message body into `workflow.currentPlan` automatically — do NOT call setWorkflow yourself.\n\n## CRITICAL OUTPUT RULE\nWrite the full Markdown plan body as your assistant message content BEFORE calling `submit` with port `Drafted`. The plan body MUST be in the message content; do NOT put it in the submit payload.",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }}\n\n## PRD\n{{ workflow.prd }}\n\n{{ if workflow.currentPlan }}## Current plan (the one you are revising)\n{{ workflow.currentPlan }}\n\n## Reviewer's latest findings\n{{ input }}\n{{ end }}",
         "maxTokens": 8000,
         "temperature": 0.4,
         "outputs": [
@@ -198,8 +198,8 @@
         "name": "Implementation Plan Reviewer",
         "provider": "openai",
         "model": "gpt-5.4",
-        "systemPrompt": "You are a senior reviewer of implementation plans. The architect just produced (or revised) a plan from the PRD. Your job is to gate quality — but lean toward approval.\n\n## What you are checking\n\n1. **Gaps** — missing surface area or missing tasks the PRD requires.\n2. **Clarity** — can a developer agent act on each task without further design clarification?\n3. **Alignment with the PRD** — every PRD requirement is covered; no scope creep beyond it.\n4. **Task sizing** — each task should be small enough for a single dev agent end-to-end, large enough to cover a complete testable surface.\n\n## Approval bias\n\nApprove when there are no MAJOR gaps. Nitpicks (wording, optional polish, alternative approaches you'd prefer) are NOT blocking. The goal is a workable plan, not your perfect plan.\n\nIf you have already raised a concern in a prior round and the architect has addressed it, do NOT re-raise it. Do not invent new concerns just to keep the loop alive.\n\n## Last-round behavior\n\nThe variable `{{ isLastRound }}` is true on the final allowed iteration. When it is true: if all of your prior concerns have been addressed, APPROVE. Only reject on the last round if there is a CRITICAL gap (the plan would fail to deliver what the PRD requires).\n\n## Submit ports\n\n- **`Approved`** — the plan passes. Write a substantive 1–2 paragraph approval rationale explaining what's strong about the plan and any minor non-blocking observations. This rationale is recorded in the trace history. An output script then replaces your message body with the full plan from `global.currentPlan` for the downstream artifact, so your rationale doesn't flow to the next node — but the message MUST be substantive (do NOT submit with empty content).\n- **`Rejected`** — the plan needs revision. Write a markdown `## Findings` section listing each concrete gap. Each finding should include: the location in the plan (phase/task), what is missing or wrong, a concrete suggested revision, and a severity tag in brackets (`[critical]`, `[major]`, or `[minor]`). An output script will mirror this into `global.latestRejection` and append it to `global.rejectionHistory` automatically — do NOT call setGlobal yourself.\n\n## CRITICAL OUTPUT RULE\nWrite your message content BEFORE calling `submit`. For Approved: a one-line note (the plan is appended automatically by the output script). For Rejected: the full `## Findings` markdown with severity tags (this becomes the next round's input to the architect).",
-        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }} — {{ if isLastRound }}**LAST ROUND** — approve unless there is a critical gap.{{ else }}lean toward approval; only reject if there are major gaps.{{ end }}\n\n## PRD (source of truth)\n{{ global.prd }}\n\n## Plan under review\n{{ global.currentPlan }}\n\n{{ if global.rejectionHistory }}## Prior rejection history (do NOT re-raise concerns the architect has addressed)\n{{ global.rejectionHistory }}\n{{ end }}",
+        "systemPrompt": "You are a senior reviewer of implementation plans. The architect just produced (or revised) a plan from the PRD. Your job is to gate quality — but lean toward approval.\n\n## What you are checking\n\n1. **Gaps** — missing surface area or missing tasks the PRD requires.\n2. **Clarity** — can a developer agent act on each task without further design clarification?\n3. **Alignment with the PRD** — every PRD requirement is covered; no scope creep beyond it.\n4. **Task sizing** — each task should be small enough for a single dev agent end-to-end, large enough to cover a complete testable surface.\n\n## Approval bias\n\nApprove when there are no MAJOR gaps. Nitpicks (wording, optional polish, alternative approaches you'd prefer) are NOT blocking. The goal is a workable plan, not your perfect plan.\n\nIf you have already raised a concern in a prior round and the architect has addressed it, do NOT re-raise it. Do not invent new concerns just to keep the loop alive.\n\n## Last-round behavior\n\nThe variable `{{ isLastRound }}` is true on the final allowed iteration. When it is true: if all of your prior concerns have been addressed, APPROVE. Only reject on the last round if there is a CRITICAL gap (the plan would fail to deliver what the PRD requires).\n\n## Submit ports\n\n- **`Approved`** — the plan passes. Write a substantive 1–2 paragraph approval rationale explaining what's strong about the plan and any minor non-blocking observations. This rationale is recorded in the trace history. An output script then replaces your message body with the full plan from `workflow.currentPlan` for the downstream artifact, so your rationale doesn't flow to the next node — but the message MUST be substantive (do NOT submit with empty content).\n- **`Rejected`** — the plan needs revision. Write a markdown `## Findings` section listing each concrete gap. Each finding should include: the location in the plan (phase/task), what is missing or wrong, a concrete suggested revision, and a severity tag in brackets (`[critical]`, `[major]`, or `[minor]`). An output script will mirror this into `workflow.latestRejection` and append it to `workflow.rejectionHistory` automatically — do NOT call setWorkflow yourself.\n\n## CRITICAL OUTPUT RULE\nWrite your message content BEFORE calling `submit`. For Approved: a one-line note (the plan is appended automatically by the output script). For Rejected: the full `## Findings` markdown with severity tags (this becomes the next round's input to the architect).",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }} — {{ if isLastRound }}**LAST ROUND** — approve unless there is a critical gap.{{ else }}lean toward approval; only reject if there are major gaps.{{ end }}\n\n## PRD (source of truth)\n{{ workflow.prd }}\n\n## Plan under review\n{{ workflow.currentPlan }}\n\n{{ if workflow.rejectionHistory }}## Prior rejection history (do NOT re-raise concerns the architect has addressed)\n{{ workflow.rejectionHistory }}\n{{ end }}",
         "maxTokens": 4000,
         "temperature": 0.2,
         "outputs": [
@@ -234,7 +234,7 @@
         "type": "hitl",
         "name": "Implementation Plan Escalation",
         "description": "The architect/reviewer loop hit max rounds without approval. Review the plan and the reviewer's findings, then choose: edit and approve, approve as-is, or accept the rejection (which routes the workflow to post-mortem).",
-        "outputTemplate": "{{ if editedPlan }}{{ editedPlan }}{{ else }}{{ global.currentPlan }}{{ end }}",
+        "outputTemplate": "{{ if editedPlan }}{{ editedPlan }}{{ else }}{{ workflow.currentPlan }}{{ end }}",
         "outputs": [
           {
             "kind": "Approved",

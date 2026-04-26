@@ -9,7 +9,7 @@ public sealed record LogicNodeEvaluationResult(
     LogicNodeFailureKind? Failure,
     string? FailureMessage,
     IReadOnlyDictionary<string, JsonElement> ContextUpdates,
-    IReadOnlyDictionary<string, JsonElement> GlobalUpdates,
+    IReadOnlyDictionary<string, JsonElement> WorkflowUpdates,
     string? OutputOverride = null,
     string? InputOverride = null)
 {
@@ -20,10 +20,10 @@ public sealed record LogicNodeEvaluationResult(
         IReadOnlyList<string> logs,
         TimeSpan duration,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
-        IReadOnlyDictionary<string, JsonElement> globalUpdates,
+        IReadOnlyDictionary<string, JsonElement> workflowUpdates,
         string? outputOverride = null,
         string? inputOverride = null) =>
-        new(port, logs, duration, null, null, contextUpdates, globalUpdates, outputOverride, inputOverride);
+        new(port, logs, duration, null, null, contextUpdates, workflowUpdates, outputOverride, inputOverride);
 
     public static LogicNodeEvaluationResult Fail(
         LogicNodeFailureKind kind,
@@ -45,5 +45,5 @@ public enum LogicNodeFailureKind
     ContextBudgetExceeded,
     OutputOverrideBudgetExceeded,
     InputOverrideBudgetExceeded,
-    ReservedGlobalKeyWrite,
+    ReservedWorkflowKeyWrite,
 }

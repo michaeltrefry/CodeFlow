@@ -250,12 +250,12 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
+    public async Task Consumer_WhenWorkflowWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
@@ -270,7 +270,7 @@ public sealed class AgentInvocationConsumerTests
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
@@ -284,7 +284,7 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirAndLegacyContextBothPresent_ShouldPreferGlobalWorkDir()
+    public async Task Consumer_WhenWorkflowWorkDirAndLegacyContextBothPresent_ShouldPreferWorkflowWorkDir()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
@@ -297,7 +297,7 @@ public sealed class AgentInvocationConsumerTests
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
@@ -313,17 +313,17 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
         observed!.Workspace!.RootPath.Should().Be(workDir);
         observed.Workspace.CorrelationId.Should().Be(traceId);
-        observed.Workspace.RepoUrl.Should().BeNull("global.workDir overrides the legacy per-repo workspace context");
+        observed.Workspace.RepoUrl.Should().BeNull("workflow.workDir overrides the legacy per-repo workspace context");
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirBlank_ShouldFallBackToLegacyContext()
+    public async Task Consumer_WhenWorkflowWorkDirBlank_ShouldFallBackToLegacyContext()
     {
         var legacy = new CodeFlow.Contracts.ToolExecutionContext(
             new CodeFlow.Contracts.ToolWorkspaceContext(
@@ -333,7 +333,7 @@ public sealed class AgentInvocationConsumerTests
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement("   ")
         };
@@ -349,7 +349,7 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
@@ -359,7 +359,7 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenNoGlobalContext_ShouldLeaveLegacyBehaviorUnchanged()
+    public async Task Consumer_WhenNoWorkflowContext_ShouldLeaveLegacyBehaviorUnchanged()
     {
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
@@ -735,15 +735,15 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_ShouldExposeGlobalContextAlongsideContext()
+    public async Task Consumer_ShouldExposeWorkflowContextAlongsideContext()
     {
-        // S6: AgentInvokeRequested may carry a `GlobalContext` dict (the saga's `global` bag).
-        // The consumer should flatten it into template variables under the `global.` namespace,
+        // S6: AgentInvokeRequested may carry a `WorkflowContext` dict (the saga's `workflow` bag).
+        // The consumer should flatten it into template variables under the `workflow.` namespace,
         // alongside the existing `context.` namespace from `ContextInputs`.
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
             RoundId: Guid.NewGuid(),
-            WorkflowKey: "global-flow",
+            WorkflowKey: "workflow-flow",
             WorkflowVersion: 1,
             NodeId: Guid.NewGuid(),
             AgentKey: "reviewer",
@@ -753,7 +753,7 @@ public sealed class AgentInvocationConsumerTests
             {
                 ["localKey"] = Json("\"local-value\"")
             },
-            GlobalContext: new Dictionary<string, JsonElement>
+            WorkflowContext: new Dictionary<string, JsonElement>
             {
                 ["sharedFlag"] = Json("\"on\""),
                 ["sharedNumber"] = Json("42"),
@@ -767,7 +767,7 @@ public sealed class AgentInvocationConsumerTests
             Configuration: new AgentInvocationConfiguration(
                 "openai",
                 "gpt-5.4",
-                PromptTemplate: "Local={{context.localKey}} Global={{global.sharedFlag}} Nested={{global.sharedObj.nested}}"),
+                PromptTemplate: "Local={{context.localKey}} Workflow={{workflow.sharedFlag}} Nested={{workflow.sharedObj.nested}}"),
             ConfigJson: "{}",
             CreatedAtUtc: DateTime.UtcNow,
             CreatedBy: "codex");
@@ -783,7 +783,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
             .AddDbContext<CodeFlowDbContext>(options => options
-                .UseInMemoryDatabase($"consumer-global-{Guid.NewGuid():N}"))
+                .UseInMemoryDatabase($"consumer-workflow-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -802,9 +802,9 @@ public sealed class AgentInvocationConsumerTests
             var variables = agentInvoker.Invocations[0].Configuration.Variables;
             variables.Should().NotBeNull();
             variables!["context.localKey"].Should().Be("local-value");
-            variables["global.sharedFlag"].Should().Be("on");
-            variables["global.sharedNumber"].Should().Be("42");
-            variables["global.sharedObj.nested"].Should().Be("value");
+            variables["workflow.sharedFlag"].Should().Be("on");
+            variables["workflow.sharedNumber"].Should().Be("42");
+            variables["workflow.sharedObj.nested"].Should().Be("value");
         }
         finally
         {

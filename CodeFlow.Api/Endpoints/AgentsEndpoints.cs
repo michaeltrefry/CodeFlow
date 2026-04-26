@@ -72,7 +72,7 @@ public static class AgentsEndpoints
         var decision = request.Decision ?? string.Empty;
         var outputPortName = request.OutputPortName ?? decision;
         var context = request.Context ?? EmptyJsonElementDictionary;
-        var global = request.Global ?? EmptyJsonElementDictionary;
+        var workflow = request.Workflow ?? EmptyJsonElementDictionary;
 
         Scriban.Runtime.ScriptObject scope;
         if (mode == DecisionOutputTemplateMode.Hitl)
@@ -86,7 +86,7 @@ public static class AgentsEndpoints
                 reasons: request.Reasons,
                 actions: request.Actions,
                 contextInputs: context,
-                globalInputs: global);
+                workflowInputs: workflow);
         }
         else
         {
@@ -97,7 +97,7 @@ public static class AgentsEndpoints
                 outputJson: ParseOutputAsStructuredJson(request.Output),
                 inputJson: request.Input,
                 contextInputs: context,
-                globalInputs: global);
+                workflowInputs: workflow);
         }
 
         string rendered;

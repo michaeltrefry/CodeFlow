@@ -97,7 +97,7 @@ public sealed class ContractSerializationTests
     [Fact]
     public void SubflowInvokeRequested_ShouldRoundTripThroughJsonSerialization()
     {
-        var sharedContext = new Dictionary<string, JsonElement>
+        var workflowContext = new Dictionary<string, JsonElement>
         {
             ["target"] = JsonDocument.Parse("""{"path":"/repo"}""").RootElement.Clone(),
             ["initialRequest"] = JsonDocument.Parse("\"build a blog\"").RootElement.Clone()
@@ -111,7 +111,7 @@ public sealed class ContractSerializationTests
             SubflowKey: "shared-utility",
             SubflowVersion: 7,
             InputRef: new Uri("file:///tmp/codeflow/parent/output.bin"),
-            SharedContext: sharedContext,
+            WorkflowContext: workflowContext,
             Depth: 1);
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
@@ -126,13 +126,13 @@ public sealed class ContractSerializationTests
         roundTripped.SubflowVersion.Should().Be(7);
         roundTripped.InputRef.Should().Be(message.InputRef);
         roundTripped.Depth.Should().Be(1);
-        roundTripped.SharedContext.Should().ContainKeys("target", "initialRequest");
+        roundTripped.WorkflowContext.Should().ContainKeys("target", "initialRequest");
     }
 
     [Fact]
     public void SubflowCompleted_ShouldRoundTripThroughJsonSerialization()
     {
-        var sharedContext = new Dictionary<string, JsonElement>
+        var workflowContext = new Dictionary<string, JsonElement>
         {
             ["resolvedSpec"] = JsonDocument.Parse("""{"engine":"markdown"}""").RootElement.Clone()
         };
@@ -144,7 +144,7 @@ public sealed class ContractSerializationTests
             ChildTraceId: Guid.NewGuid(),
             OutputPortName: "Completed",
             OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
-            SharedContext: sharedContext);
+            WorkflowContext: workflowContext);
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         var roundTripped = JsonSerializer.Deserialize<SubflowCompleted>(json, SerializerOptions);
@@ -156,8 +156,8 @@ public sealed class ContractSerializationTests
         roundTripped.ChildTraceId.Should().Be(message.ChildTraceId);
         roundTripped.OutputPortName.Should().Be("Completed");
         roundTripped.OutputRef.Should().Be(message.OutputRef);
-        roundTripped.SharedContext.Should().ContainKey("resolvedSpec");
-        roundTripped.SharedContext["resolvedSpec"].GetProperty("engine").GetString().Should().Be("markdown");
+        roundTripped.WorkflowContext.Should().ContainKey("resolvedSpec");
+        roundTripped.WorkflowContext["resolvedSpec"].GetProperty("engine").GetString().Should().Be("markdown");
     }
 
     [Theory]
@@ -173,7 +173,7 @@ public sealed class ContractSerializationTests
             ChildTraceId: Guid.NewGuid(),
             OutputPortName: portName,
             OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
-            SharedContext: new Dictionary<string, JsonElement>());
+            WorkflowContext: new Dictionary<string, JsonElement>());
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         var roundTripped = JsonSerializer.Deserialize<SubflowCompleted>(json, SerializerOptions);
@@ -194,7 +194,7 @@ public sealed class ContractSerializationTests
             SubflowKey: "draft-critique-revise",
             SubflowVersion: 2,
             InputRef: new Uri("file:///tmp/codeflow/parent/output.bin"),
-            SharedContext: new Dictionary<string, JsonElement>(),
+            WorkflowContext: new Dictionary<string, JsonElement>(),
             Depth: 1,
             ReviewRound: 2,
             ReviewMaxRounds: 3);
@@ -217,7 +217,7 @@ public sealed class ContractSerializationTests
             SubflowKey: "shared-utility",
             SubflowVersion: 7,
             InputRef: new Uri("file:///tmp/codeflow/parent/output.bin"),
-            SharedContext: new Dictionary<string, JsonElement>(),
+            WorkflowContext: new Dictionary<string, JsonElement>(),
             Depth: 1);
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
@@ -246,7 +246,7 @@ public sealed class ContractSerializationTests
             ChildTraceId: Guid.NewGuid(),
             OutputPortName: decision,
             OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
-            SharedContext: new Dictionary<string, JsonElement>(),
+            WorkflowContext: new Dictionary<string, JsonElement>(),
             Decision: decision);
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
@@ -265,7 +265,7 @@ public sealed class ContractSerializationTests
             ChildTraceId: Guid.NewGuid(),
             OutputPortName: "Completed",
             OutputRef: new Uri("file:///tmp/codeflow/child/final.bin"),
-            SharedContext: new Dictionary<string, JsonElement>());
+            WorkflowContext: new Dictionary<string, JsonElement>());
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         var roundTripped = JsonSerializer.Deserialize<SubflowCompleted>(json, SerializerOptions);

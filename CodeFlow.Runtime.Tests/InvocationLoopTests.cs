@@ -269,7 +269,7 @@ public sealed class InvocationLoopTests
                     [
                         new ToolCall("call_setctx", "setContext",
                             new JsonObject { ["key"] = "foo", ["value"] = 42 }),
-                        new ToolCall("call_setglobal", "setGlobal",
+                        new ToolCall("call_setworkflow", "setWorkflow",
                             new JsonObject { ["key"] = "bar", ["value"] = "hello" }),
                         new ToolCall("call_submit", "submit",
                             new JsonObject { ["decision"] = "Approved" })
@@ -286,12 +286,12 @@ public sealed class InvocationLoopTests
         result.Decision.PortName.Should().Be("Approved");
         result.ContextUpdates.Should().NotBeNull();
         result.ContextUpdates!["foo"].GetInt32().Should().Be(42);
-        result.GlobalUpdates.Should().NotBeNull();
-        result.GlobalUpdates!["bar"].GetString().Should().Be("hello");
+        result.WorkflowUpdates.Should().NotBeNull();
+        result.WorkflowUpdates!["bar"].GetString().Should().Be("hello");
     }
 
     [Fact]
-    public async Task RunAsync_SetGlobalReservedKey_ReturnsToolErrorAndDoesNotPersist()
+    public async Task RunAsync_SetWorkflowReservedKey_ReturnsToolErrorAndDoesNotPersist()
     {
         var modelClient = new ScriptedModelClient(
         [
@@ -301,7 +301,7 @@ public sealed class InvocationLoopTests
                     "Trying to overwrite workDir.",
                     ToolCalls:
                     [
-                        new ToolCall("call_reserved", "setGlobal",
+                        new ToolCall("call_reserved", "setWorkflow",
                             new JsonObject { ["key"] = "workDir", ["value"] = "/etc/evil" }),
                         new ToolCall("call_submit", "submit",
                             new JsonObject { ["decision"] = "Continue" })
@@ -316,20 +316,20 @@ public sealed class InvocationLoopTests
             DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
 
         result.Decision.PortName.Should().Be("Continue",
-            "the rejected setGlobal returns an error tool result; the loop continues to submit");
+            "the rejected setWorkflow returns an error tool result; the loop continues to submit");
 
-        var setGlobalToolMessage = result.Transcript
+        var setWorkflowToolMessage = result.Transcript
             .OfType<ChatMessage>()
             .FirstOrDefault(m => m.Role == ChatMessageRole.Tool
                 && m.ToolCallId == "call_reserved");
-        setGlobalToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
-        setGlobalToolMessage!.Content.Should().Contain("workDir");
-        setGlobalToolMessage.Content.Should().Contain("framework-managed global");
+        setWorkflowToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
+        setWorkflowToolMessage!.Content.Should().Contain("workDir");
+        setWorkflowToolMessage.Content.Should().Contain("framework-managed workflow variable");
 
-        if (result.GlobalUpdates is { } globals)
+        if (result.WorkflowUpdates is { } workflowVars)
         {
-            globals.ContainsKey("workDir").Should().BeFalse(
-                "the rejected write must not be persisted into the global bag");
+            workflowVars.ContainsKey("workDir").Should().BeFalse(
+                "the rejected write must not be persisted into the workflow bag");
         }
     }
 
@@ -359,7 +359,7 @@ public sealed class InvocationLoopTests
 
         result.Decision.PortName.Should().Be("Failed");
         result.ContextUpdates.Should().BeNull("failed terminations discard pending writes");
-        result.GlobalUpdates.Should().BeNull();
+        result.WorkflowUpdates.Should().BeNull();
     }
 
     [Fact]
@@ -407,7 +407,7 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
-    public async Task RunAsync_ShouldAdvertise_SetContextAndSetGlobalTools()
+    public async Task RunAsync_ShouldAdvertise_SetContextAndSetWorkflowTools()
     {
         IReadOnlyList<ToolSchema>? advertisedTools = null;
         var modelClient = new ScriptedModelClient(
@@ -428,7 +428,7 @@ public sealed class InvocationLoopTests
 
         advertisedTools.Should().NotBeNull();
         advertisedTools!.Should().Contain(t => t.Name == "setContext");
-        advertisedTools.Should().Contain(t => t.Name == "setGlobal");
+        advertisedTools.Should().Contain(t => t.Name == "setWorkflow");
     }
 
     [Fact]

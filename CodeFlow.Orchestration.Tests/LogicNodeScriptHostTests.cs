@@ -489,14 +489,14 @@ public sealed class LogicNodeScriptHostTests
     }
 
     [Fact]
-    public void Evaluate_ReadsGlobalValues_FromSnapshotBag()
+    public void Evaluate_ReadsWorkflowValues_FromSnapshotBag()
     {
         var host = BuildHost();
         const string script = """
-            if (global.feature === 'on') { setNodePath('Enabled'); }
+            if (workflow.feature === 'on') { setNodePath('Enabled'); }
             else { setNodePath('Disabled'); }
             """;
-        var global = new Dictionary<string, JsonElement>
+        var workflowSnapshot = new Dictionary<string, JsonElement>
         {
             ["feature"] = ParseJson("\"on\"")
         };
@@ -507,20 +507,20 @@ public sealed class LogicNodeScriptHostTests
             ParseJson("{}"),
             EmptyContext,
             cancellationToken: default,
-            global: global);
+            workflow: workflowSnapshot);
 
         result.IsSuccess.Should().BeTrue();
         result.OutputPortName.Should().Be("Enabled");
     }
 
     [Fact]
-    public void Evaluate_SetGlobal_CapturesUpdatesSeparatelyFromContext()
+    public void Evaluate_SetWorkflow_CapturesUpdatesSeparatelyFromContext()
     {
         var host = BuildHost();
         const string script = """
             setContext('local', 'L');
-            setGlobal('shared', { hello: 'world' });
-            setGlobal('count', 42);
+            setWorkflow('shared', { hello: 'world' });
+            setWorkflow('count', 42);
             setNodePath('Out');
             """;
 
@@ -533,17 +533,17 @@ public sealed class LogicNodeScriptHostTests
         result.IsSuccess.Should().BeTrue();
         result.ContextUpdates.Should().HaveCount(1);
         result.ContextUpdates["local"].GetString().Should().Be("L");
-        result.GlobalUpdates.Should().HaveCount(2);
-        result.GlobalUpdates["shared"].GetProperty("hello").GetString().Should().Be("world");
-        result.GlobalUpdates["count"].GetInt32().Should().Be(42);
+        result.WorkflowUpdates.Should().HaveCount(2);
+        result.WorkflowUpdates["shared"].GetProperty("hello").GetString().Should().Be("world");
+        result.WorkflowUpdates["count"].GetInt32().Should().Be(42);
     }
 
     [Fact]
-    public void Evaluate_SetGlobal_RejectsNonStringKey()
+    public void Evaluate_SetWorkflow_RejectsNonStringKey()
     {
         var host = BuildHost();
         const string script = """
-            setGlobal('', 'oops');
+            setWorkflow('', 'oops');
             setNodePath('Out');
             """;
 
@@ -555,15 +555,15 @@ public sealed class LogicNodeScriptHostTests
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ScriptError);
-        result.FailureMessage.Should().Contain("setGlobal(key, value) requires a non-empty string key.");
+        result.FailureMessage.Should().Contain("setWorkflow(key, value) requires a non-empty string key.");
     }
 
     [Fact]
-    public void Evaluate_SetGlobal_RejectsReservedKey()
+    public void Evaluate_SetWorkflow_RejectsReservedKey()
     {
         var host = BuildHost();
         const string script = """
-            setGlobal('workDir', '/etc/evil');
+            setWorkflow('workDir', '/etc/evil');
             setNodePath('Out');
             """;
 
@@ -574,22 +574,22 @@ public sealed class LogicNodeScriptHostTests
             EmptyContext);
 
         result.IsSuccess.Should().BeFalse();
-        result.Failure.Should().Be(LogicNodeFailureKind.ReservedGlobalKeyWrite);
+        result.Failure.Should().Be(LogicNodeFailureKind.ReservedWorkflowKeyWrite);
         result.FailureMessage.Should().Contain("workDir");
-        result.FailureMessage.Should().Contain("framework-managed global");
-        result.GlobalUpdates.Should().BeEmpty(
+        result.FailureMessage.Should().Contain("framework-managed workflow variable");
+        result.WorkflowUpdates.Should().BeEmpty(
             "the failed evaluation must drop pending writes so the reserved key is not persisted");
     }
 
     [Fact]
-    public void Evaluate_GlobalIsFrozen_DirectAssignmentIgnoredInStrictMode()
+    public void Evaluate_WorkflowIsFrozen_DirectAssignmentIgnoredInStrictMode()
     {
         var host = BuildHost();
         const string script = """
-            try { global.feature = 'mutated'; } catch (e) { /* expected */ }
-            setNodePath(global.feature);
+            try { workflow.feature = 'mutated'; } catch (e) { /* expected */ }
+            setNodePath(workflow.feature);
             """;
-        var global = new Dictionary<string, JsonElement>
+        var workflowSnapshot = new Dictionary<string, JsonElement>
         {
             ["feature"] = ParseJson("\"on\"")
         };
@@ -600,10 +600,10 @@ public sealed class LogicNodeScriptHostTests
             ParseJson("{}"),
             EmptyContext,
             cancellationToken: default,
-            global: global);
+            workflow: workflowSnapshot);
 
         result.IsSuccess.Should().BeTrue();
-        result.OutputPortName.Should().Be("on", "deep-frozen global rejects direct assignment");
+        result.OutputPortName.Should().Be("on", "deep-frozen workflow bag rejects direct assignment");
     }
 
     [Fact]
@@ -621,17 +621,17 @@ public sealed class LogicNodeScriptHostTests
 
         var firstRound = host.Evaluate(
             "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
-            cancellationToken: default, global: null, reviewRound: 1, reviewMaxRounds: 3);
+            cancellationToken: default, workflow: null, reviewRound: 1, reviewMaxRounds: 3);
         firstRound.OutputPortName.Should().Be("FirstRound");
 
         var middleRound = host.Evaluate(
             "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
-            cancellationToken: default, global: null, reviewRound: 2, reviewMaxRounds: 3);
+            cancellationToken: default, workflow: null, reviewRound: 2, reviewMaxRounds: 3);
         middleRound.OutputPortName.Should().Be("MiddleRound");
 
         var lastRound = host.Evaluate(
             "wf", 1, Guid.NewGuid(), script, ports, ParseJson("{}"), EmptyContext,
-            cancellationToken: default, global: null, reviewRound: 3, reviewMaxRounds: 3);
+            cancellationToken: default, workflow: null, reviewRound: 3, reviewMaxRounds: 3);
         lastRound.OutputPortName.Should().Be("LastRound");
     }
 
@@ -785,7 +785,7 @@ public sealed class LogicNodeScriptHostTests
         const string script = """
             setContext('stage', 'final');
             setOutput('rendered markdown');
-            setGlobal('shared', true);
+            setWorkflow('shared', true);
             setNodePath('Completed');
             """;
 
@@ -801,8 +801,8 @@ public sealed class LogicNodeScriptHostTests
         result.OutputOverride.Should().Be("rendered markdown");
         result.ContextUpdates.Should().ContainKey("stage");
         result.ContextUpdates["stage"].GetString().Should().Be("final");
-        result.GlobalUpdates.Should().ContainKey("shared");
-        result.GlobalUpdates["shared"].GetBoolean().Should().BeTrue();
+        result.WorkflowUpdates.Should().ContainKey("shared");
+        result.WorkflowUpdates["shared"].GetBoolean().Should().BeTrue();
     }
 
     [Fact]
@@ -981,7 +981,7 @@ public sealed class LogicNodeScriptHostTests
         const string script = """
             setContext('stage', 'prep');
             setInput('transformed prompt');
-            setGlobal('shared', true);
+            setWorkflow('shared', true);
             log('prepped input');
             setNodePath('Completed');
             """;
@@ -998,8 +998,8 @@ public sealed class LogicNodeScriptHostTests
         result.InputOverride.Should().Be("transformed prompt");
         result.ContextUpdates.Should().ContainKey("stage");
         result.ContextUpdates["stage"].GetString().Should().Be("prep");
-        result.GlobalUpdates.Should().ContainKey("shared");
-        result.GlobalUpdates["shared"].GetBoolean().Should().BeTrue();
+        result.WorkflowUpdates.Should().ContainKey("shared");
+        result.WorkflowUpdates["shared"].GetBoolean().Should().BeTrue();
         result.LogEntries.Should().Contain("prepped input");
     }
 

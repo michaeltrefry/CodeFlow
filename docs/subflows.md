@@ -10,20 +10,20 @@ Allow a workflow to embed another workflow as a single **Subflow** node so that 
 
 ## 2. Concepts
 
-### 2.1 Two-tier context (`context` + `global`)
+### 2.1 Two-tier context (`context` + `workflow`)
 
 Two distinct objects are exposed to Logic node scripts and template variables:
 
 | Name      | Scope                              | Lifetime                                 | Writable from inside?                          |
 |-----------|------------------------------------|------------------------------------------|------------------------------------------------|
 | `context` | The current workflow's local state | Per saga (top-level or subflow)          | Yes (`setContext`)                             |
-| `global`  | Shared context, propagated up/down | Lives on the top-level saga              | Yes (`setGlobal`) — writes bubble on completion |
+| `workflow`  | Shared context, propagated up/down | Lives on the top-level saga              | Yes (`setWorkflow`) — writes bubble on completion |
 
-- For a top-level workflow, `context` is the workflow's input bag (current behaviour, unchanged) and `global` starts empty (or with whatever initial values the API caller supplies).
-- For a subflow, `global` is the parent's `global` snapshotted at the moment the Subflow node fires; `context` starts empty and is local to the child saga.
+- For a top-level workflow, `context` is the workflow's input bag (current behaviour, unchanged) and `workflow` starts empty (or with whatever initial values the API caller supplies).
+- For a subflow, `workflow` is the parent's `workflow` snapshotted at the moment the Subflow node fires; `context` starts empty and is local to the child saga.
 - `setContext('foo', x)` writes to **local** `context`. Local context never bubbles back to the parent.
-- `setGlobal('foo', x)` writes to the **child's working copy** of `global`. When the child saga completes, its final `global` is **shallow-merged** (last-write-wins per key) into the parent's `global` as part of `SubflowCompleted`. Effects only become visible to the parent on completion — there is no live shared store.
-- `global` is name-safe in Jint — not a reserved word, not bound by the sandbox.
+- `setWorkflow('foo', x)` writes to the **child's working copy** of `workflow`. When the child saga completes, its final `workflow` is **shallow-merged** (last-write-wins per key) into the parent's `workflow` as part of `SubflowCompleted`. Effects only become visible to the parent on completion — there is no live shared store.
+- `workflow` is name-safe in Jint — not a reserved word, not bound by the sandbox.
 
 ### 2.2 Subflow node
 
@@ -45,10 +45,10 @@ When the parent saga reaches a Subflow node, it publishes `SubflowInvokeRequeste
 - A fresh `TraceId`.
 - Parent linkage: `ParentTraceId`, `ParentNodeId`, `ParentRoundId`.
 - A `SubflowDepth` (0 for top-level workflows; +1 per nested subflow).
-- The parent's `global` snapshot stored as the child's working `global`; the child's `context` starts empty.
+- The parent's `workflow` snapshot stored as the child's working `workflow`; the child's `context` starts empty.
 - Its own rounds, its own `MaxRoundsPerRound`, its own escalation node (if defined).
 
-When the child saga reaches a terminal state, it publishes `SubflowCompleted`, which the parent saga consumes as if it were an `AgentInvocationCompleted` for the Subflow node. The child's last output artifact becomes the input to whatever the parent routes to next, and the child's final `global` is shallow-merged into the parent's `global` before routing.
+When the child saga reaches a terminal state, it publishes `SubflowCompleted`, which the parent saga consumes as if it were an `AgentInvocationCompleted` for the Subflow node. The child's last output artifact becomes the input to whatever the parent routes to next, and the child's final `workflow` is shallow-merged into the parent's `workflow` before routing.
 
 ### 2.4 Recursion guard
 
@@ -60,7 +60,7 @@ Pending HITL tasks anywhere in a trace's subtree are surfaced on every ancestor 
 
 ## 3. Out of scope (v1)
 
-- Live shared state — `setGlobal` only propagates on subflow completion, not mid-run.
+- Live shared state — `setWorkflow` only propagates on subflow completion, not mid-run.
 - Streaming or partial outputs from child to parent.
 - Subflow-specific access control.
 - Static cycle detection at workflow save time (runtime depth cap is sufficient).
@@ -93,22 +93,22 @@ Each slice is sized to be one Kanban card. Where a slice could plausibly be spli
 ### Slice 4 — Saga: child initialization
 - New consumer `SubflowInvokeRequestedConsumer` (or extend `WorkflowSagaStateMachine` initial event handling) that:
   - Creates the child saga with `TraceId = childTraceId` and parent linkage populated.
-  - Stores the parent's `global` snapshot as the child's `global_inputs_json`; child's `inputs_json` (local `context`) starts empty.
+  - Stores the parent's `workflow` snapshot as the child's `global_inputs_json`; child's `inputs_json` (local `context`) starts empty.
   - Routes from the child workflow's Start node using the existing pipeline.
 
 ### Slice 5 — Saga: child completion → parent resume
-- When a child saga reaches a terminal state (any unwired declared port, or `Failed`) AND has parent linkage, publish `SubflowCompleted` carrying the child's final `global` (shallow JSON object) and the terminal port name.
+- When a child saga reaches a terminal state (any unwired declared port, or `Failed`) AND has parent linkage, publish `SubflowCompleted` carrying the child's final `workflow` (shallow JSON object) and the terminal port name.
 - New event/consumer on the parent saga that:
-  - Shallow-merges the child's final `global` into the parent's `global` (last-write-wins per top-level key) before routing.
+  - Shallow-merges the child's final `workflow` into the parent's `workflow` (last-write-wins per top-level key) before routing.
   - Maps `SubflowCompleted` to an `AgentInvocationCompleted`-equivalent and routes from the Subflow node's matching port.
 - Use the existing `RouteCompletionAsync` flow so script ports / logic chains on the Subflow node behave the same as on Agent nodes.
 
-### Slice 6 — Scripting: add `global` alongside `context`, with `setGlobal`
-- Update [LogicNodeScriptHost.cs](../CodeFlow.Orchestration/Scripting/LogicNodeScriptHost.cs) to bind both `context` (local) and `global` (working copy of the shared snapshot).
-- `setContext` keeps writing to local; new `setGlobal('foo', x)` writes to the working `global`. Both writes are captured per-evaluation and applied to the saga atomically alongside other context updates.
-- For top-level workflows, `global` is bound to whatever the top-level saga stores (empty by default); existing scripts continue to read `context.foo` unchanged.
+### Slice 6 — Scripting: add `workflow` alongside `context`, with `setWorkflow`
+- Update [LogicNodeScriptHost.cs](../CodeFlow.Orchestration/Scripting/LogicNodeScriptHost.cs) to bind both `context` (local) and `workflow` (working copy of the shared snapshot).
+- `setContext` keeps writing to local; new `setWorkflow('foo', x)` writes to the working `workflow`. Both writes are captured per-evaluation and applied to the saga atomically alongside other context updates.
+- For top-level workflows, `workflow` is bound to whatever the top-level saga stores (empty by default); existing scripts continue to read `context.foo` unchanged.
 - Persist split on `workflow_sagas`: keep `inputs_json` as the **local** context (matches today's semantics), add `global_inputs_json LONGTEXT NULL` for the shared bag. Migration leaves the new column NULL on existing rows; saga read code treats NULL as `{}`.
-- Update template variable population (`BuildContextTemplateVariables` in [AgentInvocationConsumer.cs](../CodeFlow.Orchestration/AgentInvocationConsumer.cs)) to expose both `context.*` and `global.*` to agent prompts.
+- Update template variable population (`BuildContextTemplateVariables` in [AgentInvocationConsumer.cs](../CodeFlow.Orchestration/AgentInvocationConsumer.cs)) to expose both `context.*` and `workflow.*` to agent prompts.
 
 ### Slice 7 — HITL: surface descendants on parent trace
 - Trace API (`/api/traces/{id}`) aggregates `pendingHitl` from the entire subtree by recursive walk on `parent_trace_id` linkage.
@@ -132,7 +132,7 @@ Each slice is sized to be one Kanban card. Where a slice could plausibly be spli
 - Reject self-reference (workflow A having a Subflow node pointing to A) at save time as a quality-of-life check, even though runtime depth cap would catch it.
 
 ### Slice 11 — Documentation + samples
-- Update [workflows.md](workflows.md) with the new node kind, the `context` vs `global` split, and an example shared workflow + composing parent.
+- Update [workflows.md](workflows.md) with the new node kind, the `context` vs `workflow` split, and an example shared workflow + composing parent.
 - Add a one-page "designing reusable subflows" tip sheet.
 
 ### Slice 12 — End-to-end test: parent + subflow with HITL inside child
@@ -155,8 +155,8 @@ Each slice is sized to be one Kanban card. Where a slice could plausibly be spli
 ## 6. Open follow-ups (post-v1)
 
 - Allow subflows to declare custom named output ports (would need an "Exit" node kind and per-port semantics).
-- Per-key write allowlists for `setGlobal` (governance).
-- Live shared state (mid-run propagation of `global` writes between parent and active children).
+- Per-key write allowlists for `setWorkflow` (governance).
+- Live shared state (mid-run propagation of `workflow` writes between parent and active children).
 - Inline HITL answering directly from the parent trace.
 - Visual cycle detection at save time.
 - Streaming partial outputs from a long-running subflow.

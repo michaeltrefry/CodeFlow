@@ -78,7 +78,7 @@ public sealed record DecisionOutputTemplatePreviewRequest(
     JsonElement? Input,
     IReadOnlyDictionary<string, JsonElement>? FieldValues,
     IReadOnlyDictionary<string, JsonElement>? Context,
-    IReadOnlyDictionary<string, JsonElement>? Global,
+    IReadOnlyDictionary<string, JsonElement>? Workflow,
     string? Reason,
     IReadOnlyList<string>? Reasons,
     IReadOnlyList<string>? Actions);

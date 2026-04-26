@@ -17,7 +17,7 @@ public static class DecisionOutputTemplateContext
         JsonElement? outputJson,
         JsonElement? inputJson,
         IReadOnlyDictionary<string, JsonElement> contextInputs,
-        IReadOnlyDictionary<string, JsonElement> globalInputs)
+        IReadOnlyDictionary<string, JsonElement> workflowInputs)
     {
         var scope = new ScriptObject
         {
@@ -31,7 +31,7 @@ public static class DecisionOutputTemplateContext
 
         scope["input"] = ConvertValue(inputJson) ?? new ScriptObject();
         scope["context"] = BuildNamespace(contextInputs);
-        scope["global"] = BuildNamespace(globalInputs);
+        scope["workflow"] = BuildNamespace(workflowInputs);
 
         return scope;
     }
@@ -50,7 +50,7 @@ public static class DecisionOutputTemplateContext
         IReadOnlyList<string>? reasons,
         IReadOnlyList<string>? actions,
         IReadOnlyDictionary<string, JsonElement> contextInputs,
-        IReadOnlyDictionary<string, JsonElement> globalInputs)
+        IReadOnlyDictionary<string, JsonElement> workflowInputs)
     {
         var scope = new ScriptObject
         {
@@ -61,7 +61,7 @@ public static class DecisionOutputTemplateContext
             ["reasons"] = reasons is null ? new ScriptArray() : ToScriptArray(reasons),
             ["actions"] = actions is null ? new ScriptArray() : ToScriptArray(actions),
             ["context"] = BuildNamespace(contextInputs),
-            ["global"] = BuildNamespace(globalInputs)
+            ["workflow"] = BuildNamespace(workflowInputs)
         };
 
         return scope;

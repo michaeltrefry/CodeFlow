@@ -19,16 +19,16 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
 
     // Built-in helpers exposed to every template. Pushed before the caller's scope so user
     // values can shadow them on a per-render basis if absolutely required, but in practice
-    // these are stable framework-managed names (mirrors `ProtectedGlobals` for scripts).
+    // these are stable framework-managed names (mirrors `ProtectedVariables` for scripts).
     private static readonly ScriptObject Builtins = CreateBuiltins();
 
     private static ScriptObject CreateBuiltins()
     {
-        var globals = new ScriptObject();
-        globals.Import(
+        var builtins = new ScriptObject();
+        builtins.Import(
             "branch_name",
             new Func<string?, string?, string>(BranchNameHelper.BranchName));
-        return globals;
+        return builtins;
     }
 
     public string Render(string template, ScriptObject scriptObject, CancellationToken cancellationToken = default)

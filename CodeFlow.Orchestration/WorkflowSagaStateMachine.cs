@@ -226,9 +226,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
-        if (message.GlobalContext is not null)
+        if (message.WorkflowContext is not null)
         {
-            saga.GlobalInputsJson = SerializeContextInputs(message.GlobalContext);
+            saga.WorkflowInputsJson = SerializeContextInputs(message.WorkflowContext);
         }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
@@ -246,9 +246,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     /// <summary>
     /// Initialize a child saga from a <see cref="SubflowInvokeRequested"/>. Loads the child
-    /// workflow, copies parent linkage + global snapshot onto the saga, pins the child Start's
-    /// agent version, and publishes an <see cref="AgentInvokeRequested"/> for the child Start
-    /// node so the existing agent invocation pipeline picks it up. The published
+    /// workflow, copies parent linkage + workflow snapshot onto the saga, pins the child
+    /// Start's agent version, and publishes an <see cref="AgentInvokeRequested"/> for the child
+    /// Start node so the existing agent invocation pipeline picks it up. The published
     /// AgentInvokeRequested is correlated by <c>ChildTraceId</c> — the saga is already in
     /// <c>Running</c> by the time it arrives, so it falls into the <c>DuringAny(Ignore(...))</c>
     /// guard rather than re-running the initial transition.
@@ -288,7 +288,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = childRoundId;
         saga.RoundCount = 0;
         saga.InputsJson = "{}";
-        saga.GlobalInputsJson = SerializeContextInputs(message.SharedContext);
+        saga.WorkflowInputsJson = SerializeContextInputs(message.WorkflowContext);
         saga.CurrentInputRef = message.InputRef.ToString();
         saga.ParentTraceId = message.ParentTraceId;
         saga.ParentNodeId = message.ParentNodeId;
@@ -321,9 +321,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentInputRef = effectiveInputRef.ToString();
 
         // The child's local `context` starts empty — the parent's shared snapshot belongs on
-        // `global`, not on the child's local inputs. Publishing SharedContext as ContextInputs
-        // would make parent keys show up under {{context.*}} on the child Start, and
-        // {{global.*}} would be empty — the opposite of the documented semantics.
+        // `workflow`, not on the child's local inputs. Publishing WorkflowContext as
+        // ContextInputs would make parent keys show up under {{context.*}} on the child Start,
+        // and {{workflow.*}} would be empty — the opposite of the documented semantics.
         await context.Publish(new AgentInvokeRequested(
             TraceId: message.ChildTraceId,
             RoundId: childRoundId,
@@ -337,7 +337,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             CorrelationHeaders: null,
             RetryContext: null,
             ToolExecutionContext: null,
-            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
+            WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: message.ReviewRound,
             ReviewMaxRounds: message.ReviewMaxRounds));
     }
@@ -345,7 +345,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// <summary>
     /// Fires whenever a child saga (one with parent linkage) enters a terminal state. Publishes
     /// <see cref="SubflowCompleted"/> back to the parent saga carrying the child's final
-    /// <c>global</c> bag and last-known output ref. The OutputPortName matches the terminal
+    /// <c>workflow</c> bag and last-known output ref. The OutputPortName matches the terminal
     /// state name (Completed/Failed/Escalated).
     /// </summary>
     private static async Task PublishSubflowCompletedIfChildAsync(
@@ -369,7 +369,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowContext = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         // For ReviewLoop children, the parent drives outcome mapping off Decision (not
         // OutputPortName). Both are now plain port-name strings.
@@ -382,7 +382,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ChildTraceId: saga.TraceId,
             OutputPortName: terminalPortName,
             OutputRef: new Uri(outputRefStr),
-            SharedContext: sharedContext,
+            WorkflowContext: workflowContext,
             Decision: terminalDecision,
             ReviewRound: saga.ParentReviewRound,
             TerminalPort: saga.LastEffectivePort));
@@ -498,19 +498,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        // Shallow merge: last-write-wins per top-level key. Child's working `global` may have
-        // accumulated setGlobal writes during its run; flush them into the parent's bag so
+        // Shallow merge: last-write-wins per top-level key. Child's working `workflow` may have
+        // accumulated setWorkflow writes during its run; flush them into the parent's bag so
         // downstream parent nodes see them.
-        if (message.SharedContext.Count > 0)
+        if (message.WorkflowContext.Count > 0)
         {
-            var parentGlobal = new Dictionary<string, JsonElement>(
-                DeserializeContextInputs(saga.GlobalInputsJson),
+            var parentWorkflow = new Dictionary<string, JsonElement>(
+                DeserializeContextInputs(saga.WorkflowInputsJson),
                 StringComparer.Ordinal);
-            foreach (var (key, value) in message.SharedContext)
+            foreach (var (key, value) in message.WorkflowContext)
             {
-                parentGlobal[key] = value.Clone();
+                parentWorkflow[key] = value.Clone();
             }
-            saga.GlobalInputsJson = SerializeContextInputs(parentGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(parentWorkflow);
         }
 
         var services = context.GetPayload<IServiceProvider>();
@@ -771,7 +771,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             InputRef: saga.CurrentInputRef,
             OutputRef: effectiveOutputRef?.ToString()));
 
-        // Slice 13: apply any setContext / setGlobal writes the agent issued during its turn.
+        // Slice 13: apply any setContext / setWorkflow writes the agent issued during its turn.
         // These are committed only when the runtime publishes a non-Failed decision (the loop
         // already discards them on failure); here we just merge them into the saga's bags so the
         // next downstream agent sees the new values.
@@ -925,7 +925,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
         var artifactJson = await ReadArtifactAsJsonAsync(
             artifactStore,
             message.OutputRef,
@@ -941,7 +941,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             input: scriptInput,
             context: contextInputs,
             cancellationToken: context.CancellationToken,
-            global: globalInputs,
+            workflow: workflowInputs,
             reviewRound: saga.ParentReviewRound,
             reviewMaxRounds: saga.ParentReviewMaxRounds,
             allowOutputOverride: true,
@@ -957,7 +957,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             FailureMessage: eval.FailureMessage,
             RecordedAtUtc: DateTime.UtcNow));
 
-        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
 
         if (!eval.IsSuccess)
         {
@@ -1020,7 +1020,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
         var artifactJson = await ReadArtifactAsJsonAsync(
             artifactStore,
             inputRef,
@@ -1035,7 +1035,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             input: artifactJson,
             context: contextInputs,
             cancellationToken: context.CancellationToken,
-            global: globalInputs,
+            workflow: workflowInputs,
             reviewRound: saga.ParentReviewRound,
             reviewMaxRounds: saga.ParentReviewMaxRounds,
             allowInputOverride: true,
@@ -1057,7 +1057,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 $"Input script for node {targetNode.Id} failed ({eval.Failure}): {eval.FailureMessage}");
         }
 
-        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
 
         if (!string.IsNullOrEmpty(eval.InputOverride))
         {
@@ -1123,7 +1123,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
         var decisionName = message.OutputPortName ?? string.Empty;
 
         var scope = DecisionOutputTemplateContext.Build(
@@ -1133,7 +1133,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             outputJson: IsStructured(outputJson) ? outputJson : null,
             inputJson: inputJson,
             contextInputs: contextInputs,
-            globalInputs: globalInputs);
+            workflowInputs: workflowInputs);
 
         string rendered;
         try
@@ -1206,10 +1206,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     }
 
     /// <summary>
-    /// Slice 13: merge an agent's pending <c>setContext</c> / <c>setGlobal</c> writes (carried on
-    /// <see cref="AgentInvocationCompleted"/>) into the saga's local-context and global-context
-    /// bags. Mirrors <see cref="ApplyScriptUpdates"/> for Logic nodes — same merge semantics
-    /// (last-write-wins per top-level key). No-op when the message has no updates.
+    /// Slice 13: merge an agent's pending <c>setContext</c> / <c>setWorkflow</c> writes (carried
+    /// on <see cref="AgentInvocationCompleted"/>) into the saga's local-context and
+    /// workflow-context bags. Mirrors <see cref="ApplyScriptUpdates"/> for Logic nodes — same
+    /// merge semantics (last-write-wins per top-level key). No-op when the message has no
+    /// updates.
     /// </summary>
     private static void ApplyAgentBagWrites(WorkflowSagaStateEntity saga, AgentInvocationCompleted message)
     {
@@ -1224,22 +1225,22 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.InputsJson = SerializeContextInputs(mergedLocal);
         }
 
-        if (message.GlobalUpdates is { Count: > 0 } globalUpdates)
+        if (message.WorkflowUpdates is { Count: > 0 } workflowUpdates)
         {
-            var currentGlobal = DeserializeContextInputs(saga.GlobalInputsJson);
-            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
-            foreach (var (key, value) in globalUpdates)
+            var currentWorkflow = DeserializeContextInputs(saga.WorkflowInputsJson);
+            var mergedWorkflow = new Dictionary<string, JsonElement>(currentWorkflow, StringComparer.Ordinal);
+            foreach (var (key, value) in workflowUpdates)
             {
-                mergedGlobal[key] = value;
+                mergedWorkflow[key] = value;
             }
-            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
         }
     }
 
     private static void ApplyScriptUpdates(
         WorkflowSagaStateEntity saga,
         IReadOnlyDictionary<string, JsonElement> currentLocal,
-        IReadOnlyDictionary<string, JsonElement> currentGlobal,
+        IReadOnlyDictionary<string, JsonElement> currentWorkflow,
         LogicNodeEvaluationResult eval)
     {
         if (eval.ContextUpdates.Count > 0)
@@ -1252,14 +1253,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.InputsJson = SerializeContextInputs(mergedLocal);
         }
 
-        if (eval.GlobalUpdates.Count > 0)
+        if (eval.WorkflowUpdates.Count > 0)
         {
-            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
-            foreach (var (key, value) in eval.GlobalUpdates)
+            var mergedWorkflow = new Dictionary<string, JsonElement>(currentWorkflow, StringComparer.Ordinal);
+            foreach (var (key, value) in eval.WorkflowUpdates)
             {
-                mergedGlobal[key] = value;
+                mergedWorkflow[key] = value;
             }
-            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
         }
     }
 
@@ -1356,7 +1357,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         JsonElement inputJson = default;
         var inputLoaded = false;
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         for (var hops = 0; hops < MaxLogicChainHops; hops++)
         {
@@ -1389,7 +1390,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 input: inputJson,
                 context: contextInputs,
                 cancellationToken: context.CancellationToken,
-                global: globalInputs,
+                workflow: workflowInputs,
                 reviewRound: saga.ParentReviewRound,
                 reviewMaxRounds: saga.ParentReviewMaxRounds);
 
@@ -1403,7 +1404,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 FailureMessage: eval.FailureMessage,
                 RecordedAtUtc: DateTime.UtcNow));
 
-            ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+            ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
             if (eval.ContextUpdates.Count > 0)
             {
                 var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
@@ -1413,14 +1414,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 }
                 contextInputs = merged;
             }
-            if (eval.GlobalUpdates.Count > 0)
+            if (eval.WorkflowUpdates.Count > 0)
             {
-                var merged = new Dictionary<string, JsonElement>(globalInputs, StringComparer.Ordinal);
-                foreach (var (key, value) in eval.GlobalUpdates)
+                var merged = new Dictionary<string, JsonElement>(workflowInputs, StringComparer.Ordinal);
+                foreach (var (key, value) in eval.WorkflowUpdates)
                 {
                     merged[key] = value;
                 }
-                globalInputs = merged;
+                workflowInputs = merged;
             }
 
             var chosenPort = eval.IsSuccess
@@ -1593,7 +1594,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         saga.CurrentInputRef = inputRef.ToString();
 
-        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowContext = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         return context.Publish(new SubflowInvokeRequested(
             ParentTraceId: saga.TraceId,
@@ -1603,7 +1604,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             SubflowKey: subflowNode.SubflowKey,
             SubflowVersion: subflowVersion,
             InputRef: inputRef,
-            SharedContext: sharedContext,
+            WorkflowContext: workflowContext,
             Depth: saga.SubflowDepth + 1,
             ReviewRound: reviewRound,
             ReviewMaxRounds: reviewMaxRounds,
@@ -1667,7 +1668,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             InputRef: effectiveInputRef,
             ContextInputs: DeserializeContextInputs(saga.InputsJson),
             RetryContext: retryContext,
-            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
+            WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: saga.ParentReviewRound,
             ReviewMaxRounds: saga.ParentReviewMaxRounds));
     }

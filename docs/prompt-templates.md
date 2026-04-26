@@ -2,7 +2,7 @@
 
 Prompt templates shape what an agent actually sees. The runtime compiles each template through the [Scriban](https://github.com/scriban/scriban) engine — a lightweight, sandboxed text templating language whose `{{ name }}` substitution is a strict superset of the original CodeFlow placeholder syntax. Existing prompts that only use `{{ name }}` continue to render exactly as before; authors who need conditionals, loops, or filters now have them available.
 
-> Companion references: [workflows.md](workflows.md) describes how template variables get populated (workflow inputs, `global`, per-round review counters); [review-loop.md](review-loop.md) documents the `round`/`maxRounds`/`isLastRound` bindings; [decision-output-templates.md](decision-output-templates.md) covers per-decision templates that reshape the agent's artifact *after* a decision is submitted.
+> Companion references: [workflows.md](workflows.md) describes how template variables get populated (workflow inputs, `workflow`, per-round review counters); [review-loop.md](review-loop.md) documents the `round`/`maxRounds`/`isLastRound` bindings; [decision-output-templates.md](decision-output-templates.md) covers per-decision templates that reshape the agent's artifact *after* a decision is submitted.
 
 ## 1. The basics
 
@@ -29,11 +29,11 @@ Every render exposes these namespaces:
 | `input` | The raw user/upstream payload for this agent invocation. | `{{ input }}` |
 | `input.<path>` | Flattened members of the input, if it parses as JSON. | `{{ input.summary }}` |
 | `context.<path>` | Flattened workflow-local inputs (the saga's local `context` bag). | `{{ context.gitRepo }}` |
-| `global.<path>` | Flattened shared context propagated across parent/subflow boundaries. | `{{ global.resolvedSpec.engine }}` |
+| `workflow.<path>` | Flattened shared context propagated across parent/subflow boundaries. | `{{ workflow.resolvedSpec.engine }}` |
 | `round`, `maxRounds`, `isLastRound` | Populated only when the agent runs inside a [`ReviewLoop`](review-loop.md). `isLastRound` is a boolean; `round` and `maxRounds` are integers. | `{{ if isLastRound }}Ship it.{{ end }}` |
 | Configured variables | Values declared on the agent itself (`AgentConfiguration.Variables`). | `{{ reviewerTone }}` |
 
-JSON objects and arrays arriving through `context.*`, `global.*`, or `input.*` are reshaped into nested structures at render time — so `{{ context.target.repo }}` and `{{ for item in context.items }}...{{ end }}` both work when the source data is nested.
+JSON objects and arrays arriving through `context.*`, `workflow.*`, or `input.*` are reshaped into nested structures at render time — so `{{ context.target.repo }}` and `{{ for item in context.items }}...{{ end }}` both work when the source data is nested.
 
 ## 3. Syntax at a glance
 

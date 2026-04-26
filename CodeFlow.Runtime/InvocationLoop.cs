@@ -10,7 +10,7 @@ public sealed class InvocationLoop
     public const string SubmitToolName = "submit";
     public const string FailToolName = "fail";
     public const string SetContextToolName = "setContext";
-    public const string SetGlobalToolName = "setGlobal";
+    public const string SetWorkflowToolName = "setWorkflow";
 
     /// <summary>
     /// Default port name emitted when an agent has no declared outputs (e.g., legacy Logic-only
@@ -21,15 +21,15 @@ public sealed class InvocationLoop
     private const string DefaultPortName = "Completed";
 
     /// <summary>
-    /// Cap on the serialized size of accumulated <c>setContext</c> / <c>setGlobal</c> writes per
-    /// invocation. Mirrors the cap on <see cref="ContextAssembler"/>'s Logic-node counterpart so
-    /// agents and Logic nodes share the same bag-write budget. Exceeding the cap returns a tool
-    /// error and the loop continues — the offending value is not persisted.
+    /// Cap on the serialized size of accumulated <c>setContext</c> / <c>setWorkflow</c> writes
+    /// per invocation. Mirrors the cap on <see cref="ContextAssembler"/>'s Logic-node counterpart
+    /// so agents and Logic nodes share the same bag-write budget. Exceeding the cap returns a
+    /// tool error and the loop continues — the offending value is not persisted.
     /// </summary>
     private const int MaxContextUpdatesChars = 256 * 1024;
 
     /// <summary>
-    /// Cap on the length of a single <c>setContext</c> / <c>setGlobal</c> key, mirroring the
+    /// Cap on the length of a single <c>setContext</c> / <c>setWorkflow</c> key, mirroring the
     /// Logic-node validation guard. Keys above this length are rejected with a tool error.
     /// </summary>
     private const int MaxContextKeyChars = 256;
@@ -67,10 +67,12 @@ public sealed class InvocationLoop
             ["required"] = new JsonArray("key", "value")
         });
 
-    private static readonly ToolSchema SetGlobalTool = new(
-        SetGlobalToolName,
-        "Persist a value into the cross-saga global bag under the given key. Same lifecycle "
-        + "rules as `setContext` — committed on successful `submit`, discarded on failure.",
+    private static readonly ToolSchema SetWorkflowTool = new(
+        SetWorkflowToolName,
+        "Persist a value into the per-trace-tree workflow bag under the given key. Visible to "
+        + "downstream agents and subflow children as `{{ workflow.<key> }}` in templates and "
+        + "`workflow.<key>` in scripts. Same lifecycle rules as `setContext` — committed on "
+        + "successful `submit`, discarded on failure.",
         new JsonObject
         {
             ["type"] = "object",
@@ -168,7 +170,7 @@ public sealed class InvocationLoop
             .ToArray();
         var submitTool = BuildSubmitTool(declaredPortNames);
         var externalTools = toolRegistry.AvailableTools(request.ToolAccessPolicy);
-        var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetGlobalTool };
+        var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetWorkflowTool };
         var toolsByName = externalTools
             .Concat(runtimeTools)
             .ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
@@ -176,11 +178,11 @@ public sealed class InvocationLoop
             .Concat(runtimeTools)
             .ToArray();
 
-        // Pending writes — accumulated by setContext/setGlobal calls and applied to the result
+        // Pending writes — accumulated by setContext/setWorkflow calls and applied to the result
         // only when the loop terminates with a non-Failed decision. Failed terminations discard
         // them so a botched invocation doesn't corrupt the saga's bag.
         var pendingContextUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        var pendingGlobalUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var pendingWorkflowUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
         var totalToolCalls = 0;
         var consecutiveNonMutatingCalls = 0;
@@ -279,7 +281,7 @@ public sealed class InvocationLoop
                     aggregateTokenUsage,
                     totalToolCalls,
                     pendingContextUpdates,
-                    pendingGlobalUpdates);
+                    pendingWorkflowUpdates);
             }
 
             foreach (var toolCall in response.Message.ToolCalls)
@@ -314,7 +316,7 @@ public sealed class InvocationLoop
                 if (TryHandleSetContextLikeTool(
                         toolCall,
                         pendingContextUpdates,
-                        pendingGlobalUpdates,
+                        pendingWorkflowUpdates,
                         out var setResult))
                 {
                     transcript.Add(new ChatMessage(
@@ -328,7 +330,7 @@ public sealed class InvocationLoop
                         await observer.OnToolCallCompletedAsync(toolCall, setResult, cancellationToken);
                     }
 
-                    // setContext / setGlobal are mutating writes — reset the non-mutating streak.
+                    // setContext / setWorkflow are mutating writes — reset the non-mutating streak.
                     consecutiveNonMutatingCalls = 0;
                     continue;
                 }
@@ -404,7 +406,7 @@ public sealed class InvocationLoop
                             aggregateTokenUsage,
                             totalToolCalls,
                             pendingContextUpdates,
-                            pendingGlobalUpdates);
+                            pendingWorkflowUpdates);
                     }
 
                     if (terminalError is not null)
@@ -602,7 +604,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted)
     {
-        // Pending setContext/setGlobal writes are deliberately NOT applied — failed invocations
+        // Pending setContext/setWorkflow writes are deliberately NOT applied — failed invocations
         // discard their pending bag-writes per Slice 13's lifecycle rule.
         return new InvocationLoopResult(
             output,
@@ -619,7 +621,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
-        IReadOnlyDictionary<string, JsonElement> globalUpdates)
+        IReadOnlyDictionary<string, JsonElement> workflowUpdates)
     {
         return new InvocationLoopResult(
             output,
@@ -628,7 +630,7 @@ public sealed class InvocationLoop
             tokenUsage,
             toolCallsExecuted,
             contextUpdates.Count > 0 ? contextUpdates : null,
-            globalUpdates.Count > 0 ? globalUpdates : null);
+            workflowUpdates.Count > 0 ? workflowUpdates : null);
     }
 
     private static InvocationLoopResult BuildTerminalResult(
@@ -638,7 +640,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
-        IReadOnlyDictionary<string, JsonElement> globalUpdates)
+        IReadOnlyDictionary<string, JsonElement> workflowUpdates)
     {
         // Discard pending updates on a Failed terminal — same lifecycle rule as exception/budget
         // failures. Successful submits commit them.
@@ -659,13 +661,13 @@ public sealed class InvocationLoop
             tokenUsage,
             toolCallsExecuted,
             contextUpdates,
-            globalUpdates);
+            workflowUpdates);
     }
 
     private static bool TryHandleSetContextLikeTool(
         ToolCall toolCall,
         Dictionary<string, JsonElement> pendingContextUpdates,
-        Dictionary<string, JsonElement> pendingGlobalUpdates,
+        Dictionary<string, JsonElement> pendingWorkflowUpdates,
         out ToolResult? toolResult)
     {
         Dictionary<string, JsonElement>? targetBag = null;
@@ -676,10 +678,10 @@ public sealed class InvocationLoop
             targetBag = pendingContextUpdates;
             toolDisplayName = SetContextToolName;
         }
-        else if (string.Equals(toolCall.Name, SetGlobalToolName, StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(toolCall.Name, SetWorkflowToolName, StringComparison.OrdinalIgnoreCase))
         {
-            targetBag = pendingGlobalUpdates;
-            toolDisplayName = SetGlobalToolName;
+            targetBag = pendingWorkflowUpdates;
+            toolDisplayName = SetWorkflowToolName;
         }
 
         if (targetBag is null || toolDisplayName is null)
@@ -704,12 +706,12 @@ public sealed class InvocationLoop
                     $"{toolDisplayName} key length {key.Length} exceeds the {MaxContextKeyChars}-character cap.");
             }
 
-            if (string.Equals(toolDisplayName, SetGlobalToolName, StringComparison.Ordinal)
-                && ProtectedGlobals.IsReserved(key))
+            if (string.Equals(toolDisplayName, SetWorkflowToolName, StringComparison.Ordinal)
+                && ProtectedVariables.IsReserved(key))
             {
                 throw new InvalidOperationException(
-                    $"setGlobal('{key}', ...) is rejected: '{key}' is a framework-managed global "
-                    + "and cannot be overwritten by agents.");
+                    $"setWorkflow('{key}', ...) is rejected: '{key}' is a framework-managed "
+                    + "workflow variable and cannot be overwritten by agents.");
             }
 
             var valueNode = toolCall.Arguments?["value"];

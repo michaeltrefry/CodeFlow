@@ -15,6 +15,6 @@ public sealed record AgentInvokeRequested(
     IReadOnlyDictionary<string, string>? CorrelationHeaders = null,
     RetryContext? RetryContext = null,
     ToolExecutionContext? ToolExecutionContext = null,
-    IReadOnlyDictionary<string, JsonElement>? GlobalContext = null,
+    IReadOnlyDictionary<string, JsonElement>? WorkflowContext = null,
     int? ReviewRound = null,
     int? ReviewMaxRounds = null);
