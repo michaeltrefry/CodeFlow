@@ -291,6 +291,49 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_SetGlobalReservedKey_ReturnsToolErrorAndDoesNotPersist()
+    {
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Trying to overwrite workDir.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_reserved", "setGlobal",
+                            new JsonObject { ["key"] = "workDir", ["value"] = "/etc/evil" }),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Continue" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Try the reserved key.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        result.Decision.PortName.Should().Be("Continue",
+            "the rejected setGlobal returns an error tool result; the loop continues to submit");
+
+        var setGlobalToolMessage = result.Transcript
+            .OfType<ChatMessage>()
+            .FirstOrDefault(m => m.Role == ChatMessageRole.Tool
+                && m.ToolCallId == "call_reserved");
+        setGlobalToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
+        setGlobalToolMessage!.Content.Should().Contain("workDir");
+        setGlobalToolMessage.Content.Should().Contain("framework-managed global");
+
+        if (result.GlobalUpdates is { } globals)
+        {
+            globals.ContainsKey("workDir").Should().BeFalse(
+                "the rejected write must not be persisted into the global bag");
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldDiscardSetContextWrites_OnFailedTerminal()
     {
         var modelClient = new ScriptedModelClient(

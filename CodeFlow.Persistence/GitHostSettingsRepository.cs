@@ -60,6 +60,7 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
                 BaseUrl = NormalizeBaseUrl(write),
                 EncryptedToken = secretProtector.Protect(write.Token.Value!),
                 WorkingDirectoryRoot = NormalizeWorkingDirectoryRoot(write.WorkingDirectoryRoot),
+                WorkingDirectoryMaxAgeDays = NormalizeMaxAgeDays(write.WorkingDirectoryMaxAgeDays),
                 LastVerifiedAtUtc = null,
                 UpdatedBy = Trim(write.UpdatedBy),
                 UpdatedAtUtc = now,
@@ -71,6 +72,7 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
             entity.Mode = write.Mode;
             entity.BaseUrl = NormalizeBaseUrl(write);
             entity.WorkingDirectoryRoot = NormalizeWorkingDirectoryRoot(write.WorkingDirectoryRoot);
+            entity.WorkingDirectoryMaxAgeDays = NormalizeMaxAgeDays(write.WorkingDirectoryMaxAgeDays);
             entity.UpdatedBy = Trim(write.UpdatedBy);
             entity.UpdatedAtUtc = now;
 
@@ -114,6 +116,7 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
         BaseUrl: entity.BaseUrl,
         HasToken: entity.EncryptedToken.Length > 0,
         WorkingDirectoryRoot: entity.WorkingDirectoryRoot,
+        WorkingDirectoryMaxAgeDays: entity.WorkingDirectoryMaxAgeDays,
         LastVerifiedAtUtc: entity.LastVerifiedAtUtc is DateTime lv ? DateTime.SpecifyKind(lv, DateTimeKind.Utc) : null,
         UpdatedBy: entity.UpdatedBy,
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc));
@@ -127,6 +130,13 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
         var trimmed = value.Trim();
         // Strip trailing separators so {root}/{traceId}/ is consistent regardless of operator input.
         return trimmed.TrimEnd('/', '\\');
+    }
+
+    private static int? NormalizeMaxAgeDays(int? value)
+    {
+        if (value is null) return null;
+        if (value <= 0) return null; // treat zero/negative as "use the default"
+        return value;
     }
 
     private static string? NormalizeBaseUrl(GitHostSettingsWrite write)

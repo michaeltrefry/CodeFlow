@@ -704,6 +704,14 @@ public sealed class InvocationLoop
                     $"{toolDisplayName} key length {key.Length} exceeds the {MaxContextKeyChars}-character cap.");
             }
 
+            if (string.Equals(toolDisplayName, SetGlobalToolName, StringComparison.Ordinal)
+                && ProtectedGlobals.IsReserved(key))
+            {
+                throw new InvalidOperationException(
+                    $"setGlobal('{key}', ...) is rejected: '{key}' is a framework-managed global "
+                    + "and cannot be overwritten by agents.");
+            }
+
             var valueNode = toolCall.Arguments?["value"];
             // Treat an explicit null value as a delete — store the JSON null so saga merge
             // overwrites the previous value with null. Missing 'value' is an error.

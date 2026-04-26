@@ -220,6 +220,194 @@ public sealed class WorkflowValidatorTests
         result.IsValid.Should().BeTrue("Failed is implicit on every node and is always a valid edge source.");
     }
 
+    [Fact]
+    public async Task RepositoriesInput_AcceptsSingleEntryWithJustUrl()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""[{"url":"https://github.com/foo/bar.git"}]""")
+            });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_AcceptsMultipleEntriesWithBranches()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""
+                [
+                    {"url":"https://github.com/foo/bar.git","branch":"main"},
+                    {"url":"https://github.com/foo/baz.git","branch":"develop"}
+                ]
+                """)
+            });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_RejectsMissingUrl()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""[{"branch":"main"}]""")
+            });
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("repositories");
+        result.Error.Should().Contain("url");
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_RejectsEmptyUrl()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""[{"url":"  "}]""")
+            });
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("repositories");
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_RejectsObjectInsteadOfArray()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""{"url":"https://github.com/foo/bar.git"}""")
+            });
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("repositories");
+        result.Error.Should().Contain("array");
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_RejectsNonStringBranch()
+    {
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                RepositoriesInput("""[{"url":"https://github.com/foo/bar.git","branch":42}]""")
+            });
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("branch");
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_TextKindIsUnaffectedByShapeRule()
+    {
+        // The convention only applies when the input is declared as Json. A Text-kind input named
+        // `repositories` is not the canonical convention and stays out of scope of the shape check.
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                new WorkflowInputDto(
+                    Key: "repositories",
+                    DisplayName: "Repos",
+                    Kind: WorkflowInputKind.Text,
+                    Required: false,
+                    DefaultValueJson: "\"freeform text not even json-array\"",
+                    Description: null,
+                    Ordinal: 0)
+            });
+
+        result.IsValid.Should().BeTrue("the shape rule is scoped to Kind=Json");
+    }
+
+    [Fact]
+    public async Task RepositoriesInput_NonRepositoriesKeyIsUnaffected()
+    {
+        // Other Json inputs keep their existing latitude — only `repositories` is opinionated.
+        var fx = await SeedSingleStartFixture();
+        var result = await fx.ValidateAsync(
+            "code-aware",
+            fx.SingleStartNodes,
+            edges: Array.Empty<WorkflowEdgeDto>(),
+            inputs: new[]
+            {
+                new WorkflowInputDto(
+                    Key: "settings",
+                    DisplayName: "Settings",
+                    Kind: WorkflowInputKind.Json,
+                    Required: false,
+                    DefaultValueJson: """{"timeout": 30, "retries": 3}""",
+                    Description: null,
+                    Ordinal: 0)
+            });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    private static WorkflowInputDto RepositoriesInput(string defaultValueJson) =>
+        new(
+            Key: "repositories",
+            DisplayName: "Repositories",
+            Kind: WorkflowInputKind.Json,
+            Required: true,
+            DefaultValueJson: defaultValueJson,
+            Description: null,
+            Ordinal: 0);
+
+    private static async Task<RepoFixture> SeedSingleStartFixture()
+    {
+        var fx = await TestFixture.CreateAsync();
+        await fx.SeedAgentAsync("kickoff", new[] { "Completed" });
+        var startId = Guid.NewGuid();
+        var nodes = new[]
+        {
+            Node(startId, WorkflowNodeKind.Start, "kickoff", new[] { "Completed" }),
+        };
+        return new RepoFixture(fx, nodes);
+    }
+
+    private sealed record RepoFixture(TestFixture Inner, IReadOnlyList<WorkflowNodeDto> SingleStartNodes)
+    {
+        public Task<ValidationResult> ValidateAsync(
+            string key,
+            IReadOnlyList<WorkflowNodeDto> nodes,
+            IReadOnlyList<WorkflowEdgeDto> edges,
+            IReadOnlyList<WorkflowInputDto>? inputs = null) =>
+            Inner.ValidateAsync(key, nodes, edges, inputs);
+    }
+
     private static WorkflowNodeDto Node(
         Guid id,
         WorkflowNodeKind kind,
@@ -310,14 +498,15 @@ public sealed class WorkflowValidatorTests
         public Task<ValidationResult> ValidateAsync(
             string key,
             IReadOnlyList<WorkflowNodeDto> nodes,
-            IReadOnlyList<WorkflowEdgeDto> edges) =>
+            IReadOnlyList<WorkflowEdgeDto> edges,
+            IReadOnlyList<WorkflowInputDto>? inputs = null) =>
             WorkflowValidator.ValidateAsync(
                 key,
                 $"Test workflow {key}",
                 maxRoundsPerRound: 3,
                 nodes,
                 edges,
-                inputs: null,
+                inputs,
                 DbContext,
                 WorkflowRepo,
                 AgentRepo,

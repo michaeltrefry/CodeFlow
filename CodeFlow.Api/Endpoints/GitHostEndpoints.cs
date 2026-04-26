@@ -40,6 +40,7 @@ public static class GitHostEndpoints
                 BaseUrl: null,
                 HasToken: false,
                 WorkingDirectoryRoot: null,
+                WorkingDirectoryMaxAgeDays: null,
                 LastVerifiedAtUtc: null,
                 UpdatedBy: null,
                 UpdatedAtUtc: null));
@@ -50,6 +51,7 @@ public static class GitHostEndpoints
             BaseUrl: settings.BaseUrl,
             HasToken: settings.HasToken,
             WorkingDirectoryRoot: settings.WorkingDirectoryRoot,
+            WorkingDirectoryMaxAgeDays: settings.WorkingDirectoryMaxAgeDays,
             LastVerifiedAtUtc: settings.LastVerifiedAtUtc,
             UpdatedBy: settings.UpdatedBy,
             UpdatedAtUtc: settings.UpdatedAtUtc));
@@ -83,6 +85,7 @@ public static class GitHostEndpoints
                 BaseUrl: request.BaseUrl,
                 Token: tokenUpdate,
                 WorkingDirectoryRoot: request.WorkingDirectoryRoot,
+                WorkingDirectoryMaxAgeDays: request.WorkingDirectoryMaxAgeDays,
                 UpdatedBy: currentUser.Id), cancellationToken);
         }
         catch (InvalidOperationException ex)
@@ -99,6 +102,7 @@ public static class GitHostEndpoints
             BaseUrl: updated.BaseUrl,
             HasToken: updated.HasToken,
             WorkingDirectoryRoot: updated.WorkingDirectoryRoot,
+            WorkingDirectoryMaxAgeDays: updated.WorkingDirectoryMaxAgeDays,
             LastVerifiedAtUtc: updated.LastVerifiedAtUtc,
             UpdatedBy: updated.UpdatedBy,
             UpdatedAtUtc: updated.UpdatedAtUtc));
@@ -173,6 +177,45 @@ public static class GitHostEndpoints
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(request.WorkingDirectoryRoot))
+        {
+            var path = request.WorkingDirectoryRoot.Trim();
+            if (!Path.IsPathFullyQualified(path))
+            {
+                errors["workingDirectoryRoot"] = ["Working directory root must be an absolute path."];
+            }
+            else if (!Directory.Exists(path))
+            {
+                errors["workingDirectoryRoot"] =
+                    ["Working directory root does not exist on the server. Create the directory before saving."];
+            }
+            else if (TryProbeWritability(path) is { } probeError)
+            {
+                errors["workingDirectoryRoot"] =
+                    [$"Working directory root is not writable by the CodeFlow service: {probeError}"];
+            }
+        }
+
         return errors;
+    }
+
+    // Attempts to create + delete a temp file in the directory. Returns null on success, or the
+    // failure message on any IO/permission error. Probing is the most reliable way to catch the
+    // common "operator pointed at a path the service account can't write" mistake before it
+    // surfaces as a 500 from `TracesEndpoints.CreateTraceAsync`.
+    private static string? TryProbeWritability(string directory)
+    {
+        var probePath = Path.Combine(directory, $".codeflow-write-probe-{Guid.NewGuid():N}");
+        try
+        {
+            File.WriteAllText(probePath, string.Empty);
+            File.Delete(probePath);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try { File.Delete(probePath); } catch { /* best-effort cleanup */ }
+            return ex.Message;
+        }
     }
 }

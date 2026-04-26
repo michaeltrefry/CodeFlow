@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="ModelContextProtocol.Core" />
+    <PackageReference Include="Octokit" />
     <PackageReference Include="Scriban" />
   </ItemGroup>
 

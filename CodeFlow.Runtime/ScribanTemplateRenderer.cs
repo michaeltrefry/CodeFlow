@@ -17,6 +17,20 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
     private const int DefaultRecursiveLimit = 64;
     private const int DefaultLimitToString = 1_000_000;
 
+    // Built-in helpers exposed to every template. Pushed before the caller's scope so user
+    // values can shadow them on a per-render basis if absolutely required, but in practice
+    // these are stable framework-managed names (mirrors `ProtectedGlobals` for scripts).
+    private static readonly ScriptObject Builtins = CreateBuiltins();
+
+    private static ScriptObject CreateBuiltins()
+    {
+        var globals = new ScriptObject();
+        globals.Import(
+            "branch_name",
+            new Func<string?, string?, string>(BranchNameHelper.BranchName));
+        return globals;
+    }
+
     public string Render(string template, ScriptObject scriptObject, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(template);
@@ -58,6 +72,7 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
             EnableRelaxedMemberAccess = true,
             CancellationToken = linkedCts.Token
         };
+        context.PushGlobal(Builtins);
         context.PushGlobal(scriptObject);
 
         try

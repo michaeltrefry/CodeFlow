@@ -213,6 +213,8 @@ export interface GitHostSettingsResponse {
   mode: GitHostMode;
   baseUrl?: string | null;
   hasToken: boolean;
+  workingDirectoryRoot?: string | null;
+  workingDirectoryMaxAgeDays?: number | null;
   lastVerifiedAtUtc?: string | null;
   updatedBy?: string | null;
   updatedAtUtc?: string | null;
@@ -228,6 +230,8 @@ export interface GitHostTokenUpdateRequest {
 export interface GitHostSettingsRequest {
   mode: GitHostMode;
   baseUrl?: string | null;
+  workingDirectoryRoot?: string | null;
+  workingDirectoryMaxAgeDays?: number | null;
   token: GitHostTokenUpdateRequest;
 }
 

@@ -99,6 +99,40 @@ public sealed class HostToolProviderTests : IDisposable
     }
 
     [Fact]
+    public void GetCatalog_IncludesVcsTools()
+    {
+        var catalog = HostToolProvider.GetCatalog();
+        var names = catalog.Select(t => t.Name).ToHashSet();
+
+        names.Should().Contain("vcs.open_pr");
+        names.Should().Contain("vcs.get_repo");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_VcsOpenPr_WithoutVcsService_ThrowsHelpfulError()
+    {
+        // The HostToolProvider in this test fixture was constructed without vcsTools (default
+        // ctor argument). Confirm that hitting a vcs.* tool fails fast with a clear message
+        // rather than NRE-ing — the message tells deployments they're missing the wiring.
+        var act = async () => await provider.InvokeAsync(
+            new ToolCall(
+                "call_pr",
+                "vcs.open_pr",
+                new JsonObject
+                {
+                    ["owner"] = "foo",
+                    ["name"] = "bar",
+                    ["head"] = "feat/x",
+                    ["base"] = "main",
+                    ["title"] = "Add x"
+                }),
+            context: context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*vcs.* tools are not configured*");
+    }
+
+    [Fact]
     public async Task InvokeAsync_RunCommand_ShouldExecuteInsideWorkspace()
     {
         var subdir = Path.Combine(workspaceRoot, "project");

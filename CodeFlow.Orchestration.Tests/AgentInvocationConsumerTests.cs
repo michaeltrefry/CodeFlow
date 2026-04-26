@@ -250,6 +250,180 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
+    public async Task Consumer_WhenGlobalWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
+    {
+        var traceId = Guid.NewGuid();
+        var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
+
+        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["workDir"] = JsonSerializer.SerializeToElement(workDir)
+        };
+
+        var request = new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "code-aware-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "code-setup",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            GlobalContext: globalContext);
+
+        var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
+
+        observed.Should().NotBeNull();
+        observed!.Workspace.Should().NotBeNull();
+        observed.Workspace!.RootPath.Should().Be(workDir);
+        observed.Workspace.CorrelationId.Should().Be(traceId);
+        observed.Workspace.RepoUrl.Should().BeNull();
+        observed.Workspace.RepoIdentityKey.Should().BeNull();
+        observed.Workspace.RepoSlug.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Consumer_WhenGlobalWorkDirAndLegacyContextBothPresent_ShouldPreferGlobalWorkDir()
+    {
+        var traceId = Guid.NewGuid();
+        var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
+
+        var legacy = new CodeFlow.Contracts.ToolExecutionContext(
+            new CodeFlow.Contracts.ToolWorkspaceContext(
+                Guid.NewGuid(),
+                "/tmp/legacy/workspace",
+                RepoUrl: "https://github.com/example/legacy.git",
+                RepoIdentityKey: "github.com/example/legacy",
+                RepoSlug: "example/legacy"));
+
+        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["workDir"] = JsonSerializer.SerializeToElement(workDir)
+        };
+
+        var request = new AgentInvokeRequested(
+            TraceId: traceId,
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "code-aware-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "code-setup",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ToolExecutionContext: legacy,
+            GlobalContext: globalContext);
+
+        var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
+
+        observed!.Workspace!.RootPath.Should().Be(workDir);
+        observed.Workspace.CorrelationId.Should().Be(traceId);
+        observed.Workspace.RepoUrl.Should().BeNull("global.workDir overrides the legacy per-repo workspace context");
+    }
+
+    [Fact]
+    public async Task Consumer_WhenGlobalWorkDirBlank_ShouldFallBackToLegacyContext()
+    {
+        var legacy = new CodeFlow.Contracts.ToolExecutionContext(
+            new CodeFlow.Contracts.ToolWorkspaceContext(
+                Guid.NewGuid(),
+                "/tmp/legacy/workspace",
+                RepoUrl: "https://github.com/example/legacy.git",
+                RepoIdentityKey: "github.com/example/legacy",
+                RepoSlug: "example/legacy"));
+
+        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["workDir"] = JsonSerializer.SerializeToElement("   ")
+        };
+
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "code-aware-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "code-setup",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ToolExecutionContext: legacy,
+            GlobalContext: globalContext);
+
+        var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
+
+        observed!.Workspace!.RootPath.Should().Be(legacy.Workspace!.RootPath);
+        observed.Workspace.CorrelationId.Should().Be(legacy.Workspace.CorrelationId);
+        observed.Workspace.RepoUrl.Should().Be(legacy.Workspace.RepoUrl);
+    }
+
+    [Fact]
+    public async Task Consumer_WhenNoGlobalContext_ShouldLeaveLegacyBehaviorUnchanged()
+    {
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "non-code-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>());
+
+        var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
+
+        observed.Should().BeNull();
+    }
+
+    private static async Task<CodeFlow.Runtime.ToolExecutionContext?> RunConsumerAndCaptureToolExecutionContextAsync(
+        AgentInvokeRequested request)
+    {
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("Draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new AgentDecision("Completed"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+            agentInvoker.Invocations.Should().ContainSingle();
+            return agentInvoker.Invocations[0].ToolExecutionContext;
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Consumer_WhenAgentFails_ShouldIncludeFailureContextInDecisionPayload()
     {
         var request = new AgentInvokeRequested(

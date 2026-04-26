@@ -161,6 +161,90 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, I
     }
 
     [Fact]
+    public async Task Put_rejects_relative_workingDirectoryRoot()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitHub",
+            baseUrl = (string?)null,
+            workingDirectoryRoot = "relative/path/workdirs",
+            token = new { action = "Replace", value = "ghp_for_workdir_relative" },
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await put.Content.ReadAsStringAsync();
+        body.Should().Contain("workingDirectoryRoot");
+        body.Should().Contain("absolute path");
+    }
+
+    [Fact]
+    public async Task Put_rejects_nonexistent_workingDirectoryRoot()
+    {
+        using var client = factory.CreateClient();
+
+        var path = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-missing-{Guid.NewGuid():N}");
+        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitHub",
+            baseUrl = (string?)null,
+            workingDirectoryRoot = path,
+            token = new { action = "Replace", value = "ghp_for_workdir_missing" },
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await put.Content.ReadAsStringAsync();
+        body.Should().Contain("workingDirectoryRoot");
+        body.Should().Contain("does not exist");
+    }
+
+    [Fact]
+    public async Task Put_accepts_valid_writable_workingDirectoryRoot()
+    {
+        using var client = factory.CreateClient();
+
+        var path = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-ok-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        try
+        {
+            var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+            {
+                mode = "GitHub",
+                baseUrl = (string?)null,
+                workingDirectoryRoot = path,
+                token = new { action = "Replace", value = "ghp_for_workdir_ok" },
+            });
+            put.EnsureSuccessStatusCode();
+
+            var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
+            settings.WorkingDirectoryRoot.Should().Be(path);
+        }
+        finally
+        {
+            try { Directory.Delete(path, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Put_accepts_null_workingDirectoryRoot()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+        {
+            mode = "GitHub",
+            baseUrl = (string?)null,
+            workingDirectoryRoot = (string?)null,
+            token = new { action = "Replace", value = "ghp_for_workdir_null" },
+        });
+        put.EnsureSuccessStatusCode();
+
+        var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
+        settings.WorkingDirectoryRoot.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Verify_marks_LastVerifiedAt_when_verifier_succeeds()
     {
         using var stubFactory = factory.WithWebHostBuilder(builder =>
@@ -233,6 +317,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, I
         string Mode,
         string? BaseUrl,
         bool HasToken,
+        string? WorkingDirectoryRoot,
         DateTime? LastVerifiedAtUtc,
         string? UpdatedBy,
         DateTime? UpdatedAtUtc);

@@ -321,6 +321,15 @@ public static class WorkflowValidator
         return ValidationResult.Ok();
     }
 
+    /// <summary>
+    /// Canonical input key for the code-aware-workflow repos convention. When a workflow declares
+    /// an input with this key (Kind=Json), its <c>DefaultValueJson</c> must be an array of
+    /// <c>{url, branch?}</c> objects with non-empty url per entry. Validating at save time keeps
+    /// authors from shipping a malformed template that the setup agent would otherwise reject at
+    /// runtime with a less actionable error.
+    /// </summary>
+    internal const string RepositoriesInputKey = "repositories";
+
     private static ValidationResult ValidateInputs(IReadOnlyList<WorkflowInputDto>? inputs)
     {
         if (inputs is null || inputs.Count == 0)
@@ -346,19 +355,69 @@ public static class WorkflowValidator
 
             if (!string.IsNullOrWhiteSpace(input.DefaultValueJson))
             {
+                JsonDocument document;
                 try
                 {
-                    using var _ = JsonDocument.Parse(input.DefaultValueJson);
+                    document = JsonDocument.Parse(input.DefaultValueJson);
                 }
                 catch (JsonException)
                 {
                     return ValidationResult.Fail(
                         $"Workflow input '{input.Key}' has a malformed DefaultValueJson.");
                 }
+
+                using (document)
+                {
+                    if (string.Equals(input.Key.Trim(), RepositoriesInputKey, StringComparison.Ordinal)
+                        && input.Kind == WorkflowInputKind.Json)
+                    {
+                        var shapeError = ValidateRepositoriesShape(document.RootElement);
+                        if (shapeError is not null)
+                        {
+                            return ValidationResult.Fail(
+                                $"Workflow input 'repositories' has an invalid shape: {shapeError}");
+                        }
+                    }
+                }
             }
         }
 
         return ValidationResult.Ok();
+    }
+
+    private static string? ValidateRepositoriesShape(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            return $"expected an array of {{url, branch?}} entries, got {root.ValueKind}.";
+        }
+
+        var index = 0;
+        foreach (var entry in root.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                return $"entry [{index}] must be an object with at least a 'url' string.";
+            }
+
+            if (!entry.TryGetProperty("url", out var urlElement)
+                || urlElement.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(urlElement.GetString()))
+            {
+                return $"entry [{index}] is missing a non-empty 'url' string.";
+            }
+
+            if (entry.TryGetProperty("branch", out var branchElement)
+                && branchElement.ValueKind != JsonValueKind.String
+                && branchElement.ValueKind != JsonValueKind.Null)
+            {
+                return $"entry [{index}] 'branch' must be a string when present.";
+            }
+
+            index++;
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -16,6 +16,8 @@ public sealed class GitHostSettingsEntity
 
     public string? WorkingDirectoryRoot { get; set; }
 
+    public int? WorkingDirectoryMaxAgeDays { get; set; }
+
     public DateTime? LastVerifiedAtUtc { get; set; }
 
     public string? UpdatedBy { get; set; }

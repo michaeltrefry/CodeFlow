@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -255,11 +256,15 @@ public static class TracesEndpoints
             cancellationToken);
 
         // Seed framework-managed globals before the start-node input script runs so that scripts
-        // and the start agent's prompt template can reference them. Currently the only framework-
-        // managed global is `workDir` (per the Code-Aware Workflows epic): if a working directory
-        // root is configured on GitHostSettings, materialize the per-trace subdirectory and expose
-        // its path. Top-level traces only — child sagas inherit via the global snapshot.
+        // and the start agent's prompt template can reference them. These keys are listed in
+        // `ProtectedGlobals.ReservedKeys` and cannot be overwritten by scripts or agents. Top-
+        // level traces only — child sagas inherit via the global snapshot, which means subflow
+        // and ReviewLoop children see the *parent's* traceId (the right answer for branch
+        // naming and any other identity-anchored work).
         var seededGlobals = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        seededGlobals["traceId"] = JsonDocument.Parse(
+            JsonSerializer.Serialize(traceId.ToString("N"))).RootElement.Clone();
+
         var gitHostSettings = await gitHostSettingsRepository.GetAsync(cancellationToken);
         if (!string.IsNullOrWhiteSpace(gitHostSettings?.WorkingDirectoryRoot))
         {
@@ -419,6 +424,8 @@ public static class TracesEndpoints
     private static async Task<IResult> DeleteTraceAsync(
         Guid id,
         CodeFlowDbContext dbContext,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var saga = await dbContext.WorkflowSagas
@@ -437,7 +444,7 @@ public static class TracesEndpoints
             });
         }
 
-        await DeleteTracesAsync(dbContext, [saga], cancellationToken);
+        await DeleteTracesAsync(dbContext, [saga], gitHostSettingsRepository, loggerFactory, cancellationToken);
 
         return Results.NoContent();
     }
@@ -445,6 +452,8 @@ public static class TracesEndpoints
     private static async Task<IResult> BulkDeleteTracesAsync(
         BulkDeleteTracesRequest request,
         CodeFlowDbContext dbContext,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (request.OlderThanDays < 1 || request.OlderThanDays > 3650)
@@ -479,7 +488,8 @@ public static class TracesEndpoints
         }
 
         var sagas = await query.ToListAsync(cancellationToken);
-        var deletedCount = await DeleteTracesAsync(dbContext, sagas, cancellationToken);
+        var deletedCount = await DeleteTracesAsync(
+            dbContext, sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
 
         return Results.Ok(new BulkDeleteTracesResponse(deletedCount));
     }
@@ -1158,6 +1168,8 @@ public static class TracesEndpoints
     private static async Task<int> DeleteTracesAsync(
         CodeFlowDbContext dbContext,
         IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (sagas.Count == 0)
@@ -1195,7 +1207,54 @@ public static class TracesEndpoints
         dbContext.WorkflowSagas.RemoveRange(sagas);
         await dbContext.SaveChangesAsync(cancellationToken);
 
+        await TryRemoveTraceWorkdirsAsync(
+            sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
+
         return sagas.Count;
+    }
+
+    // Best-effort cleanup of per-trace working directories after the DB rows have been removed.
+    // Subflow children share the parent's workdir, so only top-level sagas trigger the delete.
+    // All failures (missing config, unset root, missing dir, IO/permission errors) are swallowed
+    // and logged — the API call must not fail because the filesystem cleanup couldn't complete.
+    // Slice F (periodic sweep) catches anything left behind.
+    private static async Task TryRemoveTraceWorkdirsAsync(
+        IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
+        IGitHostSettingsRepository gitHostSettingsRepository,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var topLevel = sagas.Where(s => s.ParentTraceId is null).ToArray();
+        if (topLevel.Length == 0)
+        {
+            return;
+        }
+
+        Runtime.Workspace.GitHostSettings? settings;
+        try
+        {
+            settings = await gitHostSettingsRepository.GetAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            loggerFactory.CreateLogger(typeof(TracesEndpoints))
+                .LogWarning(ex, "Could not read GitHostSettings for trace-delete workdir cleanup; skipping.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings?.WorkingDirectoryRoot))
+        {
+            return;
+        }
+
+        var logger = loggerFactory.CreateLogger(typeof(TracesEndpoints));
+        foreach (var saga in topLevel)
+        {
+            CodeFlow.Runtime.Workspace.TraceWorkdirCleanup.TryRemove(
+                settings.WorkingDirectoryRoot,
+                saga.TraceId,
+                logger);
+        }
     }
 }
 

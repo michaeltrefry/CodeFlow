@@ -107,7 +107,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 input,
                 resolvedTools,
                 context.CancellationToken,
-                MapToolExecutionContext(message.ToolExecutionContext));
+                BuildToolExecutionContext(message));
 
             await PublishCompletionAsync(
                 context,
@@ -440,6 +440,44 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             JsonValueKind.Undefined => null,
             _ => value.GetRawText()
         };
+    }
+
+    // Tool plumbing for an agent invocation. Code-aware workflows expose a per-trace working
+    // directory through `global.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
+    // present, that path-jails every host tool to the trace workdir and supersedes the legacy
+    // per-repo `ToolExecutionContext` carried on the message. Non-code workflows fall through
+    // to the legacy plumbing unchanged.
+    private static RuntimeToolExecutionContext? BuildToolExecutionContext(AgentInvokeRequested message)
+    {
+        if (TryGetGlobalWorkDir(message.GlobalContext, out var workDir))
+        {
+            return new RuntimeToolExecutionContext(
+                new RuntimeToolWorkspaceContext(message.TraceId, workDir));
+        }
+
+        return MapToolExecutionContext(message.ToolExecutionContext);
+    }
+
+    private static bool TryGetGlobalWorkDir(
+        IReadOnlyDictionary<string, JsonElement>? globalContext,
+        out string workDir)
+    {
+        workDir = string.Empty;
+        if (globalContext is null
+            || !globalContext.TryGetValue("workDir", out var element)
+            || element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var value = element.GetString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        workDir = value;
+        return true;
     }
 
     private static RuntimeToolExecutionContext? MapToolExecutionContext(ContractsToolExecutionContext? context)

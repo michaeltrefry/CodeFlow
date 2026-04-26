@@ -559,6 +559,29 @@ public sealed class LogicNodeScriptHostTests
     }
 
     [Fact]
+    public void Evaluate_SetGlobal_RejectsReservedKey()
+    {
+        var host = BuildHost();
+        const string script = """
+            setGlobal('workDir', '/etc/evil');
+            setNodePath('Out');
+            """;
+
+        var result = host.Evaluate(
+            "wf", 1, Guid.NewGuid(), script,
+            new[] { "Out" },
+            ParseJson("{}"),
+            EmptyContext);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Failure.Should().Be(LogicNodeFailureKind.ReservedGlobalKeyWrite);
+        result.FailureMessage.Should().Contain("workDir");
+        result.FailureMessage.Should().Contain("framework-managed global");
+        result.GlobalUpdates.Should().BeEmpty(
+            "the failed evaluation must drop pending writes so the reserved key is not persisted");
+    }
+
+    [Fact]
     public void Evaluate_GlobalIsFrozen_DirectAssignmentIgnoredInStrictMode()
     {
         var host = BuildHost();

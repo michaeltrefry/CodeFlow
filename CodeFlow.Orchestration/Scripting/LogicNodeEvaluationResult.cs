@@ -44,5 +44,6 @@ public enum LogicNodeFailureKind
     UnknownPort,
     ContextBudgetExceeded,
     OutputOverrideBudgetExceeded,
-    InputOverrideBudgetExceeded
+    InputOverrideBudgetExceeded,
+    ReservedGlobalKeyWrite,
 }
