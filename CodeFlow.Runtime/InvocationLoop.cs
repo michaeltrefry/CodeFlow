@@ -34,6 +34,18 @@ public sealed class InvocationLoop
     /// </summary>
     private const int MaxContextKeyChars = 256;
 
+    /// <summary>
+    /// Cap on the serialized length of a single <c>setContext</c> / <c>setWorkflow</c> value
+    /// (per-call). Closes the runtime failure mode where an agent tries to stream a large
+    /// document (PRD, plan, codebase chunk) into the workflow bag mid-turn — the model has to
+    /// emit the entire value as JSON tool-call args, eating into <c>max_tokens</c> and producing
+    /// a <see cref="JsonReaderException"/> when the args JSON is truncated mid-string. The
+    /// remediation is to capture the document via an output script using <c>setOutput</c> /
+    /// <c>setWorkflow</c> in the script sandbox, where the value is bounded by the script's own
+    /// 256 KiB budget rather than the model's per-turn token allowance.
+    /// </summary>
+    private const int MaxSingleWriteChars = 16 * 1024;
+
     private static readonly ToolSchema FailTool = new(
         FailToolName,
         "Fail the current agent invocation with a reason.",
@@ -725,6 +737,21 @@ public sealed class InvocationLoop
             var element = valueNode is null
                 ? JsonDocument.Parse("null").RootElement.Clone()
                 : JsonDocument.Parse(valueNode.ToJsonString()).RootElement.Clone();
+
+            // Per-call value cap (V1). Reject values larger than the single-write budget before
+            // they enter the pending bag — the agent gets a typed tool error pointing at the
+            // output-script remediation path, the loop continues, and the trace doesn't risk a
+            // mid-string JSON truncation when the model retries.
+            var elementSize = element.GetRawText().Length;
+            if (elementSize > MaxSingleWriteChars)
+            {
+                throw new InvalidOperationException(
+                    $"{toolDisplayName} value for key '{key}' is {elementSize} chars, exceeding "
+                    + $"the {MaxSingleWriteChars}-character per-call cap. Move large content to "
+                    + $"an output script using setOutput / {toolDisplayName} in the script "
+                    + $"sandbox; mid-turn tool-call args are constrained by the model's "
+                    + $"max_tokens budget.");
+            }
 
             var candidate = new Dictionary<string, JsonElement>(targetBag, StringComparer.Ordinal)
             {

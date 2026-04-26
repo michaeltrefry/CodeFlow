@@ -407,6 +407,89 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldRejectSetWorkflowOversizedSingleValue_WithRemediationPointer()
+    {
+        // V1: per-call 16 KiB cap on setWorkflow values. An agent that tries to stream a large
+        // document (PRD, plan) into the workflow bag mid-turn must get a typed tool error
+        // pointing at the output-script remediation path, the loop continues, and the model
+        // retries with a smaller value or a different approach.
+        var justOver16KiB = new string('x', 16 * 1024 + 1);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Streaming the plan into the workflow bag.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set", "setWorkflow",
+                            new JsonObject { ["key"] = "currentPlan", ["value"] = justOver16KiB })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                request.Messages[^1].IsError.Should().BeTrue();
+                request.Messages[^1].Content.Should().Contain("setWorkflow");
+                request.Messages[^1].Content.Should().Contain("output script");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Recovered with a smaller summary.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Save the plan.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.WorkflowUpdates.Should().BeNull(
+            "the rejected per-call write must not reach the workflow bag");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAcceptSetWorkflowJustUnderPerCallCap()
+    {
+        // CR1: small writes continue to succeed unchanged. A 500-byte setWorkflow call sits well
+        // below the 16 KiB cap and persists into the pending bag like before.
+        var smallValue = new string('x', 500);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Saving and submitting.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set", "setWorkflow",
+                            new JsonObject { ["key"] = "summary", ["value"] = smallValue }),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Save and ship.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.WorkflowUpdates.Should().NotBeNull();
+        result.WorkflowUpdates!["summary"].GetString().Should().Be(smallValue);
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldAdvertise_SetContextAndSetWorkflowTools()
     {
         IReadOnlyList<ToolSchema>? advertisedTools = null;
