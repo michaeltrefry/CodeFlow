@@ -1,6 +1,7 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
+using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
@@ -60,6 +61,9 @@ public static class WorkflowsEndpoints
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
         group.MapPost("/validate-script", ValidateScript)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
+        group.MapPost("/validate", ValidateWorkflowAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
         return routes;
@@ -378,6 +382,58 @@ public static class WorkflowsEndpoints
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
+    }
+
+    /// <summary>
+    /// Run the pluggable validation pipeline against an arbitrary workflow draft and return the
+    /// aggregated findings. Authoring DX surface — the editor calls this on save (or as the user
+    /// edits) to drive the results panel without committing the draft. Hard errors block save in
+    /// the existing fail-fast <see cref="WorkflowValidator"/>; this endpoint exposes the broader,
+    /// pluggable rule set.
+    /// </summary>
+    private static async Task<IResult> ValidateWorkflowAsync(
+        ValidateWorkflowRequest request,
+        WorkflowValidationPipeline pipeline,
+        IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return Results.BadRequest(new { error = "Request body is required." });
+        }
+
+        var context = new WorkflowValidationContext(
+            Key: request.Key ?? string.Empty,
+            Name: request.Name,
+            MaxRoundsPerRound: request.MaxRoundsPerRound,
+            Nodes: request.Nodes ?? Array.Empty<WorkflowNodeDto>(),
+            Edges: request.Edges ?? Array.Empty<WorkflowEdgeDto>(),
+            Inputs: request.Inputs,
+            DbContext: dbContext,
+            WorkflowRepository: repository,
+            AgentRepository: agentRepository);
+
+        var report = await pipeline.RunAsync(context, cancellationToken);
+
+        var findings = report.Findings
+            .Select(f => new WorkflowValidationFindingDto(
+                RuleId: f.RuleId,
+                Severity: f.Severity.ToString(),
+                Message: f.Message,
+                Location: f.Location is null
+                    ? null
+                    : new WorkflowValidationLocationDto(
+                        NodeId: f.Location.NodeId,
+                        EdgeFrom: f.Location.EdgeFrom,
+                        EdgePort: f.Location.EdgePort)))
+            .ToArray();
+
+        return Results.Ok(new ValidateWorkflowResponse(
+            HasErrors: report.HasErrors,
+            HasWarnings: report.HasWarnings,
+            Findings: findings));
     }
 
     /// <summary>

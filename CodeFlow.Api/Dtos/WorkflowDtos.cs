@@ -89,3 +89,27 @@ public enum ValidateScriptDirection
 public sealed record ValidateScriptResponse(bool Ok, IReadOnlyList<ValidateScriptError> Errors);
 
 public sealed record ValidateScriptError(int Line, int Column, string Message);
+
+public sealed record ValidateWorkflowRequest(
+    string? Key,
+    string? Name,
+    int? MaxRoundsPerRound,
+    IReadOnlyList<WorkflowNodeDto>? Nodes,
+    IReadOnlyList<WorkflowEdgeDto>? Edges,
+    IReadOnlyList<WorkflowInputDto>? Inputs);
+
+public sealed record WorkflowValidationLocationDto(
+    Guid? NodeId,
+    Guid? EdgeFrom,
+    string? EdgePort);
+
+public sealed record WorkflowValidationFindingDto(
+    string RuleId,
+    string Severity,
+    string Message,
+    WorkflowValidationLocationDto? Location);
+
+public sealed record ValidateWorkflowResponse(
+    bool HasErrors,
+    bool HasWarnings,
+    IReadOnlyList<WorkflowValidationFindingDto> Findings);

@@ -1,5 +1,7 @@
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
+using CodeFlow.Api.Validation.Pipeline;
+using CodeFlow.Api.Validation.Pipeline.Rules;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Host;
 using MassTransit;
@@ -53,6 +55,12 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IMcpEndpointPolicy, McpEndpointPolicy>();
         services.AddScoped<IWorkflowPackageResolver, WorkflowPackageResolver>();
         services.AddScoped<IWorkflowPackageImporter, WorkflowPackageImporter>();
+
+        // Workflow validation pipeline (F1). Rules are scoped because they take a per-request
+        // DbContext via WorkflowValidationContext; the pipeline itself is scoped so it picks up
+        // the correct DI scope's rule instances.
+        services.AddScoped<IWorkflowValidationRule, StartNodeAdvisoryRule>();
+        services.AddScoped<WorkflowValidationPipeline>();
 
         return services;
     }
