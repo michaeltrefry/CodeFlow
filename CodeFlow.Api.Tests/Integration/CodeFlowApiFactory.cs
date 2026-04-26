@@ -13,8 +13,11 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
     {
         // WebApplication.CreateBuilder reads configuration at builder-construction time, before
         // WebApplicationFactory.ConfigureWebHost has a chance to inject in-memory values.
-        // Seed the mandatory Secrets master key via an environment variable so the host starts.
+        // Seed values that are read eagerly during service registration so the host can start
+        // (Secrets master key for AesGcmSecretProtector; Auth:DevelopmentBypass=true so the
+        // production OIDC fail-fast in AddCodeFlowAuth doesn't trip in the test environment).
         Environment.SetEnvironmentVariable("Secrets__MasterKey", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+        Environment.SetEnvironmentVariable("Auth__DevelopmentBypass", "true");
     }
 
     private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")

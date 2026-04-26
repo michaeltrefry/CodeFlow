@@ -16,7 +16,12 @@
             "index": "src/index.html",
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
-            "assets": [],
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
             "styles": [
               "src/styles.scss",
               "node_modules/monaco-editor/min/vs/editor/editor.main.css"

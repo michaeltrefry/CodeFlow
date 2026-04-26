@@ -70,4 +70,9 @@ playwright-agent-*
 *.db-wal
 *.sqlite
 *.sqlite3
+
+# Operator-local production env files (deploy/.env.example is committed; .env / .env.release are not)
+deploy/.env
+deploy/.env.release
+deploy/.env.local
 *.sqlite-journal

@@ -44,6 +44,33 @@ public static class AuthServiceCollectionExtensions
                 + "This is only safe for local development and test environments.");
         }
 
+        if (!developmentBypass)
+        {
+            // When the bypass is off the API must validate real Keycloak-issued JWTs. An empty
+            // Authority means JwtBearer would skip issuer validation and an empty Audience means
+            // any token signed by anyone the runtime trusts would be accepted, which is not a
+            // useful production posture.
+            var missing = new List<string>(2);
+            if (string.IsNullOrWhiteSpace(authSection[nameof(AuthOptions.Authority)]))
+            {
+                missing.Add("Auth:Authority");
+            }
+            if (string.IsNullOrWhiteSpace(authSection[nameof(AuthOptions.Audience)]))
+            {
+                missing.Add("Auth:Audience");
+            }
+            if (missing.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Auth:DevelopmentBypass is disabled but the following required OIDC settings are empty: "
+                    + $"{string.Join(", ", missing)}. Set them via environment variables "
+                    + $"({string.Join(" and ", missing.Select(name => name.Replace(":", "__")))}) "
+                    + "before starting the host. Authority is the Keycloak realm issuer "
+                    + "(for example https://identity.trefry.net/realms/<realm>) and Audience is the "
+                    + "expected JWT 'aud' value (for example codeflow-api).");
+            }
+        }
+
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUser, ClaimsCurrentUser>();
         services.AddSingleton<RoleBasedPermissionChecker>();

@@ -1,0 +1,353 @@
+name: Build, push, and deploy CodeFlow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Concurrency: only one deploy at a time, but cancel an in-progress run if a newer commit lands.
+concurrency:
+  group: codeflow-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write   # GHCR push using GITHUB_TOKEN
+  id-token: write   # Reserved for future OIDC-based deploys; harmless today.
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  test:
+    name: Build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore .NET solution
+        run: dotnet restore CodeFlow.slnx
+
+      - name: Build .NET solution (Release)
+        run: dotnet build CodeFlow.slnx --configuration Release --no-restore
+
+      # Skip integration tests in CI for now: they require Testcontainers (Docker-in-Docker) AND
+      # the suite has known pre-existing failures from the recent Port Model Redesign that are
+      # tracked separately. Run only the unit-level Auth tests here as a regression guard for
+      # the OIDC fail-fast added in Slice 1.
+      - name: Run Auth unit tests
+        run: dotnet test CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~AuthServiceCollectionExtensionsTests"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: codeflow-ui/package-lock.json
+
+      - name: Install UI deps
+        working-directory: codeflow-ui
+        run: npm ci
+
+      - name: Build UI
+        working-directory: codeflow-ui
+        run: npm run build
+
+  images:
+    name: Build + push GHCR images
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.tags.outputs.api_image }}
+      worker_image: ${{ steps.tags.outputs.worker_image }}
+      ui_image: ${{ steps.tags.outputs.ui_image }}
+      sha_tag: ${{ steps.tags.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -eu
+          owner_lc="$(echo "${IMAGE_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          short_sha="${GITHUB_SHA:0:7}"
+          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "api_image=${REGISTRY}/${owner_lc}/codeflow-api:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "worker_image=${REGISTRY}/${owner_lc}/codeflow-worker:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "ui_image=${REGISTRY}/${owner_lc}/codeflow-ui:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push codeflow-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: CodeFlow.Api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.api_image }}
+            ${{ env.REGISTRY }}/${{ steps.tags.outputs.owner_lc }}/codeflow-api:latest
+          cache-from: type=gha,scope=codeflow-api
+          cache-to: type=gha,mode=max,scope=codeflow-api
+
+      - name: Build + push codeflow-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: CodeFlow.Worker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.worker_image }}
+            ${{ env.REGISTRY }}/${{ steps.tags.outputs.owner_lc }}/codeflow-worker:latest
+          cache-from: type=gha,scope=codeflow-worker
+          cache-to: type=gha,mode=max,scope=codeflow-worker
+
+      - name: Build + push codeflow-ui
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: codeflow-ui/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.ui_image }}
+            ${{ env.REGISTRY }}/${{ steps.tags.outputs.owner_lc }}/codeflow-ui:latest
+          cache-from: type=gha,scope=codeflow-ui
+          cache-to: type=gha,mode=max,scope=codeflow-ui
+
+  deploy:
+    name: Deploy to Linode
+    needs: images
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # ----- Single-pass preflight: collect ALL missing required values, then fail with one
+      # grouped message so the operator sees every secret/variable they still need to set.
+      - name: Preflight required secrets and variables
+        id: preflight
+        env:
+          LINODE_HOST: ${{ vars.LINODE_HOST || secrets.LINODE_HOST }}
+          LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
+          LINODE_SSH_KEY: ${{ secrets.LINODE_SSH_KEY }}
+          LINODE_SSH_KEY_B64: ${{ secrets.LINODE_SSH_KEY_B64 }}
+          CODEFLOW_AUTH_AUTHORITY: ${{ vars.CODEFLOW_AUTH_AUTHORITY || secrets.CODEFLOW_AUTH_AUTHORITY }}
+          CODEFLOW_AUTH_AUDIENCE: ${{ vars.CODEFLOW_AUTH_AUDIENCE || secrets.CODEFLOW_AUTH_AUDIENCE }}
+          CODEFLOW_OAUTH_CLIENT_ID: ${{ vars.CODEFLOW_OAUTH_CLIENT_ID || secrets.CODEFLOW_OAUTH_CLIENT_ID }}
+          CODEFLOW_DB_CONNECTION_STRING: ${{ secrets.CODEFLOW_DB_CONNECTION_STRING }}
+          CODEFLOW_RABBITMQ_HOST: ${{ vars.CODEFLOW_RABBITMQ_HOST || secrets.CODEFLOW_RABBITMQ_HOST }}
+          CODEFLOW_RABBITMQ_VHOST: ${{ vars.CODEFLOW_RABBITMQ_VHOST || secrets.CODEFLOW_RABBITMQ_VHOST }}
+          CODEFLOW_RABBITMQ_USERNAME: ${{ secrets.CODEFLOW_RABBITMQ_USERNAME }}
+          CODEFLOW_RABBITMQ_PASSWORD: ${{ secrets.CODEFLOW_RABBITMQ_PASSWORD }}
+          CODEFLOW_SECRETS_MASTER_KEY: ${{ secrets.CODEFLOW_SECRETS_MASTER_KEY }}
+        run: |
+          set -eu
+          missing=()
+          require_one_of() {
+            local label="$1"; shift
+            local found=""
+            for var in "$@"; do
+              if [ -n "${!var:-}" ]; then found="yes"; break; fi
+            done
+            if [ -z "$found" ]; then missing+=("$label (one of: $*)"); fi
+          }
+          require() {
+            local var="$1"
+            if [ -z "${!var:-}" ]; then missing+=("$var"); fi
+          }
+
+          require LINODE_HOST
+          require LINODE_USER
+          require_one_of "LINODE_SSH_KEY or LINODE_SSH_KEY_B64" LINODE_SSH_KEY LINODE_SSH_KEY_B64
+          require CODEFLOW_AUTH_AUTHORITY
+          require CODEFLOW_AUTH_AUDIENCE
+          require CODEFLOW_OAUTH_CLIENT_ID
+          require CODEFLOW_DB_CONNECTION_STRING
+          require CODEFLOW_RABBITMQ_HOST
+          require CODEFLOW_RABBITMQ_VHOST
+          require CODEFLOW_RABBITMQ_USERNAME
+          require CODEFLOW_RABBITMQ_PASSWORD
+          require CODEFLOW_SECRETS_MASTER_KEY
+
+          if [ ${#missing[@]} -ne 0 ]; then
+            {
+              echo "Missing required GitHub Actions settings:"
+              for m in "${missing[@]}"; do echo "  - $m"; done
+              echo ""
+              echo "Sensitive values (DB, secrets, passwords, SSH key) MUST be repository or environment secrets."
+              echo "Non-sensitive values (host, user, vhost, authority, OAuth client id) MAY be repository variables OR secrets."
+            } >&2
+            exit 1
+          fi
+          echo "All required settings present."
+
+      - name: Load deploy SSH key into ssh-agent
+        env:
+          LINODE_SSH_KEY: ${{ secrets.LINODE_SSH_KEY }}
+          LINODE_SSH_KEY_B64: ${{ secrets.LINODE_SSH_KEY_B64 }}
+          LINODE_SSH_KEY_PASSPHRASE: ${{ secrets.LINODE_SSH_KEY_PASSPHRASE }}
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "$LINODE_SSH_KEY" ]; then
+            printf '%s\n' "$LINODE_SSH_KEY" > ~/.ssh/id_codeflow
+          else
+            echo "$LINODE_SSH_KEY_B64" | base64 -d > ~/.ssh/id_codeflow
+          fi
+          chmod 600 ~/.ssh/id_codeflow
+
+          eval "$(ssh-agent -s)" >/dev/null
+          # Persist agent envs to GITHUB_ENV so subsequent steps see them.
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+          if [ -n "$LINODE_SSH_KEY_PASSPHRASE" ]; then
+            # Use sshpass-free approach: ssh-add reads the passphrase from $SSH_ASKPASS.
+            export DISPLAY=":0"
+            askpass="$(mktemp)"
+            cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          printf '%s' "$LINODE_SSH_KEY_PASSPHRASE"
+          EOF
+            chmod 700 "$askpass"
+            export SSH_ASKPASS="$askpass"
+            setsid -w ssh-add ~/.ssh/id_codeflow < /dev/null
+            rm -f "$askpass"
+          else
+            ssh-add ~/.ssh/id_codeflow
+          fi
+
+      - name: Verify SSH access
+        env:
+          LINODE_HOST: ${{ vars.LINODE_HOST || secrets.LINODE_HOST }}
+          LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
+          LINODE_SSH_PORT: ${{ vars.LINODE_SSH_PORT || secrets.LINODE_SSH_PORT || '22' }}
+        run: |
+          set -eu
+          echo "Deploy target: ${LINODE_USER}@${LINODE_HOST}:${LINODE_SSH_PORT}"
+          ssh-add -l
+          # Trust on first use, then strict thereafter.
+          ssh-keyscan -p "$LINODE_SSH_PORT" "$LINODE_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes -o PasswordAuthentication=no -o PubkeyAuthentication=yes \
+              -o StrictHostKeyChecking=yes \
+              -p "$LINODE_SSH_PORT" "${LINODE_USER}@${LINODE_HOST}" \
+              'echo "ssh ok: $(hostname) $(uname -srm)"'
+
+      - name: Generate .env.release
+        env:
+          IMAGE_OWNER_LC: ${{ github.repository_owner }}
+          SHA_TAG: ${{ needs.images.outputs.sha_tag }}
+          CODEFLOW_PUBLIC_ORIGIN: ${{ vars.CODEFLOW_PUBLIC_ORIGIN || 'https://codeflow.trefry.net' }}
+          CODEFLOW_AUTH_AUTHORITY: ${{ vars.CODEFLOW_AUTH_AUTHORITY || secrets.CODEFLOW_AUTH_AUTHORITY }}
+          CODEFLOW_AUTH_AUDIENCE: ${{ vars.CODEFLOW_AUTH_AUDIENCE || secrets.CODEFLOW_AUTH_AUDIENCE }}
+          CODEFLOW_OAUTH_CLIENT_ID: ${{ vars.CODEFLOW_OAUTH_CLIENT_ID || secrets.CODEFLOW_OAUTH_CLIENT_ID }}
+          CODEFLOW_OAUTH_SCOPE: ${{ vars.CODEFLOW_OAUTH_SCOPE || 'openid profile email' }}
+          CODEFLOW_DB_CONNECTION_STRING: ${{ secrets.CODEFLOW_DB_CONNECTION_STRING }}
+          CODEFLOW_RABBITMQ_HOST: ${{ vars.CODEFLOW_RABBITMQ_HOST || secrets.CODEFLOW_RABBITMQ_HOST }}
+          CODEFLOW_RABBITMQ_PORT: ${{ vars.CODEFLOW_RABBITMQ_PORT || '5672' }}
+          CODEFLOW_RABBITMQ_MANAGEMENT_PORT: ${{ vars.CODEFLOW_RABBITMQ_MANAGEMENT_PORT || '15672' }}
+          CODEFLOW_RABBITMQ_VHOST: ${{ vars.CODEFLOW_RABBITMQ_VHOST || secrets.CODEFLOW_RABBITMQ_VHOST }}
+          CODEFLOW_RABBITMQ_USERNAME: ${{ secrets.CODEFLOW_RABBITMQ_USERNAME }}
+          CODEFLOW_RABBITMQ_PASSWORD: ${{ secrets.CODEFLOW_RABBITMQ_PASSWORD }}
+          CODEFLOW_SECRETS_MASTER_KEY: ${{ secrets.CODEFLOW_SECRETS_MASTER_KEY }}
+          CODEFLOW_OPENAI_API_KEY: ${{ secrets.CODEFLOW_OPENAI_API_KEY }}
+          CODEFLOW_ANTHROPIC_API_KEY: ${{ secrets.CODEFLOW_ANTHROPIC_API_KEY }}
+          CODEFLOW_OTLP_ENDPOINT: ${{ vars.CODEFLOW_OTLP_ENDPOINT || '' }}
+          CODEFLOW_API_HOST_PORT: ${{ vars.CODEFLOW_API_HOST_PORT || '5080' }}
+          CODEFLOW_UI_HOST_PORT: ${{ vars.CODEFLOW_UI_HOST_PORT || '4280' }}
+          CODEFLOW_ARTIFACTS_DIR: ${{ vars.CODEFLOW_ARTIFACTS_DIR || '/opt/codeflow/artifacts' }}
+        run: |
+          set -eu
+          owner_lc="$(echo "${IMAGE_OWNER_LC}" | tr '[:upper:]' '[:lower:]')"
+          # Quote every value with single-quotes; escape any literal single quote inside the value
+          # by closing-quote / escaped-quote / re-open-quote so the file is safe even if a secret
+          # contains shell metacharacters.
+          q() { printf "%s='%s'\n" "$1" "$(printf '%s' "$2" | sed "s/'/'\\\\''/g")"; }
+          {
+            q CODEFLOW_API_IMAGE    "ghcr.io/${owner_lc}/codeflow-api:${SHA_TAG}"
+            q CODEFLOW_WORKER_IMAGE "ghcr.io/${owner_lc}/codeflow-worker:${SHA_TAG}"
+            q CODEFLOW_UI_IMAGE     "ghcr.io/${owner_lc}/codeflow-ui:${SHA_TAG}"
+            q CODEFLOW_PUBLIC_ORIGIN "${CODEFLOW_PUBLIC_ORIGIN}"
+            q CODEFLOW_AUTH_AUTHORITY "${CODEFLOW_AUTH_AUTHORITY}"
+            q CODEFLOW_AUTH_AUDIENCE  "${CODEFLOW_AUTH_AUDIENCE}"
+            q CODEFLOW_OAUTH_CLIENT_ID "${CODEFLOW_OAUTH_CLIENT_ID}"
+            q CODEFLOW_OAUTH_SCOPE     "${CODEFLOW_OAUTH_SCOPE}"
+            q CODEFLOW_DB_CONNECTION_STRING "${CODEFLOW_DB_CONNECTION_STRING}"
+            q CODEFLOW_RABBITMQ_HOST "${CODEFLOW_RABBITMQ_HOST}"
+            q CODEFLOW_RABBITMQ_PORT "${CODEFLOW_RABBITMQ_PORT}"
+            q CODEFLOW_RABBITMQ_MANAGEMENT_PORT "${CODEFLOW_RABBITMQ_MANAGEMENT_PORT}"
+            q CODEFLOW_RABBITMQ_VHOST "${CODEFLOW_RABBITMQ_VHOST}"
+            q CODEFLOW_RABBITMQ_USERNAME "${CODEFLOW_RABBITMQ_USERNAME}"
+            q CODEFLOW_RABBITMQ_PASSWORD "${CODEFLOW_RABBITMQ_PASSWORD}"
+            q CODEFLOW_SECRETS_MASTER_KEY "${CODEFLOW_SECRETS_MASTER_KEY}"
+            q CODEFLOW_OPENAI_API_KEY "${CODEFLOW_OPENAI_API_KEY}"
+            q CODEFLOW_ANTHROPIC_API_KEY "${CODEFLOW_ANTHROPIC_API_KEY}"
+            q CODEFLOW_OTLP_ENDPOINT "${CODEFLOW_OTLP_ENDPOINT}"
+            q CODEFLOW_API_HOST_PORT "${CODEFLOW_API_HOST_PORT}"
+            q CODEFLOW_UI_HOST_PORT "${CODEFLOW_UI_HOST_PORT}"
+            q CODEFLOW_ARTIFACTS_DIR "${CODEFLOW_ARTIFACTS_DIR}"
+          } > .env.release
+          chmod 600 .env.release
+          echo "Generated .env.release ($(wc -l < .env.release) lines)"
+
+      - name: Copy compose + env to Linode
+        env:
+          LINODE_HOST: ${{ vars.LINODE_HOST || secrets.LINODE_HOST }}
+          LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
+          LINODE_SSH_PORT: ${{ vars.LINODE_SSH_PORT || secrets.LINODE_SSH_PORT || '22' }}
+          DEPLOY_DIR: ${{ vars.CODEFLOW_DEPLOY_DIR || '/opt/codeflow' }}
+        run: |
+          set -eu
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
+              "${LINODE_USER}@${LINODE_HOST}" \
+              "mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
+              deploy/docker-compose.prod.yml \
+              "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/deploy/docker-compose.prod.yml"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
+              .env.release \
+              "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/.env.release"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
+              "${LINODE_USER}@${LINODE_HOST}" \
+              "chmod 600 '${DEPLOY_DIR}/.env.release'"
+
+      - name: Ensure trefry-network and (re)start the stack
+        env:
+          LINODE_HOST: ${{ vars.LINODE_HOST || secrets.LINODE_HOST }}
+          LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
+          LINODE_SSH_PORT: ${{ vars.LINODE_SSH_PORT || secrets.LINODE_SSH_PORT || '22' }}
+          DEPLOY_DIR: ${{ vars.CODEFLOW_DEPLOY_DIR || '/opt/codeflow' }}
+        run: |
+          set -eu
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
+              "${LINODE_USER}@${LINODE_HOST}" \
+              "set -eu; cd '${DEPLOY_DIR}'; \
+               docker network inspect trefry-network >/dev/null 2>&1 || docker network create trefry-network; \
+               docker compose --env-file .env.release -f deploy/docker-compose.prod.yml pull; \
+               docker compose --env-file .env.release -f deploy/docker-compose.prod.yml up -d; \
+               docker compose --env-file .env.release -f deploy/docker-compose.prod.yml ps"
+
+      - name: Cleanup local secrets
+        if: always()
+        run: |
+          rm -f .env.release ~/.ssh/id_codeflow

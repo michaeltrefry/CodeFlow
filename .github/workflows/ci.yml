@@ -1,0 +1,53 @@
+name: CI (PRs and non-main pushes)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  build:
+    name: Build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore .NET solution
+        run: dotnet restore CodeFlow.slnx
+
+      - name: Build .NET solution (Release)
+        run: dotnet build CodeFlow.slnx --configuration Release --no-restore
+
+      # The full integration suite needs Testcontainers (MariaDB + RabbitMQ) and has known
+      # pre-existing failures from the Port Model Redesign tracked separately. Run the unit-level
+      # Auth tests as a regression guard for the OIDC fail-fast added in Slice 1.
+      - name: Run Auth unit tests
+        run: dotnet test CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~AuthServiceCollectionExtensionsTests"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: codeflow-ui/package-lock.json
+
+      - name: Install UI deps
+        working-directory: codeflow-ui
+        run: npm ci
+
+      - name: Build UI
+        working-directory: codeflow-ui
+        run: npm run build
+
+      - name: Validate production compose renders
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.prod.yml config > /dev/null

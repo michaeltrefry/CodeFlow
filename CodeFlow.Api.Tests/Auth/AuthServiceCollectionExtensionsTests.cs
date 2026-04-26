@@ -25,11 +25,80 @@ public sealed class AuthServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddCodeFlowAuth_succeeds_when_Production_and_DevelopmentBypass_disabled()
+    public void AddCodeFlowAuth_succeeds_when_Production_and_DevelopmentBypass_disabled_with_OIDC_config()
     {
         var services = new ServiceCollection();
-        var configuration = BuildConfiguration(developmentBypass: false);
+        var configuration = BuildConfiguration(
+            developmentBypass: false,
+            authority: "https://identity.trefry.net/realms/trefry",
+            audience: "codeflow-api");
         var environment = new TestHostEnvironment(Environments.Production);
+
+        var act = () => services.AddCodeFlowAuth(configuration, environment);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void AddCodeFlowAuth_throws_when_DevelopmentBypass_disabled_and_Authority_missing()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(
+            developmentBypass: false,
+            authority: null,
+            audience: "codeflow-api");
+        var environment = new TestHostEnvironment(Environments.Production);
+
+        var act = () => services.AddCodeFlowAuth(configuration, environment);
+
+        act.Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*Auth:Authority*");
+    }
+
+    [Fact]
+    public void AddCodeFlowAuth_throws_when_DevelopmentBypass_disabled_and_Audience_missing()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(
+            developmentBypass: false,
+            authority: "https://identity.trefry.net/realms/trefry",
+            audience: null);
+        var environment = new TestHostEnvironment(Environments.Production);
+
+        var act = () => services.AddCodeFlowAuth(configuration, environment);
+
+        act.Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*Auth:Audience*");
+    }
+
+    [Fact]
+    public void AddCodeFlowAuth_throws_with_grouped_message_when_both_Authority_and_Audience_missing()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(
+            developmentBypass: false,
+            authority: null,
+            audience: null);
+        var environment = new TestHostEnvironment(Environments.Production);
+
+        var act = () => services.AddCodeFlowAuth(configuration, environment);
+
+        act.Should()
+            .Throw<InvalidOperationException>()
+            .Where(ex => ex.Message.Contains("Auth:Authority") && ex.Message.Contains("Auth:Audience"));
+    }
+
+    [Fact]
+    public void AddCodeFlowAuth_does_not_require_OIDC_config_when_DevelopmentBypass_enabled()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(
+            developmentBypass: true,
+            authority: null,
+            audience: null);
+        var environment = new TestHostEnvironment(Environments.Development);
 
         var act = () => services.AddCodeFlowAuth(configuration, environment);
 
@@ -52,7 +121,10 @@ public sealed class AuthServiceCollectionExtensionsTests
     public async Task AddCodeFlowAuth_does_not_register_development_scheme_in_Production()
     {
         var services = new ServiceCollection();
-        var configuration = BuildConfiguration(developmentBypass: false);
+        var configuration = BuildConfiguration(
+            developmentBypass: false,
+            authority: "https://identity.trefry.net/realms/trefry",
+            audience: "codeflow-api");
         var environment = new TestHostEnvironment(Environments.Production);
 
         services.AddCodeFlowAuth(configuration, environment);
@@ -84,11 +156,25 @@ public sealed class AuthServiceCollectionExtensionsTests
 
     private static IConfiguration BuildConfiguration(bool developmentBypass)
     {
+        return BuildConfiguration(developmentBypass, authority: null, audience: null);
+    }
+
+    private static IConfiguration BuildConfiguration(bool developmentBypass, string? authority, string? audience)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["Auth:DevelopmentBypass"] = developmentBypass ? "true" : "false"
+        };
+        if (authority is not null)
+        {
+            values["Auth:Authority"] = authority;
+        }
+        if (audience is not null)
+        {
+            values["Auth:Audience"] = audience;
+        }
         return new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Auth:DevelopmentBypass"] = developmentBypass ? "true" : "false"
-            })
+            .AddInMemoryCollection(values)
             .Build();
     }
 

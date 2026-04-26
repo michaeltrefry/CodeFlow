@@ -1,0 +1,104 @@
+# Production compose stack for CodeFlow on the Linode host.
+#
+# - Consumes prebuilt images from GHCR (CODEFLOW_*_IMAGE env vars include the full ghcr.io/...:tag).
+# - Does NOT run RabbitMQ (uses external mqapps.trefry.net) or Aspire dashboard.
+# - Connects to the host-shared MariaDB at hostname `mariadb` on the external `trefry-network`.
+# - Binds host ports for codeflow-api and codeflow-ui to 127.0.0.1 only — Caddy on the host fronts
+#   them at https://codeflow.trefry.net.
+# - codeflow-worker exposes nothing on the host.
+#
+# Required env vars are listed in deploy/.env.example. The GitHub Actions deploy workflow writes
+# them to /opt/codeflow/.env.release before `docker compose --env-file .env.release ... up -d`.
+
+networks:
+  trefry-network:
+    external: true
+
+services:
+  codeflow-api:
+    image: ${CODEFLOW_API_IMAGE:?CODEFLOW_API_IMAGE must be set (full ghcr.io/<owner>/codeflow-api:<tag>)}
+    container_name: codeflow-api
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      # --- Auth (Slice 1 + 2). DevelopmentBypass MUST be false; Authority/Audience must be set. ---
+      Auth__DevelopmentBypass: "false"
+      Auth__RequireHttpsMetadata: "true"
+      Auth__Authority: ${CODEFLOW_AUTH_AUTHORITY:?CODEFLOW_AUTH_AUTHORITY must be set (e.g. https://identity.trefry.net/realms/trefry)}
+      Auth__Audience: ${CODEFLOW_AUTH_AUDIENCE:?CODEFLOW_AUTH_AUDIENCE must be set (e.g. codeflow-api)}
+      # --- CORS for the public origin (Slice 2 / config-driven). ---
+      Cors__AllowedOrigins__0: ${CODEFLOW_PUBLIC_ORIGIN:-https://codeflow.trefry.net}
+      # --- Persistence: shared MariaDB on trefry-network (hostname `mariadb`). ---
+      CODEFLOW_DB_CONNECTION_STRING: ${CODEFLOW_DB_CONNECTION_STRING:?CODEFLOW_DB_CONNECTION_STRING must be set (Server=mariadb;Port=3306;Database=codeflow;User=...;Password=...;)}
+      # --- Bus: external RabbitMQ at mqapps.trefry.net. ---
+      RabbitMq__Host: ${CODEFLOW_RABBITMQ_HOST:-mqapps.trefry.net}
+      RabbitMq__Port: ${CODEFLOW_RABBITMQ_PORT:-5672}
+      RabbitMq__VirtualHost: ${CODEFLOW_RABBITMQ_VHOST:?CODEFLOW_RABBITMQ_VHOST must be set (e.g. codeflow)}
+      RabbitMq__Username: ${CODEFLOW_RABBITMQ_USERNAME:?CODEFLOW_RABBITMQ_USERNAME must be set}
+      RabbitMq__Password: ${CODEFLOW_RABBITMQ_PASSWORD:?CODEFLOW_RABBITMQ_PASSWORD must be set}
+      RabbitMq__PrefetchCount: "1"
+      RabbitMq__ConsumerConcurrencyLimit: "1"
+      # --- Secrets master key (AesGcmSecretProtector) and optional model API keys. ---
+      Secrets__MasterKey: ${CODEFLOW_SECRETS_MASTER_KEY:?CODEFLOW_SECRETS_MASTER_KEY must be set (32-byte base64 key)}
+      OpenAI__ApiKey: ${CODEFLOW_OPENAI_API_KEY:-}
+      Anthropic__ApiKey: ${CODEFLOW_ANTHROPIC_API_KEY:-}
+      # --- Artifacts (host bind below). ---
+      Artifacts__RootDirectory: /app/artifacts
+      # --- Dead-letter management (RabbitMQ HTTP). ---
+      DeadLetter__ManagementHost: ${CODEFLOW_RABBITMQ_HOST:-mqapps.trefry.net}
+      DeadLetter__ManagementPort: ${CODEFLOW_RABBITMQ_MANAGEMENT_PORT:-15672}
+      DeadLetter__VirtualHost: ${CODEFLOW_RABBITMQ_VHOST}
+      DeadLetter__Username: ${CODEFLOW_RABBITMQ_USERNAME}
+      DeadLetter__Password: ${CODEFLOW_RABBITMQ_PASSWORD}
+      # --- Optional: OTLP observability sink. ---
+      Observability__OtlpEndpoint: ${CODEFLOW_OTLP_ENDPOINT:-}
+      Observability__EnableConsoleExporter: "false"
+    ports:
+      - "127.0.0.1:${CODEFLOW_API_HOST_PORT:-5080}:8080"
+    volumes:
+      - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
+    networks:
+      - default
+      - trefry-network
+
+  codeflow-worker:
+    image: ${CODEFLOW_WORKER_IMAGE:?CODEFLOW_WORKER_IMAGE must be set (full ghcr.io/<owner>/codeflow-worker:<tag>)}
+    container_name: codeflow-worker
+    restart: unless-stopped
+    depends_on:
+      - codeflow-api
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      CODEFLOW_DB_CONNECTION_STRING: ${CODEFLOW_DB_CONNECTION_STRING}
+      RabbitMq__Host: ${CODEFLOW_RABBITMQ_HOST:-mqapps.trefry.net}
+      RabbitMq__Port: ${CODEFLOW_RABBITMQ_PORT:-5672}
+      RabbitMq__VirtualHost: ${CODEFLOW_RABBITMQ_VHOST}
+      RabbitMq__Username: ${CODEFLOW_RABBITMQ_USERNAME}
+      RabbitMq__Password: ${CODEFLOW_RABBITMQ_PASSWORD}
+      RabbitMq__PrefetchCount: "1"
+      RabbitMq__ConsumerConcurrencyLimit: "1"
+      Secrets__MasterKey: ${CODEFLOW_SECRETS_MASTER_KEY}
+      OpenAI__ApiKey: ${CODEFLOW_OPENAI_API_KEY:-}
+      Anthropic__ApiKey: ${CODEFLOW_ANTHROPIC_API_KEY:-}
+      Artifacts__RootDirectory: /app/artifacts
+      Observability__OtlpEndpoint: ${CODEFLOW_OTLP_ENDPOINT:-}
+      Observability__EnableConsoleExporter: "false"
+    volumes:
+      - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
+    networks:
+      - default
+      - trefry-network
+
+  codeflow-ui:
+    image: ${CODEFLOW_UI_IMAGE:?CODEFLOW_UI_IMAGE must be set (full ghcr.io/<owner>/codeflow-ui:<tag>)}
+    container_name: codeflow-ui
+    restart: unless-stopped
+    depends_on:
+      - codeflow-api
+    environment:
+      OAUTH_AUTHORITY: ${CODEFLOW_AUTH_AUTHORITY}
+      OAUTH_CLIENT_ID: ${CODEFLOW_OAUTH_CLIENT_ID:-codeflow-ui}
+      OAUTH_SCOPE: ${CODEFLOW_OAUTH_SCOPE:-openid profile email}
+    ports:
+      - "127.0.0.1:${CODEFLOW_UI_HOST_PORT:-4200}:80"

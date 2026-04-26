@@ -1,3 +1,18 @@
-Secrets__MasterKey={32-bit key}
+# Local-development sample. Copy to `.env` (gitignored) at the repo root and fill in.
+# For production deployment, see deploy/.env.example and docs/deployment.md.
+
+# AES-GCM master key, 32 bytes base64 (generate with: openssl rand -base64 32).
+Secrets__MasterKey={32-byte base64 key}
+
+# Optional model API keys. Leave empty to skip the provider.
 OpenAI__ApiKey={Open Api Key}
 Anthropic__ApiKey={Anthropic Api Key}
+
+# Local DB password used by the docker-compose `codeflow-api` connection string.
+CODEFLOW_DB_PASSWORD={dev password}
+
+# Local OAuth (UI runtime-config). Leave empty to fall back to the API's DevelopmentBypass.
+# To exercise real Keycloak login locally, point these at your dev realm:
+# OAUTH_AUTHORITY=https://identity.trefry.net/realms/trefry
+# OAUTH_CLIENT_ID=codeflow-ui
+# OAUTH_SCOPE=openid profile email

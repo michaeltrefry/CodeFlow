@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { firstValueFrom } from 'rxjs';
-import { authConfig } from './auth.config';
+import { buildAuthConfig, hasAuthConfigured } from './auth.config';
 
 export interface CurrentUser {
   id: string;
@@ -29,8 +29,8 @@ export class AuthService {
     this.error.set(null);
 
     try {
-      if (authConfig.issuer) {
-        this.oauth.configure(authConfig);
+      if (hasAuthConfigured()) {
+        this.oauth.configure(buildAuthConfig());
         await this.oauth.loadDiscoveryDocumentAndTryLogin();
       }
 

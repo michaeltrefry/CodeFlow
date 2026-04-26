@@ -143,6 +143,10 @@ services:
     restart: unless-stopped
     depends_on:
       - codeflow-api
+    environment:
+      OAUTH_AUTHORITY: ${OAUTH_AUTHORITY:-}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-codeflow-ui}
+      OAUTH_SCOPE: ${OAUTH_SCOPE:-openid profile email}
     ports:
       - "4200:80"
 

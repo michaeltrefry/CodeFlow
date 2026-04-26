@@ -1,7 +1,7 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router, UrlTree } from '@angular/router';
 import { AuthService } from './auth.service';
-import { authConfig } from './auth.config';
+import { hasAuthConfigured } from './auth.config';
 
 /**
  * Redirect anonymous users into the OAuth code flow instead of rendering a half-loaded page
@@ -18,7 +18,7 @@ export const authenticatedGuard: CanActivateFn = (): boolean | UrlTree => {
 
   // If OAuth is not configured (dev bypass, local), we can't start the code flow — let the
   // anonymous user through and the API will authenticate them via DevelopmentBypass.
-  if (!authConfig.issuer) {
+  if (!hasAuthConfigured()) {
     return true;
   }
 

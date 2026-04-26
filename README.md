@@ -110,6 +110,13 @@ npm run build
 - **Review loops** support bounded draft-review-revise iterations with round-aware context.
 - **MCP + host tooling** let agents call external tools and local workspace capabilities under policy.
 
+## Production deployment
+
+CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted by host-managed Caddy, authenticated against Keycloak at `https://identity.trefry.net`, and connected to the shared MariaDB on `trefry-network` and the shared RabbitMQ at `mqapps.trefry.net`.
+
+- [Production deployment + Caddy + GitHub Actions](./docs/deployment.md)
+- [Keycloak realm + client configuration](./docs/deployment-keycloak.md)
+
 ## Docs worth reading
 
 - [Workflow model and editor behavior](./docs/workflows.md)

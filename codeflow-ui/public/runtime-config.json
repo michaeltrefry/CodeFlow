@@ -1,0 +1,7 @@
+{
+  "oauth": {
+    "authority": "",
+    "clientId": "codeflow-ui",
+    "scope": "openid profile email"
+  }
+}
