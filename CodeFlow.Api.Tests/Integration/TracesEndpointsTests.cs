@@ -730,7 +730,7 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
                     inputScript = "setInput('normalized');",
-                    outputPorts = new[] { "Completed", "Failed" },
+                    outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
                 }
@@ -797,7 +797,16 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var response = await client.PostAsJsonAsync("/api/agents", new
         {
             key,
-            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Do work." }
+            config = new
+            {
+                provider = "openai",
+                model = "gpt-5",
+                systemPrompt = "Do work.",
+                outputs = new object[]
+                {
+                    new { kind = "Completed" }
+                }
+            }
         });
         response.EnsureSuccessStatusCode();
     }
