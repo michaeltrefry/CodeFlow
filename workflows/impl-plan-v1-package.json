@@ -1,0 +1,269 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-26T14:30:00Z"
+  },
+  "entryPoint": {
+    "key": "impl-plan-flow",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "impl-plan-flow",
+      "version": 1,
+      "name": "Implementation Plan Flow",
+      "maxRoundsPerRound": 5,
+      "category": "Subflow",
+      "tags": ["plan", "architect", "reviewer"],
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "nodes": [
+        {
+          "id": "aaaaaaaa-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "impl-plan-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "aaaaaaaa-0001-0001-0001-000000000002",
+          "kind": "ReviewLoop",
+          "outputPorts": ["Approved", "Exhausted"],
+          "layoutX": 400,
+          "layoutY": 200,
+          "subflowKey": "impl-plan-loop",
+          "subflowVersion": 1,
+          "reviewMaxRounds": 3,
+          "loopDecision": "Rejected"
+        },
+        {
+          "id": "aaaaaaaa-0001-0001-0001-000000000003",
+          "kind": "Hitl",
+          "agentKey": "impl-plan-escalate-form",
+          "agentVersion": 1,
+          "outputPorts": ["Approved", "RejectionAccepted"],
+          "layoutX": 750,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "aaaaaaaa-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "aaaaaaaa-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "aaaaaaaa-0001-0001-0001-000000000002",
+          "fromPort": "Exhausted",
+          "toNodeId": "aaaaaaaa-0001-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Approved PRD",
+          "kind": "Text",
+          "required": true,
+          "description": "An approved PRD (markdown) to be turned into an implementation plan.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "impl-plan-loop",
+      "version": 1,
+      "name": "Implementation Plan — Architect/Reviewer Loop",
+      "maxRoundsPerRound": 5,
+      "category": "Loop",
+      "tags": ["plan", "architect", "reviewer", "loop"],
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "nodes": [
+        {
+          "id": "bbbbbbbb-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "impl-plan-architect",
+          "agentVersion": 1,
+          "outputPorts": ["Drafted"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "bbbbbbbb-0001-0001-0001-000000000002",
+          "kind": "Agent",
+          "agentKey": "impl-plan-reviewer",
+          "agentVersion": 1,
+          "outputPorts": ["Approved", "Rejected"],
+          "layoutX": 400,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "bbbbbbbb-0001-0001-0001-000000000001",
+          "fromPort": "Drafted",
+          "toNodeId": "bbbbbbbb-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Input",
+          "kind": "Text",
+          "required": true,
+          "description": "On round 1, the approved PRD. On rounds 2+, the prior reviewer's rejection findings.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "impl-plan-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Implementation Plan Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the Implementation Plan flow. You receive an approved PRD and your only job is to seed it into shared state for the loop, then hand off.\n\nMid-turn, call setGlobal(key=\"prd\", value=<the input PRD verbatim>) to make the PRD available to the architect and reviewer agents inside the loop.\n\nThen submit with port `Continue`.\n\n## CRITICAL OUTPUT RULE\nWrite the PRD body verbatim as your assistant message content BEFORE calling `submit` with port `Continue`. The message content becomes the artifact handed to the architect on round 1.",
+        "promptTemplate": "## Approved PRD\n\n{{ input }}",
+        "maxTokens": 4000,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Seeds the PRD into globals and hands off to the architect/reviewer loop."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Seeds the PRD into globals and hands off to the architect/reviewer loop."
+        }
+      ]
+    },
+    {
+      "key": "impl-plan-architect",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Implementation Plan Architect",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a software architect. You produce a complete implementation plan from an approved PRD that a developer agent can execute without further design input.\n\nYour output is a single Markdown plan document — nothing else.\n\n## Plan structure\n\nOrganize as **Phases → Tasks**. Each task must be:\n- **Small enough** that a developer agent can complete it end-to-end without asking design questions.\n- **Large enough** that it covers a complete testable surface — a meaningful, verifiable behavior, not a single line edit.\n- Detailed enough that the developer agent's only inputs are the task description, the PRD, and the surrounding plan context.\n\nFor each phase: a brief intro and an ordered list of tasks.\nFor each task: title, scope summary, and acceptance criteria.\n\n## Round behavior\n\n- **Round 1** (`global.currentPlan` is empty): produce the first draft from `global.prd`.\n- **Rounds 2+**: this is a REVISION pass. Read the current plan from `global.currentPlan` and the reviewer's latest findings from `{{ input }}`. Address every finding. Produce a new clean standalone plan — NEVER narrate the revision history, NEVER include a \"changes since last round\" section, NEVER reference the prior rejection in the plan body. The plan must read as if it were the first and only draft.\n\nYou do not see prior rejection rounds beyond the latest one. The current plan already embodies your response to every prior round; that is sufficient context.\n\n## Mid-turn\n\nCall setGlobal(key=\"currentPlan\", value=<your full plan markdown>) before submitting, so the reviewer and downstream HITL escalation can read it.\n\nSubmit with port `Drafted`.\n\n## CRITICAL OUTPUT RULE\nWrite the full Markdown plan body as your assistant message content BEFORE calling `submit` with port `Drafted`. The plan body MUST be in the message content; do NOT put it in the submit payload.",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }}\n\n## PRD\n{{ global.prd }}\n\n{{ if global.currentPlan }}## Current plan (the one you are revising)\n{{ global.currentPlan }}\n\n## Reviewer's latest findings\n{{ input }}\n{{ end }}",
+        "maxTokens": 8000,
+        "temperature": 0.4,
+        "outputs": [
+          {
+            "kind": "Drafted",
+            "description": "Plan drafted (first round) or revised (subsequent rounds)."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Drafted",
+          "description": "Plan drafted (first round) or revised (subsequent rounds)."
+        }
+      ]
+    },
+    {
+      "key": "impl-plan-reviewer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Implementation Plan Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a senior reviewer of implementation plans. The architect just produced (or revised) a plan from the PRD. Your job is to gate quality — but lean toward approval.\n\n## What you are checking\n\n1. **Gaps** — missing surface area or missing tasks the PRD requires.\n2. **Clarity** — can a developer agent act on each task without further design clarification?\n3. **Alignment with the PRD** — every PRD requirement is covered; no scope creep beyond it.\n4. **Task sizing** — each task should be small enough for a single dev agent end-to-end, large enough to cover a complete testable surface.\n\n## Approval bias\n\nApprove when there are no MAJOR gaps. Nitpicks (wording, optional polish, alternative approaches you'd prefer) are NOT blocking. The goal is a workable plan, not your perfect plan.\n\nIf you have already raised a concern in a prior round and the architect has addressed it, do NOT re-raise it. Do not invent new concerns just to keep the loop alive.\n\n## Last-round behavior\n\nThe variable `{{ isLastRound }}` is true on the final allowed iteration. When it is true: if all of your prior concerns have been addressed, APPROVE. Only reject on the last round if there is a CRITICAL gap (the plan would fail to deliver what the PRD requires).\n\n## Submit ports\n\n- **`Approved`** — the plan passes. Your assistant message content should be the unchanged plan body from `global.currentPlan` (so the artifact downstream is the clean approved plan).\n- **`Rejected`** — the plan needs revision. Your assistant message content should be a markdown `## Findings` section listing each concrete gap. Each finding should include: the location in the plan (phase/task), what is missing or wrong, a concrete suggested revision, and a severity tag in brackets (`[critical]`, `[major]`, or `[minor]`).\n\n## Mid-turn (on Rejected only)\n\nBefore submitting Rejected, call:\n\n- setGlobal(key=\"latestRejection\", value=<your `## Findings` markdown — the same content you put in the message body>)\n- setGlobal(key=\"rejectionHistory\", value=<the prior `global.rejectionHistory` value with a new `## Round {{ round }}` section appended containing this round's findings>)\n\nIf `global.rejectionHistory` is empty, start it with `## Round {{ round }}\\n<findings>`.\n\nDo NOT call setGlobal on Approved.\n\n## CRITICAL OUTPUT RULE\nWrite your full review output as your assistant message content BEFORE calling `submit`. For Approved: write the unchanged plan body. For Rejected: write the `## Findings` markdown with severity tags.",
+        "promptTemplate": "## Round\nround {{ round }} of {{ maxRounds }} — {{ if isLastRound }}**LAST ROUND** — approve unless there is a critical gap.{{ else }}lean toward approval; only reject if there are major gaps.{{ end }}\n\n## PRD (source of truth)\n{{ global.prd }}\n\n## Plan under review\n{{ global.currentPlan }}\n\n{{ if global.rejectionHistory }}## Prior rejection history (do NOT re-raise concerns the architect has addressed)\n{{ global.rejectionHistory }}\n{{ end }}",
+        "maxTokens": 4000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Approved",
+            "description": "Plan passes the quality bar; exits the loop."
+          },
+          {
+            "kind": "Rejected",
+            "description": "Plan needs revision; findings handed back to the architect for the next round."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Approved",
+          "description": "Plan passes the quality bar; exits the loop."
+        },
+        {
+          "kind": "Rejected",
+          "description": "Plan needs revision; findings handed back to the architect for the next round."
+        }
+      ]
+    },
+    {
+      "key": "impl-plan-escalate-form",
+      "version": 1,
+      "kind": "Hitl",
+      "config": {
+        "type": "hitl",
+        "name": "Implementation Plan Escalation",
+        "description": "The architect/reviewer loop hit max rounds without approval. Review the plan and the reviewer's findings, then choose: edit and approve, approve as-is, or accept the rejection (which routes the workflow to post-mortem).",
+        "outputTemplate": "{{ if editedPlan }}{{ editedPlan }}{{ else }}{{ global.currentPlan }}{{ end }}",
+        "outputs": [
+          {
+            "kind": "Approved",
+            "description": "Operator approves the plan (with or without edits). Exits the subflow on the Approved port carrying the (possibly edited) plan."
+          },
+          {
+            "kind": "RejectionAccepted",
+            "description": "Operator accepts the rejection. Exits the subflow on the RejectionAccepted port; parent lifecycle workflows route this directly to post-mortem."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-26T14:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Approved",
+          "description": "Operator approves the plan (with or without edits). Exits the subflow on the Approved port carrying the (possibly edited) plan."
+        },
+        {
+          "kind": "RejectionAccepted",
+          "description": "Operator accepts the rejection. Exits the subflow on the RejectionAccepted port; parent lifecycle workflows route this directly to post-mortem."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    {"agentKey": "impl-plan-init", "roleKeys": []},
+    {"agentKey": "impl-plan-architect", "roleKeys": []},
+    {"agentKey": "impl-plan-reviewer", "roleKeys": []},
+    {"agentKey": "impl-plan-escalate-form", "roleKeys": []}
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}
