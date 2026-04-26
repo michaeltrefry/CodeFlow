@@ -33,6 +33,13 @@ export const authenticatedGuard: CanActivateFn = async (): Promise<boolean> => {
     return true;
   }
 
+  // We have a Keycloak token but the API rejected it. Calling login() again would just re-mint
+  // the same broken token and loop. Let the user through so the AppShell can render the auth
+  // error instead of trapping them in a redirect loop.
+  if (auth.hasToken() && !auth.tokenAcceptedByApi()) {
+    return true;
+  }
+
   auth.login();
   return false;
 };
