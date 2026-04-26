@@ -53,7 +53,7 @@ public sealed class ContextAssembler
 
         var messages = new List<ChatMessage>();
 
-        var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input);
+        var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input, request.Partials);
         var skillsBlock = BuildSkillsBlock(request.Skills, request.Variables, request.Input);
         var outputFormatBlock = BuildOutputFormatBlock(request.DeclaredOutputs);
 
@@ -85,7 +85,7 @@ public sealed class ContextAssembler
 
     private string? BuildUserMessage(ContextAssemblyRequest request)
     {
-        var renderedPrompt = RenderTemplate(request.PromptTemplate, request.Variables, request.Input);
+        var renderedPrompt = RenderTemplate(request.PromptTemplate, request.Variables, request.Input, request.Partials);
         var trimmedInput = string.IsNullOrWhiteSpace(request.Input) ? null : request.Input.Trim();
 
         if (string.IsNullOrWhiteSpace(renderedPrompt))
@@ -104,14 +104,15 @@ public sealed class ContextAssembler
     private string? RenderTemplate(
         string? template,
         IReadOnlyDictionary<string, string?>? variables,
-        string? input)
+        string? input,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         if (string.IsNullOrWhiteSpace(template))
         {
             return null;
         }
 
-        var rendered = ApplyVariables(template, variables, input);
+        var rendered = ApplyVariables(template, variables, input, partials);
         var trimmed = rendered.Trim();
         return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
@@ -119,7 +120,8 @@ public sealed class ContextAssembler
     private string ApplyVariables(
         string template,
         IReadOnlyDictionary<string, string?>? variables,
-        string? input)
+        string? input,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         var flat = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         if (variables is not null)
@@ -158,7 +160,7 @@ public sealed class ContextAssembler
                     : EscapeLegacyLiteral(match.Value);
             });
 
-        return RenderWithScriban(escaped, flat);
+        return RenderWithScriban(escaped, flat, partials);
     }
 
     private static HashSet<string> CollectLocallyBoundNames(string template)
@@ -177,10 +179,13 @@ public sealed class ContextAssembler
         return dot < 0 ? dottedName : dottedName[..dot];
     }
 
-    private string RenderWithScriban(string template, IReadOnlyDictionary<string, string?> flat)
+    private string RenderWithScriban(
+        string template,
+        IReadOnlyDictionary<string, string?> flat,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         var scriptObject = BuildScriptObject(flat);
-        return renderer.Render(template, scriptObject);
+        return renderer.Render(template, scriptObject, partials);
     }
 
     private static string EscapeLegacyLiteral(string literal)

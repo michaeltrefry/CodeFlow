@@ -8,4 +8,5 @@ public sealed record ContextAssemblyRequest(
     IReadOnlyDictionary<string, string?>? Variables = null,
     RetryContext? RetryContext = null,
     IReadOnlyList<ResolvedSkill>? Skills = null,
-    IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null);
+    IReadOnlyList<AgentOutputDeclaration>? DeclaredOutputs = null,
+    IReadOnlyDictionary<string, string>? Partials = null);

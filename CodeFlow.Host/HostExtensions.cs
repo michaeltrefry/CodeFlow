@@ -95,6 +95,7 @@ public static class HostExtensions
         services.AddMemoryCache();
         services.AddSingleton<LogicNodeScriptHost>();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
+        services.AddScoped<IPromptPartialRepository, PromptPartialRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
         services.AddScoped<IMcpServerRepository, McpServerRepository>();
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();

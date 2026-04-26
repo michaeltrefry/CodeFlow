@@ -25,19 +25,22 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private readonly IAgentInvoker agentInvoker;
     private readonly IRoleResolutionService roleResolution;
     private readonly CodeFlowDbContext dbContext;
+    private readonly IPromptPartialRepository promptPartialRepository;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
         IArtifactStore artifactStore,
         IAgentInvoker agentInvoker,
         IRoleResolutionService roleResolution,
-        CodeFlowDbContext dbContext)
+        CodeFlowDbContext dbContext,
+        IPromptPartialRepository promptPartialRepository)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.agentInvoker = agentInvoker ?? throw new ArgumentNullException(nameof(agentInvoker));
         this.roleResolution = roleResolution ?? throw new ArgumentNullException(nameof(roleResolution));
         this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        this.promptPartialRepository = promptPartialRepository ?? throw new ArgumentNullException(nameof(promptPartialRepository));
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -76,6 +79,10 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 return;
             }
 
+            var resolvedPartials = await ResolvePartialsAsync(
+                agentConfig.Configuration.PartialPins,
+                context.CancellationToken);
+
             var invocationConfig = agentConfig.Configuration with
             {
                 Variables = MergeVariables(
@@ -86,7 +93,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     BuildInputTemplateVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
-                    : null
+                    : null,
+                ResolvedPartials = resolvedPartials,
             };
             if (message.RetryContext is { } retryContext)
             {
@@ -264,6 +272,26 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// Resolve the agent's partial pins to concrete bodies via the persistence layer. Returns
+    /// null when the agent declares no pins so the renderer keeps its no-loader fast path. A pin
+    /// pointing at a missing (key, version) silently falls through here — the renderer will surface
+    /// the missing include with the offending name when it reaches the <c>{{ include }}</c> call.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>?> ResolvePartialsAsync(
+        IReadOnlyList<PromptPartialPin>? pins,
+        CancellationToken cancellationToken)
+    {
+        if (pins is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var pinTuples = pins.Select(p => (p.Key, p.Version)).ToArray();
+        var bodies = await promptPartialRepository.ResolveBodiesAsync(pinTuples, cancellationToken);
+        return bodies.Count == 0 ? null : bodies;
     }
 
     private static IReadOnlyDictionary<string, string?>? MergeVariables(

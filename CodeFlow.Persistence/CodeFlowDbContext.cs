@@ -41,6 +41,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<LlmProviderSettingsEntity> LlmProviders => Set<LlmProviderSettingsEntity>();
 
+    public DbSet<PromptPartialEntity> PromptPartials => Set<PromptPartialEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

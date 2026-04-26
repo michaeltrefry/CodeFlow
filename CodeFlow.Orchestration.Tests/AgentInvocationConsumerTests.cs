@@ -56,6 +56,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -146,6 +147,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-retry-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -217,6 +219,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -399,6 +402,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -460,6 +464,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-failure-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -526,6 +531,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-exception-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -615,6 +621,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-http-exception-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -700,6 +707,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -782,6 +790,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-workflow-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -849,6 +858,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-input-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -914,6 +924,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-plain-input-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -979,6 +990,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-review-loop-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -1035,6 +1047,7 @@ public sealed class AgentInvocationConsumerTests
                 Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-hitl-repeat-{Guid.NewGuid():N}"))
             .BuildServiceProvider(true);
@@ -1045,7 +1058,8 @@ public sealed class AgentInvocationConsumerTests
             scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
             scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
             scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
-            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IPromptPartialRepository>());
 
         await InvokeCreateHitlTaskAsync(consumer, new AgentInvokeRequested(
             TraceId: traceId,
@@ -1106,6 +1120,7 @@ public sealed class AgentInvocationConsumerTests
                 Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-hitl-redelivery-{Guid.NewGuid():N}"))
             .BuildServiceProvider(true);
@@ -1116,7 +1131,8 @@ public sealed class AgentInvocationConsumerTests
             scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
             scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
             scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
-            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IPromptPartialRepository>());
         var request = new AgentInvokeRequested(
             TraceId: traceId,
             RoundId: roundId,
