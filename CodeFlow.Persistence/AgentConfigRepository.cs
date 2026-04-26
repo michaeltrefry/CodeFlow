@@ -19,6 +19,13 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         .SetSize(1)
         .SetSlidingExpiration(CacheSlidingExpiration);
 
+    /// <summary>
+    /// Test-only escape hatch: drop every cached <see cref="AgentConfig"/>. Required because the
+    /// cache is process-static and can leak entries between tests that reuse agent keys against
+    /// fresh in-memory databases. Production code never calls this.
+    /// </summary>
+    public static void ClearCacheForTests() => Cache.Clear();
+
     public async Task<AgentConfig> GetAsync(
         string key,
         int version,

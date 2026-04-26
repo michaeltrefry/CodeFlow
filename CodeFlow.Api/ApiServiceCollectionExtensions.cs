@@ -61,6 +61,7 @@ public static class ApiServiceCollectionExtensions
         // the correct DI scope's rule instances.
         services.AddScoped<IWorkflowValidationRule, StartNodeAdvisoryRule>();
         services.AddScoped<IWorkflowValidationRule, PortCouplingRule>();
+        services.AddScoped<IWorkflowValidationRule, RoleAssignmentRule>();
         services.AddScoped<WorkflowValidationPipeline>();
 
         // Authoring telemetry (O1). Singleton sink — stateless logger wrapper with stable event

@@ -226,6 +226,7 @@ public sealed class WorkflowValidationPipelineTests
         var db = new CodeFlowDbContext(options);
         var workflowRepo = new WorkflowRepository(db);
         var agentRepo = new AgentConfigRepository(db);
+        var roleRepo = new AgentRoleRepository(db);
 
         await Task.CompletedTask;
         return new WorkflowValidationContext(
@@ -237,7 +238,8 @@ public sealed class WorkflowValidationPipelineTests
             Inputs: null,
             DbContext: db,
             WorkflowRepository: workflowRepo,
-            AgentRepository: agentRepo);
+            AgentRepository: agentRepo,
+            AgentRoleRepository: roleRepo);
     }
 
     private sealed class RecordingTelemetry : IAuthoringTelemetry

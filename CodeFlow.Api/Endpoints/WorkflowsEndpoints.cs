@@ -283,6 +283,7 @@ public static class WorkflowsEndpoints
         CreateWorkflowRequest request,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
         IAuthoringTelemetry telemetry,
         WorkflowValidationPipeline pipeline,
@@ -321,6 +322,7 @@ public static class WorkflowsEndpoints
             dbContext,
             repository,
             agentRepository,
+            roleRepository,
             pipeline,
             telemetry,
             cancellationToken);
@@ -359,6 +361,7 @@ public static class WorkflowsEndpoints
         UpdateWorkflowRequest request,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
         IAuthoringTelemetry telemetry,
         WorkflowValidationPipeline pipeline,
@@ -395,6 +398,7 @@ public static class WorkflowsEndpoints
             dbContext,
             repository,
             agentRepository,
+            roleRepository,
             pipeline,
             telemetry,
             cancellationToken);
@@ -444,6 +448,7 @@ public static class WorkflowsEndpoints
         CodeFlowDbContext dbContext,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         WorkflowValidationPipeline pipeline,
         IAuthoringTelemetry telemetry,
         CancellationToken cancellationToken)
@@ -457,7 +462,8 @@ public static class WorkflowsEndpoints
             Inputs: inputs,
             DbContext: dbContext,
             WorkflowRepository: repository,
-            AgentRepository: agentRepository);
+            AgentRepository: agentRepository,
+            AgentRoleRepository: roleRepository);
 
         var report = await pipeline.RunAsync(context, cancellationToken);
 
@@ -498,6 +504,7 @@ public static class WorkflowsEndpoints
         WorkflowValidationPipeline pipeline,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
         CancellationToken cancellationToken)
     {
@@ -515,7 +522,8 @@ public static class WorkflowsEndpoints
             Inputs: request.Inputs,
             DbContext: dbContext,
             WorkflowRepository: repository,
-            AgentRepository: agentRepository);
+            AgentRepository: agentRepository,
+            AgentRoleRepository: roleRepository);
 
         var report = await pipeline.RunAsync(context, cancellationToken);
 

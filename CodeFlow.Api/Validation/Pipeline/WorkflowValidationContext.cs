@@ -20,6 +20,9 @@ namespace CodeFlow.Api.Validation.Pipeline;
 /// <param name="DbContext">Read-only access to the persistence layer for cross-entity lookups.</param>
 /// <param name="WorkflowRepository">Resolves subflow / ReviewLoop pinned children.</param>
 /// <param name="AgentRepository">Resolves pinned agent versions referenced by nodes.</param>
+/// <param name="AgentRoleRepository">Resolves role assignments for agents (V5 role-assignment
+/// validation). Roles are per-agent (not per-agent-version), so this lookup is keyed by
+/// agent key alone.</param>
 public sealed record WorkflowValidationContext(
     string Key,
     string? Name,
@@ -29,4 +32,5 @@ public sealed record WorkflowValidationContext(
     IReadOnlyList<WorkflowInputDto>? Inputs,
     CodeFlowDbContext DbContext,
     IWorkflowRepository WorkflowRepository,
-    IAgentConfigRepository AgentRepository);
+    IAgentConfigRepository AgentRepository,
+    IAgentRoleRepository AgentRoleRepository);

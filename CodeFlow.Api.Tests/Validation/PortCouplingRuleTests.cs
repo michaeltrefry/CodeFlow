@@ -237,22 +237,32 @@ public sealed class PortCouplingRuleTests
         private TestFixture(
             CodeFlowDbContext db,
             IWorkflowRepository workflowRepo,
-            IAgentConfigRepository agentRepo)
+            IAgentConfigRepository agentRepo,
+            IAgentRoleRepository roleRepo)
         {
             this.db = db;
             this.workflowRepo = workflowRepo;
             this.agentRepo = agentRepo;
+            this.roleRepo = roleRepo;
             rule = new PortCouplingRule();
         }
 
+        private readonly IAgentRoleRepository roleRepo;
+
         public static Task<TestFixture> CreateAsync()
         {
+            // Static AgentConfig cache leaks between tests that reuse keys; reset before each
+            // fixture so this test's fresh in-memory DB always wins the lookup.
+            AgentConfigRepository.ClearCacheForTests();
             var options = new DbContextOptionsBuilder<CodeFlowDbContext>()
                 .UseInMemoryDatabase($"port-coupling-tests-{Guid.NewGuid():N}")
                 .Options;
             var ctx = new CodeFlowDbContext(options);
             return Task.FromResult(new TestFixture(
-                ctx, new WorkflowRepository(ctx), new AgentConfigRepository(ctx)));
+                ctx,
+                new WorkflowRepository(ctx),
+                new AgentConfigRepository(ctx),
+                new AgentRoleRepository(ctx)));
         }
 
         public async Task SeedAgentAsync(string key, IReadOnlyList<string> declaredOutputs, int version = 1)
@@ -290,7 +300,8 @@ public sealed class PortCouplingRuleTests
                 Inputs: null,
                 DbContext: db,
                 WorkflowRepository: workflowRepo,
-                AgentRepository: agentRepo);
+                AgentRepository: agentRepo,
+                AgentRoleRepository: roleRepo);
             return await rule.RunAsync(context, CancellationToken.None);
         }
 
