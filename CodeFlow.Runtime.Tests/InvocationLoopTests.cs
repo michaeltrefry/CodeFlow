@@ -917,6 +917,101 @@ public sealed class InvocationLoopTests
         result.ToolCallsExecuted.Should().Be(2);
     }
 
+    [Fact]
+    public void EnsureToolCallPairing_PassesOnEmptyTranscript()
+    {
+        // Defensive smoke check — the precondition is invoked before the very first model call,
+        // when the transcript may be just a single User message.
+        var transcript = new[] { new ChatMessage(ChatMessageRole.User, "Hi.") };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EnsureToolCallPairing_PassesWhenEveryFunctionCallHasMatchingOutput()
+    {
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Use a tool."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling tool.",
+                ToolCalls: [new ToolCall("call_a", "echo", new JsonObject())]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_a"),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling another.",
+                ToolCalls: [new ToolCall("call_b", "echo", new JsonObject())]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_b")
+        };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EnsureToolCallPairing_ThrowsWithOffendingIdsWhenAFunctionCallHasNoOutput()
+    {
+        // Synthetic regression target for V3: a future loop bug that pushes a User reminder
+        // back into the transcript without first writing a Tool message for the prior assistant
+        // tool call. Without this guard the next model call would surface the provider's
+        // "No tool output found for function call <id>" — opaque and two layers from the bug.
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Use a tool."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling tool.",
+                ToolCalls:
+                [
+                    new ToolCall("call_paired", "echo", new JsonObject()),
+                    new ToolCall("call_orphan", "echo", new JsonObject())
+                ]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_paired"),
+            new ChatMessage(ChatMessageRole.User, "Why didn't you finish?")
+        };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        var thrown = act.Should().Throw<OrphanFunctionCallException>().Which;
+        thrown.OrphanedCallIds.Should().ContainSingle().Which.Should().Be("call_orphan");
+        thrown.Message.Should().Contain("call_orphan");
+    }
+
+    [Fact]
+    public async Task RunAsync_ThrowsOrphanFunctionCallException_WhenTranscriptStartsWithUnpairedAssistantToolCall()
+    {
+        // End-to-end shape: an attacker / buggy caller hands the loop an initial transcript
+        // that already has an orphaned assistant function_call. The loop must throw before
+        // the first HTTP call so the caller's stack frame is in the trace.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => throw new InvalidOperationException(
+                "model client must not be invoked when the transcript is invalid")
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Begin."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Half-done.",
+                ToolCalls: [new ToolCall("call_lost", "echo", new JsonObject())])
+        };
+
+        var act = async () => await loop.RunAsync(new InvocationLoopRequest(
+            transcript,
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        await act.Should().ThrowAsync<OrphanFunctionCallException>();
+        modelClient.InvocationCount.Should().Be(0);
+    }
+
     private sealed class ScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient
     {
         private int nextStepIndex;

@@ -220,6 +220,13 @@ public sealed class InvocationLoop
                 await observer.OnModelCallStartedAsync(roundNumber, cancellationToken);
             }
 
+            // Hard precondition: every prior assistant `function_call` in the transcript must
+            // have a matching Tool-role `function_call_output`. Both OpenAI Responses and
+            // Anthropic enforce this; sending an orphaned call produces opaque provider errors
+            // ("No tool output found for function call <id>"). Catch it client-side so the
+            // stack trace points at the offending retry path rather than the HTTP layer.
+            EnsureToolCallPairing(transcript);
+
             var response = await modelClient.InvokeAsync(
                 new InvocationRequest(
                     transcript,
@@ -773,6 +780,49 @@ public sealed class InvocationLoop
         {
             toolResult = new ToolResult(toolCall.Id, exception.Message, IsError: true);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Walks <paramref name="transcript"/> and verifies every <c>function_call</c> emitted by an
+    /// assistant message has a matching <c>function_call_output</c> Tool message later in the
+    /// transcript. Throws <see cref="OrphanFunctionCallException"/> on the first violation.
+    /// </summary>
+    /// <remarks>
+    /// Defensive: the loop's own retry paths already maintain pairing. This guard turns any
+    /// future regression into a stack trace pointing at the offending append, instead of an
+    /// opaque provider HTTP error.
+    /// </remarks>
+    public static void EnsureToolCallPairing(IReadOnlyList<ChatMessage> transcript)
+    {
+        ArgumentNullException.ThrowIfNull(transcript);
+
+        // Single forward pass: track outstanding tool-call IDs and tick them off when the
+        // matching Tool message appears. Any IDs still outstanding at the end are orphans.
+        // O(n) in transcript length; constant memory in unique-ID count.
+        var outstanding = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var message in transcript)
+        {
+            if (message.Role == ChatMessageRole.Assistant && message.ToolCalls is { Count: > 0 } calls)
+            {
+                foreach (var call in calls)
+                {
+                    if (!string.IsNullOrEmpty(call.Id))
+                    {
+                        outstanding.Add(call.Id);
+                    }
+                }
+            }
+            else if (message.Role == ChatMessageRole.Tool && !string.IsNullOrEmpty(message.ToolCallId))
+            {
+                outstanding.Remove(message.ToolCallId);
+            }
+        }
+
+        if (outstanding.Count > 0)
+        {
+            throw new OrphanFunctionCallException(outstanding.OrderBy(static id => id, StringComparer.Ordinal).ToList());
         }
     }
 
