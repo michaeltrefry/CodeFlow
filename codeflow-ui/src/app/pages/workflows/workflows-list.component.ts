@@ -2,7 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
-import { WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowsApi } from '../../core/workflows.api';
+import { WorkflowPackageDocument, WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowPackageReference, WorkflowsApi } from '../../core/workflows.api';
 import { WORKFLOW_CATEGORIES, WorkflowCategory, WorkflowSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
@@ -24,6 +24,38 @@ const CATEGORY_ORDER: Record<WorkflowCategory, number> = {
 
 const CATEGORY_FILTER_ALL = 'All' as const;
 type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
+
+interface ExportPreviewWorkflow { key: string; version: number; name: string; bytes: number; }
+interface ExportPreviewAgent { key: string; version: number; kind: string | null; bytes: number; }
+interface ExportPreviewRole { key: string; displayName: string; bytes: number; }
+interface ExportPreviewSkill { name: string; bytes: number; }
+interface ExportPreviewMcpServer { key: string; displayName: string; bytes: number; }
+
+interface ExportPreview {
+  package: WorkflowPackageDocument;
+  manifest: WorkflowPackageDocument['manifest'] | null;
+  summary: WorkflowSummary;
+  fileName: string;
+  totalBytes: number;
+  workflows: ExportPreviewWorkflow[];
+  agents: ExportPreviewAgent[];
+  roles: ExportPreviewRole[];
+  skills: ExportPreviewSkill[];
+  mcpServers: ExportPreviewMcpServer[];
+  assignmentCount: number;
+}
+
+interface MissingExportReference {
+  kind: string;
+  key: string;
+  version: number | null;
+  referencedBy: string | null;
+}
+
+function byteLengthOfJson(value: unknown): number {
+  // TextEncoder gives accurate byte length (multi-byte chars handled correctly).
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
 
 @Component({
   selector: 'cf-workflows-list',
@@ -57,6 +89,171 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
 
       @if (importError()) {
         <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ importError() }}</cf-chip></div></div>
+      }
+
+      @if (exportLoading()) {
+        <div class="card"><div class="card-body muted">Loading export preview…</div></div>
+      }
+
+      @if (exportMissingRefs(); as missing) {
+        <div class="card export-preview-card">
+          <div class="card-body">
+            <div class="export-preview-head">
+              <div>
+                <h2>Export blocked</h2>
+                <div class="muted small">Package is not self-contained.</div>
+              </div>
+              <button type="button" cf-button size="sm" variant="ghost" (click)="cancelExportPreview()">Close</button>
+            </div>
+            <p class="muted small">
+              The dependency tree references entities not resolvable in the current database. Resolve every
+              missing reference below before re-exporting. Bumping the affected agents/subflows usually fixes this.
+            </p>
+            <table class="table">
+              <thead>
+                <tr><th>Kind</th><th>Key</th><th>Version</th><th>Referenced by</th></tr>
+              </thead>
+              <tbody>
+                @for (ref of missing; track ref.kind + ':' + ref.key + ':' + (ref.version ?? '')) {
+                  <tr>
+                    <td><cf-chip variant="err">{{ ref.kind }}</cf-chip></td>
+                    <td class="mono">{{ ref.key }}</td>
+                    <td class="mono muted">{{ ref.version ?? '—' }}</td>
+                    <td class="muted small">{{ ref.referencedBy ?? '—' }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      } @else if (exportPreview(); as preview) {
+        <div class="card export-preview-card">
+          <div class="card-body">
+            <div class="export-preview-head">
+              <div>
+                <h2>Export preview</h2>
+                <div class="muted small">
+                  {{ preview.summary.name }} —
+                  <code class="mono">{{ preview.summary.key }}</code> v{{ preview.summary.latestVersion }}
+                </div>
+              </div>
+              <div class="preview-actions">
+                <div class="preview-counts">
+                  <cf-chip variant="ok">Self-contained</cf-chip>
+                  <cf-chip>{{ formatBytes(preview.totalBytes) }} total</cf-chip>
+                  <cf-chip>{{ preview.workflows.length }} workflows</cf-chip>
+                  <cf-chip>{{ preview.agents.length }} agents</cf-chip>
+                  <cf-chip>{{ preview.roles.length }} roles</cf-chip>
+                </div>
+                <button type="button" cf-button size="sm" variant="ghost" (click)="cancelExportPreview()">Cancel</button>
+                <button type="button" cf-button variant="primary" size="sm" (click)="saveExportPackage()">Download package</button>
+              </div>
+            </div>
+
+            <p class="muted xsmall export-preview-help">
+              Sizes are estimated from the JSON encoding of each entity (UTF-8 byte length); the package on disk is the same JSON
+              with whitespace per server defaults. The V8 self-containment check passed — every transitive reference is included
+              at the version pinned in the entry point.
+            </p>
+
+            <details class="export-section" open>
+              <summary>Workflows ({{ preview.workflows.length }})</summary>
+              <table class="table export-table">
+                <thead>
+                  <tr><th>Key</th><th>Version</th><th>Name</th><th class="num">Size</th></tr>
+                </thead>
+                <tbody>
+                  @for (w of preview.workflows; track w.key + ':' + w.version) {
+                    <tr>
+                      <td class="mono">{{ w.key }}</td>
+                      <td class="mono muted">v{{ w.version }}</td>
+                      <td>{{ w.name }}</td>
+                      <td class="mono muted num">{{ formatBytes(w.bytes) }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </details>
+
+            <details class="export-section">
+              <summary>Agents ({{ preview.agents.length }})</summary>
+              <table class="table export-table">
+                <thead>
+                  <tr><th>Key</th><th>Version</th><th>Kind</th><th class="num">Size</th></tr>
+                </thead>
+                <tbody>
+                  @for (a of preview.agents; track a.key + ':' + a.version) {
+                    <tr>
+                      <td class="mono">{{ a.key }}</td>
+                      <td class="mono muted">v{{ a.version }}</td>
+                      <td>{{ a.kind ?? '—' }}</td>
+                      <td class="mono muted num">{{ formatBytes(a.bytes) }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </details>
+
+            @if (preview.roles.length > 0) {
+              <details class="export-section">
+                <summary>Roles ({{ preview.roles.length }}) <span class="muted xsmall">— {{ preview.assignmentCount }} agent assignments</span></summary>
+                <table class="table export-table">
+                  <thead>
+                    <tr><th>Key</th><th>Display name</th><th class="num">Size</th></tr>
+                  </thead>
+                  <tbody>
+                    @for (r of preview.roles; track r.key) {
+                      <tr>
+                        <td class="mono">{{ r.key }}</td>
+                        <td>{{ r.displayName }}</td>
+                        <td class="mono muted num">{{ formatBytes(r.bytes) }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </details>
+            }
+
+            @if (preview.skills.length > 0) {
+              <details class="export-section">
+                <summary>Skills ({{ preview.skills.length }})</summary>
+                <table class="table export-table">
+                  <thead>
+                    <tr><th>Name</th><th class="num">Size</th></tr>
+                  </thead>
+                  <tbody>
+                    @for (s of preview.skills; track s.name) {
+                      <tr>
+                        <td class="mono">{{ s.name }}</td>
+                        <td class="mono muted num">{{ formatBytes(s.bytes) }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </details>
+            }
+
+            @if (preview.mcpServers.length > 0) {
+              <details class="export-section">
+                <summary>MCP servers ({{ preview.mcpServers.length }})</summary>
+                <table class="table export-table">
+                  <thead>
+                    <tr><th>Key</th><th>Display name</th><th class="num">Size</th></tr>
+                  </thead>
+                  <tbody>
+                    @for (m of preview.mcpServers; track m.key) {
+                      <tr>
+                        <td class="mono">{{ m.key }}</td>
+                        <td>{{ m.displayName }}</td>
+                        <td class="mono muted num">{{ formatBytes(m.bytes) }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </details>
+            }
+          </div>
+        </div>
       }
 
       @if (importPreview(); as preview) {
@@ -331,6 +528,36 @@ type CategoryFilter = WorkflowCategory | typeof CATEGORY_FILTER_ALL;
       font-size: 0.8rem;
     }
     .import-table { margin-top: 0.25rem; }
+    .export-preview-card { margin-bottom: 1rem; }
+    .export-preview-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+    }
+    .export-preview-card h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+    .export-preview-help { margin: 0 0 0.5rem 0; }
+    .export-section {
+      margin-top: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.5rem;
+      background: color-mix(in oklab, var(--surface) 95%, transparent);
+    }
+    .export-section > summary {
+      cursor: pointer;
+      user-select: none;
+      font-size: 0.85rem;
+      padding: 0.15rem 0.1rem;
+    }
+    .export-section[open] > summary { margin-bottom: 0.25rem; }
+    .export-table { margin-top: 0.25rem; }
+    .export-table .num { text-align: right; }
     th.sortable { cursor: pointer; user-select: none; }
     th.sortable:hover { color: var(--accent); }
     .tag-chip-row { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -364,6 +591,13 @@ export class WorkflowsListComponent {
   readonly importSuccess = signal<string | null>(null);
   readonly importPreview = signal<WorkflowPackageImportPreview | null>(null);
   private pendingImportPackage: unknown = null;
+
+  /** E5 / R5.5: parsed package + size estimates for the export-preview card.
+   *  Computed once when the author hits Export; the cached package + bytes feed both
+   *  the dependency-tree view and the eventual Download click (no second network call). */
+  readonly exportPreview = signal<ExportPreview | null>(null);
+  readonly exportLoading = signal(false);
+  readonly exportMissingRefs = signal<MissingExportReference[] | null>(null);
 
   readonly categoryOptions = WORKFLOW_CATEGORIES;
   readonly categoryFilter = signal<CategoryFilter>('All');
@@ -423,17 +657,107 @@ export class WorkflowsListComponent {
     this.router.navigate(['/workflows', key]);
   }
 
+  /** E5: open the export-preview dialog. The dependency tree is pulled from the V8 manifest
+   *  on the package; total + per-entity sizes are computed locally from the JSON. */
   downloadPackage(event: Event, workflow: WorkflowSummary): void {
     event.stopPropagation();
     this.exportError.set(null);
+    this.exportMissingRefs.set(null);
+    this.exportPreview.set(null);
+    this.exportLoading.set(true);
 
-    this.api.downloadPackage(workflow.key, workflow.latestVersion).subscribe({
-      next: response => this.saveBlob(
-        response.body,
-        this.fileNameFromResponse(response.headers.get('content-disposition'))
-          ?? `${workflow.key}-v${workflow.latestVersion}-package.json`),
-      error: err => this.exportError.set(err?.message ?? 'Failed to export workflow package.')
+    this.api.getPackage(workflow.key, workflow.latestVersion).subscribe({
+      next: response => {
+        const pkg = response.body!;
+        this.exportLoading.set(false);
+        this.exportPreview.set(this.buildExportPreview(workflow, pkg, response.headers.get('content-disposition')));
+      },
+      error: err => {
+        this.exportLoading.set(false);
+        const missing = this.extractMissingRefs(err);
+        if (missing) {
+          this.exportMissingRefs.set(missing);
+        }
+        this.exportError.set(this.errorMessage(err, 'Failed to export workflow package.'));
+      }
     });
+  }
+
+  /** E5: download the package the author already previewed. We re-stringify the parsed
+   *  JSON rather than re-fetching — bytes are already in memory and match what was shown. */
+  saveExportPackage(): void {
+    const preview = this.exportPreview();
+    if (!preview) return;
+    const blob = new Blob([JSON.stringify(preview.package)], { type: 'application/json' });
+    this.saveBlob(blob, preview.fileName);
+  }
+
+  cancelExportPreview(): void {
+    this.exportPreview.set(null);
+    this.exportMissingRefs.set(null);
+    this.exportError.set(null);
+  }
+
+  private buildExportPreview(
+    summary: WorkflowSummary,
+    pkg: WorkflowPackageDocument,
+    contentDisposition: string | null
+  ): ExportPreview {
+    const totalBytes = byteLengthOfJson(pkg);
+    // Per-entity byte estimates by stringifying the typed collection elements. Cheap on
+    // typical packages (tens of entities); recompute happens once per Export click.
+    const workflowBytes = (pkg.workflows ?? []).map(w => byteLengthOfJson(w));
+    const agentBytes = (pkg.agents ?? []).map(a => byteLengthOfJson(a));
+    const roleBytes = (pkg.roles ?? []).map(r => byteLengthOfJson(r));
+    const skillBytes = (pkg.skills ?? []).map(s => byteLengthOfJson(s));
+    const mcpBytes = (pkg.mcpServers ?? []).map(m => byteLengthOfJson(m));
+
+    const manifest = pkg.manifest ?? null;
+    return {
+      package: pkg,
+      manifest,
+      summary,
+      fileName: this.fileNameFromResponse(contentDisposition)
+        ?? `${summary.key}-v${summary.latestVersion}-package.json`,
+      totalBytes,
+      workflows: (pkg.workflows ?? []).map((w, i) => ({
+        key: w.key, version: w.version, name: w.name, bytes: workflowBytes[i] ?? 0
+      })),
+      agents: (pkg.agents ?? []).map((a, i) => ({
+        key: a.key, version: a.version, kind: a.kind ?? null, bytes: agentBytes[i] ?? 0
+      })),
+      roles: (pkg.roles ?? []).map((r, i) => ({
+        key: r.key, displayName: r.displayName, bytes: roleBytes[i] ?? 0
+      })),
+      skills: (pkg.skills ?? []).map((s, i) => ({
+        name: s.name, bytes: skillBytes[i] ?? 0
+      })),
+      mcpServers: (pkg.mcpServers ?? []).map((m, i) => ({
+        key: m.key, displayName: m.displayName, bytes: mcpBytes[i] ?? 0
+      })),
+      assignmentCount: (pkg.agentRoleAssignments ?? []).length
+    };
+  }
+
+  /** Pull V8's missing-refs payload out of a 422 ProblemDetails response (extensions). */
+  private extractMissingRefs(err: unknown): MissingExportReference[] | null {
+    const body = (err as { error?: unknown })?.error;
+    if (!body || typeof body !== 'object') return null;
+    const extensions = (body as { extensions?: { missingReferences?: unknown } }).extensions;
+    const refs = extensions?.missingReferences;
+    if (!Array.isArray(refs) || refs.length === 0) return null;
+    return refs.map(r => ({
+      kind: typeof r?.kind === 'string' ? r.kind : 'Unknown',
+      key: typeof r?.key === 'string' ? r.key : '(unknown)',
+      version: typeof r?.version === 'number' ? r.version : null,
+      referencedBy: typeof r?.referencedBy === 'string' ? r.referencedBy : null
+    }));
+  }
+
+  formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
   }
 
   previewPackageImport(event: Event): void {

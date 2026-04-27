@@ -65,6 +65,34 @@ export interface WorkflowPackageImportPreview {
   canApply: boolean;
 }
 
+/** V8 manifest — flat enumeration of every (key, version) the package includes.
+ *  E5 surfaces this in the export-preview dialog before the author downloads. */
+export interface WorkflowPackageManifest {
+  workflows: WorkflowPackageReference[];
+  agents: WorkflowPackageReference[];
+  roles: string[];
+  skills: string[];
+  mcpServers: string[];
+}
+
+export interface WorkflowPackageMetadata {
+  exportedFrom: string;
+  exportedAtUtc: string;
+}
+
+export interface WorkflowPackageDocument {
+  schemaVersion: string;
+  metadata: WorkflowPackageMetadata;
+  entryPoint: WorkflowPackageReference;
+  workflows: { key: string; version: number; name: string }[];
+  agents: { key: string; version: number; kind?: string }[];
+  agentRoleAssignments: { agentKey: string; roleKeys: string[] }[];
+  roles: { key: string; displayName: string }[];
+  skills: { name: string }[];
+  mcpServers: { key: string; displayName: string }[];
+  manifest?: WorkflowPackageManifest;
+}
+
 export interface WorkflowPackageImportApplyResult {
   entryPoint: WorkflowPackageReference;
   items: WorkflowPackageImportItem[];
@@ -73,6 +101,54 @@ export interface WorkflowPackageImportApplyResult {
   reuseCount: number;
   conflictCount: number;
   warningCount: number;
+}
+
+/** F2 dataflow snapshot — per-node static-analysis describing what's in scope when each node
+ *  runs. Drives VZ1 (data-flow inspector), VZ2 (workflow-vars declaration), and E1 (script
+ *  IntelliSense narrowing). Snapshot is computed from the SAVED workflow version, so reflects
+ *  on-disk state, not the live editor draft. */
+export type DataflowConfidence = 'Definite' | 'Conditional';
+
+export interface DataflowVariableSource {
+  nodeId: string;
+  scriptKind: string;
+}
+
+export interface DataflowVariable {
+  key: string;
+  confidence: DataflowConfidence;
+  sources: DataflowVariableSource[];
+}
+
+export interface DataflowInputSource {
+  nodeId: string;
+  port: string;
+}
+
+export interface DataflowLoopBindings {
+  staticRound: number | null;
+  maxRounds: number;
+}
+
+export interface NodeDataflowScope {
+  nodeId: string;
+  workflowVariables: DataflowVariable[];
+  contextKeys: DataflowVariable[];
+  inputSource: DataflowInputSource | null;
+  loopBindings: DataflowLoopBindings | null;
+}
+
+export interface WorkflowDataflowDiagnostic {
+  nodeId: string;
+  scriptKind: string;
+  message: string;
+}
+
+export interface WorkflowDataflowSnapshot {
+  workflowKey: string;
+  workflowVersion: number;
+  scopesByNode: Record<string, NodeDataflowScope>;
+  diagnostics: WorkflowDataflowDiagnostic[];
 }
 
 @Injectable({ providedIn: 'root' })
@@ -111,6 +187,16 @@ export class WorkflowsApi {
     });
   }
 
+  /** E5 / R5.5: fetch the parsed package JSON for the export-preview dialog. Same endpoint
+   *  as downloadPackage; the response body is the entire serialized package including the
+   *  V8 manifest. We surface counts and the manifest tree before letting the author save. */
+  getPackage(key: string, version: number): Observable<HttpResponse<WorkflowPackageDocument>> {
+    return this.http.get<WorkflowPackageDocument>(
+      `/api/workflows/${encodeURIComponent(key)}/${version}/package`,
+      { observe: 'response' }
+    );
+  }
+
   previewPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportPreview> {
     return this.http.post<WorkflowPackageImportPreview>('/api/workflows/package/preview', workflowPackage);
   }
@@ -133,4 +219,141 @@ export class WorkflowsApi {
   validateScript(request: ValidateScriptRequest): Observable<ValidateScriptResponse> {
     return this.http.post<ValidateScriptResponse>('/api/workflows/validate-script', request);
   }
+
+  /** F2: per-node dataflow snapshot for the saved workflow at this version. */
+  getDataflow(key: string, version: number): Observable<WorkflowDataflowSnapshot> {
+    return this.http.get<WorkflowDataflowSnapshot>(
+      `/api/workflows/${encodeURIComponent(key)}/${version}/dataflow`
+    );
+  }
+
+  // ---------- T1: workflow fixtures + dry-run ----------
+
+  listFixtures(workflowKey: string): Observable<WorkflowFixtureSummary[]> {
+    return this.http.get<WorkflowFixtureSummary[]>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures`
+    );
+  }
+
+  getFixture(workflowKey: string, id: number): Observable<WorkflowFixtureDetail> {
+    return this.http.get<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`
+    );
+  }
+
+  createFixture(workflowKey: string, payload: WorkflowFixtureCreate): Observable<WorkflowFixtureDetail> {
+    return this.http.post<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures`,
+      payload
+    );
+  }
+
+  updateFixture(workflowKey: string, id: number, payload: WorkflowFixtureUpdate): Observable<WorkflowFixtureDetail> {
+    return this.http.put<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`,
+      payload
+    );
+  }
+
+  deleteFixture(workflowKey: string, id: number): Observable<void> {
+    return this.http.delete<void>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`
+    );
+  }
+
+  dryRun(workflowKey: string, payload: DryRunRequestBody): Observable<DryRunResponse> {
+    return this.http.post<DryRunResponse>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/dry-run`,
+      payload
+    );
+  }
+}
+
+// ---------- T1 types ----------
+
+export interface WorkflowFixtureSummary {
+  id: number;
+  workflowKey: string;
+  fixtureKey: string;
+  displayName: string;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+export interface WorkflowFixtureDetail extends WorkflowFixtureSummary {
+  startingInput: string | null;
+  /** Map of agentKey → ordered array of mock responses. */
+  mockResponses: Record<string, DryRunMockResponse[]>;
+}
+
+export interface DryRunMockResponse {
+  decision: string;
+  output?: string | null;
+  payload?: unknown;
+}
+
+export interface WorkflowFixtureCreate {
+  workflowKey: string;
+  fixtureKey: string;
+  displayName: string;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]>;
+}
+
+export interface WorkflowFixtureUpdate {
+  fixtureKey: string;
+  displayName: string;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]>;
+}
+
+export interface DryRunRequestBody {
+  fixtureId?: number | null;
+  workflowVersion?: number | null;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]> | null;
+}
+
+export type DryRunState = 'Completed' | 'HitlReached' | 'Failed' | 'StepLimitExceeded';
+
+export interface DryRunResponse {
+  state: DryRunState;
+  terminalPort: string | null;
+  failureReason: string | null;
+  finalArtifact: string | null;
+  hitlPayload: {
+    nodeId: string;
+    agentKey: string;
+    input: string | null;
+    /** Legacy `outputTemplate` (singular) on the HITL agent — what the form preview renders. */
+    outputTemplate?: string | null;
+    /** Per-port templates the saga renders server-side at submit time. */
+    decisionOutputTemplates?: Record<string, string> | null;
+    /** Best-effort server render of the form preview at suspension; null when no template found. */
+    renderedFormPreview?: string | null;
+    /** Set when the form-template render failed; the dry-run still succeeds. */
+    renderError?: string | null;
+  } | null;
+  workflowVariables: Record<string, unknown>;
+  contextVariables: Record<string, unknown>;
+  events: DryRunEvent[];
+}
+
+export interface DryRunEvent {
+  ordinal: number;
+  kind: string;
+  nodeId: string;
+  nodeKind: string;
+  agentKey: string | null;
+  portName: string | null;
+  message: string | null;
+  inputPreview: string | null;
+  outputPreview: string | null;
+  reviewRound: number | null;
+  maxRounds: number | null;
+  subflowDepth: number | null;
+  subflowKey: string | null;
+  subflowVersion: number | null;
+  logs: string[] | null;
+  decisionPayload: unknown;
 }

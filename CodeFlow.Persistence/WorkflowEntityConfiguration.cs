@@ -49,6 +49,14 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
             .HasColumnType("datetime(6)")
             .IsRequired();
 
+        builder.Property(workflow => workflow.WorkflowVarsReadsJson)
+            .HasColumnName("workflow_vars_reads_json")
+            .HasColumnType("longtext");
+
+        builder.Property(workflow => workflow.WorkflowVarsWritesJson)
+            .HasColumnName("workflow_vars_writes_json")
+            .HasColumnType("longtext");
+
         builder.HasIndex(workflow => new { workflow.Key, workflow.Version })
             .IsUnique();
     }

@@ -834,13 +834,13 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task CreateTrace_ShouldSeedGlobalTraceId_AndExposeItToStartNodeScripts()
+    public async Task CreateTrace_ShouldSeedWorkflowTraceId_AndExposeItToStartNodeScripts()
     {
-        // Top-level Start nodes must see `global.traceId` (the N-format hex) so any code-aware
+        // Top-level Start nodes must see `workflow.traceId` (the N-format hex) so any code-aware
         // workflow can call the `branch_name(prd_title, trace_id)` Scriban filter or read the id
-        // from a Logic-node script. We exercise the wiring by writing global.traceId straight into
-        // the dispatched input artifact via setInput(); the artifact content is the easiest piece
-        // to read back through the existing artifact store.
+        // from a Logic-node script. We exercise the wiring by writing workflow.traceId straight
+        // into the dispatched input artifact via setInput(); the artifact content is the easiest
+        // piece to read back through the existing artifact store.
         var agentKey = $"traceid-script-writer-{Guid.NewGuid():N}";
         var workflowKey = $"traceid-script-flow-{Guid.NewGuid():N}";
 
@@ -862,7 +862,7 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     agentKey,
                     agentVersion = (int?)null,
                     outputScript = (string?)null,
-                    inputScript = "setInput(global.traceId);",
+                    inputScript = "setInput(workflow.traceId);",
                     outputPorts = new[] { "Completed" },
                     layoutX = 0,
                     layoutY = 0
@@ -884,10 +884,10 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var artifacts = await ReadTraceArtifactsAsync(tracePayload!.TraceId);
         var override_ = artifacts.SingleOrDefault(a =>
             a.FileName.EndsWith("scripted-input.txt", StringComparison.Ordinal));
-        override_.Should().NotBeNull("setInput(global.traceId) must produce a scripted-input artifact");
+        override_.Should().NotBeNull("setInput(workflow.traceId) must produce a scripted-input artifact");
         override_!.Content.Should().Be(
             tracePayload.TraceId.ToString("N"),
-            "global.traceId must be the trace's id in N (hex, no hyphens) format");
+            "workflow.traceId must be the trace's id in N (hex, no hyphens) format");
     }
 
     [Fact]

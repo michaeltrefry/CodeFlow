@@ -14,4 +14,4 @@ public sealed record AgentInvocationCompleted(
     TimeSpan Duration,
     TokenUsage TokenUsage,
     IReadOnlyDictionary<string, JsonElement>? ContextUpdates = null,
-    IReadOnlyDictionary<string, JsonElement>? GlobalUpdates = null);
+    IReadOnlyDictionary<string, JsonElement>? WorkflowUpdates = null);

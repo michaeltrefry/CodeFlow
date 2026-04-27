@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using ContractsToolExecutionContext = CodeFlow.Contracts.ToolExecutionContext;
 using ContractsToolWorkspaceContext = CodeFlow.Contracts.ToolWorkspaceContext;
 using RuntimeToolExecutionContext = CodeFlow.Runtime.ToolExecutionContext;
@@ -20,24 +21,41 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private const int HitlInputPreviewLength = 2048;
     private const string AgentInvocationFailedReason = "AgentInvocationFailed";
 
+    // P2: a Scriban comment block carrying the auto-inject annotation. Comments do not render at
+    // model time but stay visible in the templated source so the live prompt preview (VZ3) can
+    // surface the `[auto-injected]` marker by scanning for this delimiter.
+    public const string AutoInjectedLastRoundReminderTemplate =
+        "{{# [auto-injected] @codeflow/last-round-reminder #}}\n{{ include \"@codeflow/last-round-reminder\" }}";
+
+    // Matches `{{ include "@codeflow/last-round-reminder" }}` (single or double quotes, any
+    // surrounding whitespace) in a system prompt or user template, so we can de-dup an explicit
+    // include and skip auto-injection.
+    private static readonly Regex ExplicitLastRoundReminderInclude = new(
+        @"{{\s*include\s+[""']@codeflow/last-round-reminder[""']\s*}}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
+
     private readonly IAgentConfigRepository agentConfigRepository;
     private readonly IArtifactStore artifactStore;
     private readonly IAgentInvoker agentInvoker;
     private readonly IRoleResolutionService roleResolution;
     private readonly CodeFlowDbContext dbContext;
+    private readonly IPromptPartialRepository promptPartialRepository;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
         IArtifactStore artifactStore,
         IAgentInvoker agentInvoker,
         IRoleResolutionService roleResolution,
-        CodeFlowDbContext dbContext)
+        CodeFlowDbContext dbContext,
+        IPromptPartialRepository promptPartialRepository)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.agentInvoker = agentInvoker ?? throw new ArgumentNullException(nameof(agentInvoker));
         this.roleResolution = roleResolution ?? throw new ArgumentNullException(nameof(roleResolution));
         this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        this.promptPartialRepository = promptPartialRepository ?? throw new ArgumentNullException(nameof(promptPartialRepository));
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -76,18 +94,40 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 return;
             }
 
+            var resolvedPartials = await ResolvePartialsAsync(
+                agentConfig.Configuration.PartialPins,
+                context.CancellationToken);
+
+            var (effectivePromptTemplate, partialsForInvocation, lastRoundReminderInjected) =
+                InjectLastRoundReminderIfApplicable(
+                    agentConfig.Configuration.SystemPrompt,
+                    agentConfig.Configuration.PromptTemplate,
+                    resolvedPartials,
+                    message.ReviewRound,
+                    message.OptOutLastRoundReminder);
+
             var invocationConfig = agentConfig.Configuration with
             {
-                Variables = MergeVariables(
+                PromptTemplate = effectivePromptTemplate,
+                Variables = AgentPromptScopeBuilder.Merge(
                     agentConfig.Configuration.Variables,
-                    BuildContextTemplateVariables(message.ContextInputs),
-                    BuildGlobalTemplateVariables(message.GlobalContext),
-                    BuildReviewLoopTemplateVariables(message.ReviewRound, message.ReviewMaxRounds),
-                    BuildInputTemplateVariables(input)),
+                    AgentPromptScopeBuilder.BuildContextVariables(message.ContextInputs),
+                    AgentPromptScopeBuilder.BuildWorkflowVariables(message.WorkflowContext),
+                    AgentPromptScopeBuilder.BuildReviewLoopVariables(
+                        message.ReviewRound,
+                        message.ReviewMaxRounds,
+                        message.WorkflowContext),
+                    AgentPromptScopeBuilder.BuildInputVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
-                    : null
+                    : null,
+                ResolvedPartials = partialsForInvocation,
             };
+
+            if (lastRoundReminderInjected)
+            {
+                activity?.SetTag(CodeFlowActivity.TagNames.LastRoundReminderAutoInjected, true);
+            }
             if (message.RetryContext is { } retryContext)
             {
                 invocationConfig = invocationConfig with
@@ -204,7 +244,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 Duration: duration,
                 TokenUsage: MapTokenUsage(invocationResult.TokenUsage),
                 ContextUpdates: invocationResult.ContextUpdates,
-                GlobalUpdates: invocationResult.GlobalUpdates),
+                WorkflowUpdates: invocationResult.WorkflowUpdates),
             context.CancellationToken);
     }
 
@@ -266,190 +306,109 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return payload;
     }
 
-    private static IReadOnlyDictionary<string, string?>? MergeVariables(
-        IReadOnlyDictionary<string, string?>? configured,
-        IReadOnlyDictionary<string, string?> contextVariables,
-        IReadOnlyDictionary<string, string?> globalVariables,
-        IReadOnlyDictionary<string, string?> reviewLoopVariables,
-        IReadOnlyDictionary<string, string?> inputVariables)
+    /// <summary>
+    /// Resolve the agent's partial pins to concrete bodies via the persistence layer. Returns
+    /// null when the agent declares no pins so the renderer keeps its no-loader fast path. A pin
+    /// pointing at a missing (key, version) silently falls through here — the renderer will surface
+    /// the missing include with the offending name when it reaches the <c>{{ include }}</c> call.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>?> ResolvePartialsAsync(
+        IReadOnlyList<PromptPartialPin>? pins,
+        CancellationToken cancellationToken)
     {
-        if ((configured is null || configured.Count == 0)
-            && contextVariables.Count == 0
-            && globalVariables.Count == 0
-            && reviewLoopVariables.Count == 0
-            && inputVariables.Count == 0)
+        if (pins is not { Count: > 0 })
         {
-            return configured;
+            return null;
         }
 
-        var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        if (configured is not null)
+        var pinTuples = pins.Select(p => (p.Key, p.Version)).ToArray();
+        var bodies = await promptPartialRepository.ResolveBodiesAsync(pinTuples, cancellationToken);
+        return bodies.Count == 0 ? null : bodies;
+    }
+
+    /// <summary>
+    /// P2: when an agent runs inside a ReviewLoop child saga (<paramref name="reviewRound"/>
+    /// is non-null), append <c>@codeflow/last-round-reminder</c> to the prompt template and seed
+    /// its body into the partials map so the include resolves at render time.
+    ///
+    /// Skip cases:
+    /// - The agent is not in a ReviewLoop (no round binding to anchor the reminder).
+    /// - The author opted out at the workflow node (<paramref name="optOut"/>).
+    /// - The agent already includes the partial explicitly in its system prompt or prompt template
+    ///   (de-dup so authors who opted in by hand pre-P2 don't get the reminder twice).
+    ///
+    /// When injection happens and the agent didn't pin the partial, fall back to the bundled
+    /// <see cref="SystemPromptPartials.LastRoundReminderKey"/> body — the seeded version 1 is the
+    /// runtime contract for the auto-injected case.
+    /// </summary>
+    public static (string? PromptTemplate,
+        IReadOnlyDictionary<string, string>? Partials,
+        bool Injected) InjectLastRoundReminderIfApplicable(
+        string? systemPrompt,
+        string? promptTemplate,
+        IReadOnlyDictionary<string, string>? resolvedPartials,
+        int? reviewRound,
+        bool optOut)
+    {
+        if (reviewRound is null || optOut)
         {
-            foreach (var entry in configured)
+            return (promptTemplate, resolvedPartials, false);
+        }
+
+        if (HasExplicitLastRoundReminder(systemPrompt) || HasExplicitLastRoundReminder(promptTemplate))
+        {
+            return (promptTemplate, resolvedPartials, false);
+        }
+
+        var augmentedTemplate = string.IsNullOrEmpty(promptTemplate)
+            ? AutoInjectedLastRoundReminderTemplate
+            : promptTemplate + "\n\n" + AutoInjectedLastRoundReminderTemplate;
+
+        var augmentedPartials = EnsureLastRoundReminderBody(resolvedPartials);
+
+        return (augmentedTemplate, augmentedPartials, true);
+    }
+
+    private static bool HasExplicitLastRoundReminder(string? template)
+    {
+        return !string.IsNullOrEmpty(template)
+            && ExplicitLastRoundReminderInclude.IsMatch(template);
+    }
+
+    private static IReadOnlyDictionary<string, string> EnsureLastRoundReminderBody(
+        IReadOnlyDictionary<string, string>? resolvedPartials)
+    {
+        if (resolvedPartials is not null
+            && resolvedPartials.ContainsKey(SystemPromptPartials.LastRoundReminderKey))
+        {
+            return resolvedPartials;
+        }
+
+        var seed = SystemPromptPartials.All
+            .First(p => p.Key == SystemPromptPartials.LastRoundReminderKey)
+            .Body;
+
+        var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (resolvedPartials is not null)
+        {
+            foreach (var entry in resolvedPartials)
             {
                 merged[entry.Key] = entry.Value;
             }
         }
 
-        foreach (var entry in contextVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in globalVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in reviewLoopVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in inputVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
+        merged[SystemPromptPartials.LastRoundReminderKey] = seed;
         return merged;
     }
 
-    private static IReadOnlyDictionary<string, string?> BuildContextTemplateVariables(
-        IReadOnlyDictionary<string, JsonElement> contextInputs)
-    {
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, value) in contextInputs)
-        {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                continue;
-            }
-
-            AddContextTemplateVariables(variables, $"context.{key}", value);
-        }
-
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildGlobalTemplateVariables(
-        IReadOnlyDictionary<string, JsonElement>? globalContext)
-    {
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        if (globalContext is null)
-        {
-            return variables;
-        }
-
-        foreach (var (key, value) in globalContext)
-        {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                continue;
-            }
-
-            AddContextTemplateVariables(variables, $"global.{key}", value);
-        }
-
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildReviewLoopTemplateVariables(
-        int? reviewRound,
-        int? reviewMaxRounds)
-    {
-        // Outside a ReviewLoop, emit no template variables — an unused {{round}} placeholder in
-        // a prompt will render as the literal unresolved token, matching the documented "child
-        // saga not spawned by a ReviewLoop does not see these bindings" rule.
-        // (Jint bindings still default to round=0/maxRounds=0/isLastRound=false so shared scripts
-        // can reference them without a ReferenceError — that lives in LogicNodeScriptHost.)
-        if (reviewRound is not int round || reviewMaxRounds is not int maxRounds)
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["maxRounds"] = maxRounds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["isLastRound"] = maxRounds > 0 && round >= maxRounds ? "true" : "false"
-        };
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildInputTemplateVariables(string? input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(input);
-            var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-
-            switch (document.RootElement.ValueKind)
-            {
-                case JsonValueKind.Object:
-                case JsonValueKind.Array:
-                    AddContextTemplateVariables(variables, "input", document.RootElement);
-                    break;
-            }
-
-            return variables;
-        }
-        catch (JsonException)
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-    }
-
-    private static void AddContextTemplateVariables(
-        IDictionary<string, string?> variables,
-        string key,
-        JsonElement value)
-    {
-        variables[key] = ToTemplateValue(value);
-
-        switch (value.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var property in value.EnumerateObject())
-                {
-                    AddContextTemplateVariables(variables, $"{key}.{property.Name}", property.Value);
-                }
-                break;
-
-            case JsonValueKind.Array:
-                var index = 0;
-                foreach (var item in value.EnumerateArray())
-                {
-                    AddContextTemplateVariables(variables, $"{key}.{index}", item);
-                    index += 1;
-                }
-                break;
-        }
-    }
-
-    private static string? ToTemplateValue(JsonElement value)
-    {
-        return value.ValueKind switch
-        {
-            JsonValueKind.String => value.GetString(),
-            JsonValueKind.Null => null,
-            JsonValueKind.Undefined => null,
-            _ => value.GetRawText()
-        };
-    }
-
     // Tool plumbing for an agent invocation. Code-aware workflows expose a per-trace working
-    // directory through `global.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
+    // directory through `workflow.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
     // present, that path-jails every host tool to the trace workdir and supersedes the legacy
     // per-repo `ToolExecutionContext` carried on the message. Non-code workflows fall through
     // to the legacy plumbing unchanged.
     private static RuntimeToolExecutionContext? BuildToolExecutionContext(AgentInvokeRequested message)
     {
-        if (TryGetGlobalWorkDir(message.GlobalContext, out var workDir))
+        if (TryGetWorkflowWorkDir(message.WorkflowContext, out var workDir))
         {
             return new RuntimeToolExecutionContext(
                 new RuntimeToolWorkspaceContext(message.TraceId, workDir));
@@ -458,13 +417,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return MapToolExecutionContext(message.ToolExecutionContext);
     }
 
-    private static bool TryGetGlobalWorkDir(
-        IReadOnlyDictionary<string, JsonElement>? globalContext,
+    private static bool TryGetWorkflowWorkDir(
+        IReadOnlyDictionary<string, JsonElement>? workflowContext,
         out string workDir)
     {
         workDir = string.Empty;
-        if (globalContext is null
-            || !globalContext.TryGetValue("workDir", out var element)
+        if (workflowContext is null
+            || !workflowContext.TryGetValue("workDir", out var element)
             || element.ValueKind != JsonValueKind.String)
         {
             return false;

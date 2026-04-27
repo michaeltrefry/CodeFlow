@@ -5,7 +5,7 @@ namespace CodeFlow.Contracts;
 /// <summary>
 /// Emitted by a child saga when it reaches a terminal state. Drives the parent saga to resume
 /// routing from the Subflow node's matching output port and merges the child's final
-/// <c>global</c> back into the parent's <c>global</c> (shallow, last-write-wins per top-level
+/// <c>workflow</c> back into the parent's <c>workflow</c> (shallow, last-write-wins per top-level
 /// key) before routing.
 /// </summary>
 /// <param name="ParentTraceId">Trace id of the parent saga to wake.</param>
@@ -18,8 +18,8 @@ namespace CodeFlow.Contracts;
 ///   implicit <c>Failed</c> port).</param>
 /// <param name="OutputRef">Artifact reference produced by the child's last node — handed to
 ///   whatever the parent routes to next.</param>
-/// <param name="SharedContext">The child saga's final <c>global</c> bag, including any
-///   <c>setGlobal</c> writes performed during the child's execution.</param>
+/// <param name="WorkflowContext">The child saga's final <c>workflow</c> bag, including any
+///   <c>setWorkflow</c> writes performed during the child's execution.</param>
 /// <param name="Decision">The child saga's terminal port name as a string (the author-defined
 ///   port). Mirrors <see cref="OutputPortName"/> in the new port model and is preserved as a
 ///   distinct field for trace tooling. Null for legacy or synthetic completions.</param>
@@ -39,7 +39,7 @@ public sealed record SubflowCompleted(
     Guid ChildTraceId,
     string OutputPortName,
     Uri OutputRef,
-    IReadOnlyDictionary<string, JsonElement> SharedContext,
+    IReadOnlyDictionary<string, JsonElement> WorkflowContext,
     string? Decision = null,
     int? ReviewRound = null,
     string? TerminalPort = null);

@@ -26,7 +26,11 @@ public sealed record WorkflowNodeDto(
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
-    string? InputScript = null);
+    string? InputScript = null,
+    bool OptOutLastRoundReminder = false,
+    RejectionHistoryConfig? RejectionHistory = null,
+    string? MirrorOutputToWorkflowVar = null,
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,
@@ -34,7 +38,8 @@ public sealed record WorkflowEdgeDto(
     Guid ToNodeId,
     string ToPort,
     bool RotatesRound,
-    int SortOrder);
+    int SortOrder,
+    bool IntentionalBackedge = false);
 
 public sealed record WorkflowInputDto(
     string Key,
@@ -55,7 +60,9 @@ public sealed record WorkflowDetailDto(
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowNodeDto> Nodes,
     IReadOnlyList<WorkflowEdgeDto> Edges,
-    IReadOnlyList<WorkflowInputDto> Inputs);
+    IReadOnlyList<WorkflowInputDto> Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record CreateWorkflowRequest(
     string? Key,
@@ -65,7 +72,9 @@ public sealed record CreateWorkflowRequest(
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
-    IReadOnlyList<WorkflowInputDto>? Inputs);
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record UpdateWorkflowRequest(
     string? Name,
@@ -74,7 +83,9 @@ public sealed record UpdateWorkflowRequest(
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
-    IReadOnlyList<WorkflowInputDto>? Inputs);
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record ValidateScriptRequest(
     string? Script,
@@ -89,3 +100,29 @@ public enum ValidateScriptDirection
 public sealed record ValidateScriptResponse(bool Ok, IReadOnlyList<ValidateScriptError> Errors);
 
 public sealed record ValidateScriptError(int Line, int Column, string Message);
+
+public sealed record ValidateWorkflowRequest(
+    string? Key,
+    string? Name,
+    int? MaxRoundsPerRound,
+    IReadOnlyList<WorkflowNodeDto>? Nodes,
+    IReadOnlyList<WorkflowEdgeDto>? Edges,
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
+
+public sealed record WorkflowValidationLocationDto(
+    Guid? NodeId,
+    Guid? EdgeFrom,
+    string? EdgePort);
+
+public sealed record WorkflowValidationFindingDto(
+    string RuleId,
+    string Severity,
+    string Message,
+    WorkflowValidationLocationDto? Location);
+
+public sealed record ValidateWorkflowResponse(
+    bool HasErrors,
+    bool HasWarnings,
+    IReadOnlyList<WorkflowValidationFindingDto> Findings);

@@ -1,6 +1,7 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
+using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
@@ -62,6 +63,9 @@ public static class WorkflowsEndpoints
         group.MapPost("/validate-script", ValidateScript)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
+        group.MapPost("/validate", ValidateWorkflowAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
         return routes;
     }
 
@@ -85,10 +89,19 @@ public static class WorkflowsEndpoints
         }
         catch (WorkflowPackageResolutionException exception)
         {
+            // V8: surface the full structured list of missing references in `extensions` so
+            // editors / package-preview UIs can render each one with click-to-jump anchors.
+            var extensions = exception.MissingReferences.Count == 0
+                ? null
+                : new Dictionary<string, object?>
+                {
+                    ["missingReferences"] = exception.MissingReferences,
+                };
             return Results.Problem(
                 title: "Workflow package export failed",
                 detail: exception.Message,
-                statusCode: StatusCodes.Status422UnprocessableEntity);
+                statusCode: StatusCodes.Status422UnprocessableEntity,
+                extensions: extensions);
         }
     }
 
@@ -279,7 +292,10 @@ public static class WorkflowsEndpoints
         CreateWorkflowRequest request,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
+        IAuthoringTelemetry telemetry,
+        WorkflowValidationPipeline pipeline,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -296,10 +312,34 @@ public static class WorkflowsEndpoints
 
         if (!validation.IsValid)
         {
+            telemetry.ValidatorBlockedSave(
+                request.Key ?? string.Empty,
+                new[] { "workflow-validator" });
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["workflow"] = new[] { validation.Error! }
             });
+        }
+
+        var pipelineBlock = await RunSaveTimePipelineAsync(
+            request.Key ?? string.Empty,
+            request.Name,
+            request.MaxRoundsPerRound,
+            request.Nodes,
+            request.Edges,
+            request.Inputs,
+            dbContext,
+            repository,
+            agentRepository,
+            roleRepository,
+            pipeline,
+            telemetry,
+            cancellationToken,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
+        if (pipelineBlock is not null)
+        {
+            return pipelineBlock;
         }
 
         var normalizedKey = request.Key!.Trim();
@@ -321,7 +361,9 @@ public static class WorkflowsEndpoints
             request.Tags,
             resolvedNodes,
             request.Edges!,
-            request.Inputs);
+            request.Inputs,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -332,7 +374,10 @@ public static class WorkflowsEndpoints
         UpdateWorkflowRequest request,
         IWorkflowRepository repository,
         IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
+        IAuthoringTelemetry telemetry,
+        WorkflowValidationPipeline pipeline,
         CancellationToken cancellationToken)
     {
         var validation = await WorkflowValidator.ValidateAsync(
@@ -349,10 +394,32 @@ public static class WorkflowsEndpoints
 
         if (!validation.IsValid)
         {
+            telemetry.ValidatorBlockedSave(key, new[] { "workflow-validator" });
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["workflow"] = new[] { validation.Error! }
             });
+        }
+
+        var pipelineBlock = await RunSaveTimePipelineAsync(
+            key,
+            request.Name,
+            request.MaxRoundsPerRound,
+            request.Nodes,
+            request.Edges,
+            request.Inputs,
+            dbContext,
+            repository,
+            agentRepository,
+            roleRepository,
+            pipeline,
+            telemetry,
+            cancellationToken,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
+        if (pipelineBlock is not null)
+        {
+            return pipelineBlock;
         }
 
         var normalizedKey = key.Trim();
@@ -374,10 +441,132 @@ public static class WorkflowsEndpoints
             request.Tags,
             resolvedNodes,
             request.Edges!,
-            request.Inputs);
+            request.Inputs,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
+    }
+
+    /// <summary>
+    /// Run the pluggable validation pipeline at workflow save and convert any Error findings into
+    /// a ValidationProblem result. Returns null if the pipeline produced no errors (save proceeds).
+    /// Warning-only findings do not block save — the editor surfaces them via the
+    /// <c>POST /validate</c> endpoint, which is what authoring UIs call interactively.
+    /// </summary>
+    private static async Task<IResult?> RunSaveTimePipelineAsync(
+        string key,
+        string? name,
+        int? maxRoundsPerRound,
+        IReadOnlyList<WorkflowNodeDto>? nodes,
+        IReadOnlyList<WorkflowEdgeDto>? edges,
+        IReadOnlyList<WorkflowInputDto>? inputs,
+        CodeFlowDbContext dbContext,
+        IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
+        WorkflowValidationPipeline pipeline,
+        IAuthoringTelemetry telemetry,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? workflowVarsReads = null,
+        IReadOnlyList<string>? workflowVarsWrites = null)
+    {
+        var context = new WorkflowValidationContext(
+            Key: key ?? string.Empty,
+            Name: name,
+            MaxRoundsPerRound: maxRoundsPerRound,
+            Nodes: nodes ?? Array.Empty<WorkflowNodeDto>(),
+            Edges: edges ?? Array.Empty<WorkflowEdgeDto>(),
+            Inputs: inputs,
+            DbContext: dbContext,
+            WorkflowRepository: repository,
+            AgentRepository: agentRepository,
+            AgentRoleRepository: roleRepository,
+            WorkflowVarsReads: workflowVarsReads,
+            WorkflowVarsWrites: workflowVarsWrites);
+
+        var report = await pipeline.RunAsync(context, cancellationToken);
+
+        if (!report.HasErrors)
+        {
+            return null;
+        }
+
+        var errorFindings = report.Findings
+            .Where(f => f.Severity == WorkflowValidationSeverity.Error)
+            .ToArray();
+        var blockingRuleIds = errorFindings
+            .Select(f => f.RuleId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        telemetry.ValidatorBlockedSave(key ?? string.Empty, blockingRuleIds);
+
+        var problems = errorFindings
+            .GroupBy(f => f.RuleId, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(f => f.Message).ToArray(),
+                StringComparer.Ordinal);
+
+        return Results.ValidationProblem(problems);
+    }
+
+    /// <summary>
+    /// Run the pluggable validation pipeline against an arbitrary workflow draft and return the
+    /// aggregated findings. Authoring DX surface — the editor calls this as the user edits to
+    /// drive the results panel without committing the draft. Save endpoints additionally run the
+    /// pipeline and convert Error findings into a blocking ValidationProblem (see
+    /// <see cref="RunSaveTimePipelineAsync"/>).
+    /// </summary>
+    private static async Task<IResult> ValidateWorkflowAsync(
+        ValidateWorkflowRequest request,
+        WorkflowValidationPipeline pipeline,
+        IWorkflowRepository repository,
+        IAgentConfigRepository agentRepository,
+        IAgentRoleRepository roleRepository,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return Results.BadRequest(new { error = "Request body is required." });
+        }
+
+        var context = new WorkflowValidationContext(
+            Key: request.Key ?? string.Empty,
+            Name: request.Name,
+            MaxRoundsPerRound: request.MaxRoundsPerRound,
+            Nodes: request.Nodes ?? Array.Empty<WorkflowNodeDto>(),
+            Edges: request.Edges ?? Array.Empty<WorkflowEdgeDto>(),
+            Inputs: request.Inputs,
+            DbContext: dbContext,
+            WorkflowRepository: repository,
+            AgentRepository: agentRepository,
+            AgentRoleRepository: roleRepository,
+            WorkflowVarsReads: request.WorkflowVarsReads,
+            WorkflowVarsWrites: request.WorkflowVarsWrites);
+
+        var report = await pipeline.RunAsync(context, cancellationToken);
+
+        var findings = report.Findings
+            .Select(f => new WorkflowValidationFindingDto(
+                RuleId: f.RuleId,
+                Severity: f.Severity.ToString(),
+                Message: f.Message,
+                Location: f.Location is null
+                    ? null
+                    : new WorkflowValidationLocationDto(
+                        NodeId: f.Location.NodeId,
+                        EdgeFrom: f.Location.EdgeFrom,
+                        EdgePort: f.Location.EdgePort)))
+            .ToArray();
+
+        return Results.Ok(new ValidateWorkflowResponse(
+            HasErrors: report.HasErrors,
+            HasWarnings: report.HasWarnings,
+            Findings: findings));
     }
 
     /// <summary>
@@ -435,7 +624,9 @@ public static class WorkflowsEndpoints
         IReadOnlyList<string>? tags,
         IReadOnlyList<WorkflowNodeDto> nodes,
         IReadOnlyList<WorkflowEdgeDto> edges,
-        IReadOnlyList<WorkflowInputDto>? inputs)
+        IReadOnlyList<WorkflowInputDto>? inputs,
+        IReadOnlyList<string>? workflowVarsReads = null,
+        IReadOnlyList<string>? workflowVarsWrites = null)
     {
         return new WorkflowDraft(
             Key: key,
@@ -443,6 +634,8 @@ public static class WorkflowsEndpoints
             MaxRoundsPerRound: maxRoundsPerRound ?? 3,
             Category: category,
             Tags: tags ?? Array.Empty<string>(),
+            WorkflowVarsReads: workflowVarsReads,
+            WorkflowVarsWrites: workflowVarsWrites,
             Nodes: nodes
                 .Select(node => new WorkflowNodeDraft(
                     Id: node.Id,
@@ -457,7 +650,11 @@ public static class WorkflowsEndpoints
                     SubflowVersion: node.SubflowVersion,
                     ReviewMaxRounds: node.ReviewMaxRounds,
                     LoopDecision: node.LoopDecision,
-                    InputScript: node.InputScript))
+                    InputScript: node.InputScript,
+                    OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+                    RejectionHistory: node.RejectionHistory,
+                    MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
+                    OutputPortReplacements: node.OutputPortReplacements))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -466,7 +663,8 @@ public static class WorkflowsEndpoints
                     ToNodeId: edge.ToNodeId,
                     ToPort: string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                     RotatesRound: edge.RotatesRound,
-                    SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder))
+                    SortOrder: edge.SortOrder == 0 ? index : edge.SortOrder,
+                    IntentionalBackedge: edge.IntentionalBackedge))
                 .ToArray(),
             Inputs: inputs is null
                 ? Array.Empty<WorkflowInputDraft>()
@@ -515,7 +713,11 @@ public static class WorkflowsEndpoints
                 SubflowVersion: node.SubflowVersion,
                 ReviewMaxRounds: node.ReviewMaxRounds,
                 LoopDecision: node.LoopDecision,
-                InputScript: node.InputScript))
+                InputScript: node.InputScript,
+                OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+                RejectionHistory: node.RejectionHistory,
+                MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
+                OutputPortReplacements: node.OutputPortReplacements))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(
@@ -524,7 +726,8 @@ public static class WorkflowsEndpoints
                 ToNodeId: edge.ToNodeId,
                 ToPort: edge.ToPort,
                 RotatesRound: edge.RotatesRound,
-                SortOrder: edge.SortOrder))
+                SortOrder: edge.SortOrder,
+                IntentionalBackedge: edge.IntentionalBackedge))
             .ToArray(),
         Inputs: workflow.Inputs
             .Select(input => new WorkflowInputDto(
@@ -535,5 +738,7 @@ public static class WorkflowsEndpoints
                 DefaultValueJson: input.DefaultValueJson,
                 Description: input.Description,
                 Ordinal: input.Ordinal))
-            .ToArray());
+            .ToArray(),
+        WorkflowVarsReads: workflow.WorkflowVarsReads,
+        WorkflowVarsWrites: workflow.WorkflowVarsWrites);
 }

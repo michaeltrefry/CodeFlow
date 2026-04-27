@@ -167,6 +167,134 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldAcceptEmptyContent_WhenSubmittingPortFlaggedContentOptional()
+    {
+        // V2: sentinel ports like Cancelled/Skip declare ContentOptional=true so the empty-
+        // content guard skips them. The decision itself carries the meaning; downstream
+        // consumers don't read the artifact body.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_cancel", "submit",
+                            new JsonObject { ["decision"] = "Cancelled" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Cancel if you must.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Cancelled", null, null, ContentOptional: true)
+            ]));
+
+        result.Decision.PortName.Should().Be("Cancelled");
+        modelClient.InvocationCount.Should().Be(1, "no retry should fire when the port is content-optional");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldStillRejectEmptyContent_OnNonOptionalPort_WhenSiblingIsContentOptional()
+    {
+        // Mirror of the prior test: the sibling Approved port is NOT content-optional, so an
+        // empty submit there still triggers the retry. Confirms the per-port lookup is correct
+        // (not "any contentOptional port disables the guard for the whole agent").
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_approve", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Real artifact body.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_approve2", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Approve.")],
+            "gpt-5",
+            DeclaredOutputs:
+            [
+                new AgentOutputDeclaration("Approved", null, null),
+                new AgentOutputDeclaration("Cancelled", null, null, ContentOptional: true)
+            ]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.Output.Should().Be("Real artifact body.");
+        modelClient.InvocationCount.Should().Be(2, "the empty Approved submit must trigger one retry");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNameTheOffendingPort_InEmptyContentToolError()
+    {
+        // V2 acceptance: the tool error returned to the model names the port and tells the
+        // model to write content BEFORE submit. Helps the LLM self-correct in one turn.
+        InvocationRequest? capturedSecondRequest = null;
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    string.Empty,
+                    ToolCalls:
+                    [
+                        new ToolCall("call_first", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                capturedSecondRequest = request;
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Body content.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_second", "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Approve.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        capturedSecondRequest.Should().NotBeNull();
+        var toolMessage = capturedSecondRequest!.Messages.Single(m =>
+            m.Role == ChatMessageRole.Tool && m.ToolCallId == "call_first");
+        toolMessage.IsError.Should().BeTrue();
+        toolMessage.Content.Should().Contain("\"Approved\"");
+        toolMessage.Content.Should().Contain("non-empty");
+        toolMessage.Content.Should().Contain("BEFORE calling submit");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldRePromptOnNoToolCall_WhenDeclaredOutputsExist()
     {
         // Real bug from prd-intake testing: an interviewer with declared outputs
@@ -269,7 +397,7 @@ public sealed class InvocationLoopTests
                     [
                         new ToolCall("call_setctx", "setContext",
                             new JsonObject { ["key"] = "foo", ["value"] = 42 }),
-                        new ToolCall("call_setglobal", "setGlobal",
+                        new ToolCall("call_setworkflow", "setWorkflow",
                             new JsonObject { ["key"] = "bar", ["value"] = "hello" }),
                         new ToolCall("call_submit", "submit",
                             new JsonObject { ["decision"] = "Approved" })
@@ -286,12 +414,12 @@ public sealed class InvocationLoopTests
         result.Decision.PortName.Should().Be("Approved");
         result.ContextUpdates.Should().NotBeNull();
         result.ContextUpdates!["foo"].GetInt32().Should().Be(42);
-        result.GlobalUpdates.Should().NotBeNull();
-        result.GlobalUpdates!["bar"].GetString().Should().Be("hello");
+        result.WorkflowUpdates.Should().NotBeNull();
+        result.WorkflowUpdates!["bar"].GetString().Should().Be("hello");
     }
 
     [Fact]
-    public async Task RunAsync_SetGlobalReservedKey_ReturnsToolErrorAndDoesNotPersist()
+    public async Task RunAsync_SetWorkflowReservedKey_ReturnsToolErrorAndDoesNotPersist()
     {
         var modelClient = new ScriptedModelClient(
         [
@@ -301,7 +429,7 @@ public sealed class InvocationLoopTests
                     "Trying to overwrite workDir.",
                     ToolCalls:
                     [
-                        new ToolCall("call_reserved", "setGlobal",
+                        new ToolCall("call_reserved", "setWorkflow",
                             new JsonObject { ["key"] = "workDir", ["value"] = "/etc/evil" }),
                         new ToolCall("call_submit", "submit",
                             new JsonObject { ["decision"] = "Continue" })
@@ -316,20 +444,20 @@ public sealed class InvocationLoopTests
             DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
 
         result.Decision.PortName.Should().Be("Continue",
-            "the rejected setGlobal returns an error tool result; the loop continues to submit");
+            "the rejected setWorkflow returns an error tool result; the loop continues to submit");
 
-        var setGlobalToolMessage = result.Transcript
+        var setWorkflowToolMessage = result.Transcript
             .OfType<ChatMessage>()
             .FirstOrDefault(m => m.Role == ChatMessageRole.Tool
                 && m.ToolCallId == "call_reserved");
-        setGlobalToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
-        setGlobalToolMessage!.Content.Should().Contain("workDir");
-        setGlobalToolMessage.Content.Should().Contain("framework-managed global");
+        setWorkflowToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
+        setWorkflowToolMessage!.Content.Should().Contain("workDir");
+        setWorkflowToolMessage.Content.Should().Contain("framework-managed workflow variable");
 
-        if (result.GlobalUpdates is { } globals)
+        if (result.WorkflowUpdates is { } workflowVars)
         {
-            globals.ContainsKey("workDir").Should().BeFalse(
-                "the rejected write must not be persisted into the global bag");
+            workflowVars.ContainsKey("workDir").Should().BeFalse(
+                "the rejected write must not be persisted into the workflow bag");
         }
     }
 
@@ -359,7 +487,7 @@ public sealed class InvocationLoopTests
 
         result.Decision.PortName.Should().Be("Failed");
         result.ContextUpdates.Should().BeNull("failed terminations discard pending writes");
-        result.GlobalUpdates.Should().BeNull();
+        result.WorkflowUpdates.Should().BeNull();
     }
 
     [Fact]
@@ -407,7 +535,90 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
-    public async Task RunAsync_ShouldAdvertise_SetContextAndSetGlobalTools()
+    public async Task RunAsync_ShouldRejectSetWorkflowOversizedSingleValue_WithRemediationPointer()
+    {
+        // V1: per-call 16 KiB cap on setWorkflow values. An agent that tries to stream a large
+        // document (PRD, plan) into the workflow bag mid-turn must get a typed tool error
+        // pointing at the output-script remediation path, the loop continues, and the model
+        // retries with a smaller value or a different approach.
+        var justOver16KiB = new string('x', 16 * 1024 + 1);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Streaming the plan into the workflow bag.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set", "setWorkflow",
+                            new JsonObject { ["key"] = "currentPlan", ["value"] = justOver16KiB })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            request =>
+            {
+                request.Messages[^1].Role.Should().Be(ChatMessageRole.Tool);
+                request.Messages[^1].IsError.Should().BeTrue();
+                request.Messages[^1].Content.Should().Contain("setWorkflow");
+                request.Messages[^1].Content.Should().Contain("output script");
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Recovered with a smaller summary.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", "submit",
+                                new JsonObject { ["decision"] = "Approved" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Save the plan.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.WorkflowUpdates.Should().BeNull(
+            "the rejected per-call write must not reach the workflow bag");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAcceptSetWorkflowJustUnderPerCallCap()
+    {
+        // CR1: small writes continue to succeed unchanged. A 500-byte setWorkflow call sits well
+        // below the 16 KiB cap and persists into the pending bag like before.
+        var smallValue = new string('x', 500);
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Saving and submitting.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set", "setWorkflow",
+                            new JsonObject { ["key"] = "summary", ["value"] = smallValue }),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Save and ship.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.WorkflowUpdates.Should().NotBeNull();
+        result.WorkflowUpdates!["summary"].GetString().Should().Be(smallValue);
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldAdvertise_SetContextAndSetWorkflowTools()
     {
         IReadOnlyList<ToolSchema>? advertisedTools = null;
         var modelClient = new ScriptedModelClient(
@@ -428,7 +639,7 @@ public sealed class InvocationLoopTests
 
         advertisedTools.Should().NotBeNull();
         advertisedTools!.Should().Contain(t => t.Name == "setContext");
-        advertisedTools.Should().Contain(t => t.Name == "setGlobal");
+        advertisedTools.Should().Contain(t => t.Name == "setWorkflow");
     }
 
     [Fact]
@@ -832,6 +1043,101 @@ public sealed class InvocationLoopTests
         result.Decision.Payload!.AsObject()["reason"]!.GetValue<string>()
             .Should().Be(InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded);
         result.ToolCallsExecuted.Should().Be(2);
+    }
+
+    [Fact]
+    public void EnsureToolCallPairing_PassesOnEmptyTranscript()
+    {
+        // Defensive smoke check — the precondition is invoked before the very first model call,
+        // when the transcript may be just a single User message.
+        var transcript = new[] { new ChatMessage(ChatMessageRole.User, "Hi.") };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EnsureToolCallPairing_PassesWhenEveryFunctionCallHasMatchingOutput()
+    {
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Use a tool."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling tool.",
+                ToolCalls: [new ToolCall("call_a", "echo", new JsonObject())]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_a"),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling another.",
+                ToolCalls: [new ToolCall("call_b", "echo", new JsonObject())]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_b")
+        };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EnsureToolCallPairing_ThrowsWithOffendingIdsWhenAFunctionCallHasNoOutput()
+    {
+        // Synthetic regression target for V3: a future loop bug that pushes a User reminder
+        // back into the transcript without first writing a Tool message for the prior assistant
+        // tool call. Without this guard the next model call would surface the provider's
+        // "No tool output found for function call <id>" — opaque and two layers from the bug.
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Use a tool."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling tool.",
+                ToolCalls:
+                [
+                    new ToolCall("call_paired", "echo", new JsonObject()),
+                    new ToolCall("call_orphan", "echo", new JsonObject())
+                ]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_paired"),
+            new ChatMessage(ChatMessageRole.User, "Why didn't you finish?")
+        };
+
+        var act = () => InvocationLoop.EnsureToolCallPairing(transcript);
+
+        var thrown = act.Should().Throw<OrphanFunctionCallException>().Which;
+        thrown.OrphanedCallIds.Should().ContainSingle().Which.Should().Be("call_orphan");
+        thrown.Message.Should().Contain("call_orphan");
+    }
+
+    [Fact]
+    public async Task RunAsync_ThrowsOrphanFunctionCallException_WhenTranscriptStartsWithUnpairedAssistantToolCall()
+    {
+        // End-to-end shape: an attacker / buggy caller hands the loop an initial transcript
+        // that already has an orphaned assistant function_call. The loop must throw before
+        // the first HTTP call so the caller's stack frame is in the trace.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => throw new InvalidOperationException(
+                "model client must not be invoked when the transcript is invalid")
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var transcript = new[]
+        {
+            new ChatMessage(ChatMessageRole.User, "Begin."),
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Half-done.",
+                ToolCalls: [new ToolCall("call_lost", "echo", new JsonObject())])
+        };
+
+        var act = async () => await loop.RunAsync(new InvocationLoopRequest(
+            transcript,
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)]));
+
+        await act.Should().ThrowAsync<OrphanFunctionCallException>();
+        modelClient.InvocationCount.Should().Be(0);
     }
 
     private sealed class ScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient

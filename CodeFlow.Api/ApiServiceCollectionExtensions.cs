@@ -1,6 +1,10 @@
+using CodeFlow.Api.CascadeBump;
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
+using CodeFlow.Api.Validation.Pipeline;
+using CodeFlow.Api.Validation.Pipeline.Rules;
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Api.WorkflowTemplates;
 using CodeFlow.Host;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
@@ -53,6 +57,34 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IMcpEndpointPolicy, McpEndpointPolicy>();
         services.AddScoped<IWorkflowPackageResolver, WorkflowPackageResolver>();
         services.AddScoped<IWorkflowPackageImporter, WorkflowPackageImporter>();
+
+        // Workflow validation pipeline (F1). Rules are scoped because they take a per-request
+        // DbContext via WorkflowValidationContext; the pipeline itself is scoped so it picks up
+        // the correct DI scope's rule instances.
+        services.AddScoped<IWorkflowValidationRule, StartNodeAdvisoryRule>();
+        services.AddScoped<IWorkflowValidationRule, PortCouplingRule>();
+        services.AddScoped<IWorkflowValidationRule, RoleAssignmentRule>();
+        services.AddScoped<IWorkflowValidationRule, BackedgeRule>();
+        services.AddScoped<IWorkflowValidationRule, PromptLintRule>();
+        services.AddScoped<IWorkflowValidationRule, ProtectedVariableTargetRule>();
+        services.AddScoped<IWorkflowValidationRule, WorkflowVarDeclarationRule>();
+        services.AddScoped<WorkflowValidationPipeline>();
+
+        // Authoring telemetry (O1). Singleton sink — stateless logger wrapper with stable event
+        // names. Substituted with a recording fake in tests.
+        services.AddSingleton<IAuthoringTelemetry, LoggerAuthoringTelemetry>();
+
+        // S3: workflow-template framework. Registry is a singleton (in-memory catalog of
+        // static-shipped templates); the materializer is scoped because it pulls scoped
+        // repositories.
+        services.AddSingleton<WorkflowTemplateRegistry>();
+        services.AddScoped<IWorkflowTemplateMaterializer, WorkflowTemplateMaterializer>();
+
+        // E4: cascade-bump assistant. Both services are scoped because they depend on per-request
+        // DbContext / repositories. The executor delegates to the planner under the hood, so the
+        // planner is also resolvable directly for the plan endpoint.
+        services.AddScoped<CascadeBumpPlanner>();
+        services.AddScoped<CascadeBumpExecutor>();
 
         return services;
     }

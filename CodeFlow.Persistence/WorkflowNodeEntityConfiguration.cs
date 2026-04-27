@@ -71,6 +71,23 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("loop_decision")
             .HasMaxLength(64);
 
+        builder.Property(node => node.OptOutLastRoundReminder)
+            .HasColumnName("opt_out_last_round_reminder")
+            .HasDefaultValue(false)
+            .IsRequired();
+
+        builder.Property(node => node.RejectionHistoryConfigJson)
+            .HasColumnName("rejection_history_config_json")
+            .HasColumnType("longtext");
+
+        builder.Property(node => node.MirrorOutputToWorkflowVar)
+            .HasColumnName("mirror_output_to_workflow_var")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.OutputPortReplacementsJson)
+            .HasColumnName("output_port_replacements_json")
+            .HasColumnType("longtext");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

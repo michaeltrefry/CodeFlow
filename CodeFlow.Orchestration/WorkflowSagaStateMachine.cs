@@ -226,9 +226,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = message.RoundId;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
-        if (message.GlobalContext is not null)
+        if (message.WorkflowContext is not null)
         {
-            saga.GlobalInputsJson = SerializeContextInputs(message.GlobalContext);
+            saga.WorkflowInputsJson = SerializeContextInputs(message.WorkflowContext);
         }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
@@ -246,9 +246,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
     /// <summary>
     /// Initialize a child saga from a <see cref="SubflowInvokeRequested"/>. Loads the child
-    /// workflow, copies parent linkage + global snapshot onto the saga, pins the child Start's
-    /// agent version, and publishes an <see cref="AgentInvokeRequested"/> for the child Start
-    /// node so the existing agent invocation pipeline picks it up. The published
+    /// workflow, copies parent linkage + workflow snapshot onto the saga, pins the child
+    /// Start's agent version, and publishes an <see cref="AgentInvokeRequested"/> for the child
+    /// Start node so the existing agent invocation pipeline picks it up. The published
     /// AgentInvokeRequested is correlated by <c>ChildTraceId</c> — the saga is already in
     /// <c>Running</c> by the time it arrives, so it falls into the <c>DuringAny(Ignore(...))</c>
     /// guard rather than re-running the initial transition.
@@ -288,7 +288,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentRoundId = childRoundId;
         saga.RoundCount = 0;
         saga.InputsJson = "{}";
-        saga.GlobalInputsJson = SerializeContextInputs(message.SharedContext);
+        saga.WorkflowInputsJson = SerializeContextInputs(message.WorkflowContext);
         saga.CurrentInputRef = message.InputRef.ToString();
         saga.ParentTraceId = message.ParentTraceId;
         saga.ParentNodeId = message.ParentNodeId;
@@ -321,9 +321,9 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentInputRef = effectiveInputRef.ToString();
 
         // The child's local `context` starts empty — the parent's shared snapshot belongs on
-        // `global`, not on the child's local inputs. Publishing SharedContext as ContextInputs
-        // would make parent keys show up under {{context.*}} on the child Start, and
-        // {{global.*}} would be empty — the opposite of the documented semantics.
+        // `workflow`, not on the child's local inputs. Publishing WorkflowContext as
+        // ContextInputs would make parent keys show up under {{context.*}} on the child Start,
+        // and {{workflow.*}} would be empty — the opposite of the documented semantics.
         await context.Publish(new AgentInvokeRequested(
             TraceId: message.ChildTraceId,
             RoundId: childRoundId,
@@ -337,7 +337,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             CorrelationHeaders: null,
             RetryContext: null,
             ToolExecutionContext: null,
-            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
+            WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: message.ReviewRound,
             ReviewMaxRounds: message.ReviewMaxRounds));
     }
@@ -345,7 +345,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// <summary>
     /// Fires whenever a child saga (one with parent linkage) enters a terminal state. Publishes
     /// <see cref="SubflowCompleted"/> back to the parent saga carrying the child's final
-    /// <c>global</c> bag and last-known output ref. The OutputPortName matches the terminal
+    /// <c>workflow</c> bag and last-known output ref. The OutputPortName matches the terminal
     /// state name (Completed/Failed/Escalated).
     /// </summary>
     private static async Task PublishSubflowCompletedIfChildAsync(
@@ -369,7 +369,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowContext = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         // For ReviewLoop children, the parent drives outcome mapping off Decision (not
         // OutputPortName). Both are now plain port-name strings.
@@ -382,7 +382,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ChildTraceId: saga.TraceId,
             OutputPortName: terminalPortName,
             OutputRef: new Uri(outputRefStr),
-            SharedContext: sharedContext,
+            WorkflowContext: workflowContext,
             Decision: terminalDecision,
             ReviewRound: saga.ParentReviewRound,
             TerminalPort: saga.LastEffectivePort));
@@ -498,19 +498,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return;
         }
 
-        // Shallow merge: last-write-wins per top-level key. Child's working `global` may have
-        // accumulated setGlobal writes during its run; flush them into the parent's bag so
+        // Shallow merge: last-write-wins per top-level key. Child's working `workflow` may have
+        // accumulated setWorkflow writes during its run; flush them into the parent's bag so
         // downstream parent nodes see them.
-        if (message.SharedContext.Count > 0)
+        if (message.WorkflowContext.Count > 0)
         {
-            var parentGlobal = new Dictionary<string, JsonElement>(
-                DeserializeContextInputs(saga.GlobalInputsJson),
+            var parentWorkflow = new Dictionary<string, JsonElement>(
+                DeserializeContextInputs(saga.WorkflowInputsJson),
                 StringComparer.Ordinal);
-            foreach (var (key, value) in message.SharedContext)
+            foreach (var (key, value) in message.WorkflowContext)
             {
-                parentGlobal[key] = value.Clone();
+                parentWorkflow[key] = value.Clone();
             }
-            saga.GlobalInputsJson = SerializeContextInputs(parentGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(parentWorkflow);
         }
 
         var services = context.GetPayload<IServiceProvider>();
@@ -546,6 +546,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     saga.UpdatedAtUtc = DateTime.UtcNow;
                     return;
                 }
+
+                await AccumulateRejectionHistoryAsync(
+                    saga,
+                    parentNode,
+                    message,
+                    artifactStore,
+                    context.CancellationToken);
 
                 await PublishSubflowDispatchAsync(
                     context,
@@ -771,7 +778,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             InputRef: saga.CurrentInputRef,
             OutputRef: effectiveOutputRef?.ToString()));
 
-        // Slice 13: apply any setContext / setGlobal writes the agent issued during its turn.
+        // Slice 13: apply any setContext / setWorkflow writes the agent issued during its turn.
         // These are committed only when the runtime publishes a non-Failed decision (the loop
         // already discards them on failure); here we just merge them into the saga's bags so the
         // next downstream agent sees the new values.
@@ -912,9 +919,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     {
         var fallbackPort = message.OutputPortName;
         var fromNode = workflow.FindNode(message.FromNodeId);
-        if (fromNode is null
-            || fromNode.Kind == WorkflowNodeKind.Logic
-            || string.IsNullOrWhiteSpace(fromNode.OutputScript))
+        if (fromNode is null || fromNode.Kind == WorkflowNodeKind.Logic)
+        {
+            return new SourcePortResolution(fallbackPort, null);
+        }
+
+        // P4: mirror the agent's output text into the configured workflow variable BEFORE the
+        // output script runs so the script can read `workflow[mirrorKey]`. Even if the node has
+        // no output script, mirroring still applies — the feature is independent.
+        var mirrorTarget = NormalizeMirrorTarget(fromNode.MirrorOutputToWorkflowVar);
+        var hasOutputScript = !string.IsNullOrWhiteSpace(fromNode.OutputScript);
+        var portReplacementsByPort = NormalizePortReplacements(fromNode.OutputPortReplacements);
+
+        if (mirrorTarget is null && !hasOutputScript && portReplacementsByPort is null)
         {
             return new SourcePortResolution(fallbackPort, null);
         }
@@ -924,12 +941,41 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return new SourcePortResolution(fallbackPort, null);
         }
 
+        string? artifactText = null;
+        if (mirrorTarget is not null || hasOutputScript)
+        {
+            artifactText = await ReadArtifactAsTextAsync(
+                artifactStore,
+                message.OutputRef,
+                context.CancellationToken);
+        }
+
+        if (mirrorTarget is not null && artifactText is not null)
+        {
+            ApplyMirrorOutputToWorkflow(saga, mirrorTarget, artifactText);
+        }
+
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
-        var artifactJson = await ReadArtifactAsJsonAsync(
-            artifactStore,
-            message.OutputRef,
-            context.CancellationToken);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+
+        if (!hasOutputScript)
+        {
+            // P5 may still apply on the no-script path. Use the agent's port verbatim as the
+            // routing decision and apply any binding for that port.
+            var directOverride = portReplacementsByPort is not null
+                ? await TryApplyPortReplacementAsync(
+                    portReplacementsByPort,
+                    fallbackPort,
+                    workflowInputs,
+                    artifactStore,
+                    saga,
+                    fromNode.AgentKey,
+                    context.CancellationToken)
+                : null;
+            return new SourcePortResolution(fallbackPort, directOverride);
+        }
+
+        var artifactJson = ParseArtifactAsJson(artifactText!);
         var scriptInput = ComposeAgentScriptInput(artifactJson, message.OutputPortName, message.DecisionPayload);
 
         var eval = scriptHost.Evaluate(
@@ -941,7 +987,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             input: scriptInput,
             context: contextInputs,
             cancellationToken: context.CancellationToken,
-            global: globalInputs,
+            workflow: workflowInputs,
             reviewRound: saga.ParentReviewRound,
             reviewMaxRounds: saga.ParentReviewMaxRounds,
             allowOutputOverride: true,
@@ -957,11 +1003,34 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             FailureMessage: eval.FailureMessage,
             RecordedAtUtc: DateTime.UtcNow));
 
-        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
 
         if (!eval.IsSuccess)
         {
             return new SourcePortResolution(fallbackPort, null);
+        }
+
+        var resolvedPort = eval.OutputPortName!;
+
+        // P5: per-port binding takes precedence over setOutput so authors who want both
+        // a script-managed variable AND a per-port artifact replacement get the binding's
+        // value. The setOutput value is still side-effected via WriteOverrideArtifact when
+        // no binding fires for the resolved port.
+        if (portReplacementsByPort is not null)
+        {
+            var refreshedWorkflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+            var bindingOverride = await TryApplyPortReplacementAsync(
+                portReplacementsByPort,
+                resolvedPort,
+                refreshedWorkflowInputs,
+                artifactStore,
+                saga,
+                fromNode.AgentKey,
+                context.CancellationToken);
+            if (bindingOverride is not null)
+            {
+                return new SourcePortResolution(resolvedPort, bindingOverride);
+            }
         }
 
         Uri? overrideRef = null;
@@ -975,7 +1044,136 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 context.CancellationToken);
         }
 
-        return new SourcePortResolution(eval.OutputPortName!, overrideRef);
+        return new SourcePortResolution(resolvedPort, overrideRef);
+    }
+
+    private static string? NormalizeMirrorTarget(string? mirrorTarget)
+    {
+        if (string.IsNullOrWhiteSpace(mirrorTarget))
+        {
+            return null;
+        }
+
+        var trimmed = mirrorTarget.Trim();
+        // P4: a configured key targeting the framework-managed __loop.* namespace fails silently
+        // — the save-time validator surfaces the misconfiguration; the runtime never clobbers
+        // framework state. (Mirrors the protection the agent-side setWorkflow tool enforces.)
+        if (Runtime.ProtectedVariables.IsReserved(trimmed))
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static IReadOnlyDictionary<string, string>? NormalizePortReplacements(
+        IReadOnlyDictionary<string, string>? portReplacements)
+    {
+        if (portReplacements is null || portReplacements.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<string, string>? normalized = null;
+        foreach (var (port, key) in portReplacements)
+        {
+            if (string.IsNullOrWhiteSpace(port) || string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            normalized ??= new Dictionary<string, string>(StringComparer.Ordinal);
+            normalized[port.Trim()] = key.Trim();
+        }
+
+        return normalized is { Count: > 0 } ? normalized : null;
+    }
+
+    private static void ApplyMirrorOutputToWorkflow(
+        WorkflowSagaStateEntity saga,
+        string mirrorKey,
+        string artifactText)
+    {
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+
+        workflowBag[mirrorKey] = JsonSerializer.SerializeToElement(artifactText);
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
+    }
+
+    private static async Task<Uri?> TryApplyPortReplacementAsync(
+        IReadOnlyDictionary<string, string> portReplacementsByPort,
+        string? resolvedPort,
+        IReadOnlyDictionary<string, JsonElement> workflowInputs,
+        IArtifactStore artifactStore,
+        WorkflowSagaStateEntity saga,
+        string? agentKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedPort)
+            || !portReplacementsByPort.TryGetValue(resolvedPort, out var workflowKey))
+        {
+            return null;
+        }
+
+        if (!workflowInputs.TryGetValue(workflowKey, out var element))
+        {
+            // Configured but value not present — fail-safe: keep the agent's artifact rather
+            // than substituting an empty string. The save-time validator (E5/V8 follow-up) is
+            // the right place to flag a binding that names a never-written variable.
+            return null;
+        }
+
+        var replacementText = element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => element.GetRawText(),
+        };
+
+        if (replacementText is null)
+        {
+            return null;
+        }
+
+        return await WriteOverrideArtifactAsync(
+            artifactStore,
+            saga,
+            agentKey,
+            replacementText,
+            cancellationToken,
+            fileNameSuffix: "port-replacement");
+    }
+
+    private static async Task<string> ReadArtifactAsTextAsync(
+        IArtifactStore artifactStore,
+        Uri outputRef,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await artifactStore.ReadAsync(outputRef, cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+        return await reader.ReadToEndAsync(cancellationToken);
+    }
+
+    private static JsonElement ParseArtifactAsJson(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can
+            // still read it (mirrors ReadArtifactAsJsonAsync's fallback).
+            var doc = new { text };
+            return JsonSerializer.SerializeToElement(doc);
+        }
     }
 
     private static async Task<Uri> WriteOverrideArtifactAsync(
@@ -1020,7 +1218,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
         var artifactJson = await ReadArtifactAsJsonAsync(
             artifactStore,
             inputRef,
@@ -1035,7 +1233,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             input: artifactJson,
             context: contextInputs,
             cancellationToken: context.CancellationToken,
-            global: globalInputs,
+            workflow: workflowInputs,
             reviewRound: saga.ParentReviewRound,
             reviewMaxRounds: saga.ParentReviewMaxRounds,
             allowInputOverride: true,
@@ -1057,7 +1255,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 $"Input script for node {targetNode.Id} failed ({eval.Failure}): {eval.FailureMessage}");
         }
 
-        ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
 
         if (!string.IsNullOrEmpty(eval.InputOverride))
         {
@@ -1123,7 +1321,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
 
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
         var decisionName = message.OutputPortName ?? string.Empty;
 
         var scope = DecisionOutputTemplateContext.Build(
@@ -1133,7 +1331,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             outputJson: IsStructured(outputJson) ? outputJson : null,
             inputJson: inputJson,
             contextInputs: contextInputs,
-            globalInputs: globalInputs);
+            workflowInputs: workflowInputs);
 
         string rendered;
         try
@@ -1206,10 +1404,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     }
 
     /// <summary>
-    /// Slice 13: merge an agent's pending <c>setContext</c> / <c>setGlobal</c> writes (carried on
-    /// <see cref="AgentInvocationCompleted"/>) into the saga's local-context and global-context
-    /// bags. Mirrors <see cref="ApplyScriptUpdates"/> for Logic nodes — same merge semantics
-    /// (last-write-wins per top-level key). No-op when the message has no updates.
+    /// Slice 13: merge an agent's pending <c>setContext</c> / <c>setWorkflow</c> writes (carried
+    /// on <see cref="AgentInvocationCompleted"/>) into the saga's local-context and
+    /// workflow-context bags. Mirrors <see cref="ApplyScriptUpdates"/> for Logic nodes — same
+    /// merge semantics (last-write-wins per top-level key). No-op when the message has no
+    /// updates.
     /// </summary>
     private static void ApplyAgentBagWrites(WorkflowSagaStateEntity saga, AgentInvocationCompleted message)
     {
@@ -1224,22 +1423,22 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.InputsJson = SerializeContextInputs(mergedLocal);
         }
 
-        if (message.GlobalUpdates is { Count: > 0 } globalUpdates)
+        if (message.WorkflowUpdates is { Count: > 0 } workflowUpdates)
         {
-            var currentGlobal = DeserializeContextInputs(saga.GlobalInputsJson);
-            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
-            foreach (var (key, value) in globalUpdates)
+            var currentWorkflow = DeserializeContextInputs(saga.WorkflowInputsJson);
+            var mergedWorkflow = new Dictionary<string, JsonElement>(currentWorkflow, StringComparer.Ordinal);
+            foreach (var (key, value) in workflowUpdates)
             {
-                mergedGlobal[key] = value;
+                mergedWorkflow[key] = value;
             }
-            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
         }
     }
 
     private static void ApplyScriptUpdates(
         WorkflowSagaStateEntity saga,
         IReadOnlyDictionary<string, JsonElement> currentLocal,
-        IReadOnlyDictionary<string, JsonElement> currentGlobal,
+        IReadOnlyDictionary<string, JsonElement> currentWorkflow,
         LogicNodeEvaluationResult eval)
     {
         if (eval.ContextUpdates.Count > 0)
@@ -1252,14 +1451,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.InputsJson = SerializeContextInputs(mergedLocal);
         }
 
-        if (eval.GlobalUpdates.Count > 0)
+        if (eval.WorkflowUpdates.Count > 0)
         {
-            var mergedGlobal = new Dictionary<string, JsonElement>(currentGlobal, StringComparer.Ordinal);
-            foreach (var (key, value) in eval.GlobalUpdates)
+            var mergedWorkflow = new Dictionary<string, JsonElement>(currentWorkflow, StringComparer.Ordinal);
+            foreach (var (key, value) in eval.WorkflowUpdates)
             {
-                mergedGlobal[key] = value;
+                mergedWorkflow[key] = value;
             }
-            saga.GlobalInputsJson = SerializeContextInputs(mergedGlobal);
+            saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
         }
     }
 
@@ -1356,7 +1555,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         JsonElement inputJson = default;
         var inputLoaded = false;
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var globalInputs = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         for (var hops = 0; hops < MaxLogicChainHops; hops++)
         {
@@ -1389,7 +1588,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 input: inputJson,
                 context: contextInputs,
                 cancellationToken: context.CancellationToken,
-                global: globalInputs,
+                workflow: workflowInputs,
                 reviewRound: saga.ParentReviewRound,
                 reviewMaxRounds: saga.ParentReviewMaxRounds);
 
@@ -1403,7 +1602,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 FailureMessage: eval.FailureMessage,
                 RecordedAtUtc: DateTime.UtcNow));
 
-            ApplyScriptUpdates(saga, contextInputs, globalInputs, eval);
+            ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
             if (eval.ContextUpdates.Count > 0)
             {
                 var merged = new Dictionary<string, JsonElement>(contextInputs, StringComparer.Ordinal);
@@ -1413,14 +1612,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 }
                 contextInputs = merged;
             }
-            if (eval.GlobalUpdates.Count > 0)
+            if (eval.WorkflowUpdates.Count > 0)
             {
-                var merged = new Dictionary<string, JsonElement>(globalInputs, StringComparer.Ordinal);
-                foreach (var (key, value) in eval.GlobalUpdates)
+                var merged = new Dictionary<string, JsonElement>(workflowInputs, StringComparer.Ordinal);
+                foreach (var (key, value) in eval.WorkflowUpdates)
                 {
                     merged[key] = value;
                 }
-                globalInputs = merged;
+                workflowInputs = merged;
             }
 
             var chosenPort = eval.IsSuccess
@@ -1520,10 +1719,64 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
         catch (JsonException)
         {
-            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can still read it.
+            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can still let it.
             var doc = new { text };
             return JsonSerializer.SerializeToElement(doc);
         }
+    }
+
+    /// <summary>
+    /// P3: when a ReviewLoop's reviewer rejects on a non-final round, append the loop-decision
+    /// artifact to the framework-managed <c>__loop.rejectionHistory</c> workflow variable so
+    /// the next round's child workflow renders it via the auto-injected
+    /// <c>{{ rejectionHistory }}</c> binding. No-op when the parent ReviewLoop has the feature
+    /// disabled (NULL config, or <c>Enabled=false</c>) — that's the migration-safe default.
+    /// </summary>
+    private static async Task AccumulateRejectionHistoryAsync(
+        WorkflowSagaStateEntity saga,
+        WorkflowNode parentNode,
+        SubflowCompleted message,
+        IArtifactStore artifactStore,
+        CancellationToken cancellationToken)
+    {
+        var config = parentNode.RejectionHistory;
+        if (config is null || !config.Enabled)
+        {
+            return;
+        }
+
+        string artifactBody;
+        try
+        {
+            await using var stream = await artifactStore.ReadAsync(message.OutputRef, cancellationToken);
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+            artifactBody = await reader.ReadToEndAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            // Accumulation is a best-effort enrichment — never fail the loop because the
+            // history couldn't be appended. The next round simply runs without the new entry.
+            return;
+        }
+
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+
+        workflowBag.TryGetValue(RejectionHistoryAccumulator.WorkflowVariableKey, out var existingElement);
+        var existingValue = existingElement.ValueKind == JsonValueKind.String
+            ? existingElement.GetString()
+            : existingElement.ValueKind == JsonValueKind.Undefined || existingElement.ValueKind == JsonValueKind.Null
+                ? null
+                : existingElement.GetRawText();
+
+        var justFinishedRound = message.ReviewRound ?? 1;
+        var updated = RejectionHistoryAccumulator.Append(existingValue, justFinishedRound, artifactBody, config);
+
+        workflowBag[RejectionHistoryAccumulator.WorkflowVariableKey] =
+            JsonSerializer.SerializeToElement(updated);
+
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
     }
 
     private static Task DispatchToNodeAsync(
@@ -1593,7 +1846,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         saga.CurrentInputRef = inputRef.ToString();
 
-        var sharedContext = DeserializeContextInputs(saga.GlobalInputsJson);
+        var workflowContext = DeserializeContextInputs(saga.WorkflowInputsJson);
 
         return context.Publish(new SubflowInvokeRequested(
             ParentTraceId: saga.TraceId,
@@ -1603,7 +1856,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             SubflowKey: subflowNode.SubflowKey,
             SubflowVersion: subflowVersion,
             InputRef: inputRef,
-            SharedContext: sharedContext,
+            WorkflowContext: workflowContext,
             Depth: saga.SubflowDepth + 1,
             ReviewRound: reviewRound,
             ReviewMaxRounds: reviewMaxRounds,
@@ -1667,9 +1920,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             InputRef: effectiveInputRef,
             ContextInputs: DeserializeContextInputs(saga.InputsJson),
             RetryContext: retryContext,
-            GlobalContext: DeserializeContextInputs(saga.GlobalInputsJson),
+            WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: saga.ParentReviewRound,
-            ReviewMaxRounds: saga.ParentReviewMaxRounds));
+            ReviewMaxRounds: saga.ParentReviewMaxRounds,
+            OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(

@@ -434,6 +434,55 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             .Should().Contain(warning => warning!.Contains("bearer token", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task PostValidate_ReturnsFindingsWithoutPersisting()
+    {
+        // F1 acceptance: POST /api/workflows/validate runs the pluggable rule pipeline against an
+        // arbitrary workflow draft and returns structured findings — no DB write happens.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-validate-writer");
+
+        var startId = Guid.NewGuid();
+        var validateResponse = await client.PostAsJsonAsync("/api/workflows/validate", new
+        {
+            key = "validate-flow",
+            name = "Validate-only flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-validate-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    inputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+
+        validateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await validateResponse.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        // Canary rule emits a Warning when Start node has no input script — confirms wiring.
+        root.GetProperty("hasErrors").GetBoolean().Should().BeFalse();
+        root.GetProperty("hasWarnings").GetBoolean().Should().BeTrue();
+        var findings = root.GetProperty("findings").EnumerateArray().ToList();
+        findings.Should().Contain(f =>
+            f.GetProperty("ruleId").GetString() == "start-node-input-script-advisory" &&
+            f.GetProperty("severity").GetString() == "Warning");
+
+        // Validate did not persist — no row exists for this key.
+        var listResponse = await client.GetAsync("/api/workflows/validate-flow");
+        listResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     private static async Task SeedAgentAsync(HttpClient client, string key)
     {
         var response = await client.PostAsJsonAsync("/api/agents", new

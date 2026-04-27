@@ -47,13 +47,32 @@ public sealed class ContextAssembler
         "endif", "endunless", "endcapture", "endwhile"
     };
 
+    /// <summary>
+    /// Render system prompt and prompt template independently against the supplied scope, mirroring
+    /// the per-template render path used by <see cref="Assemble"/>. Used by the live prompt-template
+    /// preview endpoint (VZ3) so authors see exactly what the model would receive — including
+    /// legacy-placeholder escaping (typos like <c>{{ wokflow.foo }}</c> render verbatim) and partial
+    /// resolution (when <paramref name="partials"/> is populated).
+    /// </summary>
+    public PromptPreviewRenderResult RenderPreview(
+        string? systemPrompt,
+        string? promptTemplate,
+        IReadOnlyDictionary<string, string?>? variables,
+        string? input,
+        IReadOnlyDictionary<string, string>? partials)
+    {
+        var renderedSystemPrompt = RenderTemplate(systemPrompt, variables, input, partials);
+        var renderedPromptTemplate = RenderTemplate(promptTemplate, variables, input, partials);
+        return new PromptPreviewRenderResult(renderedSystemPrompt, renderedPromptTemplate);
+    }
+
     public IReadOnlyList<ChatMessage> Assemble(ContextAssemblyRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var messages = new List<ChatMessage>();
 
-        var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input);
+        var renderedSystemPrompt = RenderTemplate(request.SystemPrompt, request.Variables, request.Input, request.Partials);
         var skillsBlock = BuildSkillsBlock(request.Skills, request.Variables, request.Input);
         var outputFormatBlock = BuildOutputFormatBlock(request.DeclaredOutputs);
 
@@ -85,7 +104,7 @@ public sealed class ContextAssembler
 
     private string? BuildUserMessage(ContextAssemblyRequest request)
     {
-        var renderedPrompt = RenderTemplate(request.PromptTemplate, request.Variables, request.Input);
+        var renderedPrompt = RenderTemplate(request.PromptTemplate, request.Variables, request.Input, request.Partials);
         var trimmedInput = string.IsNullOrWhiteSpace(request.Input) ? null : request.Input.Trim();
 
         if (string.IsNullOrWhiteSpace(renderedPrompt))
@@ -104,14 +123,15 @@ public sealed class ContextAssembler
     private string? RenderTemplate(
         string? template,
         IReadOnlyDictionary<string, string?>? variables,
-        string? input)
+        string? input,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         if (string.IsNullOrWhiteSpace(template))
         {
             return null;
         }
 
-        var rendered = ApplyVariables(template, variables, input);
+        var rendered = ApplyVariables(template, variables, input, partials);
         var trimmed = rendered.Trim();
         return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
@@ -119,7 +139,8 @@ public sealed class ContextAssembler
     private string ApplyVariables(
         string template,
         IReadOnlyDictionary<string, string?>? variables,
-        string? input)
+        string? input,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         var flat = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         if (variables is not null)
@@ -158,7 +179,7 @@ public sealed class ContextAssembler
                     : EscapeLegacyLiteral(match.Value);
             });
 
-        return RenderWithScriban(escaped, flat);
+        return RenderWithScriban(escaped, flat, partials);
     }
 
     private static HashSet<string> CollectLocallyBoundNames(string template)
@@ -177,10 +198,13 @@ public sealed class ContextAssembler
         return dot < 0 ? dottedName : dottedName[..dot];
     }
 
-    private string RenderWithScriban(string template, IReadOnlyDictionary<string, string?> flat)
+    private string RenderWithScriban(
+        string template,
+        IReadOnlyDictionary<string, string?> flat,
+        IReadOnlyDictionary<string, string>? partials = null)
     {
         var scriptObject = BuildScriptObject(flat);
-        return renderer.Render(template, scriptObject);
+        return renderer.Render(template, scriptObject, partials);
     }
 
     private static string EscapeLegacyLiteral(string literal)
@@ -509,6 +533,8 @@ public sealed class ContextAssembler
             });
     }
 }
+
+public sealed record PromptPreviewRenderResult(string? RenderedSystemPrompt, string? RenderedPromptTemplate);
 
 public sealed class PromptTemplateException : Exception
 {

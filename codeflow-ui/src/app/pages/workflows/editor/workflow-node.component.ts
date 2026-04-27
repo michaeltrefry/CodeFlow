@@ -50,6 +50,8 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
             <div class="wf-node-row output"
                  *ngFor="let output of data.outputs | keyvalueimpure: sortByIndex"
                  [class.implicit-failed]="output.key === 'Failed'"
+                 [class.wired]="output.key === 'Failed' && data.failedHasConnection"
+                 [hidden]="output.key === 'Failed' && !data.failedHasConnection && !data.showImplicitFailed()"
                  [attr.data-testid]="'output-' + output.key">
               <span class="wf-port-label output">{{ output.value?.label }}</span>
               <div class="wf-port-wrap"
@@ -86,10 +88,17 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
     .wf-node-row.input .wf-port-wrap { margin-left: -7px; }
     .wf-node-row.output .wf-port-wrap { margin-right: -7px; }
     .port-col.outputs:empty, .port-col:empty { min-height: 24px; }
-    .wf-node-row.output.implicit-failed .wf-port-label {
+    /* Implicit Failed port: italic + danger when unwired-and-revealed; normal when wired. */
+    .wf-node-row.output.implicit-failed:not(.wired) .wf-port-label {
       color: var(--color-danger, #d04848);
-      opacity: 0.85;
+      opacity: 0.55;
       font-style: italic;
+    }
+    .wf-node-row.output.implicit-failed:not(.wired) .wf-port-wrap {
+      opacity: 0.55;
+    }
+    .wf-node-row.output.implicit-failed.wired .wf-port-label {
+      color: var(--color-danger, #d04848);
     }
   `]
 })

@@ -144,6 +144,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 MaxRoundsPerRound = draft.MaxRoundsPerRound,
                 Category = draft.Category,
                 TagsJson = WorkflowJson.SerializeTags(NormalizeTags(draft.Tags)),
+                WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(NormalizeWorkflowVarList(draft.WorkflowVarsReads)),
+                WorkflowVarsWritesJson = WorkflowJson.SerializeStringList(NormalizeWorkflowVarList(draft.WorkflowVarsWrites)),
                 CreatedAtUtc = DateTime.UtcNow,
                 Nodes = draft.Nodes
                     .Select(node => new WorkflowNodeEntity
@@ -160,7 +162,11 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         SubflowKey = NormalizeOptionalString(node.SubflowKey),
                         SubflowVersion = node.SubflowVersion,
                         ReviewMaxRounds = node.ReviewMaxRounds,
-                        LoopDecision = NormalizeOptionalString(node.LoopDecision)
+                        LoopDecision = NormalizeOptionalString(node.LoopDecision),
+                        OptOutLastRoundReminder = node.OptOutLastRoundReminder,
+                        RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
+                        MirrorOutputToWorkflowVar = NormalizeOptionalString(node.MirrorOutputToWorkflowVar),
+                        OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -171,7 +177,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         ToNodeId = edge.ToNodeId,
                         ToPort = string.IsNullOrWhiteSpace(edge.ToPort) ? WorkflowEdge.DefaultInputPort : edge.ToPort,
                         RotatesRound = edge.RotatesRound,
-                        SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder
+                        SortOrder = edge.SortOrder == 0 ? index : edge.SortOrder,
+                        IntentionalBackedge = edge.IntentionalBackedge,
                     })
                     .ToList(),
                 Inputs = draft.Inputs
@@ -229,7 +236,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 .Select(Map)
                 .ToArray(),
             entity.Category,
-            WorkflowJson.DeserializeTags(entity.TagsJson));
+            WorkflowJson.DeserializeTags(entity.TagsJson),
+            WorkflowJson.DeserializeStringList(entity.WorkflowVarsReadsJson),
+            WorkflowJson.DeserializeStringList(entity.WorkflowVarsWritesJson));
     }
 
     private static IReadOnlyList<string> NormalizeTags(IReadOnlyList<string>? tags)
@@ -244,6 +253,25 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             .Select(tag => tag.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(5)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// VZ2: NULL → not opted in, validator skips. Empty list → opted in with explicit "no
+    /// reads/writes". Non-empty → trimmed, deduped (case-sensitive — workflow variable names
+    /// are case-sensitive at runtime).
+    /// </summary>
+    private static IReadOnlyList<string>? NormalizeWorkflowVarList(IReadOnlyList<string>? values)
+    {
+        if (values is null)
+        {
+            return null;
+        }
+
+        return values
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v.Trim())
+            .Distinct(StringComparer.Ordinal)
             .ToArray();
     }
 
@@ -262,7 +290,11 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.SubflowVersion,
             entity.ReviewMaxRounds,
             entity.LoopDecision,
-            entity.InputScript);
+            entity.InputScript,
+            entity.OptOutLastRoundReminder,
+            WorkflowJson.DeserializeRejectionHistoryConfig(entity.RejectionHistoryConfigJson),
+            entity.MirrorOutputToWorkflowVar,
+            WorkflowJson.DeserializePortReplacements(entity.OutputPortReplacementsJson));
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)
@@ -273,7 +305,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.ToNodeId,
             string.IsNullOrWhiteSpace(entity.ToPort) ? WorkflowEdge.DefaultInputPort : entity.ToPort,
             entity.RotatesRound,
-            entity.SortOrder);
+            entity.SortOrder,
+            entity.IntentionalBackedge);
     }
 
     private static WorkflowInput Map(WorkflowInputEntity entity)

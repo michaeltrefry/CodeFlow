@@ -15,8 +15,8 @@ namespace CodeFlow.Contracts;
 /// <param name="SubflowVersion">Pinned version of the child workflow. Must be non-null at
 ///   dispatch — "latest at save" sentinels are resolved at parent-workflow save time.</param>
 /// <param name="InputRef">Artifact reference handed to the child workflow's Start node.</param>
-/// <param name="SharedContext">Snapshot of the parent's <c>global</c> bag at the moment of
-///   dispatch. Becomes the child's working <c>global</c>.</param>
+/// <param name="WorkflowContext">Snapshot of the parent's <c>workflow</c> bag at the moment of
+///   dispatch. Becomes the child's working <c>workflow</c>.</param>
 /// <param name="Depth">Subflow nesting depth assigned to the child (parent depth + 1). Capped
 ///   by the orchestration layer at the configured maximum to prevent runaway recursion.</param>
 /// <param name="ReviewRound">1-indexed round number when this invocation is an iteration of a
@@ -37,7 +37,7 @@ public sealed record SubflowInvokeRequested(
     string SubflowKey,
     int SubflowVersion,
     Uri InputRef,
-    IReadOnlyDictionary<string, JsonElement> SharedContext,
+    IReadOnlyDictionary<string, JsonElement> WorkflowContext,
     int Depth,
     int? ReviewRound = null,
     int? ReviewMaxRounds = null,

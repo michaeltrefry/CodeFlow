@@ -60,6 +60,7 @@ public sealed class ObservabilityTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"obs-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>

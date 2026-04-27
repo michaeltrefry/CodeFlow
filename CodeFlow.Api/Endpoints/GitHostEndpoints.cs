@@ -184,10 +184,10 @@ public static class GitHostEndpoints
             {
                 errors["workingDirectoryRoot"] = ["Working directory root must be an absolute path."];
             }
-            else if (!Directory.Exists(path))
+            else if (TryEnsureDirectoryExists(path) is { } createError)
             {
                 errors["workingDirectoryRoot"] =
-                    ["Working directory root does not exist on the server. Create the directory before saving."];
+                    [$"Working directory root could not be created on the server: {createError}"];
             }
             else if (TryProbeWritability(path) is { } probeError)
             {
@@ -197,6 +197,22 @@ public static class GitHostEndpoints
         }
 
         return errors;
+    }
+
+    // Creates the directory tree if it does not already exist. The user generally does not have
+    // shell access to the server, so requiring them to mkdir before saving is friction we don't
+    // need — surface a clear error only if creation actually fails.
+    private static string? TryEnsureDirectoryExists(string directory)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return ex.Message;
+        }
     }
 
     // Attempts to create + delete a temp file in the directory. Returns null on success, or the

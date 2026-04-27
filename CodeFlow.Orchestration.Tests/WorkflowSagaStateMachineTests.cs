@@ -70,12 +70,12 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
-    public async Task InitialAgentInvokeRequested_WithGlobalContext_ShouldSeedSagaGlobalInputsJson()
+    public async Task InitialAgentInvokeRequested_WithWorkflowContext_ShouldSeedSagaWorkflowInputsJson()
     {
         // Top-level traces enter via AgentInvokeRequested → Initially → ApplyInitialRequest.
         // The /api/traces endpoint runs the start node's InputScript and passes the script's
-        // setGlobal writes via the GlobalContext field. ApplyInitialRequest must seed
-        // saga.GlobalInputsJson from that field so the start agent's prompt template can
+        // setWorkflow writes via the WorkflowContext field. ApplyInitialRequest must seed
+        // saga.WorkflowInputsJson from that field so the start agent's prompt template can
         // resolve {{ global.* }} and downstream nodes inherit the seeded state — paralleling
         // the same behavior on subflow Start nodes (ApplyInitialSubflowAsync).
         var traceId = Guid.NewGuid();
@@ -90,7 +90,7 @@ public sealed class WorkflowSagaStateMachineTests
         await harness.Start();
         try
         {
-            var globalContext = new Dictionary<string, JsonElement>
+            var workflowContext = new Dictionary<string, JsonElement>
             {
                 ["seedKey"] = JsonDocument.Parse("\"seedValue\"").RootElement.Clone()
             };
@@ -105,7 +105,7 @@ public sealed class WorkflowSagaStateMachineTests
                 AgentVersion: 1,
                 InputRef: new Uri("file:///tmp/in.bin"),
                 ContextInputs: new Dictionary<string, JsonElement>(),
-                GlobalContext: globalContext));
+                WorkflowContext: workflowContext));
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             var sagaInstance = await sagaHarness.Exists(traceId, x => x.Running);
@@ -113,11 +113,11 @@ public sealed class WorkflowSagaStateMachineTests
 
             var saga = sagaHarness.Sagas.Contains(sagaInstance!.Value);
             saga.Should().NotBeNull();
-            saga!.GlobalInputsJson.Should().NotBeNullOrWhiteSpace(
-                "ApplyInitialRequest must seed GlobalInputsJson from message.GlobalContext");
-            saga.GlobalInputsJson!.Should().Contain("seedKey",
-                "setGlobal writes from a top-level Start input script (passed via GlobalContext) must land in the saga");
-            saga.GlobalInputsJson.Should().Contain("seedValue");
+            saga!.WorkflowInputsJson.Should().NotBeNullOrWhiteSpace(
+                "ApplyInitialRequest must seed WorkflowInputsJson from message.WorkflowContext");
+            saga.WorkflowInputsJson!.Should().Contain("seedKey",
+                "setWorkflow writes from a top-level Start input script (passed via WorkflowContext) must land in the saga");
+            saga.WorkflowInputsJson.Should().Contain("seedValue");
         }
         finally
         {
@@ -714,6 +714,313 @@ public sealed class WorkflowSagaStateMachineTests
             logicHistory.Should().ContainSingle()
                 .Which.NodeId.Should().Be(NodeIdFor(workflow, "classifier"));
             logicHistory[0].OutputPortName.Should().Be("Accept");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task MirrorOutputToWorkflowVar_WritesArtifactTextToWorkflowBag_BeforeOutputScriptRuns()
+    {
+        // P4: an Agent/Start node configured with `MirrorOutputToWorkflowVar = "currentPlan"`
+        // must mirror the agent's output text into the workflow bag BEFORE the output script
+        // runs, so the script can read `workflow.currentPlan` immediately. The mirror is a
+        // pure side effect — no separate setWorkflow call needed.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/architect-out.bin");
+        var artifactBody = "## Plan\n1. Wire the saga.\n2. Test it.";
+
+        // Output script picks Approved when the mirrored variable is visible at script time,
+        // Rejected otherwise. If P4 ordering is wrong, `workflow.currentPlan` would be
+        // undefined and the script would take the Rejected branch instead.
+        const string script = """
+            if (workflow && workflow.currentPlan && workflow.currentPlan.length > 0) {
+                setNodePath('Approved');
+            } else {
+                setNodePath('Rejected');
+            }
+            """;
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p4-mirror",
+            sourceAgentKey: "architect",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "downstreamPresent",
+                ["Rejected"] = "downstreamMissing",
+            },
+            sourceOutputScript: script,
+            mirrorOutputToWorkflowVar: "currentPlan");
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, artifactBody);
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["downstreamPresent"] = 1, ["downstreamMissing"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "architect"),
+                AgentKey: "architect",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "downstreamPresent"
+                       || x.Context.Message.AgentKey == "downstreamMissing"));
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("downstreamPresent",
+                "the output script should observe the mirrored variable was already populated");
+
+            // The bag also carries the value into downstream dispatch.
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "downstreamPresent");
+            downstreamDispatch.Context.Message.WorkflowContext
+                .Should().NotBeNull();
+            downstreamDispatch.Context.Message.WorkflowContext!.Should().ContainKey("currentPlan");
+            downstreamDispatch.Context.Message.WorkflowContext["currentPlan"].GetString()
+                .Should().Be(artifactBody);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task MirrorOutputToWorkflowVar_RejectsReservedKey_SilentlyAtRuntime()
+    {
+        // P4: the runtime swallows mirrors targeting the framework-managed __loop.* namespace
+        // — the save-time validator is responsible for surfacing the error. The agent's output
+        // must NOT clobber the reserved bookkeeping namespace under any circumstance.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/architect-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p4-reserved-key",
+            sourceAgentKey: "architect",
+            downstream: new Dictionary<string, string>
+            {
+                ["Completed"] = "downstream",
+            },
+            mirrorOutputToWorkflowVar: "__loop.rejectionHistory");
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "agent-attempt-to-clobber");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["downstream"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "architect"),
+                AgentKey: "architect",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "downstream"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "downstream");
+            (downstreamDispatch.Context.Message.WorkflowContext is null
+                || !downstreamDispatch.Context.Message.WorkflowContext.ContainsKey("__loop.rejectionHistory"))
+                .Should().BeTrue("reserved namespace must remain untouched by mirror");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task OutputPortReplacements_OnApproved_ReplacesArtifactWithWorkflowVariable()
+    {
+        // P5: the reviewer's "Approved" submission text (a one-line rationale) is logged via
+        // the saga but the downstream artifact must be the architect's plan, sourced from the
+        // workflow variable populated upstream. With OutputPortReplacements = { Approved →
+        // currentPlan }, the runtime replaces the artifact only on the Approved port — other
+        // ports continue to flow the agent's verbatim submission.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/reviewer-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p5-replace",
+            sourceAgentKey: "reviewer",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher",
+            },
+            sourceOutputScript: "setNodePath('Approved');",
+            outputPortReplacements: new Dictionary<string, string>
+            {
+                ["Approved"] = "currentPlan",
+            });
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "Looks great — approving.");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            // Seed the workflow bag with `currentPlan` via the start message — simulates an
+            // upstream node that mirrored the architect's plan.
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: workflow.StartNode.Id,
+                AgentKey: workflow.StartNode.AgentKey!,
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>
+                {
+                    ["currentPlan"] = JsonSerializer.SerializeToElement(
+                        "## Plan\n1. Step one.\n2. Step two."),
+                }));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "reviewer"),
+                AgentKey: "reviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+
+            // The downstream input ref must point at the replacement artifact (a fresh write
+            // recorded by the artifact store), not the reviewer's original submission.
+            downstreamDispatch.Context.Message.InputRef.Should().NotBe(artifactRef);
+            var replacementContent = artifactStore.ReadWrittenContent(downstreamDispatch.Context.Message.InputRef);
+            replacementContent.Should().Be("## Plan\n1. Step one.\n2. Step two.");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task OutputPortReplacements_PortWithoutBinding_FlowsAgentArtifactVerbatim()
+    {
+        // P5 contract: only the bound port is replaced. Submitting on a different port (here,
+        // "Rejected") leaves the agent's original artifact in place — the workflow author's
+        // hand-rolled replacement on Approved doesn't accidentally affect Rejected.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/reviewer-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p5-replace-non-bound",
+            sourceAgentKey: "reviewer",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher",
+                ["Rejected"] = "rework",
+            },
+            sourceOutputScript: "setNodePath('Rejected');",
+            outputPortReplacements: new Dictionary<string, string>
+            {
+                ["Approved"] = "currentPlan",
+            });
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "## Findings\n- needs more polish");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["publisher"] = 1, ["rework"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: workflow.StartNode.Id,
+                AgentKey: workflow.StartNode.AgentKey!,
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>
+                {
+                    ["currentPlan"] = JsonSerializer.SerializeToElement("the plan"),
+                }));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "reviewer"),
+                AgentKey: "reviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "rework"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "rework");
+            downstreamDispatch.Context.Message.InputRef.Should().Be(artifactRef,
+                "Rejected has no binding so the original artifact must flow through");
         }
         finally
         {
@@ -1626,6 +1933,58 @@ public sealed class WorkflowSagaStateMachineTests
             CreatedBy: null);
     }
 
+    private static Workflow BuildWorkflowWithMirrorAndReplacements(
+        string key,
+        string sourceAgentKey,
+        IReadOnlyDictionary<string, string> downstream,
+        string? sourceOutputScript = null,
+        string? mirrorOutputToWorkflowVar = null,
+        IReadOnlyDictionary<string, string>? outputPortReplacements = null)
+    {
+        var nodes = new List<WorkflowNode>();
+        var nodeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+
+        var sourceId = Guid.NewGuid();
+        nodeIds[sourceAgentKey] = sourceId;
+        nodes.Add(new WorkflowNode(
+            Id: sourceId,
+            Kind: WorkflowNodeKind.Start,
+            AgentKey: sourceAgentKey,
+            AgentVersion: 1,
+            OutputScript: sourceOutputScript,
+            OutputPorts: AllDecisionPorts,
+            LayoutX: 0,
+            LayoutY: 0,
+            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar,
+            OutputPortReplacements: outputPortReplacements));
+
+        foreach (var downstreamAgent in downstream.Values.Distinct(StringComparer.Ordinal))
+        {
+            var id = Guid.NewGuid();
+            nodeIds[downstreamAgent] = id;
+            nodes.Add(new WorkflowNode(id, WorkflowNodeKind.Agent, downstreamAgent, 1,
+                null, AllDecisionPorts, 500, 0));
+        }
+
+        var edges = new List<WorkflowEdge>();
+        var sortOrder = 0;
+        foreach (var (port, agent) in downstream)
+        {
+            edges.Add(new WorkflowEdge(sourceId, port, nodeIds[agent],
+                WorkflowEdge.DefaultInputPort, false, sortOrder++));
+        }
+
+        return new Workflow(
+            Key: key,
+            Version: 1,
+            Name: key,
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: edges,
+            Inputs: Array.Empty<WorkflowInput>());
+    }
+
     private static Workflow BuildWorkflowWithScriptedSource(
         string key,
         string sourceAgentKey,
@@ -1827,8 +2186,8 @@ public sealed class WorkflowSagaStateMachineTests
             dispatched.SubflowKey.Should().Be("shared-utility");
             dispatched.SubflowVersion.Should().Be(7);
             dispatched.Depth.Should().Be(1, "top-level saga has SubflowDepth=0, child = 0 + 1");
-            dispatched.SharedContext.Should().BeEmpty(
-                "no setGlobal writes have occurred and no API caller seeded global at start");
+            dispatched.WorkflowContext.Should().BeEmpty(
+                "no setWorkflow writes have occurred and no API caller seeded global at start");
 
             var saga = sagaHarness.Sagas.Contains(traceId);
             saga.Should().NotBeNull();
@@ -1898,7 +2257,7 @@ public sealed class WorkflowSagaStateMachineTests
     public async Task SubflowCompleted_ShouldMergeGlobalAndTerminateParentWhenNoDownstreamEdge()
     {
         // S5: a SubflowCompleted with port "Completed" and no downstream edge from the Subflow
-        // node terminates the parent in the Completed state. The child's final SharedContext is
+        // node terminates the parent in the Completed state. The child's final WorkflowContext is
         // shallow-merged into the parent's global before routing, and a synthetic decision is
         // appended to the parent's history.
         var traceId = Guid.NewGuid();
@@ -1932,8 +2291,8 @@ public sealed class WorkflowSagaStateMachineTests
             parent.CurrentNodeId.Should().Be(subflowNodeId);
             parent.CurrentRoundId.Should().Be(parentRoundId);
 
-            // Synthesize the child's completion with a SharedContext that should propagate.
-            var childGlobal = new Dictionary<string, JsonElement>
+            // Synthesize the child's completion with a WorkflowContext that should propagate.
+            var childWorkflowBag = new Dictionary<string, JsonElement>
             {
                 ["resolvedSpec"] = JsonDocument.Parse("""{"engine":"markdown"}""").RootElement.Clone(),
                 ["fromChild"] = JsonDocument.Parse("\"yes\"").RootElement.Clone(),
@@ -1946,15 +2305,15 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: Guid.NewGuid(),
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/child-final.bin"),
-                SharedContext: childGlobal));
+                WorkflowContext: childWorkflowBag));
 
             await sagaHarness.Exists(traceId, x => x.Completed);
 
             var resumed = sagaHarness.Sagas.Contains(traceId)!;
             resumed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
-            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
-            resumed.GlobalInputsJson!.Should().Contain("resolvedSpec");
-            resumed.GlobalInputsJson.Should().Contain("fromChild");
+            resumed.WorkflowInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.WorkflowInputsJson!.Should().Contain("resolvedSpec");
+            resumed.WorkflowInputsJson.Should().Contain("fromChild");
 
             // Decision history should include the synthetic Subflow completion record.
             var decisions = resumed.GetDecisionHistory();
@@ -2004,7 +2363,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: Guid.NewGuid(),
                 OutputPortName: "Failed",
                 OutputRef: new Uri("file:///tmp/child-failed.bin"),
-                SharedContext: new Dictionary<string, JsonElement>()));
+                WorkflowContext: new Dictionary<string, JsonElement>()));
 
             await sagaHarness.Exists(traceId, x => x.Failed);
 
@@ -2055,7 +2414,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: Guid.NewGuid(),
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/stale.bin"),
-                SharedContext: new Dictionary<string, JsonElement>
+                WorkflowContext: new Dictionary<string, JsonElement>
                 {
                     ["shouldNotMerge"] = JsonDocument.Parse("\"true\"").RootElement.Clone(),
                 }));
@@ -2064,7 +2423,7 @@ public sealed class WorkflowSagaStateMachineTests
             await Task.Delay(500);
             var saga = sagaHarness.Sagas.Contains(traceId)!;
             saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Running));
-            (saga.GlobalInputsJson ?? string.Empty).Should().NotContain("shouldNotMerge",
+            (saga.WorkflowInputsJson ?? string.Empty).Should().NotContain("shouldNotMerge",
                 "stale-round messages must not mutate the parent's global");
         }
         finally
@@ -2076,8 +2435,8 @@ public sealed class WorkflowSagaStateMachineTests
     [Fact]
     public async Task ReviewLoopCompleted_ShouldCarryGlobalAcrossRoundsAndMergeIntoParentOnExit()
     {
-        // Slice 4: a child's setGlobal writes during round N must be visible to round N+1 (via
-        // SharedContext on the next SubflowInvokeRequested) and must survive into the parent's
+        // Slice 4: a child's setWorkflow writes during round N must be visible to round N+1 (via
+        // WorkflowContext on the next SubflowInvokeRequested) and must survive into the parent's
         // global bag after the loop exits.
         var traceId = Guid.NewGuid();
         var parentRoundId = Guid.NewGuid();
@@ -2110,8 +2469,8 @@ public sealed class WorkflowSagaStateMachineTests
             round1.ReviewRound.Should().Be(1);
             round1.ReviewMaxRounds.Should().Be(2);
 
-            // Child round 1 finishes Rejected with setGlobal('counter', 1).
-            var round1Global = new Dictionary<string, JsonElement>
+            // Child round 1 finishes Rejected with setWorkflow('counter', 1).
+            var round1WorkflowBag = new Dictionary<string, JsonElement>
             {
                 ["counter"] = JsonDocument.Parse("1").RootElement.Clone(),
             };
@@ -2122,7 +2481,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round1.ChildTraceId,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/round1-out.bin"),
-                SharedContext: round1Global,
+                WorkflowContext: round1WorkflowBag,
                 Decision: "Rejected",
                 ReviewRound: 1,
                 TerminalPort: "Rejected"));
@@ -2135,12 +2494,12 @@ public sealed class WorkflowSagaStateMachineTests
             round2.ReviewMaxRounds.Should().Be(2);
             round2.InputRef.Should().Be(new Uri("file:///tmp/round1-out.bin"),
                 "round N+1 input = round N's output artifact");
-            round2.SharedContext.Should().ContainKey("counter");
-            round2.SharedContext["counter"].GetInt32().Should().Be(1,
-                "round 2 must see round 1's setGlobal writes through its SharedContext snapshot");
+            round2.WorkflowContext.Should().ContainKey("counter");
+            round2.WorkflowContext["counter"].GetInt32().Should().Be(1,
+                "round 2 must see round 1's setWorkflow writes through its WorkflowContext snapshot");
 
             // Child round 2 approves with an additional global write.
-            var round2Global = new Dictionary<string, JsonElement>
+            var round2WorkflowBag = new Dictionary<string, JsonElement>
             {
                 ["counter"] = JsonDocument.Parse("2").RootElement.Clone(),
                 ["done"] = JsonDocument.Parse("true").RootElement.Clone(),
@@ -2152,7 +2511,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round2.ChildTraceId,
                 OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/round2-out.bin"),
-                SharedContext: round2Global,
+                WorkflowContext: round2WorkflowBag,
                 Decision: "Approved",
                 ReviewRound: 2));
 
@@ -2162,10 +2521,10 @@ public sealed class WorkflowSagaStateMachineTests
 
             var resumed = sagaHarness.Sagas.Contains(traceId)!;
             resumed.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
-            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
-            resumed.GlobalInputsJson!.Should().Contain("\"counter\":2",
+            resumed.WorkflowInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.WorkflowInputsJson!.Should().Contain("\"counter\":2",
                 "the parent's final global must reflect the last round's write");
-            resumed.GlobalInputsJson.Should().Contain("done",
+            resumed.WorkflowInputsJson.Should().Contain("done",
                 "keys added only in the final round must also be merged up");
         }
         finally
@@ -2213,7 +2572,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ChildTraceId: round1.ChildTraceId,
                 OutputPortName: childTerminalPort,
                 OutputRef: new Uri("file:///tmp/round1-out.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: childTerminalPort,
                 ReviewRound: 1,
                 TerminalPort: childTerminalPort));
@@ -2266,7 +2625,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r1-out.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
 
             var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
@@ -2277,7 +2636,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round2.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r2-out.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Rejected", ReviewRound: 2, TerminalPort: "Rejected"));
 
             await sagaHarness.Exists(traceId, x => x.Completed);
@@ -2293,10 +2652,157 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task ReviewLoopCompleted_RejectionHistoryEnabled_AccumulatesArtifactBodyAcrossRounds()
+    {
+        // P3: when the parent ReviewLoop has rejection history enabled, each non-final Rejected
+        // round appends the loop-decision artifact body to the framework-managed
+        // `__loop.rejectionHistory` workflow variable. The final Approved round exits via the
+        // Approved port and the accumulated history rides up on the parent saga's workflow bag
+        // (so a downstream node can still read it after the loop completes).
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-rejection-history", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3,
+            rejectionHistory: new RejectionHistoryConfig(Enabled: true));
+
+        var round1Body = "## Findings\n- missing API in section 2";
+        var round2Body = "## Findings\n- still missing the GET endpoint";
+        var round1OutputRef = new Uri("file:///tmp/r1-feedback.bin");
+        var round2OutputRef = new Uri("file:///tmp/r2-feedback.bin");
+        var round3OutputRef = new Uri("file:///tmp/r3-approved.bin");
+
+        var artifactStore = new StubArtifactStore(uri =>
+            uri == round1OutputRef ? round1Body
+            : uri == round2OutputRef ? round2Body
+            : "{}");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>(), artifactStore: artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Round 1 reject — accumulator should record the artifact body before round 2 spawns.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: round1OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+            round2.ReviewRound.Should().Be(2);
+
+            // Verify the accumulator captured round 1 before spawning round 2.
+            var afterRound1Saga = sagaHarness.Sagas.Contains(traceId)!;
+            var afterRound1Bag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                afterRound1Saga.WorkflowInputsJson)!;
+            afterRound1Bag.Should().ContainKey(RejectionHistoryAccumulator.WorkflowVariableKey);
+            afterRound1Bag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()
+                .Should().Contain("## Round 1").And.Contain("missing API in section 2");
+
+            // Round 2 reject — second round body appends.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: round2OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 2, TerminalPort: "Rejected"));
+
+            var round3 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 3))[2].Context.Message;
+            round3.ReviewRound.Should().Be(3);
+
+            var afterRound2Saga = sagaHarness.Sagas.Contains(traceId)!;
+            var afterRound2Bag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                afterRound2Saga.WorkflowInputsJson)!;
+            var historyAfterRound2 = afterRound2Bag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()!;
+            historyAfterRound2.Should().Contain("## Round 1").And.Contain("missing API in section 2");
+            historyAfterRound2.Should().Contain("## Round 2").And.Contain("still missing the GET endpoint");
+
+            // Round 3 approves — loop exits Approved, accumulator is NOT extended (approval is not
+            // a rejection event), and the saga terminates cleanly.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round3.ChildTraceId, OutputPortName: "Approved",
+                OutputRef: round3OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Approved", ReviewRound: 3, TerminalPort: "Approved"));
+
+            await sagaHarness.Exists(traceId, x => x.Completed);
+
+            var finalSaga = sagaHarness.Sagas.Contains(traceId)!;
+            var finalBag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                finalSaga.WorkflowInputsJson)!;
+            finalBag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()
+                .Should().Be(historyAfterRound2,
+                    "the Approved exit must not extend the rejection history");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_RejectionHistoryDisabled_DoesNotPopulateAccumulator()
+    {
+        // P3 CR1 contract: a ReviewLoop without the feature configured (NULL = pre-P3 row, or
+        // explicit Enabled=false) must behave identically to today — no `__loop.rejectionHistory`
+        // entry appears on the saga bag, so existing hand-rolled accumulation paths are untouched.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-rejection-history-disabled", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 2,
+            rejectionHistory: null);
+
+        var artifactStore = new StubArtifactStore("## Findings\n- something to ignore");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>(), artifactStore: artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: new Uri("file:///tmp/r1.bin"),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
+
+            await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            // Pre-P3 sagas leave WorkflowInputsJson null until something writes; an empty bag
+            // is the expected disabled-feature outcome too.
+            var bag = string.IsNullOrEmpty(saga.WorkflowInputsJson)
+                ? new Dictionary<string, JsonElement>()
+                : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(saga.WorkflowInputsJson)!;
+            bag.Should().NotContainKey(RejectionHistoryAccumulator.WorkflowVariableKey);
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
     public async Task ReviewLoopCompleted_FailedOnRound2_ShouldExitFailedPort_AndKeepRound1GlobalMerged()
     {
         // Slice 10 scenario 5: a Failed return from round 2 exits the Failed port (no edge →
-        // Failed terminal). Round 1's setGlobal writes must still be visible on the parent's
+        // Failed terminal). Round 1's setWorkflow writes must still be visible on the parent's
         // global, because the merge happens inline with each SubflowCompleted.
         var traceId = Guid.NewGuid();
         var parentRoundId = Guid.NewGuid();
@@ -2318,12 +2824,12 @@ public sealed class WorkflowSagaStateMachineTests
             await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
             var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
 
-            // Round 1: Rejected (the loopDecision) with a setGlobal write; next round spawns.
+            // Round 1: Rejected (the loopDecision) with a setWorkflow write; next round spawns.
             await harness.Bus.Publish(new SubflowCompleted(
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
-                SharedContext: new Dictionary<string, JsonElement>
+                WorkflowContext: new Dictionary<string, JsonElement>
                 {
                     ["fromRound1"] = JsonDocument.Parse("\"carried\"").RootElement.Clone()
                 },
@@ -2336,15 +2842,15 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round2.ChildTraceId, OutputPortName: "Failed",
                 OutputRef: new Uri("file:///tmp/r2-failed.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Failed", ReviewRound: 2, TerminalPort: "Failed"));
 
             await sagaHarness.Exists(traceId, x => x.Failed);
 
             var resumed = sagaHarness.Sagas.Contains(traceId)!;
-            resumed.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
-            resumed.GlobalInputsJson!.Should().Contain("fromRound1",
-                "round 1's setGlobal write must survive even when a later round fails");
+            resumed.WorkflowInputsJson.Should().NotBeNullOrWhiteSpace();
+            resumed.WorkflowInputsJson!.Should().Contain("fromRound1",
+                "round 1's setWorkflow write must survive even when a later round fails");
         }
         finally { await harness.Stop(); }
     }
@@ -2396,7 +2902,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Completed",
                 ReviewRound: 1,
                 TerminalPort: "Answered"));
@@ -2411,7 +2917,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round2.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r2.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Approved",
                 ReviewRound: 2,
                 TerminalPort: "Approved"));
@@ -2459,7 +2965,7 @@ public sealed class WorkflowSagaStateMachineTests
                 ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
                 ChildTraceId: round1.ChildTraceId, OutputPortName: "Completed",
                 OutputRef: new Uri("file:///tmp/r1.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Decision: "Rejected",
                 ReviewRound: 1,
                 TerminalPort: "Rejected"));
@@ -2513,7 +3019,7 @@ public sealed class WorkflowSagaStateMachineTests
                 SubflowKey: "custom-port-child",
                 SubflowVersion: 1,
                 InputRef: new Uri("file:///tmp/in.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Depth: 1,
                 LoopDecision: "Answered"));
 
@@ -2639,7 +3145,7 @@ public sealed class WorkflowSagaStateMachineTests
                 SubflowKey: "reviewer-only",
                 SubflowVersion: 1,
                 InputRef: new Uri("file:///tmp/reviewer-in.bin"),
-                SharedContext: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
                 Depth: 1));
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
@@ -2729,7 +3235,7 @@ public sealed class WorkflowSagaStateMachineTests
                 SubflowKey: "child-flow",
                 SubflowVersion: 3,
                 InputRef: new Uri("file:///tmp/child-input.bin"),
-                SharedContext: sharedContext,
+                WorkflowContext: sharedContext,
                 Depth: 1));
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
@@ -2751,9 +3257,9 @@ public sealed class WorkflowSagaStateMachineTests
             dispatch.WorkflowVersion.Should().Be(3);
             dispatch.InputRef.Should().Be(new Uri("file:///tmp/child-input.bin"));
             dispatch.ContextInputs.Should().BeEmpty(
-                "inherited parent state belongs on GlobalContext, not ContextInputs — the child's local context starts empty");
-            dispatch.GlobalContext.Should().NotBeNull();
-            dispatch.GlobalContext!.Should().ContainKey("sharedFlag",
+                "inherited parent state belongs on WorkflowContext, not ContextInputs — the child's local context starts empty");
+            dispatch.WorkflowContext.Should().NotBeNull();
+            dispatch.WorkflowContext!.Should().ContainKey("sharedFlag",
                 "child Start must see inherited state under {{global.*}} from the first node onward");
 
             var saga = sagaHarness.Sagas.Contains(childTraceId)!;
@@ -2769,8 +3275,8 @@ public sealed class WorkflowSagaStateMachineTests
             saga.SubflowDepth.Should().Be(1);
             saga.GetPinnedVersion("child-start-agent").Should().Be(11);
             saga.CurrentInputRef.Should().Be("file:///tmp/child-input.bin");
-            saga.GlobalInputsJson.Should().NotBeNullOrWhiteSpace();
-            saga.GlobalInputsJson!.Should().Contain("sharedFlag");
+            saga.WorkflowInputsJson.Should().NotBeNullOrWhiteSpace();
+            saga.WorkflowInputsJson!.Should().Contain("sharedFlag");
             saga.InputsJson.Should().Be("{}", "child's local context starts empty");
         }
         finally
@@ -2820,7 +3326,8 @@ public sealed class WorkflowSagaStateMachineTests
         string subflowKey,
         int subflowVersion,
         int maxRounds,
-        string? loopDecision = null)
+        string? loopDecision = null,
+        RejectionHistoryConfig? rejectionHistory = null)
     {
         var nodes = new List<WorkflowNode>
         {
@@ -2829,7 +3336,8 @@ public sealed class WorkflowSagaStateMachineTests
             new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, OutputScript: null,
                 OutputPorts: new[] { "Approved", "Exhausted", "Failed" }, LayoutX: 250, LayoutY: 0,
                 SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds,
-                LoopDecision: loopDecision),
+                LoopDecision: loopDecision,
+                RejectionHistory: rejectionHistory),
         };
 
         var edges = new[]

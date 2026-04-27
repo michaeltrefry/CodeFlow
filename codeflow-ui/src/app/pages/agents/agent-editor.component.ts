@@ -15,12 +15,23 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { LlmProvidersApi } from '../../core/llm-providers.api';
-import { AgentConfig, AgentOutputDeclaration, DecisionOutputTemplateMode, LlmProviderKey, LlmProviderModelOption } from '../../core/models';
+import {
+  AgentConfig,
+  AgentOutputDeclaration,
+  DecisionOutputTemplateMode,
+  LlmProviderKey,
+  LlmProviderModelOption,
+  PromptPartialPinDto,
+  PromptTemplatePreviewAutoInjection,
+  PromptTemplatePreviewMissingPartial,
+} from '../../core/models';
+import { FORM_PRESETS, FormPresetKey, getFormPreset } from './form-presets';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { TabsComponent, TabItem } from '../../ui/tabs.component';
+import { MonacoScriptEditorComponent } from '../workflows/editor/monaco-script-editor.component';
 
 interface DecisionTemplateRow {
   port: string;
@@ -41,7 +52,7 @@ interface OutputRow {
   expanded: boolean;
 }
 
-type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
+type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
 
 @Component({
   selector: 'cf-agent-editor',
@@ -49,6 +60,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
   imports: [
     CommonModule, FormsModule, RouterLink,
     PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, TabsComponent,
+    MonacoScriptEditorComponent,
   ],
   template: `
     <div [class.page]="!embedded()">
@@ -141,15 +153,57 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                 </div>
                 <div class="code-field">
                   <div class="code-field-head"><span>input.scriban</span><span>scriban</span></div>
-                  <textarea class="textarea mono" rows="18"
-                            [(ngModel)]="promptTemplate" name="promptTemplate"
-                            style="border: 0; border-radius: 0; background: var(--bg); min-height: 28rem; resize: vertical"
-                            placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
+                  <cf-monaco-script-editor
+                    class="prompt-template-editor"
+                    language="plaintext"
+                    [value]="promptTemplate()"
+                    [templateCompletion]="true"
+                    (valueChange)="promptTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
               </div>
             </cf-card>
           } @else {
             <cf-card>
+              @if (canShowFormPresets()) {
+                <div class="form-section preset-picker">
+                  <div class="form-section-head">
+                    <h3>Start from a preset</h3>
+                    <p>Templates for the most common HITL form shapes. Apply a preset to seed the output template, ports, and per-port templates — then customize from there.</p>
+                  </div>
+                  <div class="preset-grid">
+                    @for (preset of formPresets; track preset.key) {
+                      <div class="preset-card">
+                        <div class="preset-card-head">
+                          <h4>{{ preset.label }}</h4>
+                          <p class="muted small">{{ preset.summary }}</p>
+                        </div>
+                        @if (preset.key === 'edit-then-approve') {
+                          <label class="field">
+                            <span class="field-label small">Pre-fill from workflow variable</span>
+                            <input class="input mono" type="text"
+                                   [ngModel]="presetEditSourceKey()"
+                                   (ngModelChange)="presetEditSourceKey.set($event)"
+                                   name="presetEditSourceKey" placeholder="draft" />
+                          </label>
+                        }
+                        @if (preset.key === 'multi-action') {
+                          <label class="field">
+                            <span class="field-label small">Port names <span class="muted">(comma-separated)</span></span>
+                            <input class="input mono" type="text"
+                                   [ngModel]="presetMultiActionPorts()"
+                                   (ngModelChange)="presetMultiActionPorts.set($event)"
+                                   name="presetMultiActionPorts" placeholder="Approved, Rejected" />
+                          </label>
+                        }
+                        <button type="button" cf-button variant="primary" size="sm" icon="plus"
+                                (click)="applyFormPreset(preset.key)">
+                          Apply preset
+                        </button>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
               <div class="form-section">
                 <div class="form-section-head">
                   <h3>Output template</h3>
@@ -161,14 +215,90 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                 </div>
                 <div class="code-field">
                   <div class="code-field-head"><span>hitl.template</span><span>form</span></div>
-                  <textarea class="textarea mono" rows="10"
-                            [(ngModel)]="outputTemplate" name="outputTemplate"
-                            style="border: 0; border-radius: 0; background: var(--bg)"
-                            placeholder="HITL decision: {{ '{{decision:Approved|Rejected}}' }}&#10;{{ '{{feedback}}' }}"></textarea>
+                  <cf-monaco-script-editor
+                    class="hitl-template-editor"
+                    language="plaintext"
+                    [value]="outputTemplate()"
+                    [templateCompletion]="true"
+                    (valueChange)="outputTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
               </div>
             </cf-card>
           }
+        }
+
+        @if (tab() === 'preview' && type() === 'agent') {
+          <cf-card>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Live preview</h3>
+                <p>
+                  Renders the system prompt and prompt template the model would actually receive,
+                  given the sample scope below. Typos like <code>{{ '{{ wokflow.foo }}' }}</code>
+                  render verbatim so you can spot them before runtime. Auto-injected partials —
+                  for example <code>@codeflow/last-round-reminder</code> when this agent runs in a
+                  ReviewLoop — appear in their own annotated block.
+                </p>
+              </div>
+
+              <label class="field">
+                <span class="field-label">Sample scope <span class="muted small">(JSON: workflow, context, input, reviewRound, reviewMaxRounds, optOutLastRoundReminder)</span></span>
+                <textarea class="textarea mono" rows="9"
+                          [ngModel]="promptPreviewScopeText()"
+                          (ngModelChange)="promptPreviewScopeText.set($event)"
+                          name="promptPreviewScope"></textarea>
+                @if (promptPreviewScopeError()) {
+                  <cf-chip variant="err" dot>{{ promptPreviewScopeError() }}</cf-chip>
+                }
+              </label>
+
+              @if (promptPreviewMissingPartials().length > 0) {
+                <div class="preview-missing-partials">
+                  <strong>Missing partials:</strong>
+                  @for (mp of promptPreviewMissingPartials(); track mp.key) {
+                    <cf-chip variant="err" mono>{{ mp.key }} v{{ mp.version }}</cf-chip>
+                  }
+                  <p class="muted small">
+                    Pin these to a valid version on the agent or remove the include from the prompt.
+                  </p>
+                </div>
+              }
+
+              @if (promptPreviewError(); as err) {
+                <div class="form-section">
+                  <div class="form-section-head"><h4>Render error</h4></div>
+                  <pre class="preview-error mono">{{ err }}</pre>
+                </div>
+              } @else {
+                <div class="form-section">
+                  <div class="form-section-head">
+                    <h4>System prompt
+                      @if (promptPreviewPending()) { <cf-chip mono>rendering…</cf-chip> }
+                    </h4>
+                  </div>
+                  <pre class="preview-output mono">{{ promptPreviewSystem() || '(empty)' }}</pre>
+                </div>
+
+                <div class="form-section">
+                  <div class="form-section-head"><h4>Prompt template</h4></div>
+                  <pre class="preview-output mono">{{ promptPreviewBody() || '(empty)' }}</pre>
+                </div>
+
+                @for (inj of promptPreviewAutoInjections(); track inj.key) {
+                  <div class="form-section preview-injection">
+                    <div class="form-section-head">
+                      <h4>
+                        <cf-chip variant="accent" mono>[auto-injected]</cf-chip>
+                        {{ inj.key }}
+                      </h4>
+                      <p class="muted small">{{ inj.reason }}</p>
+                    </div>
+                    <pre class="preview-output mono">{{ inj.renderedBody || '(empty)' }}</pre>
+                  </div>
+                }
+              }
+            </div>
+          </cf-card>
         }
 
         @if (tab() === 'model' && type() === 'agent') {
@@ -457,6 +587,44 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
       flex-direction: column;
       gap: 12px;
     }
+    .preview-missing-partials {
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--err-bg);
+      border: 1px solid color-mix(in oklab, var(--sem-red) 40%, transparent);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .preview-missing-partials p { width: 100%; margin: 6px 0 0; }
+    .preview-injection {
+      border-left: 3px solid var(--accent, var(--fg));
+      padding-left: 12px;
+    }
+    .preset-picker {
+      background: var(--surface-2);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .preset-card {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+    }
+    .preset-card h4 { margin: 0 0 4px; font-size: var(--fs-md); }
+    .preset-card-head p { margin: 0; }
+    .preset-card .field-label.small { font-size: var(--fs-sm); }
   `]
 })
 export class AgentEditorComponent implements OnInit {
@@ -488,6 +656,34 @@ export class AgentEditorComponent implements OnInit {
   ]);
 
   readonly fallbackTemplates = signal<DecisionTemplateRow[]>([]);
+
+  readonly partialPins = signal<PromptPartialPinDto[]>([]);
+
+  // S2: form-preset picker state. Visible only when type=hitl AND the form looks empty
+  // (so editing an existing form doesn't get clobbered by an accidental Apply).
+  readonly formPresets = FORM_PRESETS;
+  readonly presetEditSourceKey = signal('draft');
+  readonly presetMultiActionPorts = signal('Approved, Rejected');
+  readonly canShowFormPresets = computed(() => {
+    if (this.type() !== 'hitl') return false;
+    const tpl = this.outputTemplate().trim();
+    const outs = this.outputs();
+    const isFreshOutputs = outs.length === 2
+      && outs[0].kind === 'Completed'
+      && outs[1].kind === 'Failed'
+      && !outs[0].template && !outs[1].template;
+    return tpl.length === 0 && (outs.length === 0 || isFreshOutputs);
+  });
+
+  // VZ3: live prompt-template preview state (separate from the decision-template preview).
+  readonly promptPreviewScopeText = signal(defaultPromptPreviewScope());
+  readonly promptPreviewScopeError = signal<string | null>(null);
+  readonly promptPreviewSystem = signal<string | null>(null);
+  readonly promptPreviewBody = signal<string | null>(null);
+  readonly promptPreviewAutoInjections = signal<PromptTemplatePreviewAutoInjection[]>([]);
+  readonly promptPreviewMissingPartials = signal<PromptTemplatePreviewMissingPartial[]>([]);
+  readonly promptPreviewError = signal<string | null>(null);
+  readonly promptPreviewPending = signal(false);
 
   readonly previewContextText = signal(defaultLlmPreviewContext());
   readonly previewContextPlaceholder = computed(() => {
@@ -523,12 +719,20 @@ export class AgentEditorComponent implements OnInit {
   });
 
   readonly tab = signal<EditorTab>('identity');
-  readonly tabs = computed<TabItem[]>(() => [
-    { value: 'identity', label: 'Identity' },
-    { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
-    { value: 'model', label: 'Model' },
-    { value: 'outputs', label: 'Decisions', count: this.outputs().length },
-  ]);
+  readonly tabs = computed<TabItem[]>(() => {
+    const items: TabItem[] = [
+      { value: 'identity', label: 'Identity' },
+      { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
+    ];
+    if (this.type() === 'agent') {
+      items.push({ value: 'preview', label: 'Preview' });
+    }
+    items.push(
+      { value: 'model', label: 'Model' },
+      { value: 'outputs', label: 'Decisions', count: this.outputs().length },
+    );
+    return items;
+  });
 
   constructor() {
     effect(() => {
@@ -598,6 +802,109 @@ export class AgentEditorComponent implements OnInit {
         );
       });
     });
+
+    // VZ3: live prompt-template preview re-render. Debounced 200ms; reads systemPrompt/promptTemplate
+    // along with the editable scope JSON and pinned partials, and renders against the same Scriban
+    // path the runtime invocation consumer uses.
+    effect(() => {
+      if (this.type() !== 'agent') return;
+
+      const systemPrompt = this.systemPrompt();
+      const promptTemplate = this.promptTemplate();
+      const scopeText = this.promptPreviewScopeText();
+      const pins = this.partialPins();
+
+      let scope: PromptPreviewScope;
+      try {
+        scope = parsePromptPreviewScope(scopeText);
+        this.promptPreviewScopeError.set(null);
+      } catch (err) {
+        this.cancelPromptPreviewRender();
+        this.promptPreviewScopeError.set(err instanceof Error ? err.message : 'Invalid scope.');
+        return;
+      }
+
+      const signature = JSON.stringify([systemPrompt, promptTemplate, scopeText, pins]);
+      if (this.lastPromptPreviewSignature === signature) return;
+      this.lastPromptPreviewSignature = signature;
+      this.schedulePromptPreviewRender(systemPrompt, promptTemplate, scope, pins);
+    });
+  }
+
+  private lastPromptPreviewSignature: string | null = null;
+  private promptPreviewTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private schedulePromptPreviewRender(
+    systemPrompt: string,
+    promptTemplate: string,
+    scope: PromptPreviewScope,
+    pins: PromptPartialPinDto[]
+  ): void {
+    this.cancelPromptPreviewRender();
+    if (!systemPrompt.trim() && !promptTemplate.trim()) {
+      this.promptPreviewSystem.set(null);
+      this.promptPreviewBody.set(null);
+      this.promptPreviewAutoInjections.set([]);
+      this.promptPreviewMissingPartials.set([]);
+      this.promptPreviewError.set(null);
+      this.promptPreviewPending.set(false);
+      return;
+    }
+    this.promptPreviewPending.set(true);
+    this.promptPreviewTimer = setTimeout(() => {
+      this.promptPreviewTimer = undefined;
+      this.runPromptPreview(systemPrompt, promptTemplate, scope, pins);
+    }, 200);
+  }
+
+  private cancelPromptPreviewRender(): void {
+    if (this.promptPreviewTimer !== undefined) {
+      clearTimeout(this.promptPreviewTimer);
+      this.promptPreviewTimer = undefined;
+    }
+  }
+
+  private runPromptPreview(
+    systemPrompt: string,
+    promptTemplate: string,
+    scope: PromptPreviewScope,
+    pins: PromptPartialPinDto[]
+  ): void {
+    this.agentsApi.renderPromptTemplate({
+      systemPrompt: systemPrompt || null,
+      promptTemplate: promptTemplate || null,
+      workflow: scope.workflow,
+      context: scope.context,
+      input: scope.input,
+      reviewRound: scope.reviewRound,
+      reviewMaxRounds: scope.reviewMaxRounds,
+      optOutLastRoundReminder: scope.optOutLastRoundReminder,
+      partialPins: pins,
+    }).subscribe({
+      next: response => {
+        this.promptPreviewSystem.set(response.renderedSystemPrompt);
+        this.promptPreviewBody.set(response.renderedPromptTemplate);
+        this.promptPreviewAutoInjections.set(response.autoInjections ?? []);
+        this.promptPreviewMissingPartials.set(response.missingPartials ?? []);
+        this.promptPreviewError.set(null);
+        this.promptPreviewPending.set(false);
+      },
+      error: err => {
+        const body = err && typeof err === 'object' ? (err as { error?: unknown }).error : null;
+        if (body && typeof body === 'object') {
+          const e = body as { error?: string; missingPartials?: PromptTemplatePreviewMissingPartial[] };
+          this.promptPreviewError.set(e.error ?? 'Preview render failed.');
+          this.promptPreviewMissingPartials.set(e.missingPartials ?? []);
+        } else {
+          this.promptPreviewError.set(typeof body === 'string' ? body : 'Preview render failed.');
+          this.promptPreviewMissingPartials.set([]);
+        }
+        this.promptPreviewSystem.set(null);
+        this.promptPreviewBody.set(null);
+        this.promptPreviewAutoInjections.set([]);
+        this.promptPreviewPending.set(false);
+      }
+    });
   }
 
   ngOnInit(): void {
@@ -641,6 +948,14 @@ export class AgentEditorComponent implements OnInit {
     this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
     this.maxTokens.set(config['maxTokens'] as number | undefined);
     this.temperature.set(config['temperature'] as number | undefined);
+    const rawPins = config['partialPins'];
+    if (Array.isArray(rawPins)) {
+      this.partialPins.set(rawPins
+        .filter((p: any) => p && typeof p.key === 'string' && typeof p.version === 'number')
+        .map((p: any) => ({ key: p.key, version: p.version })));
+    } else {
+      this.partialPins.set([]);
+    }
     const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
     const declaredKinds = new Set<string>();
@@ -771,11 +1086,37 @@ export class AgentEditorComponent implements OnInit {
       reasons: mode === 'hitl' ? asStringArray(parsedContext['reasons']) : undefined,
       actions: mode === 'hitl' ? asStringArray(parsedContext['actions']) : undefined,
       context: asRecord(parsedContext['context']),
-      global: asRecord(parsedContext['global'])
+      workflow: asRecord(parsedContext['workflow'])
     }).subscribe({
       next: response => commit({ preview: response.rendered, previewError: null, previewPending: false }),
       error: err => commit({ preview: '', previewError: extractPreviewError(err), previewPending: false })
     });
+  }
+
+  applyFormPreset(key: FormPresetKey): void {
+    const preset = getFormPreset(key);
+    if (!preset) return;
+
+    const sourceVariableKey = key === 'edit-then-approve' ? this.presetEditSourceKey().trim() : undefined;
+    const portNames = key === 'multi-action'
+      ? this.presetMultiActionPorts().split(',').map(p => p.trim()).filter(p => p.length > 0)
+      : undefined;
+
+    const result = preset.build({ sourceVariableKey, portNames });
+
+    this.outputTemplate.set(result.outputTemplate);
+    this.outputs.set(result.outputs.map(o => ({
+      kind: o.kind,
+      description: o.description ?? null,
+      payloadExample: o.payloadExample ?? null,
+      template: result.decisionOutputTemplates?.[o.kind] ?? '',
+      preview: '',
+      previewError: null,
+      previewPending: false,
+      expanded: !!result.decisionOutputTemplates?.[o.kind],
+    })));
+    this.fallbackTemplates.set([]);
+    this.previewContextText.set(defaultHitlPreviewContext());
   }
 
   addOutput(): void {
@@ -846,6 +1187,10 @@ export class AgentEditorComponent implements OnInit {
       config.promptTemplate = this.promptTemplate() || undefined;
       if (this.maxTokens() !== undefined) config.maxTokens = this.maxTokens();
       if (this.temperature() !== undefined) config.temperature = this.temperature();
+      const pins = this.partialPins();
+      if (pins.length > 0) {
+        config['partialPins'] = pins;
+      }
     }
 
     if (this.type() === 'hitl') {
@@ -994,7 +1339,7 @@ function defaultHitlPreviewContext(): string {
     reasons: [],
     actions: [],
     context: {},
-    global: {}
+    workflow: {}
   }, null, 2);
 }
 
@@ -1007,7 +1352,7 @@ function defaultLlmPreviewContext(sampleOutput?: unknown, sampleDecision?: strin
     output,
     input: {},
     context: {},
-    global: {}
+    workflow: {}
   }, null, 2);
 }
 
@@ -1040,6 +1385,54 @@ function asString(value: unknown): string | undefined {
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter(item => typeof item === 'string') as string[];
+}
+
+interface PromptPreviewScope {
+  workflow?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  input?: string | null;
+  reviewRound?: number | null;
+  reviewMaxRounds?: number | null;
+  optOutLastRoundReminder?: boolean;
+}
+
+function defaultPromptPreviewScope(): string {
+  return JSON.stringify({
+    workflow: { exampleVar: 'sample value' },
+    context: {},
+    input: null,
+    reviewRound: null,
+    reviewMaxRounds: null,
+    optOutLastRoundReminder: false,
+  }, null, 2);
+}
+
+function parsePromptPreviewScope(text: string): PromptPreviewScope {
+  if (!text || !text.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Scope must be valid JSON.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Scope must be a JSON object.');
+  }
+  const obj = parsed as Record<string, unknown>;
+  const result: PromptPreviewScope = {};
+  if (obj['workflow'] && typeof obj['workflow'] === 'object' && !Array.isArray(obj['workflow'])) {
+    result.workflow = obj['workflow'] as Record<string, unknown>;
+  }
+  if (obj['context'] && typeof obj['context'] === 'object' && !Array.isArray(obj['context'])) {
+    result.context = obj['context'] as Record<string, unknown>;
+  }
+  if (typeof obj['input'] === 'string') result.input = obj['input'];
+  else if (obj['input'] === null) result.input = null;
+  else if (obj['input'] !== undefined) result.input = JSON.stringify(obj['input']);
+  if (typeof obj['reviewRound'] === 'number') result.reviewRound = obj['reviewRound'];
+  if (typeof obj['reviewMaxRounds'] === 'number') result.reviewMaxRounds = obj['reviewMaxRounds'];
+  if (typeof obj['optOutLastRoundReminder'] === 'boolean') result.optOutLastRoundReminder = obj['optOutLastRoundReminder'];
+  return result;
 }
 
 function previewSignature(

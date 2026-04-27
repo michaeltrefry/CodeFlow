@@ -275,6 +275,135 @@ public sealed class WorkflowPackageResolverTests
         serialized.Should().Contain("search.local/mcp");
     }
 
+    [Fact]
+    public async Task ResolveAsync_AccumulatesEveryMissingReference_AndThrowsOnce()
+    {
+        // V8: an export with a dangling agent ref AND a dangling subflow ref should fail with
+        // BOTH listed in MissingReferences, not bail out on the first one.
+        var rootStartId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+
+        var workflows = new Dictionary<(string Key, int Version), Workflow>(StringTupleComparer.Ordinal)
+        {
+            [("root-flow", 1)] = new(
+                Key: "root-flow",
+                Version: 1,
+                Name: "Root",
+                MaxRoundsPerRound: 3,
+                CreatedAtUtc: DateTime.UtcNow,
+                Nodes:
+                [
+                    new WorkflowNode(rootStartId, WorkflowNodeKind.Start, "ghost-agent", 7, null, ["Done"], 0, 0),
+                    new WorkflowNode(subflowNodeId, WorkflowNodeKind.Subflow, null, null, null, ["Done"], 0, 0, "ghost-flow", 2),
+                ],
+                Edges: [],
+                Inputs: []),
+        };
+
+        var resolver = CreateResolver(
+            workflows,
+            agents: new Dictionary<(string Key, int Version), AgentConfig>(StringTupleComparer.Ordinal),
+            latestWorkflowVersions: new Dictionary<string, int>(StringComparer.Ordinal),
+            latestAgentVersions: new Dictionary<string, int>(StringComparer.Ordinal));
+
+        var act = async () => await resolver.ResolveAsync("root-flow", 1);
+
+        var exception = (await act.Should().ThrowAsync<WorkflowPackageResolutionException>()).Which;
+        exception.MissingReferences.Should().HaveCount(2);
+        exception.MissingReferences.Should().Contain(r =>
+            r.Kind == PackageReferenceKind.Agent && r.Key == "ghost-agent" && r.Version == 7);
+        exception.MissingReferences.Should().Contain(r =>
+            r.Kind == PackageReferenceKind.Workflow && r.Key == "ghost-flow" && r.Version == 2);
+        exception.Message.Should().Contain("ghost-agent");
+        exception.Message.Should().Contain("ghost-flow");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_DanglingEntryPointWorkflow_FailsWithMissingReference()
+    {
+        var resolver = CreateResolver(
+            workflows: new Dictionary<(string Key, int Version), Workflow>(StringTupleComparer.Ordinal),
+            agents: new Dictionary<(string Key, int Version), AgentConfig>(StringTupleComparer.Ordinal),
+            latestWorkflowVersions: new Dictionary<string, int>(StringComparer.Ordinal),
+            latestAgentVersions: new Dictionary<string, int>(StringComparer.Ordinal));
+
+        var act = async () => await resolver.ResolveAsync("missing-flow", 9);
+
+        var exception = (await act.Should().ThrowAsync<WorkflowPackageResolutionException>()).Which;
+        exception.MissingReferences.Should().ContainSingle();
+        exception.MissingReferences[0].Kind.Should().Be(PackageReferenceKind.Workflow);
+        exception.MissingReferences[0].Key.Should().Be("missing-flow");
+        exception.MissingReferences[0].Version.Should().Be(9);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_SuccessfulExport_ProducesManifestEnumeratingEveryIncludedEntity()
+    {
+        // V8 acceptance: bumping one agent and exporting produces a package containing every
+        // transitively-referenced entity at its current pinned version. Manifest summarizes them.
+        var rootStartId = Guid.NewGuid();
+        var subflowNodeId = Guid.NewGuid();
+        var childStartId = Guid.NewGuid();
+
+        var workflows = new Dictionary<(string Key, int Version), Workflow>(StringTupleComparer.Ordinal)
+        {
+            [("root-flow", 1)] = new(
+                Key: "root-flow",
+                Version: 1,
+                Name: "Root",
+                MaxRoundsPerRound: 3,
+                CreatedAtUtc: DateTime.UtcNow,
+                Nodes:
+                [
+                    new WorkflowNode(rootStartId, WorkflowNodeKind.Start, "writer", 4, null, ["Done"], 0, 0),
+                    new WorkflowNode(subflowNodeId, WorkflowNodeKind.Subflow, null, null, null, ["Done"], 0, 0, "child-flow", 2),
+                ],
+                Edges: [],
+                Inputs: []),
+            [("child-flow", 2)] = new(
+                Key: "child-flow",
+                Version: 2,
+                Name: "Child",
+                MaxRoundsPerRound: 2,
+                CreatedAtUtc: DateTime.UtcNow,
+                Nodes:
+                [
+                    new WorkflowNode(childStartId, WorkflowNodeKind.Start, "reviewer", 3, null, ["Done"], 0, 0),
+                ],
+                Edges: [],
+                Inputs: []),
+        };
+
+        var agents = new Dictionary<(string Key, int Version), AgentConfig>(StringTupleComparer.Ordinal)
+        {
+            [("writer", 4)] = CreateAgent("writer", 4, """{"provider":"openai","model":"gpt-5"}"""),
+            [("reviewer", 3)] = CreateAgent("reviewer", 3, """{"provider":"openai","model":"gpt-5"}"""),
+        };
+
+        var resolver = CreateResolver(
+            workflows,
+            agents,
+            latestWorkflowVersions: new Dictionary<string, int>(StringComparer.Ordinal),
+            latestAgentVersions: new Dictionary<string, int>(StringComparer.Ordinal));
+
+        var package = await resolver.ResolveAsync("root-flow", 1);
+
+        package.Manifest.Should().NotBeNull();
+        package.Manifest!.Workflows.Should().BeEquivalentTo(new[]
+        {
+            new WorkflowPackageReference("child-flow", 2),
+            new WorkflowPackageReference("root-flow", 1),
+        });
+        package.Manifest.Agents.Should().BeEquivalentTo(new[]
+        {
+            new WorkflowPackageReference("reviewer", 3),
+            new WorkflowPackageReference("writer", 4),
+        });
+        package.Manifest.Roles.Should().BeEmpty();
+        package.Manifest.Skills.Should().BeEmpty();
+        package.Manifest.McpServers.Should().BeEmpty();
+    }
+
     private static WorkflowPackageResolver CreateResolver(
         IReadOnlyDictionary<(string Key, int Version), Workflow> workflows,
         IReadOnlyDictionary<(string Key, int Version), AgentConfig> agents,
@@ -321,8 +450,14 @@ public sealed class WorkflowPackageResolverTests
         IReadOnlyDictionary<(string Key, int Version), Workflow> workflows,
         IReadOnlyDictionary<string, int> latestVersions) : IWorkflowRepository
     {
-        public Task<Workflow> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
-            Task.FromResult(workflows[(key, version)]);
+        public Task<Workflow> GetAsync(string key, int version, CancellationToken cancellationToken = default)
+        {
+            if (!workflows.TryGetValue((key, version), out var workflow))
+            {
+                throw new WorkflowNotFoundException(key, version);
+            }
+            return Task.FromResult(workflow);
+        }
 
         public Task<Workflow?> GetLatestAsync(string key, CancellationToken cancellationToken = default)
         {
@@ -354,14 +489,26 @@ public sealed class WorkflowPackageResolverTests
         IReadOnlyDictionary<(string Key, int Version), AgentConfig> agents,
         IReadOnlyDictionary<string, int> latestVersions) : IAgentConfigRepository
     {
-        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
-            Task.FromResult(agents[(key, version)]);
+        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default)
+        {
+            if (!agents.TryGetValue((key, version), out var agent))
+            {
+                throw new AgentConfigNotFoundException(key, version);
+            }
+            return Task.FromResult(agent);
+        }
 
         public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default) =>
-            Task.FromResult(latestVersions[key]);
+        public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default)
+        {
+            if (!latestVersions.TryGetValue(key, out var version))
+            {
+                throw new AgentConfigNotFoundException(key, version: 0);
+            }
+            return Task.FromResult(version);
+        }
 
         public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

@@ -10,9 +10,21 @@ public sealed record Workflow(
     IReadOnlyList<WorkflowEdge> Edges,
     IReadOnlyList<WorkflowInput> Inputs,
     WorkflowCategory Category = WorkflowCategory.Workflow,
-    IReadOnlyList<string>? Tags = null)
+    IReadOnlyList<string>? Tags = null,
+    // VZ2: optional declarations of which workflow variables this workflow expects to read
+    // and write. Empty = no opt-in (workflow saves and runs identically to today). When
+    // non-empty, the validator pipeline (WorkflowVarDeclarationRule) emits warnings if any
+    // reachable agent reads / script writes a variable not in the corresponding list.
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null)
 {
     public IReadOnlyList<string> TagsOrEmpty => Tags ?? Array.Empty<string>();
+
+    public IReadOnlyList<string> WorkflowVarsReadsOrEmpty =>
+        WorkflowVarsReads ?? Array.Empty<string>();
+
+    public IReadOnlyList<string> WorkflowVarsWritesOrEmpty =>
+        WorkflowVarsWrites ?? Array.Empty<string>();
 
     public WorkflowNode StartNode =>
         Nodes.Single(node => node.Kind == WorkflowNodeKind.Start);

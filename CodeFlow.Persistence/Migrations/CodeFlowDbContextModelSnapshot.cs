@@ -163,6 +163,12 @@ namespace CodeFlow.Persistence.Migrations
                         .HasDefaultValue(false)
                         .HasColumnName("is_archived");
 
+                    b.Property<bool>("IsSystemManaged")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_system_managed");
+
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -553,6 +559,53 @@ namespace CodeFlow.Persistence.Migrations
                     b.ToTable("mcp_server_tools", (string)null);
                 });
 
+            modelBuilder.Entity("CodeFlow.Persistence.PromptPartialEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("body");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("created_by");
+
+                    b.Property<bool>("IsSystemManaged")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_system_managed");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(192)
+                        .HasColumnType("varchar(192)")
+                        .HasColumnName("key");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key", "Version")
+                        .IsUnique();
+
+                    b.ToTable("prompt_partials", (string)null);
+                });
+
             modelBuilder.Entity("CodeFlow.Persistence.SkillEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -625,6 +678,12 @@ namespace CodeFlow.Persistence.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)")
                         .HasColumnName("from_port");
+
+                    b.Property<bool>("IntentionalBackedge")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false)
+                        .HasColumnName("intentional_backedge");
 
                     b.Property<bool>("RotatesRound")
                         .HasColumnType("tinyint(1)")
@@ -699,12 +758,72 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("version");
 
+                    b.Property<string>("WorkflowVarsReadsJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("workflow_vars_reads_json");
+
+                    b.Property<string>("WorkflowVarsWritesJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("workflow_vars_writes_json");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Key", "Version")
                         .IsUnique();
 
                     b.ToTable("workflows", (string)null);
+                });
+
+            modelBuilder.Entity("CodeFlow.Persistence.WorkflowFixtureEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("varchar(256)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("FixtureKey")
+                        .IsRequired()
+                        .HasMaxLength(192)
+                        .HasColumnType("varchar(192)")
+                        .HasColumnName("fixture_key");
+
+                    b.Property<string>("MockResponsesJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("mock_responses_json");
+
+                    b.Property<string>("StartingInput")
+                        .HasColumnType("longtext")
+                        .HasColumnName("starting_input");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(192)
+                        .HasColumnType("varchar(192)")
+                        .HasColumnName("workflow_key");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("WorkflowKey", "FixtureKey")
+                        .IsUnique();
+
+                    b.ToTable("workflow_fixtures", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.WorkflowInputEntity", b =>
@@ -803,9 +922,24 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("varchar(64)")
                         .HasColumnName("loop_decision");
 
+                    b.Property<string>("MirrorOutputToWorkflowVar")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("mirror_output_to_workflow_var");
+
                     b.Property<Guid>("NodeId")
                         .HasColumnType("char(36)")
                         .HasColumnName("node_id");
+
+                    b.Property<bool>("OptOutLastRoundReminder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false)
+                        .HasColumnName("opt_out_last_round_reminder");
+
+                    b.Property<string>("OutputPortReplacementsJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("output_port_replacements_json");
 
                     b.Property<string>("OutputPortsJson")
                         .IsRequired()
@@ -815,6 +949,10 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<string>("OutputScript")
                         .HasColumnType("longtext")
                         .HasColumnName("output_script");
+
+                    b.Property<string>("RejectionHistoryConfigJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("rejection_history_config_json");
 
                     b.Property<int?>("ReviewMaxRounds")
                         .HasColumnType("int")
@@ -1023,10 +1161,6 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("varchar(512)")
                         .HasColumnName("failure_reason");
 
-                    b.Property<string>("GlobalInputsJson")
-                        .HasColumnType("longtext")
-                        .HasColumnName("global_inputs_json");
-
                     b.Property<string>("InputsJson")
                         .IsRequired()
                         .HasColumnType("longtext")
@@ -1095,6 +1229,10 @@ namespace CodeFlow.Persistence.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("int")
                         .HasColumnName("version");
+
+                    b.Property<string>("WorkflowInputsJson")
+                        .HasColumnType("longtext")
+                        .HasColumnName("workflow_inputs_json");
 
                     b.Property<string>("WorkflowKey")
                         .IsRequired()

@@ -19,4 +19,11 @@ public sealed class WorkflowEdgeEntity
     public bool RotatesRound { get; set; }
 
     public int SortOrder { get; set; }
+
+    /// <summary>
+    /// Author-acknowledged backedge: when true, the V6 backedge validator suppresses its
+    /// "edge targets a node already reachable from its source" warning. Set via the editor's
+    /// "Yes, intentional" override on a flagged edge.
+    /// </summary>
+    public bool IntentionalBackedge { get; set; }
 }

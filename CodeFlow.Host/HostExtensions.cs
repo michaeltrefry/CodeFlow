@@ -1,5 +1,6 @@
 using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
+using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -94,8 +95,12 @@ public static class HostExtensions
         services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
         services.AddMemoryCache();
         services.AddSingleton<LogicNodeScriptHost>();
+        services.AddSingleton<IWorkflowDataflowAnalyzer, WorkflowDataflowAnalyzer>();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
+        services.AddScoped<IPromptPartialRepository, PromptPartialRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
+        services.AddScoped<IWorkflowFixtureRepository, WorkflowFixtureRepository>();
+        services.AddScoped<DryRunExecutor>();
         services.AddScoped<IMcpServerRepository, McpServerRepository>();
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
         services.AddScoped<ISkillRepository, SkillRepository>();
@@ -230,6 +235,8 @@ public static class HostExtensions
         await using var scope = host.Services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
         await dbContext.Database.MigrateAsync();
+        await SystemPromptPartialSeeder.SeedAsync(dbContext);
+        await SystemAgentRoleSeeder.SeedAsync(dbContext);
     }
 
     public static async Task ApplyDatabaseMigrationsAsync(this IServiceProvider services)
@@ -239,6 +246,8 @@ public static class HostExtensions
         await using var scope = services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
         await dbContext.Database.MigrateAsync();
+        await SystemPromptPartialSeeder.SeedAsync(dbContext);
+        await SystemAgentRoleSeeder.SeedAsync(dbContext);
     }
 
     private static FileSystemArtifactStoreOptions ResolveArtifactOptions(IConfiguration configuration)

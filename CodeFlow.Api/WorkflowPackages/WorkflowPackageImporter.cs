@@ -541,6 +541,8 @@ public sealed class WorkflowPackageImporter(
                 MaxRoundsPerRound = workflow.MaxRoundsPerRound,
                 Category = workflow.Category,
                 TagsJson = JsonSerializer.Serialize(workflow.Tags, SerializerOptions),
+                WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsReads),
+                WorkflowVarsWritesJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsWrites),
                 CreatedAtUtc = UsePackageDateOrNow(workflow.CreatedAtUtc, now),
                 Nodes = workflow.Nodes
                     .Select(node => new WorkflowNodeEntity
@@ -558,6 +560,10 @@ public sealed class WorkflowPackageImporter(
                         SubflowVersion = node.SubflowVersion,
                         ReviewMaxRounds = node.ReviewMaxRounds,
                         LoopDecision = Trim(node.LoopDecision),
+                        OptOutLastRoundReminder = node.OptOutLastRoundReminder,
+                        RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
+                        MirrorOutputToWorkflowVar = Trim(node.MirrorOutputToWorkflowVar),
+                        OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -621,7 +627,11 @@ public sealed class WorkflowPackageImporter(
             node.SubflowVersion ?? packageNode?.SubflowVersion,
             node.ReviewMaxRounds,
             NormalizeOptional(node.LoopDecision),
-            node.InputScript);
+            node.InputScript,
+            node.OptOutLastRoundReminder,
+            node.RejectionHistory,
+            NormalizeOptional(node.MirrorOutputToWorkflowVar),
+            node.OutputPortReplacements);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,
@@ -637,7 +647,22 @@ public sealed class WorkflowPackageImporter(
             input.Required,
             input.DefaultValueJson,
             input.Description,
-            input.Ordinal)));
+            input.Ordinal))) &&
+        WorkflowVarsListEqual(packageWorkflow.WorkflowVarsReads, existing.WorkflowVarsReads) &&
+        WorkflowVarsListEqual(packageWorkflow.WorkflowVarsWrites, existing.WorkflowVarsWrites);
+
+    private static bool WorkflowVarsListEqual(IReadOnlyList<string>? a, IReadOnlyList<string>? b)
+    {
+        if (a is null && b is null)
+        {
+            return true;
+        }
+        if (a is null || b is null)
+        {
+            return false;
+        }
+        return a.SequenceEqual(b, StringComparer.Ordinal);
+    }
 
     private static bool Equivalent(WorkflowPackageAgent packageAgent, AgentConfig existing) =>
         packageAgent.Kind == existing.Kind &&

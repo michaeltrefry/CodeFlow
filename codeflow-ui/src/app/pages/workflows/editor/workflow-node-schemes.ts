@@ -23,6 +23,13 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   loopDecision: string | null;
   traceState: WorkflowNodeTraceState = null;
 
+  // VZ5: tracks whether the implicit Failed port is wired and whether the canvas-level
+  // "Show implicit Failed ports" toggle is on. Both are populated by the canvas after node
+  // creation and on every connection event; the node component reads them from the template
+  // to decide whether to render or hide the Failed row.
+  failedHasConnection: boolean = false;
+  showImplicitFailed: () => boolean = () => false;
+
   constructor(params: {
     nodeId: string;
     kind: WorkflowNodeKind;
@@ -82,6 +89,8 @@ export class WorkflowEditorConnection
   rotatesRound = false;
   sortOrder = 0;
   isSelected = false;
+  /** Author-marked intentional backedge — suppresses VZ7 dashed-amber and V6 save warnings. */
+  intentionalBackedge = false;
   onPick: (() => void) | null = null;
 }
 

@@ -16,3 +16,11 @@ export { PageHeaderComponent } from './page-header.component';
 export { ProviderIconComponent } from './provider-icon.component';
 export { TagInputComponent } from './tag-input.component';
 export { DialogComponent } from './dialog.component';
+export { TraceTimelineComponent } from './trace-timeline.component';
+export type {
+  TraceTimelineEvent,
+  TraceTimelineBadge,
+  TraceTimelineExtraLink,
+  TraceTimelineDotState,
+} from './trace-timeline.types';
+export { TRACE_KIND_VARIANTS, variantForKind, dotStateFor } from './trace-timeline.types';

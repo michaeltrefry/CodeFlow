@@ -56,6 +56,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-tests-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -146,6 +147,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-retry-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -217,6 +219,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -250,12 +253,12 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
+    public async Task Consumer_WhenWorkflowWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
@@ -270,7 +273,7 @@ public sealed class AgentInvocationConsumerTests
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
@@ -284,7 +287,7 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirAndLegacyContextBothPresent_ShouldPreferGlobalWorkDir()
+    public async Task Consumer_WhenWorkflowWorkDirAndLegacyContextBothPresent_ShouldPreferWorkflowWorkDir()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
@@ -297,7 +300,7 @@ public sealed class AgentInvocationConsumerTests
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
@@ -313,17 +316,17 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
         observed!.Workspace!.RootPath.Should().Be(workDir);
         observed.Workspace.CorrelationId.Should().Be(traceId);
-        observed.Workspace.RepoUrl.Should().BeNull("global.workDir overrides the legacy per-repo workspace context");
+        observed.Workspace.RepoUrl.Should().BeNull("workflow.workDir overrides the legacy per-repo workspace context");
     }
 
     [Fact]
-    public async Task Consumer_WhenGlobalWorkDirBlank_ShouldFallBackToLegacyContext()
+    public async Task Consumer_WhenWorkflowWorkDirBlank_ShouldFallBackToLegacyContext()
     {
         var legacy = new CodeFlow.Contracts.ToolExecutionContext(
             new CodeFlow.Contracts.ToolWorkspaceContext(
@@ -333,7 +336,7 @@ public sealed class AgentInvocationConsumerTests
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
 
-        var globalContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["workDir"] = JsonSerializer.SerializeToElement("   ")
         };
@@ -349,7 +352,7 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            GlobalContext: globalContext);
+            WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
@@ -359,7 +362,7 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenNoGlobalContext_ShouldLeaveLegacyBehaviorUnchanged()
+    public async Task Consumer_WhenNoWorkflowContext_ShouldLeaveLegacyBehaviorUnchanged()
     {
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
@@ -399,6 +402,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -460,6 +464,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-failure-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -526,6 +531,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-exception-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -615,6 +621,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-http-exception-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -700,6 +707,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -735,15 +743,15 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_ShouldExposeGlobalContextAlongsideContext()
+    public async Task Consumer_ShouldExposeWorkflowContextAlongsideContext()
     {
-        // S6: AgentInvokeRequested may carry a `GlobalContext` dict (the saga's `global` bag).
-        // The consumer should flatten it into template variables under the `global.` namespace,
+        // S6: AgentInvokeRequested may carry a `WorkflowContext` dict (the saga's `workflow` bag).
+        // The consumer should flatten it into template variables under the `workflow.` namespace,
         // alongside the existing `context.` namespace from `ContextInputs`.
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
             RoundId: Guid.NewGuid(),
-            WorkflowKey: "global-flow",
+            WorkflowKey: "workflow-flow",
             WorkflowVersion: 1,
             NodeId: Guid.NewGuid(),
             AgentKey: "reviewer",
@@ -753,7 +761,7 @@ public sealed class AgentInvocationConsumerTests
             {
                 ["localKey"] = Json("\"local-value\"")
             },
-            GlobalContext: new Dictionary<string, JsonElement>
+            WorkflowContext: new Dictionary<string, JsonElement>
             {
                 ["sharedFlag"] = Json("\"on\""),
                 ["sharedNumber"] = Json("42"),
@@ -767,7 +775,7 @@ public sealed class AgentInvocationConsumerTests
             Configuration: new AgentInvocationConfiguration(
                 "openai",
                 "gpt-5.4",
-                PromptTemplate: "Local={{context.localKey}} Global={{global.sharedFlag}} Nested={{global.sharedObj.nested}}"),
+                PromptTemplate: "Local={{context.localKey}} Workflow={{workflow.sharedFlag}} Nested={{workflow.sharedObj.nested}}"),
             ConfigJson: "{}",
             CreatedAtUtc: DateTime.UtcNow,
             CreatedBy: "codex");
@@ -782,8 +790,9 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
-                .UseInMemoryDatabase($"consumer-global-{Guid.NewGuid():N}"))
+                .UseInMemoryDatabase($"consumer-workflow-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -802,9 +811,9 @@ public sealed class AgentInvocationConsumerTests
             var variables = agentInvoker.Invocations[0].Configuration.Variables;
             variables.Should().NotBeNull();
             variables!["context.localKey"].Should().Be("local-value");
-            variables["global.sharedFlag"].Should().Be("on");
-            variables["global.sharedNumber"].Should().Be("42");
-            variables["global.sharedObj.nested"].Should().Be("value");
+            variables["workflow.sharedFlag"].Should().Be("on");
+            variables["workflow.sharedNumber"].Should().Be("42");
+            variables["workflow.sharedObj.nested"].Should().Be("value");
         }
         finally
         {
@@ -849,6 +858,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-input-context-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -914,6 +924,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-plain-input-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -979,6 +990,7 @@ public sealed class AgentInvocationConsumerTests
             .AddSingleton<IArtifactStore>(artifactStore)
             .AddSingleton<IAgentInvoker>(agentInvoker)
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-review-loop-{Guid.NewGuid():N}"))
             .AddMassTransitTestHarness(x =>
@@ -1002,6 +1014,148 @@ public sealed class AgentInvocationConsumerTests
             variables.Should().ContainKey("maxRounds").WhoseValue.Should().Be("3");
             variables.Should().ContainKey("isLastRound").WhoseValue.Should().Be("true",
                 "round equals maxRounds on the final iteration");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_ExposesRejectionHistoryAlias_FromWorkflowContext()
+    {
+        // P3: when the framework-managed `__loop.rejectionHistory` accumulator is set in the
+        // per-trace workflow bag, the consumer surfaces it under the un-prefixed
+        // `rejectionHistory` Scriban variable so reviewer/producer prompts can `{{ rejectionHistory }}`
+        // without fighting through `{{ workflow.__loop.rejectionHistory }}`.
+        var historyValue = "## Round 1\nfeedback v1\n\n## Round 2\nfeedback v2";
+        var workflowContext = new Dictionary<string, JsonElement>
+        {
+            ["__loop.rejectionHistory"] = JsonSerializer.SerializeToElement(historyValue),
+        };
+
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "rejection-history-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            WorkflowContext: workflowContext,
+            ReviewRound: 3,
+            ReviewMaxRounds: 3);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", PromptTemplate: "p"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-rejection-history-alias-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!.Should().ContainKey("rejectionHistory").WhoseValue.Should().Be(historyValue);
+            variables.Should().ContainKey("workflow.__loop.rejectionHistory").WhoseValue.Should().Be(historyValue,
+                "the original namespaced workflow variable still flows through too");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_RejectionHistoryAlias_DefaultsToEmptyWhenAbsent()
+    {
+        // P3: when the accumulator is empty (round 1 of a fresh loop, or feature disabled),
+        // the alias still exists as an empty string so `{{ if rejectionHistory }}` blocks
+        // evaluate falsy without rendering a literal `{{ rejectionHistory }}` token.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "rejection-history-empty",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 1,
+            ReviewMaxRounds: 3);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", PromptTemplate: "p"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-rejection-history-empty-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!.Should().ContainKey("rejectionHistory").WhoseValue.Should().Be(string.Empty);
         }
         finally
         {
@@ -1035,6 +1189,7 @@ public sealed class AgentInvocationConsumerTests
                 Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-hitl-repeat-{Guid.NewGuid():N}"))
             .BuildServiceProvider(true);
@@ -1045,7 +1200,8 @@ public sealed class AgentInvocationConsumerTests
             scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
             scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
             scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
-            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IPromptPartialRepository>());
 
         await InvokeCreateHitlTaskAsync(consumer, new AgentInvokeRequested(
             TraceId: traceId,
@@ -1106,6 +1262,7 @@ public sealed class AgentInvocationConsumerTests
                 Decision: new AgentDecision("Completed"),
                 Transcript: [])))
             .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-hitl-redelivery-{Guid.NewGuid():N}"))
             .BuildServiceProvider(true);
@@ -1116,7 +1273,8 @@ public sealed class AgentInvocationConsumerTests
             scope.ServiceProvider.GetRequiredService<IArtifactStore>(),
             scope.ServiceProvider.GetRequiredService<IAgentInvoker>(),
             scope.ServiceProvider.GetRequiredService<IRoleResolutionService>(),
-            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>());
+            scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IPromptPartialRepository>());
         var request = new AgentInvokeRequested(
             TraceId: traceId,
             RoundId: roundId,
@@ -1251,6 +1409,283 @@ public sealed class AgentInvocationConsumerTests
             Writes.Add((uri, metadata, text));
             return uri;
         }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_AppendsLastRoundReminderToPromptTemplate()
+    {
+        // P2 end-to-end: a reviewer agent dispatched inside a ReviewLoop child saga has its
+        // prompt template augmented before reaching the ContextAssembler — the auto-injected
+        // include directive lands in the configuration the IAgentInvoker observes.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "review-loop-p2",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 2,
+            ReviewMaxRounds: 3,
+            OptOutLastRoundReminder: false);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai", "gpt-5.4",
+                SystemPrompt: "you are a reviewer",
+                PromptTemplate: "Please review."),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("artifact body", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "ok",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-p2-inject-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var observedConfig = agentInvoker.Invocations[0].Configuration;
+            observedConfig.PromptTemplate.Should().Contain("Please review.");
+            observedConfig.PromptTemplate.Should().Contain("@codeflow/last-round-reminder");
+            observedConfig.PromptTemplate.Should().Contain("[auto-injected]");
+            observedConfig.ResolvedPartials.Should().NotBeNull();
+            observedConfig.ResolvedPartials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_OptOut_DoesNotAppendReminder()
+    {
+        // P2: when the workflow node sets OptOutLastRoundReminder, the auto-inject path is
+        // suppressed even inside a ReviewLoop — the agent runs with its authored template only.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "review-loop-p2-optout",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 1,
+            ReviewMaxRounds: 3,
+            OptOutLastRoundReminder: true);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai", "gpt-5.4",
+                PromptTemplate: "Please review."),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("artifact body", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "ok",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-p2-optout-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var observedConfig = agentInvoker.Invocations[0].Configuration;
+            observedConfig.PromptTemplate.Should().Be("Please review.");
+            observedConfig.PromptTemplate.Should().NotContain("@codeflow/last-round-reminder");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_OutsideReviewLoop_DoesNothing()
+    {
+        // P2: outside a ReviewLoop child saga (ReviewRound is null) the reminder must not be
+        // appended — the partial's `{{ if isLastRound }}` block has no meaningful binding to
+        // anchor against.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "system",
+            promptTemplate: "user prompt",
+            resolvedPartials: null,
+            reviewRound: null,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("user prompt");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_InReviewLoop_AppendsPartialAndSeedsBody()
+    {
+        // P2 happy path: in a ReviewLoop child, no opt-out, no explicit include — the consumer
+        // appends the include directive to the prompt template AND seeds the bundled v1 body
+        // into the partials map so render-time `{{ include }}` resolves without a DB lookup.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "you are a reviewer",
+            promptTemplate: "review the artifact",
+            resolvedPartials: null,
+            reviewRound: 2,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().Contain("review the artifact");
+        template.Should().Contain("@codeflow/last-round-reminder");
+        template.Should().Contain("[auto-injected]");
+        partials.Should().NotBeNull();
+        partials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
+        partials[SystemPromptPartials.LastRoundReminderKey].Should().Contain("isLastRound");
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_OptOut_DoesNothing()
+    {
+        // P2: workflow-node opt-out wins even when the agent is in a ReviewLoop. Authors who
+        // want a different reminder shape (or none) toggle this.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review the artifact",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: true);
+
+        injected.Should().BeFalse();
+        template.Should().Be("review the artifact");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_ExplicitIncludeInPromptTemplate_DedupSkipsInjection()
+    {
+        // P2: the author already includes the partial explicitly — auto-injection would render
+        // the reminder twice. Skip cleanly.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review\n{{ include \"@codeflow/last-round-reminder\" }}",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("review\n{{ include \"@codeflow/last-round-reminder\" }}");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_ExplicitIncludeInSystemPrompt_DedupSkipsInjection()
+    {
+        // P2: an explicit include in the system prompt also counts for de-dup — we don't want a
+        // double reminder regardless of which template surface the author placed it on.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "{{ include '@codeflow/last-round-reminder' }}\nreviewer base",
+            promptTemplate: "go review",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("go review");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_PreservesAuthorPinnedPartials()
+    {
+        // P2: when the agent already has resolved partials (from its own pins), the seeded body
+        // is added without disturbing the existing entries — so authors who pinned a different
+        // version of @codeflow/last-round-reminder keep their pinned body.
+        var existing = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [SystemPromptPartials.ReviewerBaseKey] = "reviewer base body",
+            [SystemPromptPartials.LastRoundReminderKey] = "AUTHOR-PINNED V2 BODY",
+        };
+
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review",
+            resolvedPartials: existing,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().Contain("@codeflow/last-round-reminder");
+        partials.Should().BeSameAs(existing,
+            "the consumer should not allocate a fresh dict when the partial body is already supplied");
+        partials![SystemPromptPartials.LastRoundReminderKey].Should().Be("AUTHOR-PINNED V2 BODY");
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_NullPromptTemplate_StillInjects()
+    {
+        // P2: an agent with no PromptTemplate (system-only agent) still gets the reminder when
+        // it lands in a ReviewLoop. The injected snippet becomes the only user-side template.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "you are a reviewer",
+            promptTemplate: null,
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().NotBeNullOrEmpty();
+        template.Should().Contain("@codeflow/last-round-reminder");
+        partials.Should().NotBeNull();
+        partials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
     }
 
     private static JsonElement Json(string json)

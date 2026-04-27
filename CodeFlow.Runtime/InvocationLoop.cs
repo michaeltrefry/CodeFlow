@@ -10,7 +10,7 @@ public sealed class InvocationLoop
     public const string SubmitToolName = "submit";
     public const string FailToolName = "fail";
     public const string SetContextToolName = "setContext";
-    public const string SetGlobalToolName = "setGlobal";
+    public const string SetWorkflowToolName = "setWorkflow";
 
     /// <summary>
     /// Default port name emitted when an agent has no declared outputs (e.g., legacy Logic-only
@@ -21,18 +21,30 @@ public sealed class InvocationLoop
     private const string DefaultPortName = "Completed";
 
     /// <summary>
-    /// Cap on the serialized size of accumulated <c>setContext</c> / <c>setGlobal</c> writes per
-    /// invocation. Mirrors the cap on <see cref="ContextAssembler"/>'s Logic-node counterpart so
-    /// agents and Logic nodes share the same bag-write budget. Exceeding the cap returns a tool
-    /// error and the loop continues — the offending value is not persisted.
+    /// Cap on the serialized size of accumulated <c>setContext</c> / <c>setWorkflow</c> writes
+    /// per invocation. Mirrors the cap on <see cref="ContextAssembler"/>'s Logic-node counterpart
+    /// so agents and Logic nodes share the same bag-write budget. Exceeding the cap returns a
+    /// tool error and the loop continues — the offending value is not persisted.
     /// </summary>
     private const int MaxContextUpdatesChars = 256 * 1024;
 
     /// <summary>
-    /// Cap on the length of a single <c>setContext</c> / <c>setGlobal</c> key, mirroring the
+    /// Cap on the length of a single <c>setContext</c> / <c>setWorkflow</c> key, mirroring the
     /// Logic-node validation guard. Keys above this length are rejected with a tool error.
     /// </summary>
     private const int MaxContextKeyChars = 256;
+
+    /// <summary>
+    /// Cap on the serialized length of a single <c>setContext</c> / <c>setWorkflow</c> value
+    /// (per-call). Closes the runtime failure mode where an agent tries to stream a large
+    /// document (PRD, plan, codebase chunk) into the workflow bag mid-turn — the model has to
+    /// emit the entire value as JSON tool-call args, eating into <c>max_tokens</c> and producing
+    /// a <see cref="JsonReaderException"/> when the args JSON is truncated mid-string. The
+    /// remediation is to capture the document via an output script using <c>setOutput</c> /
+    /// <c>setWorkflow</c> in the script sandbox, where the value is bounded by the script's own
+    /// 256 KiB budget rather than the model's per-turn token allowance.
+    /// </summary>
+    private const int MaxSingleWriteChars = 16 * 1024;
 
     private static readonly ToolSchema FailTool = new(
         FailToolName,
@@ -67,10 +79,12 @@ public sealed class InvocationLoop
             ["required"] = new JsonArray("key", "value")
         });
 
-    private static readonly ToolSchema SetGlobalTool = new(
-        SetGlobalToolName,
-        "Persist a value into the cross-saga global bag under the given key. Same lifecycle "
-        + "rules as `setContext` — committed on successful `submit`, discarded on failure.",
+    private static readonly ToolSchema SetWorkflowTool = new(
+        SetWorkflowToolName,
+        "Persist a value into the per-trace-tree workflow bag under the given key. Visible to "
+        + "downstream agents and subflow children as `{{ workflow.<key> }}` in templates and "
+        + "`workflow.<key>` in scripts. Same lifecycle rules as `setContext` — committed on "
+        + "successful `submit`, discarded on failure.",
         new JsonObject
         {
             ["type"] = "object",
@@ -161,14 +175,21 @@ public sealed class InvocationLoop
         var budget = request.Budget ?? InvocationLoopBudget.Default;
         var startedAt = nowProvider();
         var transcript = request.Messages.ToList();
-        var declaredPortNames = (request.DeclaredOutputs ?? [])
-            .Select(o => o.Kind)
-            .Where(static name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.Ordinal)
+        var declaredOutputs = (request.DeclaredOutputs ?? [])
+            .Where(static o => !string.IsNullOrWhiteSpace(o.Kind))
+            .GroupBy(o => o.Kind, StringComparer.Ordinal)
+            .Select(g => g.First())
             .ToArray();
+        var declaredPortNames = declaredOutputs.Select(o => o.Kind).ToArray();
+        // Per-port content-optional opt-out (V2). Sentinel ports like Cancelled/Skip whose
+        // decision carries the meaning may declare ContentOptional=true so the empty-content
+        // submit guard skips them.
+        var contentOptionalByPort = declaredOutputs
+            .Where(o => o.ContentOptional)
+            .ToDictionary(o => o.Kind, _ => true, StringComparer.Ordinal);
         var submitTool = BuildSubmitTool(declaredPortNames);
         var externalTools = toolRegistry.AvailableTools(request.ToolAccessPolicy);
-        var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetGlobalTool };
+        var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetWorkflowTool };
         var toolsByName = externalTools
             .Concat(runtimeTools)
             .ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
@@ -176,11 +197,11 @@ public sealed class InvocationLoop
             .Concat(runtimeTools)
             .ToArray();
 
-        // Pending writes — accumulated by setContext/setGlobal calls and applied to the result
+        // Pending writes — accumulated by setContext/setWorkflow calls and applied to the result
         // only when the loop terminates with a non-Failed decision. Failed terminations discard
         // them so a botched invocation doesn't corrupt the saga's bag.
         var pendingContextUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        var pendingGlobalUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var pendingWorkflowUpdates = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
         var totalToolCalls = 0;
         var consecutiveNonMutatingCalls = 0;
@@ -205,6 +226,13 @@ public sealed class InvocationLoop
             {
                 await observer.OnModelCallStartedAsync(roundNumber, cancellationToken);
             }
+
+            // Hard precondition: every prior assistant `function_call` in the transcript must
+            // have a matching Tool-role `function_call_output`. Both OpenAI Responses and
+            // Anthropic enforce this; sending an orphaned call produces opaque provider errors
+            // ("No tool output found for function call <id>"). Catch it client-side so the
+            // stack trace points at the offending retry path rather than the HTTP layer.
+            EnsureToolCallPairing(transcript);
 
             var response = await modelClient.InvokeAsync(
                 new InvocationRequest(
@@ -279,7 +307,7 @@ public sealed class InvocationLoop
                     aggregateTokenUsage,
                     totalToolCalls,
                     pendingContextUpdates,
-                    pendingGlobalUpdates);
+                    pendingWorkflowUpdates);
             }
 
             foreach (var toolCall in response.Message.ToolCalls)
@@ -314,7 +342,7 @@ public sealed class InvocationLoop
                 if (TryHandleSetContextLikeTool(
                         toolCall,
                         pendingContextUpdates,
-                        pendingGlobalUpdates,
+                        pendingWorkflowUpdates,
                         out var setResult))
                 {
                     transcript.Add(new ChatMessage(
@@ -328,7 +356,7 @@ public sealed class InvocationLoop
                         await observer.OnToolCallCompletedAsync(toolCall, setResult, cancellationToken);
                     }
 
-                    // setContext / setGlobal are mutating writes — reset the non-mutating streak.
+                    // setContext / setWorkflow are mutating writes — reset the non-mutating streak.
                     consecutiveNonMutatingCalls = 0;
                     continue;
                 }
@@ -339,16 +367,19 @@ public sealed class InvocationLoop
                     {
                         // Reject terminal submits with empty/whitespace assistant content when
                         // the agent has declared outputs and didn't choose the implicit Failed
-                        // port. Without this guard, an LLM that calls `submit` on its very first
-                        // turn (no content, just a tool call) produces a 0-byte artifact —
-                        // downstream agents see empty input, HITL forms render blank fields, and
-                        // the workflow proceeds in a broken state with no diagnostic. Push a
+                        // port (or another port the author flagged content-optional). Without
+                        // this guard, an LLM that calls `submit` on its very first turn (no
+                        // content, just a tool call) produces a 0-byte artifact — downstream
+                        // agents see empty input, HITL forms render blank fields, and the
+                        // workflow proceeds in a broken state with no diagnostic. Push a
                         // reminder back into the transcript and let the loop continue; the LLM
                         // gets another shot at producing real output.
                         var isFailedPort = string.Equals(
                             terminalResult.PortName, "Failed", StringComparison.Ordinal);
+                        var isContentOptionalPort = contentOptionalByPort.ContainsKey(terminalResult.PortName);
                         if (declaredPortNames.Length > 0
                             && !isFailedPort
+                            && !isContentOptionalPort
                             && string.IsNullOrWhiteSpace(lastAssistantOutput))
                         {
                             // Without this tool message, the next round's request would carry the
@@ -357,9 +388,13 @@ public sealed class InvocationLoop
                             // request: "No tool output found for function call <id>". Provider
                             // protocol requires every prior `function_call` to be paired with a
                             // `function_call_output` before the next assistant turn.
+                            var toolErrorMessage =
+                                $"Port \"{terminalResult.PortName}\" requires non-empty assistant "
+                                + "message content. Write your output as message text BEFORE "
+                                + "calling submit.";
                             transcript.Add(new ChatMessage(
                                 ChatMessageRole.Tool,
-                                "missing assistant content; retry",
+                                toolErrorMessage,
                                 ToolCallId: toolCall.Id,
                                 IsError: true));
                             transcript.Add(new ChatMessage(
@@ -374,7 +409,7 @@ public sealed class InvocationLoop
                             {
                                 await observer.OnToolCallCompletedAsync(
                                     toolCall,
-                                    new ToolResult(toolCall.Id, "missing assistant content; retry", IsError: true),
+                                    new ToolResult(toolCall.Id, toolErrorMessage, IsError: true),
                                     cancellationToken);
                             }
                             if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
@@ -404,7 +439,7 @@ public sealed class InvocationLoop
                             aggregateTokenUsage,
                             totalToolCalls,
                             pendingContextUpdates,
-                            pendingGlobalUpdates);
+                            pendingWorkflowUpdates);
                     }
 
                     if (terminalError is not null)
@@ -602,7 +637,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted)
     {
-        // Pending setContext/setGlobal writes are deliberately NOT applied — failed invocations
+        // Pending setContext/setWorkflow writes are deliberately NOT applied — failed invocations
         // discard their pending bag-writes per Slice 13's lifecycle rule.
         return new InvocationLoopResult(
             output,
@@ -619,7 +654,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
-        IReadOnlyDictionary<string, JsonElement> globalUpdates)
+        IReadOnlyDictionary<string, JsonElement> workflowUpdates)
     {
         return new InvocationLoopResult(
             output,
@@ -628,7 +663,7 @@ public sealed class InvocationLoop
             tokenUsage,
             toolCallsExecuted,
             contextUpdates.Count > 0 ? contextUpdates : null,
-            globalUpdates.Count > 0 ? globalUpdates : null);
+            workflowUpdates.Count > 0 ? workflowUpdates : null);
     }
 
     private static InvocationLoopResult BuildTerminalResult(
@@ -638,7 +673,7 @@ public sealed class InvocationLoop
         TokenUsage? tokenUsage,
         int toolCallsExecuted,
         IReadOnlyDictionary<string, JsonElement> contextUpdates,
-        IReadOnlyDictionary<string, JsonElement> globalUpdates)
+        IReadOnlyDictionary<string, JsonElement> workflowUpdates)
     {
         // Discard pending updates on a Failed terminal — same lifecycle rule as exception/budget
         // failures. Successful submits commit them.
@@ -659,13 +694,13 @@ public sealed class InvocationLoop
             tokenUsage,
             toolCallsExecuted,
             contextUpdates,
-            globalUpdates);
+            workflowUpdates);
     }
 
     private static bool TryHandleSetContextLikeTool(
         ToolCall toolCall,
         Dictionary<string, JsonElement> pendingContextUpdates,
-        Dictionary<string, JsonElement> pendingGlobalUpdates,
+        Dictionary<string, JsonElement> pendingWorkflowUpdates,
         out ToolResult? toolResult)
     {
         Dictionary<string, JsonElement>? targetBag = null;
@@ -676,10 +711,10 @@ public sealed class InvocationLoop
             targetBag = pendingContextUpdates;
             toolDisplayName = SetContextToolName;
         }
-        else if (string.Equals(toolCall.Name, SetGlobalToolName, StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(toolCall.Name, SetWorkflowToolName, StringComparison.OrdinalIgnoreCase))
         {
-            targetBag = pendingGlobalUpdates;
-            toolDisplayName = SetGlobalToolName;
+            targetBag = pendingWorkflowUpdates;
+            toolDisplayName = SetWorkflowToolName;
         }
 
         if (targetBag is null || toolDisplayName is null)
@@ -704,12 +739,12 @@ public sealed class InvocationLoop
                     $"{toolDisplayName} key length {key.Length} exceeds the {MaxContextKeyChars}-character cap.");
             }
 
-            if (string.Equals(toolDisplayName, SetGlobalToolName, StringComparison.Ordinal)
-                && ProtectedGlobals.IsReserved(key))
+            if (string.Equals(toolDisplayName, SetWorkflowToolName, StringComparison.Ordinal)
+                && ProtectedVariables.IsReserved(key))
             {
                 throw new InvalidOperationException(
-                    $"setGlobal('{key}', ...) is rejected: '{key}' is a framework-managed global "
-                    + "and cannot be overwritten by agents.");
+                    $"setWorkflow('{key}', ...) is rejected: '{key}' is a framework-managed "
+                    + "workflow variable and cannot be overwritten by agents.");
             }
 
             var valueNode = toolCall.Arguments?["value"];
@@ -723,6 +758,21 @@ public sealed class InvocationLoop
             var element = valueNode is null
                 ? JsonDocument.Parse("null").RootElement.Clone()
                 : JsonDocument.Parse(valueNode.ToJsonString()).RootElement.Clone();
+
+            // Per-call value cap (V1). Reject values larger than the single-write budget before
+            // they enter the pending bag — the agent gets a typed tool error pointing at the
+            // output-script remediation path, the loop continues, and the trace doesn't risk a
+            // mid-string JSON truncation when the model retries.
+            var elementSize = element.GetRawText().Length;
+            if (elementSize > MaxSingleWriteChars)
+            {
+                throw new InvalidOperationException(
+                    $"{toolDisplayName} value for key '{key}' is {elementSize} chars, exceeding "
+                    + $"the {MaxSingleWriteChars}-character per-call cap. Move large content to "
+                    + $"an output script using setOutput / {toolDisplayName} in the script "
+                    + $"sandbox; mid-turn tool-call args are constrained by the model's "
+                    + $"max_tokens budget.");
+            }
 
             var candidate = new Dictionary<string, JsonElement>(targetBag, StringComparer.Ordinal)
             {
@@ -744,6 +794,49 @@ public sealed class InvocationLoop
         {
             toolResult = new ToolResult(toolCall.Id, exception.Message, IsError: true);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Walks <paramref name="transcript"/> and verifies every <c>function_call</c> emitted by an
+    /// assistant message has a matching <c>function_call_output</c> Tool message later in the
+    /// transcript. Throws <see cref="OrphanFunctionCallException"/> on the first violation.
+    /// </summary>
+    /// <remarks>
+    /// Defensive: the loop's own retry paths already maintain pairing. This guard turns any
+    /// future regression into a stack trace pointing at the offending append, instead of an
+    /// opaque provider HTTP error.
+    /// </remarks>
+    public static void EnsureToolCallPairing(IReadOnlyList<ChatMessage> transcript)
+    {
+        ArgumentNullException.ThrowIfNull(transcript);
+
+        // Single forward pass: track outstanding tool-call IDs and tick them off when the
+        // matching Tool message appears. Any IDs still outstanding at the end are orphans.
+        // O(n) in transcript length; constant memory in unique-ID count.
+        var outstanding = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var message in transcript)
+        {
+            if (message.Role == ChatMessageRole.Assistant && message.ToolCalls is { Count: > 0 } calls)
+            {
+                foreach (var call in calls)
+                {
+                    if (!string.IsNullOrEmpty(call.Id))
+                    {
+                        outstanding.Add(call.Id);
+                    }
+                }
+            }
+            else if (message.Role == ChatMessageRole.Tool && !string.IsNullOrEmpty(message.ToolCallId))
+            {
+                outstanding.Remove(message.ToolCallId);
+            }
+        }
+
+        if (outstanding.Count > 0)
+        {
+            throw new OrphanFunctionCallException(outstanding.OrderBy(static id => id, StringComparer.Ordinal).ToList());
         }
     }
 

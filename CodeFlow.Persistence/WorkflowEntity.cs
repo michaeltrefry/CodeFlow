@@ -21,6 +21,20 @@ public sealed class WorkflowEntity
 
     public DateTime CreatedAtUtc { get; set; }
 
+    /// <summary>
+    /// VZ2: nullable JSON array of workflow-variable keys this workflow declares it reads
+    /// (and expects upstream nodes to write before they're consumed). NULL = no declaration,
+    /// validator skips. Empty array = author declared "reads nothing" explicitly.
+    /// </summary>
+    public string? WorkflowVarsReadsJson { get; set; }
+
+    /// <summary>
+    /// VZ2: nullable JSON array of workflow-variable keys this workflow's nodes are allowed
+    /// to write via <c>setWorkflow</c> / mirror / rejection-history. Same NULL vs empty
+    /// distinction as <see cref="WorkflowVarsReadsJson"/>.
+    /// </summary>
+    public string? WorkflowVarsWritesJson { get; set; }
+
     public List<WorkflowNodeEntity> Nodes { get; set; } = [];
 
     public List<WorkflowEdgeEntity> Edges { get; set; } = [];

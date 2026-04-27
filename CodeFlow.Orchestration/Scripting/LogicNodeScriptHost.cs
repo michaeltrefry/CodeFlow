@@ -52,7 +52,7 @@ public sealed class LogicNodeScriptHost
             return o;
         }
         var __contextUpdates = Object.create(null);
-        var __globalUpdates = Object.create(null);
+        var __workflowUpdates = Object.create(null);
         var __outputOverride = null;
         var __inputOverride = null;
         function setContext(key, value) {
@@ -61,11 +61,11 @@ public sealed class LogicNodeScriptHost
             }
             __contextUpdates[key] = value;
         }
-        function setGlobal(key, value) {
+        function setWorkflow(key, value) {
             if (typeof key !== 'string' || key.length === 0 || key.trim().length === 0) {
-                throw new TypeError('setGlobal(key, value) requires a non-empty string key.');
+                throw new TypeError('setWorkflow(key, value) requires a non-empty string key.');
             }
-            __globalUpdates[key] = value;
+            __workflowUpdates[key] = value;
         }
         function __readContextUpdates() {
             try { return JSON.stringify(__contextUpdates); }
@@ -73,10 +73,10 @@ public sealed class LogicNodeScriptHost
                 throw new TypeError('setContext value is not JSON-serializable: ' + e.message);
             }
         }
-        function __readGlobalUpdates() {
-            try { return JSON.stringify(__globalUpdates); }
+        function __readWorkflowUpdates() {
+            try { return JSON.stringify(__workflowUpdates); }
             catch (e) {
-                throw new TypeError('setGlobal value is not JSON-serializable: ' + e.message);
+                throw new TypeError('setWorkflow value is not JSON-serializable: ' + e.message);
             }
         }
         function __readOutputOverride() {
@@ -139,7 +139,7 @@ public sealed class LogicNodeScriptHost
         JsonElement input,
         IReadOnlyDictionary<string, JsonElement> context,
         CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, JsonElement>? global = null,
+        IReadOnlyDictionary<string, JsonElement>? workflow = null,
         int? reviewRound = null,
         int? reviewMaxRounds = null,
         bool allowOutputOverride = false,
@@ -152,7 +152,7 @@ public sealed class LogicNodeScriptHost
         ArgumentException.ThrowIfNullOrWhiteSpace(inputVariableName);
         ArgumentNullException.ThrowIfNull(declaredPorts);
         ArgumentNullException.ThrowIfNull(context);
-        var globalSnapshot = global ?? LogicNodeEvaluationResult.EmptyContextUpdates;
+        var workflowSnapshot = workflow ?? LogicNodeEvaluationResult.EmptyContextUpdates;
 
         var logs = new List<string>();
         var stopwatch = Stopwatch.StartNew();
@@ -233,14 +233,14 @@ public sealed class LogicNodeScriptHost
                 : BootstrapScriptSetInputDisabled);
             engine.Execute($"var {inputVariableName} = {input.GetRawText()};");
             engine.Execute($"var context = __deepFreeze({SerializeContext(context)});");
-            engine.Execute($"var global = __deepFreeze({SerializeContext(globalSnapshot)});");
+            engine.Execute($"var workflow = __deepFreeze({SerializeContext(workflowSnapshot)});");
             engine.Execute($"var round = {scriptRound};");
             engine.Execute($"var maxRounds = {scriptMaxRounds};");
             engine.Execute($"var isLastRound = {(scriptIsLast ? "true" : "false")};");
             engine.Execute(prepared);
 
             var updatesJson = engine.Evaluate("__readContextUpdates()").AsString();
-            var globalUpdatesJson = engine.Evaluate("__readGlobalUpdates()").AsString();
+            var workflowUpdatesJson = engine.Evaluate("__readWorkflowUpdates()").AsString();
             var outputOverrideValue = engine.Evaluate("__readOutputOverride()");
             string? outputOverride = outputOverrideValue.IsNull() || outputOverrideValue.IsUndefined()
                 ? null
@@ -261,11 +261,11 @@ public sealed class LogicNodeScriptHost
                     stopwatch.Elapsed);
             }
 
-            if (globalUpdatesJson.Length > MaxContextUpdatesChars)
+            if (workflowUpdatesJson.Length > MaxContextUpdatesChars)
             {
                 return LogicNodeEvaluationResult.Fail(
                     LogicNodeFailureKind.ContextBudgetExceeded,
-                    $"setGlobal payload exceeded {MaxContextUpdatesChars} characters when serialized.",
+                    $"setWorkflow payload exceeded {MaxContextUpdatesChars} characters when serialized.",
                     logs,
                     stopwatch.Elapsed);
             }
@@ -289,19 +289,19 @@ public sealed class LogicNodeScriptHost
             }
 
             var contextUpdates = ParseContextUpdates(updatesJson);
-            var globalUpdates = ParseContextUpdates(globalUpdatesJson);
+            var workflowUpdates = ParseContextUpdates(workflowUpdatesJson);
 
-            // Reserved-global enforcement runs after parsing so the failure message can name the
-            // offending key. The script has already finished — pending writes are discarded
-            // because we return Fail(...) and the caller drops the result on failure.
-            foreach (var reservedKey in globalUpdates.Keys)
+            // Reserved-workflow-key enforcement runs after parsing so the failure message can
+            // name the offending key. The script has already finished — pending writes are
+            // discarded because we return Fail(...) and the caller drops the result on failure.
+            foreach (var reservedKey in workflowUpdates.Keys)
             {
-                if (ProtectedGlobals.IsReserved(reservedKey))
+                if (ProtectedVariables.IsReserved(reservedKey))
                 {
                     return LogicNodeEvaluationResult.Fail(
-                        LogicNodeFailureKind.ReservedGlobalKeyWrite,
-                        $"setGlobal('{reservedKey}', ...) is rejected: '{reservedKey}' is a "
-                        + "framework-managed global and cannot be overwritten by scripts.",
+                        LogicNodeFailureKind.ReservedWorkflowKeyWrite,
+                        $"setWorkflow('{reservedKey}', ...) is rejected: '{reservedKey}' is a "
+                        + "framework-managed workflow variable and cannot be overwritten by scripts.",
                         logs,
                         stopwatch.Elapsed);
                 }
@@ -325,7 +325,7 @@ public sealed class LogicNodeScriptHost
                     Failure: null,
                     FailureMessage: null,
                     ContextUpdates: contextUpdates,
-                    GlobalUpdates: globalUpdates,
+                    WorkflowUpdates: workflowUpdates,
                     OutputOverride: outputOverride,
                     InputOverride: inputOverride);
             }
@@ -344,7 +344,7 @@ public sealed class LogicNodeScriptHost
                 logs,
                 stopwatch.Elapsed,
                 contextUpdates,
-                globalUpdates,
+                workflowUpdates,
                 outputOverride,
                 inputOverride);
         }

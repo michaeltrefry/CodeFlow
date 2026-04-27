@@ -29,7 +29,7 @@ import {
   WorkflowNodeKind,
   WorkflowSummary
 } from '../../../core/models';
-import { WorkflowsApi } from '../../../core/workflows.api';
+import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
 import { ButtonComponent } from '../../../ui/button.component';
 import { TagInputComponent } from '../../../ui/tag-input.component';
 import {
@@ -48,7 +48,7 @@ import {
 } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
 import { WorkflowNodeComponent } from './workflow-node.component';
-import { MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
+import { MonacoAmbientLib, MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
 import { NodeContextMenuComponent, NodeContextMenuItem } from './node-context-menu.component';
 import {
   AgentInPlaceEditDialogComponent,
@@ -65,6 +65,7 @@ import {
   VersionUpdateResult,
   VersionUpdateTarget
 } from './version-update-dialog.component';
+import { WorkflowVersionHistoryDialogComponent } from './workflow-version-history-dialog.component';
 
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
@@ -104,6 +105,99 @@ interface PortReferenceRow {
 
 const DEFAULT_INPUT_KEY = 'input';
 
+/** `{{ workflow.X }}` / `{{ context.X }}` reference scanner used by the VZ1 inspector to
+ *  flag reads that have no upstream writer. Mirrors the backend regex in
+ *  `WorkflowVarDeclarationRule` so the editor surfaces the same coupling the validator does. */
+const WORKFLOW_REF_TEMPLATE = /\{\{\s*workflow\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const CONTEXT_REF_TEMPLATE = /\{\{\s*context\.([A-Za-z_][A-Za-z0-9_]*)/g;
+/** JS read in scripts: `workflow.X`, `workflow['X']`, `workflow["X"]`. */
+const WORKFLOW_REF_SCRIPT_DOT = /\bworkflow\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const WORKFLOW_REF_SCRIPT_BRACKET = /\bworkflow\[\s*['"]([^'"]+)['"]\s*\]/g;
+const CONTEXT_REF_SCRIPT_DOT = /\bcontext\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const CONTEXT_REF_SCRIPT_BRACKET = /\bcontext\[\s*['"]([^'"]+)['"]\s*\]/g;
+
+function extractMatches(pattern: RegExp, text: string, sink: Set<string>): void {
+  pattern.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) sink.add(m[1]);
+}
+
+function extractWorkflowAndContextRefs(text: string, wf: Set<string>, ctx: Set<string>): void {
+  if (!text) return;
+  extractMatches(WORKFLOW_REF_TEMPLATE, text, wf);
+  extractMatches(CONTEXT_REF_TEMPLATE, text, ctx);
+}
+
+function extractWorkflowAndContextRefsFromScript(text: string, wf: Set<string>, ctx: Set<string>): void {
+  if (!text) return;
+  extractMatches(WORKFLOW_REF_SCRIPT_DOT, text, wf);
+  extractMatches(WORKFLOW_REF_SCRIPT_BRACKET, text, wf);
+  extractMatches(CONTEXT_REF_SCRIPT_DOT, text, ctx);
+  extractMatches(CONTEXT_REF_SCRIPT_BRACKET, text, ctx);
+}
+
+/** E1: compose Monaco ambient declarations for a script-editor slot. The active set is
+ *  swapped into Monaco's TS service when an editor takes focus. Symbol availability is
+ *  gated by script kind so `output` is undefined inside an input script (and vice versa),
+ *  matching runtime semantics. F2 dataflow narrows `workflow` / `context` to known keys
+ *  while keeping an index signature so unknown keys don't error. */
+type ScriptSlotKind = 'input-script' | 'output-script' | 'logic-script';
+
+function buildScriptAmbientLibs(
+  kind: ScriptSlotKind,
+  workflowKeys: readonly string[],
+  contextKeys: readonly string[],
+  inLoop: boolean
+): MonacoAmbientLib[] {
+  const wfNarrow = workflowKeys.length === 0
+    ? '[key: string]: unknown;'
+    : workflowKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
+  const ctxNarrow = contextKeys.length === 0
+    ? '[key: string]: unknown;'
+    : contextKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
+
+  const sharedHeader = [
+    '// CodeFlow script sandbox — auto-generated ambient declarations.',
+    '// Do not edit; regenerated when this script-editor takes focus.',
+    `declare const workflow: { ${wfNarrow} };`,
+    `declare const context: { ${ctxNarrow} };`,
+    'declare function setWorkflow(key: string, value: unknown): void;',
+    'declare function setContext(key: string, value: unknown): void;',
+    'declare function log(message: string): void;'
+  ];
+
+  const loopBlock = inLoop
+    ? [
+        'declare const round: number;',
+        'declare const maxRounds: number;',
+        'declare const isLastRound: boolean;'
+      ]
+    : [];
+
+  const slotBlock = kind === 'input-script'
+    ? [
+        '// Input scripts run BEFORE the node receives the upstream artifact.',
+        'declare const input: unknown;',
+        'declare function setInput(text: string): void;'
+      ]
+    : kind === 'output-script'
+    ? [
+        '// Output scripts run AFTER the agent submits.',
+        'declare const output: { decision: string; text: string };',
+        'declare function setOutput(text: string): void;',
+        'declare function setNodePath(port: string): void;'
+      ]
+    : [
+        '// Logic-node scripts evaluate the node\'s decision against the upstream artifact.',
+        'declare const output: { decision: string; text: string };',
+        'declare function setOutput(text: string): void;',
+        'declare function setNodePath(port: string): void;'
+      ];
+
+  const content = [...sharedHeader, ...loopBlock, ...slotBlock, ''].join('\n');
+  return [{ filePath: `inmemory://codeflow/${kind}.d.ts`, content }];
+}
+
 function defaultStartInput(): WorkflowInput {
   return {
     key: DEFAULT_INPUT_KEY,
@@ -119,7 +213,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent],
+  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -158,6 +252,19 @@ function defaultStartInput(): WorkflowInput {
             </label>
           </div>
           <div class="toolbar-actions">
+            <button type="button" cf-button variant="ghost" size="sm"
+                    [class.active]="showImplicitFailed()"
+                    (click)="toggleImplicitFailed()"
+                    title="Show implicit Failed port on every node (Shift+F)"
+                    accesskey="f">
+              {{ showImplicitFailed() ? 'Hide Failed ports' : 'Show Failed ports' }}
+            </button>
+            <button type="button" cf-button variant="ghost" size="sm"
+                    (click)="historyOpen.set(true)"
+                    [disabled]="!hasExistingKey()"
+                    title="Compare versions of this workflow">
+              History
+            </button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="tidy()">Tidy up</button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="cancel()">Cancel</button>
             <button type="button" cf-button variant="primary" size="sm" (click)="save()" [disabled]="saving()">
@@ -256,11 +363,13 @@ function defaultStartInput(): WorkflowInput {
                   <span class="field-label">Output ports <span class="muted xsmall">(derived from agent's declared outputs)</span></span>
                   @if (derivedPortRows().length > 0) {
                     <ul class="port-list mono">
-                      @for (p of derivedPortRows(); track p.name) {
-                        <li>
+                      @for (p of derivedPortRows(); track p.name + ':' + p.status) {
+                        <li [attr.data-port-status]="p.status">
                           <code>{{ p.name }}</code>
-                          @if (p.broken) {
-                            <span class="tag error xsmall">stale (not in agent outputs)</span>
+                          @if (p.status === 'stale') {
+                            <span class="tag error xsmall" title="Wired on this node but the pinned agent can't submit it. Agents reaching this port at runtime would crash.">stale (not declared by agent)</span>
+                          } @else if (p.status === 'missing') {
+                            <span class="tag warn xsmall" title="Declared by the pinned agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</span>
                           }
                         </li>
                       }
@@ -268,6 +377,14 @@ function defaultStartInput(): WorkflowInput {
                         <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
                       </li>
                     </ul>
+                    @if (selectedNodeHasPortDrift()) {
+                      <div class="row" style="gap: 8px; align-items: center; margin-top: 8px">
+                        <button type="button" cf-button variant="default" size="sm" (click)="syncPortsFromAgent(sel.editor)">
+                          Sync from agent
+                        </button>
+                        <span class="muted xsmall">Replaces this node's ports with the agent's declared outputs. Wires on still-declared ports are preserved.</span>
+                      </div>
+                    }
                   } @else {
                     <p class="muted xsmall">
                       @if (sel.editor.agentKey) {
@@ -292,12 +409,15 @@ function defaultStartInput(): WorkflowInput {
                 <div class="field">
                   <span class="field-label">Input script <span class="muted xsmall">(optional)</span></span>
                   <p class="muted xsmall">
-                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>global</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
+                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
                   </p>
                   <cf-monaco-script-editor
                     class="script-editor"
                     [value]="sel.editor.inputScript ?? ''"
                     [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -320,6 +440,9 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -336,12 +459,12 @@ function defaultStartInput(): WorkflowInput {
             @if (sel.editor.kind === 'Subflow') {
               <div class="inspector-section">
                 <label class="field">
-                  <span>Workflow <span class="muted xsmall">(the subflow to invoke)</span></span>
+                  <span>Workflow <span class="muted xsmall">(the subflow to invoke; ports preview at latest version)</span></span>
                   <select [ngModel]="sel.editor.subflowKey ?? ''"
                           (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
                     <option value="">(pick workflow)</option>
                     @for (wf of availableSubflowTargets(); track wf.key) {
-                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                      <option [value]="wf.key">{{ subflowPickerLabel(wf) }}</option>
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
@@ -408,12 +531,12 @@ function defaultStartInput(): WorkflowInput {
             @if (sel.editor.kind === 'ReviewLoop') {
               <div class="inspector-section">
                 <label class="field">
-                  <span>Child workflow <span class="muted xsmall">(re-invoked every round)</span></span>
+                  <span>Child workflow <span class="muted xsmall">(re-invoked every round; ports preview at latest version)</span></span>
                   <select [ngModel]="sel.editor.subflowKey ?? ''"
                           (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
                     <option value="">(pick workflow)</option>
                     @for (wf of availableSubflowTargets(); track wf.key) {
-                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                      <option [value]="wf.key">{{ subflowPickerLabel(wf) }}</option>
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
@@ -504,6 +627,9 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
+                    [ambientLibs]="logicScriptAmbientLibs()"
+                    snippetKind="logic-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -523,6 +649,160 @@ function defaultStartInput(): WorkflowInput {
                 </label>
               </div>
             }
+
+            <div class="inspector-section dataflow-section">
+              <div class="row-spread">
+                <div class="panel-title-inline">Data flow</div>
+                @if (dataflowVersion(); as v) {
+                  <span class="muted xsmall" [class.dirty]="dataflowDirty()">
+                    based on saved v{{ v }}@if (dataflowDirty()) { · unsaved edits }
+                  </span>
+                }
+              </div>
+              @if (dataflowLoading()) {
+                <p class="muted xsmall">Analyzing data flow…</p>
+              } @else if (dataflowError(); as err) {
+                <p class="tag error xsmall">{{ err }}</p>
+              } @else if (!dataflowSnapshot()) {
+                <p class="muted xsmall">Save this workflow to enable data-flow analysis.</p>
+              } @else if (selectedNodeDataflow(); as scope) {
+                <div class="df-group">
+                  <div class="df-group-title">
+                    Workflow variables in scope
+                    <span class="muted xsmall">— what upstream nodes have written</span>
+                  </div>
+                  @if (scope.workflowVariables.length === 0 && selectedNodeUndeclaredReads().workflow.length === 0) {
+                    <p class="muted xsmall">No upstream <code>setWorkflow</code> writes reach this node.</p>
+                  } @else {
+                    <ul class="df-list">
+                      @for (v of scope.workflowVariables; track v.key) {
+                        <li>
+                          <code class="mono">{{ v.key }}</code>
+                          <span class="tag small"
+                                [class.success]="v.confidence === 'Definite'"
+                                [class.warn]="v.confidence === 'Conditional'"
+                                [title]="v.confidence === 'Definite' ? 'Every upstream path writes this key.' : 'At least one upstream path writes this key — others may not.'">
+                            {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
+                          </span>
+                          @if (v.sources.length > 0) {
+                            <span class="muted xsmall">from</span>
+                            @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
+                              <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(src.nodeId)"
+                                      [title]="'Navigate to ' + labelForSource(src.nodeId)">
+                                {{ labelForSource(src.nodeId) }}<span class="muted">.{{ src.scriptKind }}</span></button>@if (!last) {<span class="muted">,</span>}
+                            }
+                          }
+                        </li>
+                      }
+                      @for (k of selectedNodeUndeclaredReads().workflow; track k) {
+                        <li class="undeclared">
+                          <code class="mono">{{ k }}</code>
+                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                        </li>
+                      }
+                    </ul>
+                  }
+                </div>
+
+                <div class="df-group">
+                  <div class="df-group-title">
+                    Context keys in scope
+                    <span class="muted xsmall">— per-saga, written via <code>setContext</code></span>
+                  </div>
+                  @if (scope.contextKeys.length === 0 && selectedNodeUndeclaredReads().context.length === 0) {
+                    <p class="muted xsmall">No upstream <code>setContext</code> writes reach this node.</p>
+                  } @else {
+                    <ul class="df-list">
+                      @for (v of scope.contextKeys; track v.key) {
+                        <li>
+                          <code class="mono">{{ v.key }}</code>
+                          <span class="tag small"
+                                [class.success]="v.confidence === 'Definite'"
+                                [class.warn]="v.confidence === 'Conditional'">
+                            {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
+                          </span>
+                          @if (v.sources.length > 0) {
+                            <span class="muted xsmall">from</span>
+                            @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
+                              <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(src.nodeId)"
+                                      [title]="'Navigate to ' + labelForSource(src.nodeId)">
+                                {{ labelForSource(src.nodeId) }}<span class="muted">.{{ src.scriptKind }}</span></button>@if (!last) {<span class="muted">,</span>}
+                            }
+                          }
+                        </li>
+                      }
+                      @for (k of selectedNodeUndeclaredReads().context; track k) {
+                        <li class="undeclared">
+                          <code class="mono">{{ k }}</code>
+                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                        </li>
+                      }
+                    </ul>
+                  }
+                </div>
+
+                <div class="df-group">
+                  <div class="df-group-title">Expected input artifact</div>
+                  @if (scope.inputSource) {
+                    <p class="xsmall">
+                      from
+                      <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(scope.inputSource.nodeId)"
+                              [title]="'Navigate to ' + labelForSource(scope.inputSource.nodeId)">
+                        {{ labelForSource(scope.inputSource.nodeId) }}<span class="muted">.{{ scope.inputSource.port }}</span>
+                      </button>
+                    </p>
+                  } @else {
+                    <p class="muted xsmall">
+                      @if (sel.editor.kind === 'Start') {
+                        Start nodes receive the workflow input directly.
+                      } @else {
+                        No upstream node found — wire an inbound edge.
+                      }
+                    </p>
+                  }
+                </div>
+
+                @if (scope.loopBindings; as lb) {
+                  <div class="df-group">
+                    <div class="df-group-title">
+                      Loop bindings
+                      <span class="muted xsmall">— available as <code>{{ '{{round}}' }}</code> / <code>{{ '{{maxRounds}}' }}</code> / <code>{{ '{{isLastRound}}' }}</code></span>
+                    </div>
+                    <ul class="df-list">
+                      <li>
+                        <code class="mono">round</code>
+                        @if (lb.staticRound !== null) {
+                          <span class="tag small success">= {{ lb.staticRound }}</span>
+                        } @else {
+                          <span class="tag small">1..{{ lb.maxRounds }}</span>
+                        }
+                      </li>
+                      <li><code class="mono">maxRounds</code> <span class="tag small success">= {{ lb.maxRounds }}</span></li>
+                      <li><code class="mono">isLastRound</code> <span class="muted xsmall">true on round {{ lb.maxRounds }}</span></li>
+                    </ul>
+                  </div>
+                }
+
+                @if (selectedNodeAutoInjectedPartials().length > 0) {
+                  <div class="df-group">
+                    <div class="df-group-title">
+                      Auto-injected partials
+                      <span class="muted xsmall">— added by the runtime; pin explicitly to opt out</span>
+                    </div>
+                    <ul class="df-list">
+                      @for (p of selectedNodeAutoInjectedPartials(); track p) {
+                        <li>
+                          <code class="mono">{{ p }}</code>
+                          <span class="tag small">[auto-injected]</span>
+                        </li>
+                      }
+                    </ul>
+                  </div>
+                }
+              } @else {
+                <p class="muted xsmall">No data-flow scope for this node — its persistence id isn't in the saved snapshot. Save the workflow to refresh.</p>
+              }
+            </div>
           } @else if (selectedConnection(); as sel) {
             <div class="inspector-section">
               <div class="row-spread">
@@ -532,6 +812,33 @@ function defaultStartInput(): WorkflowInput {
               <div class="muted xsmall">
                 <code class="mono">{{ connectionSummary(sel.editor) }}</code>
               </div>
+              @if (selectedConnectionBackedge(); as bk) {
+                <div class="backedge-card" [class.dismissed]="bk.intentional">
+                  <div class="row-spread">
+                    <span class="tag warn small">Backedge</span>
+                    @if (bk.intentional) {
+                      <span class="muted xsmall">Marked intentional</span>
+                    }
+                  </div>
+                  <p class="muted xsmall">
+                    This edge creates a cycle. ReviewLoop iteration handles loops natively, so
+                    accidental backedges are usually a mistake. Confirm intent or remove the
+                    edge.
+                  </p>
+                  @if (bk.cycle.length > 0) {
+                    <div class="df-group">
+                      <div class="df-group-title">Cycle</div>
+                      <div class="muted xsmall mono">{{ bk.cycle.join(' → ') }} → {{ bk.cycle[0] }}</div>
+                    </div>
+                  }
+                  <label class="field row-inline">
+                    <input type="checkbox"
+                           [checked]="bk.intentional"
+                           (change)="toggleSelectedConnectionIntentional($any($event.target).checked)" />
+                    <span>Yes, intentional — dismiss this warning</span>
+                  </label>
+                </div>
+              }
             </div>
           } @else {
             <div class="inspector-section">
@@ -637,6 +944,11 @@ function defaultStartInput(): WorkflowInput {
       [target]="versionUpdateTarget()"
       (confirmed)="onVersionUpdateConfirmed($event)"
       (cancelled)="versionUpdateTarget.set(null)"></cf-version-update-dialog>
+
+    <cf-workflow-version-history-dialog
+      [open]="historyOpen()"
+      [workflowKey]="workflowKey()"
+      (closed)="historyOpen.set(false)"></cf-workflow-version-history-dialog>
   `,
   styles: [`
     :host { display: block; height: 100%; }
@@ -868,9 +1180,6 @@ function defaultStartInput(): WorkflowInput {
     .script-editor {
       display: block;
       min-height: 320px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      overflow: hidden;
     }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {
@@ -939,8 +1248,65 @@ function defaultStartInput(): WorkflowInput {
       font-size: 0.75rem;
     }
     .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
+    .tag.warn { background: rgba(245, 184, 76, 0.18); color: #f5b84c; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.small { font-size: 0.7rem; }
+    .tag.xsmall { font-size: 0.65rem; padding: 0.1rem 0.3rem; }
+    .dataflow-section .row-spread { margin-bottom: 0.5rem; }
+    .dataflow-section .dirty { color: #f5b84c; }
+    .df-group { margin-bottom: 0.6rem; }
+    .df-group:last-child { margin-bottom: 0; }
+    .df-group-title {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .df-group-title .muted { text-transform: none; letter-spacing: 0; }
+    .df-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .df-list > li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.75rem;
+    }
+    .df-list > li.undeclared code { color: #f85149; }
+    button.link {
+      background: transparent;
+      border: none;
+      padding: 0;
+      color: #58a6ff;
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 2px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+    }
+    button.link:hover { color: #ffd166; }
+    .backedge-card {
+      margin-top: 0.75rem;
+      padding: 0.5rem 0.6rem;
+      border: 1px dashed #f5b84c;
+      border-radius: 4px;
+      background: rgba(245, 184, 76, 0.06);
+    }
+    .backedge-card.dismissed {
+      border-style: solid;
+      border-color: var(--border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .backedge-card .row-spread { margin-bottom: 0.4rem; }
+    .backedge-card p { margin: 0 0 0.4rem 0; }
+    .backedge-card .field.row-inline { margin-top: 0.4rem; gap: 0.4rem; }
   `]
 })
 export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
@@ -1006,6 +1372,37 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly selectedAgentDocsLoading = signal(false);
   readonly selectedAgentDocsError = signal<string | null>(null);
 
+  /** VZ1: F2 dataflow snapshot for the workflow's current saved version. Null until first
+   *  load completes (or for unsaved new workflows). The snapshot is the on-disk truth, so
+   *  unsaved canvas edits aren't reflected until the next save round-trips through F2. */
+  readonly dataflowSnapshot = signal<WorkflowDataflowSnapshot | null>(null);
+  readonly dataflowVersion = signal<number | null>(null);
+  readonly dataflowLoading = signal(false);
+  readonly dataflowError = signal<string | null>(null);
+  readonly dataflowDirty = signal(false);
+
+  /** VZ5: when true, every node renders its implicit Failed port (faded) so authors can wire
+   *  recovery edges. When false (default), only Failed ports that already have an edge are
+   *  rendered — keeps the canvas uncluttered. Per-author preference, not persisted on the
+   *  workflow JSON (lives in localStorage so it survives page reloads). */
+  readonly showImplicitFailed = signal(false);
+  private static readonly ShowImplicitFailedStorageKey = 'cf:editor:showImplicitFailed';
+
+  /** T3: workflow version history dialog visibility. */
+  readonly historyOpen = signal(false);
+
+  /** VZ6: per-candidate terminal-port cache for the Subflow / ReviewLoop pickers. Keyed by
+   *  workflow key, value is the candidate's terminal port list at its latest version (the
+   *  picker shows latest; once an author pins a specific version the inspector loads the
+   *  effective ports separately). Populated eagerly when the workflows list loads. */
+  readonly terminalPortsByKey = signal<Record<string, string[]>>({});
+
+  /** VZ7: backedge detection — connection ids of edges whose target is reachable from the
+   *  source via the forward graph (DFS-tree backedges). Mirrors the V6 BackedgeRule. */
+  private readonly backedgeIds = new Set<string>();
+  private readonly backedgeCycleByConnId = new Map<string, string[]>();
+  private readonly backedgeRevision = signal(0);
+
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
     return this.workflows().filter(w => w.key !== currentKey);
@@ -1023,6 +1420,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (!id || !this.editor) return null;
     const connection = this.editor.getConnection(id) as WorkflowEditorConnection | undefined;
     return connection ? { editor: connection } : null;
+  });
+
+  /** VZ7: backedge metadata for the currently-selected connection. Null if the connection
+   *  isn't a backedge. Re-evaluates on every backedge re-analysis or intentional toggle. */
+  readonly selectedConnectionBackedge = computed<{ intentional: boolean; cycle: string[] } | null>(() => {
+    this.backedgeRevision();
+    const id = this.selectedConnectionId();
+    if (!id || !this.editor) return null;
+    if (!this.backedgeIds.has(id)) return null;
+    const connection = this.editor.getConnection(id) as WorkflowEditorConnection | undefined;
+    if (!connection) return null;
+    return {
+      intentional: connection.intentionalBackedge,
+      cycle: this.backedgeCycleByConnId.get(id) ?? []
+    };
   });
 
   readonly outputPortsText = computed(() => {
@@ -1057,10 +1469,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     });
   });
 
-  /** Per-port rows for the inspector's "derived from agent outputs" listing. Marks any port
-   *  the editor still has but the agent no longer declares as `broken: true` so authors see
-   *  drift inline before saving. */
-  readonly derivedPortRows = computed<{ name: string; broken: boolean }[]>(() => {
+  /** Per-port rows for the inspector's "derived from agent outputs" listing.
+   *  - `status: 'ok'` — port present on the node and declared by the agent.
+   *  - `status: 'stale'` (red) — port wired on the node but the agent can no longer submit it.
+   *  - `status: 'missing'` (orange) — port declared by the agent but not yet on the node. */
+  readonly derivedPortRows = computed<{ name: string; status: 'ok' | 'stale' | 'missing' }[]>(() => {
     this.portsRevision();
     const sel = this.selectedNode();
     if (!sel) return [];
@@ -1068,14 +1481,142 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     const docs = this.selectedAgentDocs();
     const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs.map(o => o.kind).filter((k): k is string => typeof k === 'string' && k.length > 0)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
       : null;
     const declaredSet = declared ? new Set(declared) : null;
+    const nodePorts = sel.editor.outputPortNames;
+    const nodePortSet = new Set(nodePorts);
 
-    return sel.editor.outputPortNames.map(name => ({
+    const rows: { name: string; status: 'ok' | 'stale' | 'missing' }[] = nodePorts.map(name => ({
       name,
-      broken: declaredSet ? !declaredSet.has(name) : false,
+      status: declaredSet
+        ? (declaredSet.has(name) ? 'ok' : 'stale')
+        : 'ok',
     }));
+
+    if (declared) {
+      for (const name of declared) {
+        if (!nodePortSet.has(name)) {
+          rows.push({ name, status: 'missing' });
+        }
+      }
+    }
+
+    return rows;
+  });
+
+  /** True when the selected agent-bearing node's ports drift from its pinned agent's declared
+   *  outputs in either direction (stale or missing). Drives the "Sync from agent" affordance. */
+  readonly selectedNodeHasPortDrift = computed(() => {
+    return this.derivedPortRows().some(r => r.status !== 'ok');
+  });
+
+  /** E1: ambient TS declarations for the input-script editor on the selected node.
+   *  Narrows workflow / context to F2-detected keys; gates `input` + `setInput` to this slot. */
+  readonly inputScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'input-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
+  });
+
+  /** E1: ambient TS declarations for the output-script editor on the selected node. */
+  readonly outputScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'output-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
+  });
+
+  /** E1: ambient TS declarations for the Logic-node script editor. */
+  readonly logicScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'logic-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
+  });
+
+  /** E2: whether the selected node is inside a ReviewLoop child. Drives which snippets the
+   *  completion provider offers — loop-binding-dependent snippets stay hidden outside loops. */
+  readonly selectedNodeInLoop = computed<boolean>(() => !!this.selectedNodeDataflow()?.loopBindings);
+
+  /** VZ1: scope row shown in the data-flow inspector panel. */
+  readonly selectedNodeDataflow = computed<NodeDataflowScope | null>(() => {
+    const sel = this.selectedNode();
+    const snap = this.dataflowSnapshot();
+    if (!sel || !snap) return null;
+    const nodeId = sel.editor.nodeId;
+    return snap.scopesByNode[nodeId.toLowerCase()]
+      ?? snap.scopesByNode[nodeId.toUpperCase()]
+      ?? snap.scopesByNode[nodeId]
+      ?? null;
+  });
+
+  /** VZ1: workflow / context keys this node's prompts or scripts reference but no upstream
+   *  node writes. Acceptance: keys with no writer render in red with "no writer found". */
+  readonly selectedNodeUndeclaredReads = computed<{ workflow: string[]; context: string[] }>(() => {
+    const sel = this.selectedNode();
+    if (!sel) return { workflow: [], context: [] };
+
+    const wf = new Set<string>();
+    const ctx = new Set<string>();
+
+    const docs = this.selectedAgentDocs();
+    if (docs?.config) {
+      const cfg = docs.config as Record<string, unknown>;
+      const collect = (text: unknown) => {
+        if (typeof text === 'string') extractWorkflowAndContextRefs(text, wf, ctx);
+      };
+      collect(cfg['systemPrompt']);
+      collect(cfg['promptTemplate']);
+      collect(cfg['outputTemplate']);
+    }
+    extractWorkflowAndContextRefsFromScript(sel.editor.inputScript ?? '', wf, ctx);
+    extractWorkflowAndContextRefsFromScript(sel.editor.outputScript ?? '', wf, ctx);
+
+    const scope = this.selectedNodeDataflow();
+    const wfKnown = new Set((scope?.workflowVariables ?? []).map(v => v.key));
+    const ctxKnown = new Set((scope?.contextKeys ?? []).map(v => v.key));
+
+    return {
+      workflow: [...wf].filter(k => !wfKnown.has(k) && !k.startsWith('__loop')).sort(),
+      context: [...ctx].filter(k => !ctxKnown.has(k)).sort(),
+    };
+  });
+
+  /** VZ1: partials that the runtime auto-injects when this node executes. Today only the
+   *  P2 last-round-reminder is auto-injected — when the node sits inside a ReviewLoop and
+   *  the agent doesn't already pin `@codeflow/last-round-reminder`. The opt-out flag isn't
+   *  exposed in the editor yet (the workflow draft serializer doesn't carry it), so this is
+   *  best-effort: if the JSON has been hand-edited to opt out, the panel will still show
+   *  the partial. */
+  readonly selectedNodeAutoInjectedPartials = computed<string[]>(() => {
+    const sel = this.selectedNode();
+    const scope = this.selectedNodeDataflow();
+    if (!sel || !scope || !scope.loopBindings) return [];
+    if (!AGENT_BEARING_KINDS.has(sel.editor.kind)) return [];
+
+    const docs = this.selectedAgentDocs();
+    const pins = (docs?.config as Record<string, unknown> | undefined)?.['partialPins'];
+    if (Array.isArray(pins)) {
+      const explicitlyPinned = pins.some(p =>
+        typeof p === 'object' && p !== null
+        && (p as Record<string, unknown>)['key'] === '@codeflow/last-round-reminder'
+      );
+      if (explicitlyPinned) return [];
+    }
+    return ['@codeflow/last-round-reminder'];
   });
 
   /** Inline warnings for edges whose source port is no longer declared by the source node. */
@@ -1150,12 +1691,23 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   async ngAfterViewInit(): Promise<void> {
+    // VZ5: hydrate the implicit-Failed visibility toggle from per-author preference.
+    try {
+      const stored = localStorage.getItem(WorkflowCanvasComponent.ShowImplicitFailedStorageKey);
+      if (stored === '1') this.showImplicitFailed.set(true);
+    } catch {
+      // localStorage unavailable; default off.
+    }
+
     this.agentsApi.list().subscribe({
       next: agents => this.agents.set(agents),
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
     });
     this.api.list().subscribe({
-      next: workflows => this.workflows.set(workflows),
+      next: workflows => {
+        this.workflows.set(workflows);
+        this.preloadTerminalPortsForCandidates(workflows);
+      },
       error: err => this.error.set(`Failed to load workflows: ${err.message ?? err}`)
     });
 
@@ -1219,6 +1771,23 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         }
         this.bindConnectionInteraction(data);
       }
+      if (context.type === 'nodecreated') {
+        // VZ5: every freshly-added node (palette drop or load) gets the toggle accessor wired
+        // so its template binding can react to the canvas-level "Show implicit Failed ports"
+        // signal without depending on Angular DI through Rete's render boundary.
+        const created = context.data as WorkflowEditorNode;
+        created.showImplicitFailed = () => this.showImplicitFailed();
+      }
+      if (context.type === 'connectioncreated' || context.type === 'connectionremoved' || context.type === 'noderemoved' || context.type === 'nodecreated') {
+        // VZ1: any structural change can shift the dataflow scope; mark the cached snapshot
+        // stale so the inspector can hint that a save is needed for an accurate read.
+        if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+        // VZ7: re-detect backedges. Defer until the editor finishes processing the event so
+        // getConnections()/getNodes() reflect the post-change graph.
+        queueMicrotask(() => this.recomputeBackedges());
+        // VZ5: mirror per-node Failed-port wiring state for the implicit-Failed visibility toggle.
+        queueMicrotask(() => this.recomputeFailedConnections());
+      }
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
           this.selectedNodeId.set(null);
@@ -1252,6 +1821,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
           if (editor.getNodes().length > 0) {
             AreaExtensions.zoomAt(area, editor.getNodes());
           }
+          this.loadDataflow(detail.key, detail.version);
+          this.recomputeBackedges();
+          this.recomputeFailedConnections();
         },
         error: err => this.error.set(`Failed to load workflow: ${err.message ?? err}`)
       });
@@ -1286,6 +1858,44 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
     void this.removeSelectedNode();
+  }
+
+  toggleImplicitFailed(): void {
+    const next = !this.showImplicitFailed();
+    this.showImplicitFailed.set(next);
+    try {
+      localStorage.setItem(WorkflowCanvasComponent.ShowImplicitFailedStorageKey, next ? '1' : '0');
+    } catch {
+      // localStorage may be unavailable (private mode); the toggle still works in-session.
+    }
+    // Re-render every node so its `[hidden]` binding picks up the new toggle state.
+    if (this.editor && this.area) {
+      for (const node of this.editor.getNodes() as WorkflowEditorNode[]) {
+        void this.area.update('node', node.id);
+      }
+    }
+  }
+
+  /**
+   * VZ5: walk current connections and mark each node's `failedHasConnection` so the node
+   * component knows whether to render the implicit Failed row even when the toggle is off.
+   * Called on every structural change.
+   */
+  private recomputeFailedConnections(): void {
+    if (!this.editor || !this.area) return;
+    const wired = new Set<string>();
+    for (const c of this.editor.getConnections() as WorkflowEditorConnection[]) {
+      // Rete connection has `sourceOutput`, the port key on the source node.
+      const sourceOutput = (c as unknown as { sourceOutput?: string }).sourceOutput;
+      if (sourceOutput === 'Failed') wired.add(c.source);
+    }
+    for (const node of this.editor.getNodes() as WorkflowEditorNode[]) {
+      const has = wired.has(node.id);
+      if (node.failedHasConnection !== has) {
+        node.failedHasConnection = has;
+        void this.area.update('node', node.id);
+      }
+    }
   }
 
   async tidy(): Promise<void> {
@@ -1684,6 +2294,33 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  /** VZ6: Eagerly fetch the latest-version terminal ports for every candidate workflow so
+   *  the Subflow / ReviewLoop picker can show "{key} (vN) → port1, port2, …" inline. The
+   *  current workflow itself is excluded (`availableSubflowTargets` filters it before render
+   *  anyway, but we still skip the fetch). Failures per-candidate are silently dropped — a
+   *  missing entry just means the picker option falls back to the bare `{key} (vN)` label. */
+  private preloadTerminalPortsForCandidates(workflows: WorkflowSummary[]): void {
+    const currentKey = this.workflowKey().trim();
+    for (const wf of workflows) {
+      if (wf.key === currentKey) continue;
+      this.api.getTerminalPorts(wf.key, wf.latestVersion).subscribe({
+        next: ports => {
+          this.terminalPortsByKey.update(prev => ({ ...prev, [wf.key]: ports }));
+        },
+        error: () => { /* best-effort cache; option falls back to bare label */ }
+      });
+    }
+  }
+
+  /** VZ6: option text for a candidate workflow in the Subflow / ReviewLoop picker. */
+  subflowPickerLabel(wf: WorkflowSummary): string {
+    const ports = this.terminalPortsByKey()[wf.key];
+    const base = `${wf.key} (v${wf.latestVersion})`;
+    if (!ports) return base;
+    const portList = ports.length > 0 ? ports.join(', ') + ', Failed' : 'Failed';
+    return `${base} → ${portList}`;
+  }
+
   /** Fetch the child workflow's terminal ports and apply them to this Subflow / ReviewLoop
    *  node. ReviewLoop additionally synthesizes `Exhausted` and excludes the configured
    *  loopDecision (since that one iterates rather than exits). */
@@ -1748,6 +2385,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       .map(line => line.trim())
       .filter(line => line.length > 0);
     this.applyNodePorts(node, next);
+  }
+
+  /** Reconcile the selected agent-bearing node's ports with its pinned agent's declared
+   *  outputs. Stale ports are removed (and any wires on them dropped); missing ports are
+   *  added. Wires on ports that survive the diff are left untouched. */
+  syncPortsFromAgent(node: WorkflowEditorNode): void {
+    if (!AGENT_BEARING_KINDS.has(node.kind)) return;
+    const docs = this.selectedAgentDocs();
+    const declared = Array.isArray(docs?.config.outputs)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
+      : null;
+    if (!declared) return;
+    this.applyNodePorts(node, declared);
   }
 
   private applyNodePorts(node: WorkflowEditorNode, desired: string[]): void {
@@ -1837,6 +2489,18 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.applyConnectionStyles(next.id);
   }
 
+  /** VZ7: toggle the V6 intentional-backedge flag on the selected connection. Suppresses
+   *  this edge's dashed-amber render and the V6 save warning on subsequent saves. */
+  toggleSelectedConnectionIntentional(intentional: boolean): void {
+    const id = this.selectedConnectionId();
+    if (!id) return;
+    const connection = this.editor?.getConnection(id) as WorkflowEditorConnection | undefined;
+    if (!connection) return;
+    connection.intentionalBackedge = intentional;
+    this.applyConnectionStyles(id);
+    this.backedgeRevision.update(v => v + 1);
+  }
+
   private applyConnectionStyles(connectionId: string): void {
     const registered = this.connectionElements.get(connectionId);
     const connection = this.editor?.getConnection(connectionId) as WorkflowEditorConnection | undefined;
@@ -1845,12 +2509,133 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const path = registered.element.querySelector('path') as SVGPathElement | null;
     if (!path) return;
 
+    const isLiveBackedge = this.backedgeIds.has(connectionId) && !connection.intentionalBackedge;
+    const cycleMembers = this.backedgeCycleByConnId.get(connectionId);
+
     path.style.cursor = 'pointer';
     path.style.pointerEvents = 'auto';
     path.style.transition = 'stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease';
-    path.style.stroke = connection.isSelected ? '#ffd166' : '#4682b4';
-    path.style.strokeWidth = connection.isSelected ? '7px' : '5px';
-    path.style.filter = connection.isSelected ? 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))' : '';
+    if (connection.isSelected) {
+      path.style.stroke = '#ffd166';
+      path.style.strokeWidth = '7px';
+      path.style.filter = 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))';
+    } else if (isLiveBackedge) {
+      // VZ7: dashed amber for cycles (target reachable from source).
+      path.style.stroke = '#f5b84c';
+      path.style.strokeWidth = '5px';
+      path.style.filter = '';
+    } else {
+      path.style.stroke = '#4682b4';
+      path.style.strokeWidth = '5px';
+      path.style.filter = '';
+    }
+    path.style.strokeDasharray = isLiveBackedge ? '10 6' : '';
+
+    // Tooltip for backedges. Cleared on connections that are not (or no longer) live
+    // backedges so a previous tooltip doesn't linger after the cycle is broken or marked
+    // intentional.
+    if (isLiveBackedge && cycleMembers && cycleMembers.length > 0) {
+      const memberList = cycleMembers.join(' → ');
+      registered.element.title =
+        `This edge creates a cycle: ${memberList} → ${cycleMembers[0]}. ` +
+        `ReviewLoop iteration handles loops natively — verify the backedge is intentional.`;
+    } else if (registered.element.title) {
+      registered.element.title = '';
+    }
+  }
+
+  /**
+   * VZ7: DFS-coloring backedge detection. Mirrors the V6 BackedgeRule (port from
+   * CodeFlow.Api/Validation/Pipeline/Rules/BackedgeRule.cs). An edge (u, v) is a backedge iff
+   * v is on the active DFS stack when we walk it. Roots are picked by topology (no-incoming
+   * first, leftover whites second) so the closing edge of a cycle is the one flagged, not
+   * forward edges feeding into the cycle.
+   *
+   * ReviewLoop iteration is internal to the loop primitive and never appears in the authored
+   * connection list, so it cannot trip this check.
+   */
+  private recomputeBackedges(): void {
+    if (!this.editor) return;
+    this.backedgeIds.clear();
+    this.backedgeCycleByConnId.clear();
+
+    const connections = this.editor.getConnections() as WorkflowEditorConnection[];
+    const nodeIds = this.editor.getNodes().map(n => n.id);
+
+    if (connections.length === 0 || nodeIds.length === 0) {
+      this.backedgeRevision.update(v => v + 1);
+      return;
+    }
+
+    type Edge = { id: string; source: string; target: string };
+    const outgoing = new Map<string, Edge[]>();
+    const incomingCount = new Map<string, number>();
+    for (const id of nodeIds) {
+      outgoing.set(id, []);
+      incomingCount.set(id, 0);
+    }
+    for (const c of connections) {
+      const list = outgoing.get(c.source);
+      if (!list) continue;
+      list.push({ id: c.id, source: c.source, target: c.target });
+      incomingCount.set(c.target, (incomingCount.get(c.target) ?? 0) + 1);
+    }
+
+    type Color = 'white' | 'gray' | 'black';
+    const color = new Map<string, Color>();
+    for (const id of nodeIds) color.set(id, 'white');
+
+    const rootOrder = [
+      ...nodeIds.filter(id => (incomingCount.get(id) ?? 0) === 0),
+      ...nodeIds
+    ];
+    const seenRoot = new Set<string>();
+
+    for (const root of rootOrder) {
+      if (seenRoot.has(root)) continue;
+      seenRoot.add(root);
+      if (color.get(root) !== 'white') continue;
+
+      const stack: { nodeId: string; nextEdge: number }[] = [];
+      color.set(root, 'gray');
+      stack.push({ nodeId: root, nextEdge: 0 });
+
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const edges = outgoing.get(frame.nodeId);
+        if (!edges || frame.nextEdge >= edges.length) {
+          color.set(frame.nodeId, 'black');
+          stack.pop();
+          continue;
+        }
+        const edge = edges[frame.nextEdge];
+        frame.nextEdge += 1;
+
+        const targetColor = color.get(edge.target);
+        if (targetColor === 'white') {
+          color.set(edge.target, 'gray');
+          stack.push({ nodeId: edge.target, nextEdge: 0 });
+        } else if (targetColor === 'gray') {
+          // Backedge — reconstruct cycle from the active stack: target → ... → source.
+          const cycle: string[] = [];
+          let collecting = false;
+          for (const f of stack) {
+            if (!collecting && f.nodeId === edge.target) collecting = true;
+            if (collecting) cycle.push(this.nodeLabelFor(f.nodeId));
+          }
+          if (cycle.length === 0) cycle.push(this.nodeLabelFor(edge.target));
+          this.backedgeIds.add(edge.id);
+          this.backedgeCycleByConnId.set(edge.id, cycle);
+        }
+      }
+    }
+
+    this.backedgeRevision.update(v => v + 1);
+    for (const c of connections) this.applyConnectionStyles(c.id);
+  }
+
+  private nodeLabelFor(nodeId: string): string {
+    return (this.editor?.getNode(nodeId) as WorkflowEditorNode | undefined)?.label ?? nodeId;
   }
 
   private releaseConnectionElement(element: HTMLElement): void {
@@ -1914,6 +2699,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       if (this.scriptValidationError()) this.scriptValidationError.set(null);
       if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
     }
+    if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
   }
 
   validateNodeScript(node: WorkflowEditorNode, slot: 'input' | 'output'): void {
@@ -1993,6 +2779,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       next: result => {
         this.saving.set(false);
         this.statusMessage.set(`Saved ${result.key} v${result.version}`);
+        this.loadDataflow(result.key, result.version);
         if (!this.hasExistingKey()) {
           this.hasExistingKey.set(true);
           this.router.navigate(['/workflows', result.key, 'edit']);
@@ -2003,5 +2790,49 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.error.set(err?.error?.errors?.workflow?.[0] ?? err?.error?.title ?? err.message ?? 'Save failed');
       }
     });
+  }
+
+  /** VZ1: fetch the F2 dataflow snapshot for the workflow's saved version. */
+  private loadDataflow(key: string, version: number): void {
+    if (!key || !Number.isFinite(version) || version <= 0) {
+      this.dataflowSnapshot.set(null);
+      this.dataflowVersion.set(null);
+      this.dataflowDirty.set(false);
+      return;
+    }
+    this.dataflowLoading.set(true);
+    this.dataflowError.set(null);
+    this.api.getDataflow(key, version).subscribe({
+      next: snapshot => {
+        this.dataflowSnapshot.set(snapshot);
+        this.dataflowVersion.set(version);
+        this.dataflowDirty.set(false);
+        this.dataflowLoading.set(false);
+      },
+      error: err => {
+        this.dataflowSnapshot.set(null);
+        this.dataflowLoading.set(false);
+        this.dataflowError.set(`Failed to load data-flow analysis: ${err?.message ?? err}`);
+      }
+    });
+  }
+
+  /** VZ1: select a node by its persistence Guid (used by clickable variable sources to
+   *  navigate from a downstream consumer to the upstream writer). Falls back silently if
+   *  the target node has been deleted from the editor. */
+  navigateToSourceNode(persistenceNodeId: string): void {
+    if (!this.editor || !this.area) return;
+    const target = this.editor.getNodes().find(n => n.nodeId === persistenceNodeId);
+    if (!target) return;
+    this.selectedNodeId.set(target.id);
+    this.loadAgentDocsForNode(target);
+    AreaExtensions.zoomAt(this.area, [target]);
+  }
+
+  /** Resolve a persistence-Guid node id to a human-readable label for the inspector. */
+  labelForSource(persistenceNodeId: string): string {
+    if (!this.editor) return persistenceNodeId.slice(0, 8);
+    const target = this.editor.getNodes().find(n => n.nodeId === persistenceNodeId);
+    return target ? target.label : persistenceNodeId.slice(0, 8);
   }
 }

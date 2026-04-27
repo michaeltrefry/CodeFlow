@@ -1,17 +1,10 @@
 # Code-aware workflows
 
 This is the canonical reference for the Code-Aware Workflows feature: per-trace working
-directories, the `repositories` input convention, the framework-managed `global.workDir` /
-`global.traceId` variables, the `vcs.*` host tools, and the cleanup model that ties it all
+directories, the `repositories` input convention, the framework-managed `workflow.workDir` /
+`workflow.traceId` variables, the `vcs.*` host tools, and the cleanup model that ties it all
 together. If you're authoring a workflow that needs to clone, edit, commit, push, or open a PR,
 start here.
-
-> **Naming heads-up.** A separate epic renames the per-trace-tree variable bag from `global` to
-> `workflow` (so `setGlobal` → `setWorkflow`, `{{ global.X }}` → `{{ workflow.X }}`). This doc uses
-> the current name (`global`) consistently; once the rename ships, the names change but the
-> semantics in this doc do not.
-
----
 
 ## Operator setup
 
@@ -19,7 +12,7 @@ start here.
 
 The platform writes per-trace workdirs under `GitHostSettings.WorkingDirectoryRoot`. Until that
 setting is configured, code-aware workflows degrade gracefully — the `vcs.*` tools return
-`error: not_configured` and the workdir-related globals are simply not seeded.
+`error: not_configured` and the workdir-related workflow variables are simply not seeded.
 
 Set it via `PUT /api/admin/git-host`:
 
@@ -86,7 +79,7 @@ disappearing out from under it.
 | Symptom | Likely cause |
 |---|---|
 | Trace launch fails with "Failed to create per-trace working directory" | `WorkingDirectoryRoot` set but path doesn't exist or isn't writable. The save-time validator should have caught this; check whether the dir was deleted post-save. |
-| Code-setup agent's `run_command` fails with "no active workspace context" | The trace-launch endpoint didn't seed `global.workDir`. Confirm `WorkingDirectoryRoot` is set on `GitHostSettings`. |
+| Code-setup agent's `run_command` fails with "no active workspace context" | The trace-launch endpoint didn't seed `workflow.workDir`. Confirm `WorkingDirectoryRoot` is set on `GitHostSettings`. |
 | `vcs.open_pr` returns `error: not_configured` | `GitHostSettings` has no token, or GitLab mode is configured without a base URL. |
 | Stale workdirs accumulating | Sweep service might not be running. Confirm `AddCodeFlowHost` is wired into the host (look for "Workdir sweep" logs). |
 
@@ -97,7 +90,7 @@ disappearing out from under it.
 Skip ahead to [Authoring a code-aware workflow](#authoring-a-code-aware-workflow) for the
 recipe; the sections below introduce each primitive.
 
-### Framework-managed globals
+### Framework-managed workflow variables
 
 The platform seeds two read-only entries in the per-trace-tree variable bag at trace launch:
 
@@ -106,18 +99,18 @@ The platform seeds two read-only entries in the per-trace-tree variable bag at t
 | `workDir` | `{WorkingDirectoryRoot}/{traceId.ToString("N")}` — present only when `WorkingDirectoryRoot` is configured | `TracesEndpoints.CreateTraceAsync` |
 | `traceId` | `traceId.ToString("N")` — 32-char hex, no hyphens | `TracesEndpoints.CreateTraceAsync` |
 
-Both are listed in `ProtectedGlobals.ReservedKeys`. Scripts and agents cannot overwrite them:
+Both are listed in `ProtectedVariables.ReservedKeys`. Scripts and agents cannot overwrite them:
 
-- `setGlobal('workDir', ...)` from a Logic-node script fails the evaluation with
-  `LogicNodeFailureKind.ReservedGlobalKeyWrite`.
-- The `setGlobal` agent tool returns an error tool result; the bag is unchanged.
+- `setWorkflow('workDir', ...)` from a Logic-node script fails the evaluation with
+  `LogicNodeFailureKind.ReservedWorkflowKeyWrite`.
+- The `setWorkflow` agent tool returns an error tool result; the bag is unchanged.
 
 The error message in both cases names the offending key and explains "framework-managed
-global." If you need framework-seeded value X, propose adding it to the registry — don't try to
-masquerade as it from author code.
+workflow variable." If you need framework-seeded value X, propose adding it to the registry —
+don't try to masquerade as it from author code.
 
 Subflow / ReviewLoop children **inherit a snapshot** of these values at fork time. So a child
-saga's `global.traceId` is the *parent's* traceId — which is what you want for stable branch
+saga's `workflow.traceId` is the *parent's* traceId — which is what you want for stable branch
 naming across the entire workflow tree.
 
 ### The `repositories` input convention
@@ -160,7 +153,7 @@ Every Scriban template (agent prompt, decision-output template, anywhere the ren
 can call `branch_name` to derive a stable feature-branch name from a PRD title and a trace id:
 
 ```scriban
-{{ branch_name global.prdTitle global.traceId }}
+{{ branch_name workflow.prdTitle workflow.traceId }}
 ```
 
 Output shape: `<slug>-<8hex>`.
@@ -180,10 +173,10 @@ coordination.
 The reference implementation is the `code-setup` agent in `workflows/dev-flow-v1-package.json`.
 Its job, in three steps:
 
-1. Read `context.repositories` and `global.workDir`.
+1. Read `context.repositories` and `workflow.workDir`.
 2. For each repo: `git clone <url>` into `{workDir}`, `git checkout <branch>` (or stay on
    default), `git checkout -b <feature-branch>`. The feature-branch name is **pre-computed** in
-   the prompt template via `{{ branch_name global.prdTitle global.traceId }}` — the agent's
+   the prompt template via `{{ branch_name workflow.prdTitle workflow.traceId }}` — the agent's
    instructions explicitly say "do not invent or modify the slug."
 3. Mid-turn, `setContext('repositories', <merged-array-with-localPath-and-featureBranch>)` so
    downstream agents see:
@@ -313,12 +306,12 @@ Recipe:
    to know where each clone lives, edits files, runs tests, commits.
 4. Reuse or copy the `publish` agent. Same role.
 5. Optional: an `inputScript` on the `Start` node can extract the PRD title and stash it as
-   `global.prdTitle` so the setup agent's `branch_name` filter has a meaningful slug source. See
+   `workflow.prdTitle` so the setup agent's `branch_name` filter has a meaningful slug source. See
    the existing inputScript in `dev-flow-v1-package.json`'s start node for the regex.
 
 Things you do **not** need to do:
 
-- ❌ Compute the trace's workdir path yourself. Read `global.workDir`.
+- ❌ Compute the trace's workdir path yourself. Read `workflow.workDir`.
 - ❌ Compute the feature branch name in agent prose. Use `{{ branch_name title traceId }}`.
 - ❌ Manage a token or compose REST calls for PR creation. Call `vcs.open_pr`.
 - ❌ Schedule cleanup. The platform handles it.
@@ -333,7 +326,7 @@ Things you do **not** need to do:
   read it).
 - `docs/prompt-templates.md` — Scriban renderer, the `branch_name` filter joins the family of
   built-in filters.
-- `docs/subflows.md` — child sagas, including how globals (and therefore `workDir`/`traceId`)
+- `docs/subflows.md` — child sagas, including how workflow variables (and therefore `workDir`/`traceId`)
   are inherited via copy-on-fork.
 - `workflows/dev-flow-v1-package.json` — the reference implementation; every concept in this
   doc has a corresponding piece in that package.

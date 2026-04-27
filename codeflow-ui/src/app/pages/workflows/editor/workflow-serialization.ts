@@ -110,6 +110,7 @@ export async function loadIntoEditor(
     const connection = new WorkflowEditorConnection(source, edge.fromPort, target, edge.toPort || 'in');
     connection.rotatesRound = edge.rotatesRound;
     connection.sortOrder = edge.sortOrder;
+    connection.intentionalBackedge = edge.intentionalBackedge ?? false;
     await editor.addConnection(connection);
   }
 
@@ -169,7 +170,8 @@ export function serializeEditor(
     toNodeId: nodeById.get(conn.target) ?? conn.target,
     toPort: conn.targetInput || 'in',
     rotatesRound: conn.rotatesRound,
-    sortOrder: conn.sortOrder === 0 ? index : conn.sortOrder
+    sortOrder: conn.sortOrder === 0 ? index : conn.sortOrder,
+    intentionalBackedge: conn.intentionalBackedge
   }));
 
   return {

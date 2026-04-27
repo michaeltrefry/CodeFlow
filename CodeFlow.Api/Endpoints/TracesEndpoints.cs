@@ -255,14 +255,14 @@ public static class TracesEndpoints
                 FileName: request.InputFileName ?? "input.txt"),
             cancellationToken);
 
-        // Seed framework-managed globals before the start-node input script runs so that scripts
-        // and the start agent's prompt template can reference them. These keys are listed in
-        // `ProtectedGlobals.ReservedKeys` and cannot be overwritten by scripts or agents. Top-
-        // level traces only — child sagas inherit via the global snapshot, which means subflow
-        // and ReviewLoop children see the *parent's* traceId (the right answer for branch
-        // naming and any other identity-anchored work).
-        var seededGlobals = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        seededGlobals["traceId"] = JsonDocument.Parse(
+        // Seed framework-managed workflow variables before the start-node input script runs so
+        // that scripts and the start agent's prompt template can reference them. These keys are
+        // listed in `ProtectedVariables.ReservedKeys` and cannot be overwritten by scripts or
+        // agents. Top-level traces only — child sagas inherit via the workflow snapshot, which
+        // means subflow and ReviewLoop children see the *parent's* traceId (the right answer for
+        // branch naming and any other identity-anchored work).
+        var seededWorkflowVars = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        seededWorkflowVars["traceId"] = JsonDocument.Parse(
             JsonSerializer.Serialize(traceId.ToString("N"))).RootElement.Clone();
 
         var gitHostSettings = await gitHostSettingsRepository.GetAsync(cancellationToken);
@@ -281,7 +281,7 @@ public static class TracesEndpoints
                     detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}",
                     statusCode: StatusCodes.Status500InternalServerError);
             }
-            seededGlobals["workDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
+            seededWorkflowVars["workDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
         }
 
         // Mid-workflow dispatches run a node's InputScript via the saga's TryEvaluateInputScriptAsync
@@ -304,7 +304,7 @@ public static class TracesEndpoints
                 input: artifactJson,
                 context: resolvedInputsResult.Values,
                 cancellationToken: cancellationToken,
-                global: seededGlobals,
+                workflow: seededWorkflowVars,
                 allowInputOverride: true,
                 requireSetNodePath: false);
 
@@ -329,7 +329,7 @@ public static class TracesEndpoints
                     cancellationToken);
             }
 
-            // Apply setContext / setGlobal writes from the script onto the published message.
+            // Apply setContext / setWorkflow writes from the script onto the published message.
             // Without this, scripts can override the input artifact but cannot seed shared state
             // for the start agent — the saga's own input-script handler does the same merge, so
             // doing it here keeps top-level Start parity with mid-workflow dispatches.
@@ -343,17 +343,17 @@ public static class TracesEndpoints
                 effectiveContextInputs = merged;
             }
 
-            if (eval.GlobalUpdates.Count > 0)
+            if (eval.WorkflowUpdates.Count > 0)
             {
-                foreach (var (key, value) in eval.GlobalUpdates)
+                foreach (var (key, value) in eval.WorkflowUpdates)
                 {
-                    seededGlobals[key] = value;
+                    seededWorkflowVars[key] = value;
                 }
             }
         }
 
-        IReadOnlyDictionary<string, JsonElement>? effectiveGlobalContext = seededGlobals.Count > 0
-            ? seededGlobals
+        IReadOnlyDictionary<string, JsonElement>? effectiveWorkflowContext = seededWorkflowVars.Count > 0
+            ? seededWorkflowVars
             : null;
 
         await publishEndpoint.Publish(
@@ -371,7 +371,7 @@ public static class TracesEndpoints
                 {
                     ["x-submitted-by"] = currentUser.Id ?? "unknown"
                 },
-                GlobalContext: effectiveGlobalContext),
+                WorkflowContext: effectiveWorkflowContext),
             cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -807,7 +807,7 @@ public static class TracesEndpoints
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.TraceId == task.TraceId, cancellationToken);
         var contextInputs = DeserializeInputsJson(saga?.InputsJson);
-        var globalInputs = DeserializeInputsJson(saga?.GlobalInputsJson);
+        var workflowInputs = DeserializeInputsJson(saga?.WorkflowInputsJson);
 
         var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (request.FieldValues is not null)
@@ -831,7 +831,7 @@ public static class TracesEndpoints
             reasons: request.Reasons,
             actions: request.Actions,
             contextInputs: contextInputs,
-            globalInputs: globalInputs);
+            workflowInputs: workflowInputs);
 
         try
         {

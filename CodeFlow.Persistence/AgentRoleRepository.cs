@@ -296,7 +296,8 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         CreatedBy: entity.CreatedBy,
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc),
         UpdatedBy: entity.UpdatedBy,
-        IsArchived: entity.IsArchived);
+        IsArchived: entity.IsArchived,
+        IsSystemManaged: entity.IsSystemManaged);
 
     private static string NormalizeKey(string key)
     {

@@ -178,6 +178,51 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         return (await response.Content.ReadFromJsonAsync<AgentRoleDto>())!;
     }
 
+    [Fact]
+    public async Task SystemManagedRole_PutTools_Returns409()
+    {
+        // S1: stock platform roles are seeded on startup with IsSystemManaged=true and the
+        // API rejects edits — the operator must fork to a new key to customize.
+        using var client = factory.CreateClient();
+
+        var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
+        var systemRole = roles.SingleOrDefault(r => r.Key == "code-worker" && r.IsSystemManaged);
+        systemRole.Should().NotBeNull("the seeder runs at startup and must populate code-worker");
+
+        var response = await client.PutAsJsonAsync(
+            $"/api/agent-roles/{systemRole!.Id}/tools",
+            new object[] { new { category = "Host", toolIdentifier = "echo" } });
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task SystemManagedRole_Put_Returns409()
+    {
+        using var client = factory.CreateClient();
+
+        var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
+        var systemRole = roles.SingleOrDefault(r => r.Key == "code-worker" && r.IsSystemManaged);
+        systemRole.Should().NotBeNull();
+
+        var response = await client.PutAsJsonAsync(
+            $"/api/agent-roles/{systemRole!.Id}",
+            new { displayName = "Renamed", description = (string?)null });
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task SystemManagedRole_Delete_Returns409()
+    {
+        using var client = factory.CreateClient();
+
+        var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
+        var systemRole = roles.SingleOrDefault(r => r.Key == "code-worker" && r.IsSystemManaged);
+        systemRole.Should().NotBeNull();
+
+        var response = await client.DeleteAsync($"/api/agent-roles/{systemRole!.Id}");
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
     private sealed record AgentRoleDto(
         long Id,
         string Key,
@@ -187,7 +232,8 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string? CreatedBy,
         DateTime UpdatedAtUtc,
         string? UpdatedBy,
-        bool IsArchived);
+        bool IsArchived,
+        bool IsSystemManaged);
 
     private sealed record GrantDto(string Category, string ToolIdentifier);
 }

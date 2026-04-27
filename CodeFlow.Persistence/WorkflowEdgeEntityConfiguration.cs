@@ -45,6 +45,11 @@ public sealed class WorkflowEdgeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("sort_order")
             .IsRequired();
 
+        builder.Property(edge => edge.IntentionalBackedge)
+            .HasColumnName("intentional_backedge")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.HasOne(edge => edge.Workflow)
             .WithMany(workflow => workflow.Edges)
             .HasForeignKey(edge => edge.WorkflowId)

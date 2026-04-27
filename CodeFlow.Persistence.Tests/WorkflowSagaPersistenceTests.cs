@@ -101,11 +101,11 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Saga_ShouldRoundTripSubflowParentLinkageAndGlobalContext()
+    public async Task Saga_ShouldRoundTripSubflowParentLinkageAndWorkflowContext()
     {
         // Covers Slice S1 of the Subworkflow Composition epic: child-saga linkage columns
         // (parent_trace_id / parent_node_id / parent_round_id), the subflow_depth counter, and
-        // the global_inputs_json bag persist on the saga row alongside the existing local
+        // the workflow_inputs_json bag persist on the saga row alongside the existing local
         // inputs_json column.
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
         CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
@@ -122,7 +122,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
         var parentRoundId = Guid.NewGuid();
         var currentRoundId = Guid.NewGuid();
 
-        const string globalJson = """{"sharedKey":"sharedValue"}""";
+        const string workflowJson = """{"sharedKey":"sharedValue"}""";
         const string localJson = """{"localKey":"localValue"}""";
 
         await using (var writeContext = new CodeFlowDbContext(options.Options))
@@ -142,7 +142,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
                 ParentNodeId = parentNodeId,
                 ParentRoundId = parentRoundId,
                 SubflowDepth = 1,
-                GlobalInputsJson = globalJson,
+                WorkflowInputsJson = workflowJson,
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow
             });
@@ -160,12 +160,12 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             loaded.ParentNodeId.Should().Be(parentNodeId);
             loaded.ParentRoundId.Should().Be(parentRoundId);
             loaded.SubflowDepth.Should().Be(1);
-            loaded.GlobalInputsJson.Should().Be(globalJson);
-            loaded.InputsJson.Should().Be(localJson, "global_inputs_json and inputs_json must remain distinct columns");
+            loaded.WorkflowInputsJson.Should().Be(workflowJson);
+            loaded.InputsJson.Should().Be(localJson, "workflow_inputs_json and inputs_json must remain distinct columns");
         }
 
         // A top-level saga (no parent linkage) should default subflow_depth=0 and may leave the
-        // global bag NULL — the read code in S6 will treat that as `{}`.
+        // workflow bag NULL — the read code in S6 will treat that as `{}`.
         var topLevelCorrelationId = Guid.NewGuid();
         await using (var writeContext = new CodeFlowDbContext(options.Options))
         {
@@ -194,7 +194,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             topLevel.ParentNodeId.Should().BeNull();
             topLevel.ParentRoundId.Should().BeNull();
             topLevel.SubflowDepth.Should().Be(0);
-            topLevel.GlobalInputsJson.Should().BeNull();
+            topLevel.WorkflowInputsJson.Should().BeNull();
         }
     }
 }

@@ -66,7 +66,7 @@ export interface DecisionOutputTemplatePreviewRequest {
   input?: unknown;
   fieldValues?: Record<string, unknown>;
   context?: Record<string, unknown>;
-  global?: Record<string, unknown>;
+  workflow?: Record<string, unknown>;
   reason?: string;
   reasons?: string[];
   actions?: string[];
@@ -78,6 +78,46 @@ export interface DecisionOutputTemplatePreviewResponse {
 
 export interface DecisionOutputTemplatePreviewError {
   error: string;
+}
+
+export interface PromptPartialPinDto {
+  key: string;
+  version: number;
+}
+
+export interface PromptTemplatePreviewRequest {
+  systemPrompt?: string | null;
+  promptTemplate?: string | null;
+  workflow?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  input?: string | null;
+  reviewRound?: number | null;
+  reviewMaxRounds?: number | null;
+  optOutLastRoundReminder?: boolean;
+  partialPins?: PromptPartialPinDto[];
+}
+
+export interface PromptTemplatePreviewAutoInjection {
+  key: string;
+  renderedBody: string;
+  reason: string;
+}
+
+export interface PromptTemplatePreviewMissingPartial {
+  key: string;
+  version: number;
+}
+
+export interface PromptTemplatePreviewResponse {
+  renderedSystemPrompt: string | null;
+  renderedPromptTemplate: string | null;
+  autoInjections: PromptTemplatePreviewAutoInjection[];
+  missingPartials: PromptTemplatePreviewMissingPartial[];
+}
+
+export interface PromptTemplatePreviewError {
+  error: string;
+  missingPartials?: PromptTemplatePreviewMissingPartial[];
 }
 
 export type McpTransportKind = 'StreamableHttp' | 'HttpSse';
@@ -301,6 +341,7 @@ export interface WorkflowEdge {
   toPort: string;
   rotatesRound: boolean;
   sortOrder: number;
+  intentionalBackedge?: boolean;
 }
 
 export interface WorkflowInput {

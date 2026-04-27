@@ -7,7 +7,6 @@ import { TracesApi } from '../../core/traces.api';
 import { WorkflowsApi } from '../../core/workflows.api';
 import {
   TraceDetail,
-  TraceLogicEvaluation,
   TraceStreamEvent,
   TraceSummary,
   WorkflowDetail,
@@ -22,7 +21,9 @@ import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
 import { StateChipComponent } from '../../ui/state-chip.component';
 import { CardComponent } from '../../ui/card.component';
-import { IconComponent } from '../../ui/icon.component';
+import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
+import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
+import { Observable } from 'rxjs';
 
 interface TimelineEntry {
   id: string;
@@ -42,12 +43,6 @@ interface TimelineEntry {
   /** Trace id this entry was actually recorded on — same as the viewed trace, or a
    *  descendant. Used to drive "open child trace ↗" links per entry. */
   originTraceId?: string;
-}
-
-interface ArtifactLoadState {
-  loading: boolean;
-  content?: string;
-  error?: string;
 }
 
 interface PendingHitlGroup {
@@ -73,8 +68,6 @@ interface ReviewLoopGroup {
   rounds: ReviewLoopRoundEntry[];
 }
 
-type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
-
 @Component({
   selector: 'cf-trace-detail',
   standalone: true,
@@ -90,7 +83,7 @@ type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
     ChipComponent,
     StateChipComponent,
     CardComponent,
-    IconComponent,
+    TraceTimelineComponent,
   ],
   template: `
     <div class="page">
@@ -124,7 +117,7 @@ type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
             <strong>Failure:</strong> {{ d.failureReason }}
             @if (failureHttpDiagnosticsRef(); as diagnosticsRef) {
               <div style="margin-top: 6px">
-                <a class="mono-link" href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics →</a>
+                <a class="mono-link" href="" (click)="downloadFailureDiagnostics($event, diagnosticsRef)">Download HTTP diagnostics →</a>
               </div>
             }
           </div>
@@ -246,75 +239,10 @@ type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
 
         <cf-card title="Execution timeline" flush>
           <ng-template #cardRight><cf-chip mono>{{ timeline().length }} hops</cf-chip></ng-template>
-          <div class="timeline">
-            @for (entry of timeline(); track entry.id) {
-              <div class="tl-step" [attr.data-state]="dotStateFor(entry)">
-                <div class="tl-dot">
-                  @switch (dotStateFor(entry)) {
-                    @case ('ok')   { <cf-icon name="check"></cf-icon> }
-                    @case ('err')  { <cf-icon name="x"></cf-icon> }
-                    @case ('hitl') { <cf-icon name="hitl"></cf-icon> }
-                    @case ('run')  { <cf-icon name="play"></cf-icon> }
-                    @default       { <cf-icon name="chevR"></cf-icon> }
-                  }
-                </div>
-                <div class="tl-body">
-                  <button type="button" class="timeline-toggle" (click)="toggleEntry(entry)"
-                          [disabled]="!entry.inputRef && !entry.outputRef"
-                          [attr.aria-expanded]="expandedEntries().has(entry.id)">
-                    <div class="tl-title">
-                      <span class="tl-agent">{{ labelForTimelineEntry(entry) }}</span>
-                      <cf-chip mono>v{{ entry.agentVersion }}</cf-chip>
-                      @if (entry.decision) {
-                        <cf-chip [variant]="decisionVariantFor(entry.decision)" dot>{{ entry.decision }}</cf-chip>
-                      } @else {
-                        <cf-chip variant="accent" mono>{{ entry.kind }}</cf-chip>
-                      }
-                      @if (entry.originPath) {
-                        <cf-chip mono>via {{ entry.originPath }}</cf-chip>
-                      }
-                      @if (entry.inputRef || entry.outputRef) {
-                        <span class="caret">{{ expandedEntries().has(entry.id) ? '▾' : '▸' }}</span>
-                      }
-                    </div>
-                  </button>
-                  @if (expandedEntries().has(entry.id)) {
-                    <div class="tl-expand">
-                      @if (entry.inputRef) {
-                        <div class="artifact-block">
-                          <div class="artifact-h">Input</div>
-                          <p class="artifact-link-row">
-                            <a class="mono-link" href="" (click)="downloadArtifact($event, entry.inputRef!)">Download input artifact</a>
-                          </p>
-                          @if (artifactState(entry.inputRef); as state) {
-                            @if (state.loading) { <p class="muted small">Loading…</p> }
-                            @else if (state.error) { <cf-chip variant="err" dot>{{ state.error }}</cf-chip> }
-                            @else if (state.content !== undefined) { <pre class="tl-payload">{{ state.content }}</pre> }
-                          }
-                        </div>
-                      }
-                      @if (entry.outputRef) {
-                        <div class="artifact-block">
-                          <div class="artifact-h">Output</div>
-                          @if (httpDiagnosticsRefForDecision(entry.decisionPayload); as diagnosticsRef) {
-                            <p class="artifact-link-row">
-                              <a class="mono-link" href="" (click)="downloadArtifact($event, diagnosticsRef)">Download HTTP diagnostics →</a>
-                            </p>
-                          }
-                          @if (artifactState(entry.outputRef); as state) {
-                            @if (state.loading) { <p class="muted small">Loading…</p> }
-                            @else if (state.error) { <cf-chip variant="err" dot>{{ state.error }}</cf-chip> }
-                            @else if (state.content !== undefined) { <pre class="tl-payload">{{ state.content }}</pre> }
-                          }
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-                <div class="tl-when">{{ entry.timestampUtc | date:'mediumTime' }}</div>
-              </div>
-            }
-          </div>
+          <cf-trace-timeline
+            [events]="timelineEvents()"
+            [fetchArtifact]="artifactFetcher"
+            (downloadRef)="onTimelineDownload($event)"></cf-trace-timeline>
         </cf-card>
 
         <cf-card title="Pinned agent versions">
@@ -353,30 +281,6 @@ type TimelineDotState = 'ok' | 'err' | 'warn' | 'run' | 'hitl' | '';
     .review-loop-rounds li { display: flex; gap: 8px; align-items: center; }
     .row-spread { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .log-list { margin: 0; padding-left: 1rem; list-style: disc; }
-
-    .timeline-toggle {
-      all: unset;
-      display: block;
-      width: 100%;
-      cursor: default;
-    }
-    .timeline-toggle:disabled { cursor: default; }
-    .timeline-toggle:focus-visible {
-      outline: none;
-      box-shadow: var(--focus-ring);
-      border-radius: var(--radius);
-    }
-    .caret { margin-left: 6px; color: var(--muted); font-size: var(--fs-sm); }
-    .tl-expand { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
-    .artifact-block .artifact-h {
-      font-size: var(--fs-xs);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--faint);
-      margin-bottom: 4px;
-    }
-    .artifact-link-row { margin: 0 0 6px; font-size: var(--fs-sm); }
   `]
 })
 export class TraceDetailComponent implements OnInit, OnDestroy {
@@ -389,7 +293,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly detail = signal<TraceDetail | null>(null);
   readonly workflow = signal<WorkflowDetail | null>(null);
   readonly timeline = signal<TimelineEntry[]>([]);
-  readonly expandedEntries = signal<Set<string>>(new Set());
   readonly actionBusy = signal(false);
   readonly actionError = signal<string | null>(null);
   readonly childTraces = signal<TraceSummary[]>([]);
@@ -398,7 +301,18 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
    *  timeline so the user sees the full execution flow without drilling into each
    *  child trace manually. */
   private readonly descendantDetails = signal<Map<string, TraceDetail>>(new Map());
-  private readonly artifacts = signal<Map<string, ArtifactLoadState>>(new Map());
+
+  /**
+   * Mapped projection of {@link timeline} into the shape the shared `<cf-trace-timeline>`
+   * component consumes. Pure derivation — the shared component owns expansion state and
+   * artifact-fetch caching internally.
+   */
+  readonly timelineEvents = computed<TraceTimelineEvent[]>(() =>
+    this.timeline().map(entry => this.mapToTimelineEvent(entry)),
+  );
+
+  /** Bound input on the shared timeline — wraps `TracesApi.getArtifact`. */
+  readonly artifactFetcher = (uri: string): Observable<string> => this.api.getArtifact(this.id(), uri);
 
   readonly reviewLoopGroups = computed<ReviewLoopGroup[]>(() => {
     const detail = this.detail();
@@ -528,48 +442,14 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private loadedWorkflowKey: string | null = null;
   private loadedWorkflowVersion: number | null = null;
 
-  artifactState(uri: string | null | undefined): ArtifactLoadState | undefined {
-    if (!uri) return undefined;
-    return this.artifacts().get(uri);
+  /** Click handler for `<cf-trace-timeline>` `(downloadRef)` events — kicks off the
+   *  blob download via TracesApi. The shared timeline emits the URI for both the
+   *  per-row "Download input artifact" link and any extra-link (HTTP diagnostics). */
+  onTimelineDownload(uri: string): void {
+    this.downloadArtifact(uri);
   }
 
-  toggleEntry(entry: TimelineEntry): void {
-    const expanded = new Set(this.expandedEntries());
-    if (expanded.has(entry.id)) {
-      expanded.delete(entry.id);
-    } else {
-      expanded.add(entry.id);
-      if (entry.inputRef) this.loadArtifact(entry.inputRef);
-      if (entry.outputRef) this.loadArtifact(entry.outputRef);
-    }
-    this.expandedEntries.set(expanded);
-  }
-
-  private loadArtifact(uri: string): void {
-    const existing = this.artifacts().get(uri);
-    if (existing && (existing.content !== undefined || existing.loading)) return;
-
-    const next = new Map(this.artifacts());
-    next.set(uri, { loading: true });
-    this.artifacts.set(next);
-
-    this.api.getArtifact(this.id(), uri).subscribe({
-      next: content => {
-        const m = new Map(this.artifacts());
-        m.set(uri, { loading: false, content });
-        this.artifacts.set(m);
-      },
-      error: err => {
-        const m = new Map(this.artifacts());
-        m.set(uri, { loading: false, error: err?.message ?? 'Failed to load artifact.' });
-        this.artifacts.set(m);
-      }
-    });
-  }
-
-  downloadArtifact(event: Event, uri: string): void {
-    event.preventDefault();
-
+  downloadArtifact(uri: string): void {
     this.api.downloadArtifact(this.id(), uri).subscribe({
       next: response => {
         const blob = response.body;
@@ -585,6 +465,13 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
         URL.revokeObjectURL(url);
       }
     });
+  }
+
+  /** Top-of-page failure-banner download — a separate template hook because the saga
+   *  failure ref isn't anchored to a timeline row. */
+  downloadFailureDiagnostics(event: Event, uri: string): void {
+    event.preventDefault();
+    this.downloadArtifact(uri);
   }
 
   ngOnInit(): void {
@@ -823,17 +710,37 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     return 'workflow step';
   }
 
-  dotStateFor(entry: TimelineEntry): TimelineDotState {
-    if (entry.kind === 'Requested') return 'run';
-    if (entry.decision === 'Failed' || entry.decision === 'Rejected') return 'err';
-    if (entry.decision === 'Completed' || entry.decision === 'Approved') return 'ok';
-    return '';
-  }
+  /**
+   * Adapter from the saga-side {@link TimelineEntry} (one row per recorded decision)
+   * to the shared {@link TraceTimelineEvent} shape consumed by `<cf-trace-timeline>`.
+   * The saga case uses ref-based artifact lazy-loading via the timeline's
+   * `fetchArtifact` input; previews on this page are NEVER inline.
+   */
+  private mapToTimelineEvent(entry: TimelineEntry): TraceTimelineEvent {
+    const badges = [
+      { label: `v${entry.agentVersion}`, mono: true },
+    ];
+    if (entry.originPath) {
+      badges.push({ label: `via ${entry.originPath}`, mono: true });
+    }
 
-  decisionVariantFor(decision: string | null | undefined): 'ok' | 'err' | 'warn' | 'accent' {
-    if (decision === 'Completed' || decision === 'Approved') return 'ok';
-    if (decision === 'Failed' || decision === 'Rejected') return 'err';
-    return 'accent';
+    const expandedExtras: TraceTimelineExtraLink[] = [];
+    const httpDiagnosticsRef = this.httpDiagnosticsRefForDecision(entry.decisionPayload);
+    if (httpDiagnosticsRef) {
+      expandedExtras.push({ label: 'Download HTTP diagnostics', ref: httpDiagnosticsRef });
+    }
+
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      decision: entry.decision,
+      title: this.labelForTimelineEntry(entry),
+      badges,
+      inputRef: entry.inputRef,
+      outputRef: entry.outputRef,
+      timestampUtc: entry.timestampUtc,
+      expandedExtras: expandedExtras.length > 0 ? expandedExtras : undefined,
+    };
   }
 
   private labelForSubflowNode(node: WorkflowNode): string {

@@ -61,7 +61,8 @@ public sealed class Agent : IAgentInvoker
             configuration.Variables,
             configuration.RetryContext,
             tools.GrantedSkills,
-            configuration.DeclaredOutputs));
+            configuration.DeclaredOutputs,
+            configuration.ResolvedPartials));
 
         var toolAccessPolicy = MergeToolAccessPolicy(configuration.ToolAccessPolicy, tools, configuration);
 
@@ -99,7 +100,7 @@ public sealed class Agent : IAgentInvoker
             loopResult.TokenUsage,
             loopResult.ToolCallsExecuted,
             loopResult.ContextUpdates,
-            loopResult.GlobalUpdates);
+            loopResult.WorkflowUpdates);
     }
 
     private IEnumerable<IToolProvider> BuildProviders(

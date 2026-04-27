@@ -40,7 +40,9 @@ public sealed record WorkflowDraft(
     IReadOnlyList<WorkflowEdgeDraft> Edges,
     IReadOnlyList<WorkflowInputDraft> Inputs,
     WorkflowCategory Category = WorkflowCategory.Workflow,
-    IReadOnlyList<string>? Tags = null);
+    IReadOnlyList<string>? Tags = null,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record WorkflowNodeDraft(
     Guid Id,
@@ -55,7 +57,11 @@ public sealed record WorkflowNodeDraft(
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
-    string? InputScript = null);
+    string? InputScript = null,
+    bool OptOutLastRoundReminder = false,
+    RejectionHistoryConfig? RejectionHistory = null,
+    string? MirrorOutputToWorkflowVar = null,
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,
@@ -63,7 +69,8 @@ public sealed record WorkflowEdgeDraft(
     Guid ToNodeId,
     string ToPort,
     bool RotatesRound,
-    int SortOrder);
+    int SortOrder,
+    bool IntentionalBackedge = false);
 
 public sealed record WorkflowInputDraft(
     string Key,
