@@ -21,6 +21,17 @@ A standalone workflow with one human-in-the-loop checkpoint. Materializes:
 
 Drop the resulting workflow as a Subflow node anywhere you want a human checkpoint between subflows. The Subflow node automatically inherits the Approved + Cancelled ports.
 
+### Lifecycle wrapper (`lifecycle-wrapper`)
+
+A multi-phase shell — chained subflows with HITL gates between them. Codifies the shape of `lifecycle-v1` (PRD intake → impl-plan → dev-flow → publish). Default 3 phases:
+- `<prefix>-trigger` (Agent v1) — kickoff that forwards input to phase 1.
+- `<prefix>-phase-trigger` (Agent v1) — shared placeholder agent each phase stub uses.
+- `<prefix>-phase-1` / `-phase-2` / `-phase-3` (Workflow v1 each) — single-node stubs the author replaces (or repoints) with real phase workflows.
+- `<prefix>-gate-1-form` / `-gate-2-form` (Hitl agent v1 each) — passthrough approval gates between phases with `Approved` + `Cancelled` ports.
+- `<prefix>` (Workflow v1) — the lifecycle: Start (trigger) → Subflow (phase-1) → Hitl (gate-1) → Subflow (phase-2) → Hitl (gate-2) → Subflow (phase-3) → terminal.
+
+Author replaces each `<prefix>-phase-N` workflow's content (or repoints the lifecycle's Subflow node to point at a different workflow) with the real phase. Phase count is fixed at 3 in this materializer; authors who want more phases edit the outer workflow post-materialization (add Subflow + Hitl pairs and rewire).
+
 ### Setup → loop → finalize (`setup-loop-finalize`)
 
 The doc's "setup agent before a loop" pattern. A setup agent seeds the workflow bag from the input, then a producer/reviewer ReviewLoop iterates against that bag, with an HITL escalation on the Exhausted port. Materializes 6 entities:
@@ -75,6 +86,6 @@ Templates live in `CodeFlow.Api/WorkflowTemplates/`. To add one:
 
 Templates currently only describe new versions at v1. Bumping a template doesn't bump existing materialized workflows — those are operator-owned.
 
-## Status: S7
+## Status: complete
 
-S7 (Lifecycle wrapper) is designed but not yet shipped — it depends on S2 (HITL form presets, frontend) and a few additional editor surfaces. The framework supports it once the prerequisites land.
+All Phase 4 templates (S3 framework + S4 ReviewLoop pair + S5 HITL approval gate + S6 Setup → loop → finalize + S7 Lifecycle wrapper) are shipped. The remaining S2 (HITL form presets in the editor's New-Form picker) is a frontend card and out of the templates framework's scope.

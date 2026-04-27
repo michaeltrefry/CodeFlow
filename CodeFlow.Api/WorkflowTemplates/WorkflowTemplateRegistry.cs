@@ -20,7 +20,8 @@ public sealed class WorkflowTemplateRegistry
             EmptyWorkflowTemplate.Build(),
             ReviewLoopPairTemplate.Build(),
             HitlApprovalGateTemplate.Build(),
-            SetupLoopFinalizeTemplate.Build())
+            SetupLoopFinalizeTemplate.Build(),
+            LifecycleWrapperTemplate.Build())
     {
     }
 

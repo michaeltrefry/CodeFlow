@@ -177,6 +177,93 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
             && t.Category == WorkflowTemplateCategory.Hitl);
         listed.Should().Contain(t => t.Id == "setup-loop-finalize"
             && t.Category == WorkflowTemplateCategory.Other);
+        listed.Should().Contain(t => t.Id == "lifecycle-wrapper"
+            && t.Category == WorkflowTemplateCategory.Lifecycle);
+    }
+
+    [Fact]
+    public async Task LifecycleWrapperTemplate_Materialize_CreatesAllExpectedEntities()
+    {
+        // S7 acceptance: 3 phases + 2 gates → 8 entities (1 trigger + 1 phase trigger +
+        // 3 phase workflows + 2 gate forms + 1 lifecycle workflow).
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"life-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        var result = await materializer.MaterializeAsync(
+            templateId: "lifecycle-wrapper",
+            namePrefix: prefix,
+            createdBy: "tester");
+
+        result.EntryWorkflowKey.Should().Be(prefix);
+        result.EntryWorkflowVersion.Should().Be(1);
+        result.CreatedEntities.Should().HaveCount(8);
+        result.CreatedEntities.Select(e => e.Key).Should().BeEquivalentTo(new[]
+        {
+            $"{prefix}-trigger",
+            $"{prefix}-phase-trigger",
+            $"{prefix}-phase-1",
+            $"{prefix}-phase-2",
+            $"{prefix}-phase-3",
+            $"{prefix}-gate-1-form",
+            $"{prefix}-gate-2-form",
+            prefix,
+        });
+    }
+
+    [Fact]
+    public async Task LifecycleWrapperTemplate_OuterWorkflow_ChainsPhasesThroughGates()
+    {
+        // S7 acceptance: the lifecycle wires Start → phase-1 → gate-1 → phase-2 → gate-2 →
+        // phase-3 (terminal). Each gate's Approved port routes to the next phase; Cancelled
+        // is unwired (terminal exit / abort).
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"life-wiring-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "lifecycle-wrapper",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var lifecycle = await workflowRepo.GetAsync(prefix, 1);
+        var subflowNodes = lifecycle.Nodes.Where(n => n.Kind == WorkflowNodeKind.Subflow)
+            .OrderBy(n => n.LayoutX)
+            .ToArray();
+        var hitlNodes = lifecycle.Nodes.Where(n => n.Kind == WorkflowNodeKind.Hitl)
+            .OrderBy(n => n.LayoutX)
+            .ToArray();
+
+        subflowNodes.Should().HaveCount(3);
+        hitlNodes.Should().HaveCount(2);
+
+        subflowNodes[0].SubflowKey.Should().Be($"{prefix}-phase-1");
+        subflowNodes[1].SubflowKey.Should().Be($"{prefix}-phase-2");
+        subflowNodes[2].SubflowKey.Should().Be($"{prefix}-phase-3");
+
+        // phase-1 → gate-1 → phase-2 → gate-2 → phase-3.
+        var phase1ToGate1 = lifecycle.Edges.Single(e =>
+            e.FromNodeId == subflowNodes[0].Id && e.FromPort == "Completed");
+        phase1ToGate1.ToNodeId.Should().Be(hitlNodes[0].Id);
+
+        var gate1Approved = lifecycle.Edges.Single(e =>
+            e.FromNodeId == hitlNodes[0].Id && e.FromPort == "Approved");
+        gate1Approved.ToNodeId.Should().Be(subflowNodes[1].Id);
+
+        var phase2ToGate2 = lifecycle.Edges.Single(e =>
+            e.FromNodeId == subflowNodes[1].Id && e.FromPort == "Completed");
+        phase2ToGate2.ToNodeId.Should().Be(hitlNodes[1].Id);
+
+        var gate2Approved = lifecycle.Edges.Single(e =>
+            e.FromNodeId == hitlNodes[1].Id && e.FromPort == "Approved");
+        gate2Approved.ToNodeId.Should().Be(subflowNodes[2].Id);
+
+        // Phase-3's Completed port is unwired → terminal.
+        lifecycle.Edges.Should().NotContain(e =>
+            e.FromNodeId == subflowNodes[2].Id && e.FromPort == "Completed");
     }
 
     [Fact]

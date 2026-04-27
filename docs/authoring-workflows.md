@@ -259,6 +259,7 @@ The "New from Template" picker on the Workflows page collapses 30 minutes of wir
 - **HITL approval gate** — a standalone trigger → Hitl form workflow with `Approved` + `Cancelled` ports. Drop it as a Subflow node anywhere you want a human checkpoint.
 - **ReviewLoop pair** — producer + reviewer + inner workflow + outer ReviewLoop with `@codeflow/*` partials and P3 rejection-history pre-enabled. The canonical "draft, critique, finalize" shape.
 - **Setup → loop → finalize** — setup agent (input-script slot seeds the workflow bag from the input) → ReviewLoop (producer + reviewer pair) → on Exhausted, HITL escalation. Use when the loop body needs parsed inputs that don't exist on the raw artifact.
+- **Lifecycle wrapper** — three placeholder phase workflows chained by two HITL approval gates. Use as a starting shell when composing several existing workflows into a single end-to-end run with human checkpoints between phases. Author replaces each phase with their real workflow post-materialization.
 
 Each template prompts for a name prefix and materializes 5+ entities (agents + workflows) at v1 with that prefix. Templates fail with a clear 409 if any of their planned keys collide with existing entities — pick a different prefix.
 
