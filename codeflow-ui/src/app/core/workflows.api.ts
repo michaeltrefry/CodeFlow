@@ -75,6 +75,54 @@ export interface WorkflowPackageImportApplyResult {
   warningCount: number;
 }
 
+/** F2 dataflow snapshot — per-node static-analysis describing what's in scope when each node
+ *  runs. Drives VZ1 (data-flow inspector), VZ2 (workflow-vars declaration), and E1 (script
+ *  IntelliSense narrowing). Snapshot is computed from the SAVED workflow version, so reflects
+ *  on-disk state, not the live editor draft. */
+export type DataflowConfidence = 'Definite' | 'Conditional';
+
+export interface DataflowVariableSource {
+  nodeId: string;
+  scriptKind: string;
+}
+
+export interface DataflowVariable {
+  key: string;
+  confidence: DataflowConfidence;
+  sources: DataflowVariableSource[];
+}
+
+export interface DataflowInputSource {
+  nodeId: string;
+  port: string;
+}
+
+export interface DataflowLoopBindings {
+  staticRound: number | null;
+  maxRounds: number;
+}
+
+export interface NodeDataflowScope {
+  nodeId: string;
+  workflowVariables: DataflowVariable[];
+  contextKeys: DataflowVariable[];
+  inputSource: DataflowInputSource | null;
+  loopBindings: DataflowLoopBindings | null;
+}
+
+export interface WorkflowDataflowDiagnostic {
+  nodeId: string;
+  scriptKind: string;
+  message: string;
+}
+
+export interface WorkflowDataflowSnapshot {
+  workflowKey: string;
+  workflowVersion: number;
+  scopesByNode: Record<string, NodeDataflowScope>;
+  diagnostics: WorkflowDataflowDiagnostic[];
+}
+
 @Injectable({ providedIn: 'root' })
 export class WorkflowsApi {
   private readonly http = inject(HttpClient);
@@ -132,5 +180,12 @@ export class WorkflowsApi {
 
   validateScript(request: ValidateScriptRequest): Observable<ValidateScriptResponse> {
     return this.http.post<ValidateScriptResponse>('/api/workflows/validate-script', request);
+  }
+
+  /** F2: per-node dataflow snapshot for the saved workflow at this version. */
+  getDataflow(key: string, version: number): Observable<WorkflowDataflowSnapshot> {
+    return this.http.get<WorkflowDataflowSnapshot>(
+      `/api/workflows/${encodeURIComponent(key)}/${version}/dataflow`
+    );
   }
 }

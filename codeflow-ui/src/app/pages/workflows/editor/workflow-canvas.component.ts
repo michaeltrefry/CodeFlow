@@ -29,7 +29,7 @@ import {
   WorkflowNodeKind,
   WorkflowSummary
 } from '../../../core/models';
-import { WorkflowsApi } from '../../../core/workflows.api';
+import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
 import { ButtonComponent } from '../../../ui/button.component';
 import { TagInputComponent } from '../../../ui/tag-input.component';
 import {
@@ -103,6 +103,37 @@ interface PortReferenceRow {
 }
 
 const DEFAULT_INPUT_KEY = 'input';
+
+/** `{{ workflow.X }}` / `{{ context.X }}` reference scanner used by the VZ1 inspector to
+ *  flag reads that have no upstream writer. Mirrors the backend regex in
+ *  `WorkflowVarDeclarationRule` so the editor surfaces the same coupling the validator does. */
+const WORKFLOW_REF_TEMPLATE = /\{\{\s*workflow\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const CONTEXT_REF_TEMPLATE = /\{\{\s*context\.([A-Za-z_][A-Za-z0-9_]*)/g;
+/** JS read in scripts: `workflow.X`, `workflow['X']`, `workflow["X"]`. */
+const WORKFLOW_REF_SCRIPT_DOT = /\bworkflow\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const WORKFLOW_REF_SCRIPT_BRACKET = /\bworkflow\[\s*['"]([^'"]+)['"]\s*\]/g;
+const CONTEXT_REF_SCRIPT_DOT = /\bcontext\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const CONTEXT_REF_SCRIPT_BRACKET = /\bcontext\[\s*['"]([^'"]+)['"]\s*\]/g;
+
+function extractMatches(pattern: RegExp, text: string, sink: Set<string>): void {
+  pattern.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) sink.add(m[1]);
+}
+
+function extractWorkflowAndContextRefs(text: string, wf: Set<string>, ctx: Set<string>): void {
+  if (!text) return;
+  extractMatches(WORKFLOW_REF_TEMPLATE, text, wf);
+  extractMatches(CONTEXT_REF_TEMPLATE, text, ctx);
+}
+
+function extractWorkflowAndContextRefsFromScript(text: string, wf: Set<string>, ctx: Set<string>): void {
+  if (!text) return;
+  extractMatches(WORKFLOW_REF_SCRIPT_DOT, text, wf);
+  extractMatches(WORKFLOW_REF_SCRIPT_BRACKET, text, wf);
+  extractMatches(CONTEXT_REF_SCRIPT_DOT, text, ctx);
+  extractMatches(CONTEXT_REF_SCRIPT_BRACKET, text, ctx);
+}
 
 function defaultStartInput(): WorkflowInput {
   return {
@@ -533,6 +564,160 @@ function defaultStartInput(): WorkflowInput {
                 </label>
               </div>
             }
+
+            <div class="inspector-section dataflow-section">
+              <div class="row-spread">
+                <div class="panel-title-inline">Data flow</div>
+                @if (dataflowVersion(); as v) {
+                  <span class="muted xsmall" [class.dirty]="dataflowDirty()">
+                    based on saved v{{ v }}@if (dataflowDirty()) { · unsaved edits }
+                  </span>
+                }
+              </div>
+              @if (dataflowLoading()) {
+                <p class="muted xsmall">Analyzing data flow…</p>
+              } @else if (dataflowError(); as err) {
+                <p class="tag error xsmall">{{ err }}</p>
+              } @else if (!dataflowSnapshot()) {
+                <p class="muted xsmall">Save this workflow to enable data-flow analysis.</p>
+              } @else if (selectedNodeDataflow(); as scope) {
+                <div class="df-group">
+                  <div class="df-group-title">
+                    Workflow variables in scope
+                    <span class="muted xsmall">— what upstream nodes have written</span>
+                  </div>
+                  @if (scope.workflowVariables.length === 0 && selectedNodeUndeclaredReads().workflow.length === 0) {
+                    <p class="muted xsmall">No upstream <code>setWorkflow</code> writes reach this node.</p>
+                  } @else {
+                    <ul class="df-list">
+                      @for (v of scope.workflowVariables; track v.key) {
+                        <li>
+                          <code class="mono">{{ v.key }}</code>
+                          <span class="tag small"
+                                [class.success]="v.confidence === 'Definite'"
+                                [class.warn]="v.confidence === 'Conditional'"
+                                [title]="v.confidence === 'Definite' ? 'Every upstream path writes this key.' : 'At least one upstream path writes this key — others may not.'">
+                            {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
+                          </span>
+                          @if (v.sources.length > 0) {
+                            <span class="muted xsmall">from</span>
+                            @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
+                              <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(src.nodeId)"
+                                      [title]="'Navigate to ' + labelForSource(src.nodeId)">
+                                {{ labelForSource(src.nodeId) }}<span class="muted">.{{ src.scriptKind }}</span></button>@if (!last) {<span class="muted">,</span>}
+                            }
+                          }
+                        </li>
+                      }
+                      @for (k of selectedNodeUndeclaredReads().workflow; track k) {
+                        <li class="undeclared">
+                          <code class="mono">{{ k }}</code>
+                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                        </li>
+                      }
+                    </ul>
+                  }
+                </div>
+
+                <div class="df-group">
+                  <div class="df-group-title">
+                    Context keys in scope
+                    <span class="muted xsmall">— per-saga, written via <code>setContext</code></span>
+                  </div>
+                  @if (scope.contextKeys.length === 0 && selectedNodeUndeclaredReads().context.length === 0) {
+                    <p class="muted xsmall">No upstream <code>setContext</code> writes reach this node.</p>
+                  } @else {
+                    <ul class="df-list">
+                      @for (v of scope.contextKeys; track v.key) {
+                        <li>
+                          <code class="mono">{{ v.key }}</code>
+                          <span class="tag small"
+                                [class.success]="v.confidence === 'Definite'"
+                                [class.warn]="v.confidence === 'Conditional'">
+                            {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
+                          </span>
+                          @if (v.sources.length > 0) {
+                            <span class="muted xsmall">from</span>
+                            @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
+                              <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(src.nodeId)"
+                                      [title]="'Navigate to ' + labelForSource(src.nodeId)">
+                                {{ labelForSource(src.nodeId) }}<span class="muted">.{{ src.scriptKind }}</span></button>@if (!last) {<span class="muted">,</span>}
+                            }
+                          }
+                        </li>
+                      }
+                      @for (k of selectedNodeUndeclaredReads().context; track k) {
+                        <li class="undeclared">
+                          <code class="mono">{{ k }}</code>
+                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                        </li>
+                      }
+                    </ul>
+                  }
+                </div>
+
+                <div class="df-group">
+                  <div class="df-group-title">Expected input artifact</div>
+                  @if (scope.inputSource) {
+                    <p class="xsmall">
+                      from
+                      <button type="button" class="link mono xsmall" (click)="navigateToSourceNode(scope.inputSource.nodeId)"
+                              [title]="'Navigate to ' + labelForSource(scope.inputSource.nodeId)">
+                        {{ labelForSource(scope.inputSource.nodeId) }}<span class="muted">.{{ scope.inputSource.port }}</span>
+                      </button>
+                    </p>
+                  } @else {
+                    <p class="muted xsmall">
+                      @if (sel.editor.kind === 'Start') {
+                        Start nodes receive the workflow input directly.
+                      } @else {
+                        No upstream node found — wire an inbound edge.
+                      }
+                    </p>
+                  }
+                </div>
+
+                @if (scope.loopBindings; as lb) {
+                  <div class="df-group">
+                    <div class="df-group-title">
+                      Loop bindings
+                      <span class="muted xsmall">— available as <code>{{ '{{round}}' }}</code> / <code>{{ '{{maxRounds}}' }}</code> / <code>{{ '{{isLastRound}}' }}</code></span>
+                    </div>
+                    <ul class="df-list">
+                      <li>
+                        <code class="mono">round</code>
+                        @if (lb.staticRound !== null) {
+                          <span class="tag small success">= {{ lb.staticRound }}</span>
+                        } @else {
+                          <span class="tag small">1..{{ lb.maxRounds }}</span>
+                        }
+                      </li>
+                      <li><code class="mono">maxRounds</code> <span class="tag small success">= {{ lb.maxRounds }}</span></li>
+                      <li><code class="mono">isLastRound</code> <span class="muted xsmall">true on round {{ lb.maxRounds }}</span></li>
+                    </ul>
+                  </div>
+                }
+
+                @if (selectedNodeAutoInjectedPartials().length > 0) {
+                  <div class="df-group">
+                    <div class="df-group-title">
+                      Auto-injected partials
+                      <span class="muted xsmall">— added by the runtime; pin explicitly to opt out</span>
+                    </div>
+                    <ul class="df-list">
+                      @for (p of selectedNodeAutoInjectedPartials(); track p) {
+                        <li>
+                          <code class="mono">{{ p }}</code>
+                          <span class="tag small">[auto-injected]</span>
+                        </li>
+                      }
+                    </ul>
+                  </div>
+                }
+              } @else {
+                <p class="muted xsmall">No data-flow scope for this node — its persistence id isn't in the saved snapshot. Save the workflow to refresh.</p>
+              }
+            </div>
           } @else if (selectedConnection(); as sel) {
             <div class="inspector-section">
               <div class="row-spread">
@@ -949,6 +1134,47 @@ function defaultStartInput(): WorkflowInput {
     .tag.warn { background: rgba(245, 184, 76, 0.18); color: #f5b84c; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.small { font-size: 0.7rem; }
+    .tag.xsmall { font-size: 0.65rem; padding: 0.1rem 0.3rem; }
+    .dataflow-section .row-spread { margin-bottom: 0.5rem; }
+    .dataflow-section .dirty { color: #f5b84c; }
+    .df-group { margin-bottom: 0.6rem; }
+    .df-group:last-child { margin-bottom: 0; }
+    .df-group-title {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .df-group-title .muted { text-transform: none; letter-spacing: 0; }
+    .df-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .df-list > li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.75rem;
+    }
+    .df-list > li.undeclared code { color: #f85149; }
+    button.link {
+      background: transparent;
+      border: none;
+      padding: 0;
+      color: #58a6ff;
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 2px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+    }
+    button.link:hover { color: #ffd166; }
   `]
 })
 export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
@@ -1013,6 +1239,15 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly selectedAgentDocs = signal<SelectedAgentDocs | null>(null);
   readonly selectedAgentDocsLoading = signal(false);
   readonly selectedAgentDocsError = signal<string | null>(null);
+
+  /** VZ1: F2 dataflow snapshot for the workflow's current saved version. Null until first
+   *  load completes (or for unsaved new workflows). The snapshot is the on-disk truth, so
+   *  unsaved canvas edits aren't reflected until the next save round-trips through F2. */
+  readonly dataflowSnapshot = signal<WorkflowDataflowSnapshot | null>(null);
+  readonly dataflowVersion = signal<number | null>(null);
+  readonly dataflowLoading = signal(false);
+  readonly dataflowError = signal<string | null>(null);
+  readonly dataflowDirty = signal(false);
 
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
@@ -1107,6 +1342,74 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  outputs in either direction (stale or missing). Drives the "Sync from agent" affordance. */
   readonly selectedNodeHasPortDrift = computed(() => {
     return this.derivedPortRows().some(r => r.status !== 'ok');
+  });
+
+  /** VZ1: scope row shown in the data-flow inspector panel. */
+  readonly selectedNodeDataflow = computed<NodeDataflowScope | null>(() => {
+    const sel = this.selectedNode();
+    const snap = this.dataflowSnapshot();
+    if (!sel || !snap) return null;
+    const nodeId = sel.editor.nodeId;
+    return snap.scopesByNode[nodeId.toLowerCase()]
+      ?? snap.scopesByNode[nodeId.toUpperCase()]
+      ?? snap.scopesByNode[nodeId]
+      ?? null;
+  });
+
+  /** VZ1: workflow / context keys this node's prompts or scripts reference but no upstream
+   *  node writes. Acceptance: keys with no writer render in red with "no writer found". */
+  readonly selectedNodeUndeclaredReads = computed<{ workflow: string[]; context: string[] }>(() => {
+    const sel = this.selectedNode();
+    if (!sel) return { workflow: [], context: [] };
+
+    const wf = new Set<string>();
+    const ctx = new Set<string>();
+
+    const docs = this.selectedAgentDocs();
+    if (docs?.config) {
+      const cfg = docs.config as Record<string, unknown>;
+      const collect = (text: unknown) => {
+        if (typeof text === 'string') extractWorkflowAndContextRefs(text, wf, ctx);
+      };
+      collect(cfg['systemPrompt']);
+      collect(cfg['promptTemplate']);
+      collect(cfg['outputTemplate']);
+    }
+    extractWorkflowAndContextRefsFromScript(sel.editor.inputScript ?? '', wf, ctx);
+    extractWorkflowAndContextRefsFromScript(sel.editor.outputScript ?? '', wf, ctx);
+
+    const scope = this.selectedNodeDataflow();
+    const wfKnown = new Set((scope?.workflowVariables ?? []).map(v => v.key));
+    const ctxKnown = new Set((scope?.contextKeys ?? []).map(v => v.key));
+
+    return {
+      workflow: [...wf].filter(k => !wfKnown.has(k) && !k.startsWith('__loop')).sort(),
+      context: [...ctx].filter(k => !ctxKnown.has(k)).sort(),
+    };
+  });
+
+  /** VZ1: partials that the runtime auto-injects when this node executes. Today only the
+   *  P2 last-round-reminder is auto-injected — when the node sits inside a ReviewLoop and
+   *  the agent doesn't already pin `@codeflow/last-round-reminder`. The opt-out flag isn't
+   *  exposed in the editor yet (the workflow draft serializer doesn't carry it), so this is
+   *  best-effort: if the JSON has been hand-edited to opt out, the panel will still show
+   *  the partial. */
+  readonly selectedNodeAutoInjectedPartials = computed<string[]>(() => {
+    const sel = this.selectedNode();
+    const scope = this.selectedNodeDataflow();
+    if (!sel || !scope || !scope.loopBindings) return [];
+    if (!AGENT_BEARING_KINDS.has(sel.editor.kind)) return [];
+
+    const docs = this.selectedAgentDocs();
+    const pins = (docs?.config as Record<string, unknown> | undefined)?.['partialPins'];
+    if (Array.isArray(pins)) {
+      const explicitlyPinned = pins.some(p =>
+        typeof p === 'object' && p !== null
+        && (p as Record<string, unknown>)['key'] === '@codeflow/last-round-reminder'
+      );
+      if (explicitlyPinned) return [];
+    }
+    return ['@codeflow/last-round-reminder'];
   });
 
   /** Inline warnings for edges whose source port is no longer declared by the source node. */
@@ -1250,6 +1553,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         }
         this.bindConnectionInteraction(data);
       }
+      if (context.type === 'connectioncreated' || context.type === 'connectionremoved' || context.type === 'noderemoved' || context.type === 'nodecreated') {
+        // VZ1: any structural change can shift the dataflow scope; mark the cached snapshot
+        // stale so the inspector can hint that a save is needed for an accurate read.
+        if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+      }
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
           this.selectedNodeId.set(null);
@@ -1283,6 +1591,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
           if (editor.getNodes().length > 0) {
             AreaExtensions.zoomAt(area, editor.getNodes());
           }
+          this.loadDataflow(detail.key, detail.version);
         },
         error: err => this.error.set(`Failed to load workflow: ${err.message ?? err}`)
       });
@@ -1960,6 +2269,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       if (this.scriptValidationError()) this.scriptValidationError.set(null);
       if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
     }
+    if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
   }
 
   validateNodeScript(node: WorkflowEditorNode, slot: 'input' | 'output'): void {
@@ -2039,6 +2349,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       next: result => {
         this.saving.set(false);
         this.statusMessage.set(`Saved ${result.key} v${result.version}`);
+        this.loadDataflow(result.key, result.version);
         if (!this.hasExistingKey()) {
           this.hasExistingKey.set(true);
           this.router.navigate(['/workflows', result.key, 'edit']);
@@ -2049,5 +2360,49 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.error.set(err?.error?.errors?.workflow?.[0] ?? err?.error?.title ?? err.message ?? 'Save failed');
       }
     });
+  }
+
+  /** VZ1: fetch the F2 dataflow snapshot for the workflow's saved version. */
+  private loadDataflow(key: string, version: number): void {
+    if (!key || !Number.isFinite(version) || version <= 0) {
+      this.dataflowSnapshot.set(null);
+      this.dataflowVersion.set(null);
+      this.dataflowDirty.set(false);
+      return;
+    }
+    this.dataflowLoading.set(true);
+    this.dataflowError.set(null);
+    this.api.getDataflow(key, version).subscribe({
+      next: snapshot => {
+        this.dataflowSnapshot.set(snapshot);
+        this.dataflowVersion.set(version);
+        this.dataflowDirty.set(false);
+        this.dataflowLoading.set(false);
+      },
+      error: err => {
+        this.dataflowSnapshot.set(null);
+        this.dataflowLoading.set(false);
+        this.dataflowError.set(`Failed to load data-flow analysis: ${err?.message ?? err}`);
+      }
+    });
+  }
+
+  /** VZ1: select a node by its persistence Guid (used by clickable variable sources to
+   *  navigate from a downstream consumer to the upstream writer). Falls back silently if
+   *  the target node has been deleted from the editor. */
+  navigateToSourceNode(persistenceNodeId: string): void {
+    if (!this.editor || !this.area) return;
+    const target = this.editor.getNodes().find(n => n.nodeId === persistenceNodeId);
+    if (!target) return;
+    this.selectedNodeId.set(target.id);
+    this.loadAgentDocsForNode(target);
+    AreaExtensions.zoomAt(this.area, [target]);
+  }
+
+  /** Resolve a persistence-Guid node id to a human-readable label for the inspector. */
+  labelForSource(persistenceNodeId: string): string {
+    if (!this.editor) return persistenceNodeId.slice(0, 8);
+    const target = this.editor.getNodes().find(n => n.nodeId === persistenceNodeId);
+    return target ? target.label : persistenceNodeId.slice(0, 8);
   }
 }
