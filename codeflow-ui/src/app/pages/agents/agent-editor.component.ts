@@ -774,7 +774,7 @@ export class AgentEditorComponent implements OnInit {
       reasons: mode === 'hitl' ? asStringArray(parsedContext['reasons']) : undefined,
       actions: mode === 'hitl' ? asStringArray(parsedContext['actions']) : undefined,
       context: asRecord(parsedContext['context']),
-      global: asRecord(parsedContext['global'])
+      workflow: asRecord(parsedContext['workflow'])
     }).subscribe({
       next: response => commit({ preview: response.rendered, previewError: null, previewPending: false }),
       error: err => commit({ preview: '', previewError: extractPreviewError(err), previewPending: false })
@@ -997,7 +997,7 @@ function defaultHitlPreviewContext(): string {
     reasons: [],
     actions: [],
     context: {},
-    global: {}
+    workflow: {}
   }, null, 2);
 }
 
@@ -1010,7 +1010,7 @@ function defaultLlmPreviewContext(sampleOutput?: unknown, sampleDecision?: strin
     output,
     input: {},
     context: {},
-    global: {}
+    workflow: {}
   }, null, 2);
 }
 

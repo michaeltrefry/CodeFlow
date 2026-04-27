@@ -302,7 +302,7 @@ function defaultStartInput(): WorkflowInput {
                 <div class="field">
                   <span class="field-label">Input script <span class="muted xsmall">(optional)</span></span>
                   <p class="muted xsmall">
-                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>global</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
+                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
                   </p>
                   <cf-monaco-script-editor
                     class="script-editor"

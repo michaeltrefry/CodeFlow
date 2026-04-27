@@ -66,7 +66,7 @@ export interface DecisionOutputTemplatePreviewRequest {
   input?: unknown;
   fieldValues?: Record<string, unknown>;
   context?: Record<string, unknown>;
-  global?: Record<string, unknown>;
+  workflow?: Record<string, unknown>;
   reason?: string;
   reasons?: string[];
   actions?: string[];
