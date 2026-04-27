@@ -35,6 +35,10 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       // Filled in once the author picks a child workflow; ports inherit from the child's
       // terminal-port set.
       return [];
+    case 'Transform':
+      // Transform exposes a single synthesized "Out" port (validator allows [] or ['Out']).
+      // Declare it explicitly so the canvas renders the wirable handle.
+      return ['Out'];
   }
 }
 
@@ -95,7 +99,9 @@ export async function loadIntoEditor(
       subflowKey: node.subflowKey,
       subflowVersion: node.subflowVersion,
       reviewMaxRounds: node.reviewMaxRounds,
-      loopDecision: node.loopDecision
+      loopDecision: node.loopDecision,
+      template: node.template,
+      outputType: node.outputType
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -133,6 +139,7 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
       const rounds = node.reviewMaxRounds ? `×${node.reviewMaxRounds}` : '×?';
       return `ReviewLoop ${rounds} — ${key}`;
     }
+    case 'Transform': return 'Transform';
   }
 }
 
@@ -159,7 +166,9 @@ export function serializeEditor(
       subflowKey: node.subflowKey,
       subflowVersion: node.subflowVersion,
       reviewMaxRounds: node.reviewMaxRounds,
-      loopDecision: node.loopDecision
+      loopDecision: node.loopDecision,
+      template: node.kind === 'Transform' ? node.template : null,
+      outputType: node.kind === 'Transform' ? node.outputType : undefined
     };
   });
 

@@ -314,9 +314,11 @@ export interface LlmProviderModelOption {
   model: string;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform';
 
 export type WorkflowInputKind = 'Text' | 'Json';
+
+export type WorkflowTransformOutputType = 'string' | 'json';
 
 export interface WorkflowNode {
   id: string;
@@ -332,6 +334,9 @@ export interface WorkflowNode {
   subflowVersion?: number | null;
   reviewMaxRounds?: number | null;
   loopDecision?: string | null;
+  // Transform nodes only: the Scriban template body and how its rendered output is interpreted.
+  template?: string | null;
+  outputType?: WorkflowTransformOutputType;
 }
 
 export interface WorkflowEdge {

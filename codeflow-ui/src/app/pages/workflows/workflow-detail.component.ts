@@ -153,6 +153,7 @@ export class WorkflowDetailComponent implements OnInit {
       case 'Hitl': return 'HITL';
       case 'Subflow': return `Subflow → ${node.subflowKey ?? '?'}`;
       case 'ReviewLoop': return `ReviewLoop ×${node.reviewMaxRounds ?? '?'} → ${node.subflowKey ?? '?'}`;
+      case 'Transform': return 'Transform';
     }
   }
 

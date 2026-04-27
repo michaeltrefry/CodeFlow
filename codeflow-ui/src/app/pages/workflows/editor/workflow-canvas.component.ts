@@ -326,6 +326,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item start" (click)="addPaletteNode('Start')">Start</button>
             <button type="button" class="palette-item agent" (click)="addPaletteNode('Agent')">Agent</button>
             <button type="button" class="palette-item logic" (click)="addPaletteNode('Logic')">Logic</button>
+            <button type="button" class="palette-item transform" (click)="addPaletteNode('Transform')">Transform</button>
             <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
             <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
             <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
@@ -647,6 +648,36 @@ function defaultStartInput(): WorkflowInput {
                             [ngModel]="outputPortsText()"
                             (ngModelChange)="onOutputPortsChanged(sel.editor, $event)"></textarea>
                 </label>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'Transform') {
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Template (Scriban)</span>
+                  <p class="muted xsmall">
+                    Renders against <code>input.*</code>, <code>context.*</code>, and
+                    <code>workflow.*</code>. Output flows on the synthesized <code>Out</code>
+                    port; render errors route to <code>Failed</code>.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    language="plaintext"
+                    [value]="sel.editor.template ?? ''"
+                    [templateCompletion]="true"
+                    (valueChange)="onTransformTemplateChanged(sel.editor, $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="field">
+                  <span class="field-label">Output type</span>
+                  <p class="muted xsmall">
+                    <strong>String</strong> — rendered text becomes the artifact verbatim.
+                    <strong>JSON</strong> — rendered text must parse as JSON; invalid output
+                    routes to <code>Failed</code>. (TN-5 will add a richer toggle UI.)
+                  </p>
+                  <div class="row">
+                    <span class="tag">{{ sel.editor.outputType }}</span>
+                  </div>
+                </div>
               </div>
             }
 
@@ -1123,6 +1154,7 @@ function defaultStartInput(): WorkflowInput {
     .palette-item.start { border-left: 4px solid #3fb950; }
     .palette-item.agent { border-left: 4px solid #58a6ff; }
     .palette-item.logic { border-left: 4px solid #d29922; }
+    .palette-item.transform { border-left: 4px solid #06d6a0; }
     .palette-item.hitl { border-left: 4px solid #bc8cff; }
     .palette-item.escalation { border-left: 4px solid #f85149; }
     .palette-item.subflow { border-left: 4px solid #2ea3f2; }
@@ -1198,6 +1230,7 @@ function defaultStartInput(): WorkflowInput {
     .inspector-kind.start { background: rgba(63, 185, 80, 0.2); color: #3fb950; }
     .inspector-kind.agent { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
     .inspector-kind.logic { background: rgba(210, 153, 34, 0.2); color: #d29922; }
+    .inspector-kind.transform { background: rgba(6, 214, 160, 0.2); color: #06d6a0; }
     .inspector-kind.hitl { background: rgba(188, 140, 255, 0.2); color: #bc8cff; }
     .inspector-kind.escalation { background: rgba(248, 81, 73, 0.2); color: #f85149; }
     .inspector-kind.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; }
@@ -2699,6 +2732,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       if (this.scriptValidationError()) this.scriptValidationError.set(null);
       if (this.scriptValidationOk()) this.scriptValidationOk.set(false);
     }
+    if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+  }
+
+  onTransformTemplateChanged(node: WorkflowEditorNode, value: string): void {
+    node.template = value;
     if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
   }
 
