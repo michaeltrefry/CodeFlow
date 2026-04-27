@@ -391,7 +391,7 @@ public sealed class ContextAssemblerTests
 
         act.Should().Throw<PromptTemplateException>();
         stopwatch.Stop();
-        // Generous ceiling — render budget is 50ms and LoopLimit=1000 caps iterations almost instantly.
+        // Generous ceiling — render budget is 100ms and LoopLimit=1000 caps iterations almost instantly.
         stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
     }
 

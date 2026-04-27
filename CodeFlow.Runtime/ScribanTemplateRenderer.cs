@@ -23,7 +23,7 @@ public interface IScribanTemplateRenderer
 
 public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
 {
-    internal static readonly TimeSpan RenderTimeout = TimeSpan.FromMilliseconds(50);
+    internal static readonly TimeSpan RenderTimeout = TimeSpan.FromMilliseconds(100);
     private const int DefaultLoopLimit = 1000;
     private const int DefaultRecursiveLimit = 64;
     private const int DefaultLimitToString = 1_000_000;
