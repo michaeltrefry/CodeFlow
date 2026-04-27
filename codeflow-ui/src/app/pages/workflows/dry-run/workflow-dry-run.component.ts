@@ -15,6 +15,8 @@ import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
 import { CardComponent } from '../../../ui/card.component';
 import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
+import { TraceTimelineComponent } from '../../../ui/trace-timeline.component';
+import { TraceTimelineBadge, TraceTimelineEvent } from '../../../ui/trace-timeline.types';
 
 const STATE_CHIP: Record<DryRunState, ChipVariant> = {
   Completed: 'ok',
@@ -37,12 +39,47 @@ const EMPTY_DRAFT: FixtureDraft = {
   mockResponsesJson: '{\n  "agent-key": [\n    { "decision": "Approved", "output": "..." }\n  ]\n}',
 };
 
+function mapDryRunEventToTimeline(ev: DryRunEvent): TraceTimelineEvent {
+  const titleParts: string[] = [];
+  if (ev.agentKey) titleParts.push(ev.agentKey);
+  titleParts.push(ev.nodeKind);
+  const title = titleParts.join(' · ');
+
+  const badges: TraceTimelineBadge[] = [];
+  if (ev.portName) {
+    badges.push({ label: `port: ${ev.portName}`, variant: 'accent', mono: true });
+  }
+  if (ev.subflowKey) {
+    const ver = ev.subflowVersion != null ? ` v${ev.subflowVersion}` : '';
+    badges.push({ label: `subflow: ${ev.subflowKey}${ver}`, mono: true });
+  }
+  if (ev.subflowDepth != null && ev.subflowDepth > 0) {
+    badges.push({ label: `depth ${ev.subflowDepth}`, mono: true });
+  }
+
+  return {
+    id: `dryrun-${ev.ordinal}`,
+    ordinal: ev.ordinal,
+    kind: ev.kind,
+    title,
+    badges,
+    message: ev.message,
+    inputPreview: ev.inputPreview,
+    outputPreview: ev.outputPreview,
+    decisionPayload: ev.decisionPayload,
+    logs: ev.logs,
+    reviewRound: ev.reviewRound,
+    maxRounds: ev.maxRounds,
+  };
+}
+
 @Component({
   selector: 'cf-workflow-dry-run',
   standalone: true,
   imports: [
     CommonModule, FormsModule, RouterLink, JsonPipe,
     PageHeaderComponent, ButtonComponent, CardComponent, ChipComponent,
+    TraceTimelineComponent,
   ],
   template: `
     <div class="page">
@@ -177,49 +214,8 @@ const EMPTY_DRAFT: FixtureDraft = {
         <!-- Events list -->
         @if (result(); as r) {
           <cf-card title="Trace events" flush>
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Kind</th>
-                  <th>Node</th>
-                  <th>Agent</th>
-                  <th>Port</th>
-                  <th>Round</th>
-                  <th>Message / preview</th>
-                </tr>
-              </thead>
-              <tbody>
-                @for (ev of r.events; track ev.ordinal) {
-                  <tr>
-                    <td class="mono small">{{ ev.ordinal }}</td>
-                    <td><cf-chip [variant]="eventVariant(ev.kind)" mono>{{ ev.kind }}</cf-chip></td>
-                    <td class="mono small">{{ ev.nodeKind }}</td>
-                    <td class="mono small">{{ ev.agentKey ?? '—' }}</td>
-                    <td class="mono small">{{ ev.portName ?? '—' }}</td>
-                    <td class="mono small">
-                      {{ ev.reviewRound != null && ev.maxRounds != null ? ev.reviewRound + '/' + ev.maxRounds : '—' }}
-                    </td>
-                    <td class="event-detail">
-                      @if (ev.message) {
-                        <div class="muted small">{{ ev.message }}</div>
-                      }
-                      @if (ev.outputPreview) {
-                        <pre class="small">{{ ev.outputPreview }}</pre>
-                      } @else if (ev.inputPreview) {
-                        <pre class="small muted">↪ in: {{ ev.inputPreview }}</pre>
-                      }
-                      @if (ev.logs && ev.logs.length > 0) {
-                        <details>
-                          <summary class="small muted">{{ ev.logs.length }} log entries</summary>
-                          <pre class="small">{{ ev.logs.join('\n') }}</pre>
-                        </details>
-                      }
-                    </td>
-                  </tr>
-                }
-              </tbody>
-            </table>
+            <ng-template #cardRight><cf-chip mono>{{ r.events.length }} events</cf-chip></ng-template>
+            <cf-trace-timeline [events]="timelineEvents()"></cf-trace-timeline>
           </cf-card>
         }
       </div>
@@ -268,11 +264,6 @@ const EMPTY_DRAFT: FixtureDraft = {
       border-left: 3px solid var(--color-accent, #6cf);
       padding: 0.5rem 0.75rem;
       background: rgba(108, 170, 255, 0.06);
-    }
-    .event-detail pre {
-      margin: 0.25rem 0 0 0;
-      white-space: pre-wrap;
-      word-break: break-word;
     }
     .small { font-size: 0.85rem; }
     .muted { opacity: 0.7; }
@@ -460,14 +451,11 @@ export class WorkflowDryRunComponent implements OnInit {
     return STATE_CHIP[state] ?? 'default';
   }
 
-  eventVariant(kind: string): ChipVariant {
-    if (kind === 'WorkflowFailed' || kind === 'StepLimitExceeded') return 'err';
-    if (kind === 'WorkflowCompleted' || kind === 'AgentMockApplied') return 'ok';
-    if (kind === 'HitlSuspended' || kind === 'LoopExhausted') return 'warn';
-    if (kind === 'BuiltinApplied' || kind === 'LoopIteration' || kind === 'SubflowEntered' || kind === 'SubflowExited') return 'accent';
-    if (kind === 'RetryContextHandoff') return 'warn';
-    return 'default';
-  }
+  readonly timelineEvents = computed<TraceTimelineEvent[]>(() => {
+    const r = this.result();
+    if (!r) return [];
+    return r.events.map(ev => mapDryRunEventToTimeline(ev));
+  });
 
   objectKeys(value: Record<string, unknown> | null | undefined): string[] {
     return value ? Object.keys(value) : [];
