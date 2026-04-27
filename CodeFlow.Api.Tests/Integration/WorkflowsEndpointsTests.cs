@@ -286,7 +286,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task PreviewPackageImport_ReportsConflict_AndApplyRefuses()
+    public async Task ApplyPackageImport_BumpsWorkflowVersion_WhenSameVersionDiffers()
     {
         using var client = factory.CreateClient();
         await SeedAgentAsync(client, "wf-conflict-writer");
@@ -324,19 +324,168 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
-        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
-        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        previewDocument.RootElement.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(2);
         previewDocument.RootElement.GetProperty("items").EnumerateArray()
             .Should().Contain(item =>
                 item.GetProperty("kind").GetString() == "Workflow" &&
                 item.GetProperty("key").GetString() == "conflict-flow" &&
-                item.GetProperty("action").GetString() == "Conflict");
+                item.GetProperty("version").GetInt32() == 2 &&
+                item.GetProperty("action").GetString() == "Create" &&
+                item.GetProperty("message").GetString()!.Contains("imported v1", StringComparison.Ordinal));
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
             new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
 
-        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var imported = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/conflict-flow/2");
+        imported.Should().NotBeNull();
+        imported!.Name.Should().Be("Different imported flow");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_BumpsWorkflowPins_WhenAgentVersionIsBumped()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-agent-remap-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "agent-remap-flow",
+            name = "Agent remap flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-agent-remap-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/agent-remap-flow/1/package");
+        var package = JsonNode.Parse(packageJson)!.AsObject();
+        var agent = package["agents"]!.AsArray()[0]!.AsObject();
+        agent["config"]!.AsObject()["systemPrompt"] = "Do imported work.";
+        var changedPackage = package.ToJsonString();
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        previewDocument.RootElement.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(2);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Agent" &&
+                item.GetProperty("key").GetString() == "wf-agent-remap-writer" &&
+                item.GetProperty("version").GetInt32() == 2);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Workflow" &&
+                item.GetProperty("key").GetString() == "agent-remap-flow" &&
+                item.GetProperty("version").GetInt32() == 2);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var imported = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/agent-remap-flow/2");
+        imported.Should().NotBeNull();
+        imported!.Nodes.Should().ContainSingle()
+            .Which.AgentVersion.Should().Be(2);
+
+        var importedAgent = await client.GetAsync("/api/agents/wf-agent-remap-writer/2");
+        importedAgent.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_ReportsConflict_WhenTargetHasHigherWorkflowVersion()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-higher-conflict-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "higher-conflict-flow",
+            name = "Higher conflict flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-higher-conflict-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/higher-conflict-flow/1/package");
+
+        var update = await client.PutAsJsonAsync("/api/workflows/higher-conflict-flow", new
+        {
+            name = "Higher conflict flow v2",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-higher-conflict-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Workflow" &&
+                item.GetProperty("key").GetString() == "higher-conflict-flow" &&
+                item.GetProperty("version").GetInt32() == 1 &&
+                item.GetProperty("action").GetString() == "Conflict" &&
+                item.GetProperty("message").GetString()!.Contains("higher than imported v1", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -572,7 +721,10 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string? AgentKey,
         string? OutputScript,
         IReadOnlyList<string> OutputPorts,
-        string? InputScript = null);
+        string? InputScript = null,
+        int? AgentVersion = null,
+        string? SubflowKey = null,
+        int? SubflowVersion = null);
 
     private sealed record EdgePayload(Guid FromNodeId, string FromPort, Guid ToNodeId, string ToPort, bool RotatesRound);
 
