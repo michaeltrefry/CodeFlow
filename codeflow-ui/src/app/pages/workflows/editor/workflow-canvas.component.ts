@@ -251,6 +251,13 @@ function defaultStartInput(): WorkflowInput {
             </label>
           </div>
           <div class="toolbar-actions">
+            <button type="button" cf-button variant="ghost" size="sm"
+                    [class.active]="showImplicitFailed()"
+                    (click)="toggleImplicitFailed()"
+                    title="Show implicit Failed port on every node (Shift+F)"
+                    accesskey="f">
+              {{ showImplicitFailed() ? 'Hide Failed ports' : 'Show Failed ports' }}
+            </button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="tidy()">Tidy up</button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="cancel()">Cancel</button>
             <button type="button" cf-button variant="primary" size="sm" (click)="save()" [disabled]="saving()">
@@ -1362,6 +1369,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly dataflowError = signal<string | null>(null);
   readonly dataflowDirty = signal(false);
 
+  /** VZ5: when true, every node renders its implicit Failed port (faded) so authors can wire
+   *  recovery edges. When false (default), only Failed ports that already have an edge are
+   *  rendered — keeps the canvas uncluttered. Per-author preference, not persisted on the
+   *  workflow JSON (lives in localStorage so it survives page reloads). */
+  readonly showImplicitFailed = signal(false);
+  private static readonly ShowImplicitFailedStorageKey = 'cf:editor:showImplicitFailed';
+
   /** VZ6: per-candidate terminal-port cache for the Subflow / ReviewLoop pickers. Keyed by
    *  workflow key, value is the candidate's terminal port list at its latest version (the
    *  picker shows latest; once an author pins a specific version the inspector loads the
@@ -1662,6 +1676,14 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   async ngAfterViewInit(): Promise<void> {
+    // VZ5: hydrate the implicit-Failed visibility toggle from per-author preference.
+    try {
+      const stored = localStorage.getItem(WorkflowCanvasComponent.ShowImplicitFailedStorageKey);
+      if (stored === '1') this.showImplicitFailed.set(true);
+    } catch {
+      // localStorage unavailable; default off.
+    }
+
     this.agentsApi.list().subscribe({
       next: agents => this.agents.set(agents),
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
@@ -1734,6 +1756,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         }
         this.bindConnectionInteraction(data);
       }
+      if (context.type === 'nodecreated') {
+        // VZ5: every freshly-added node (palette drop or load) gets the toggle accessor wired
+        // so its template binding can react to the canvas-level "Show implicit Failed ports"
+        // signal without depending on Angular DI through Rete's render boundary.
+        const created = context.data as WorkflowEditorNode;
+        created.showImplicitFailed = () => this.showImplicitFailed();
+      }
       if (context.type === 'connectioncreated' || context.type === 'connectionremoved' || context.type === 'noderemoved' || context.type === 'nodecreated') {
         // VZ1: any structural change can shift the dataflow scope; mark the cached snapshot
         // stale so the inspector can hint that a save is needed for an accurate read.
@@ -1741,6 +1770,8 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         // VZ7: re-detect backedges. Defer until the editor finishes processing the event so
         // getConnections()/getNodes() reflect the post-change graph.
         queueMicrotask(() => this.recomputeBackedges());
+        // VZ5: mirror per-node Failed-port wiring state for the implicit-Failed visibility toggle.
+        queueMicrotask(() => this.recomputeFailedConnections());
       }
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
@@ -1777,6 +1808,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
           }
           this.loadDataflow(detail.key, detail.version);
           this.recomputeBackedges();
+          this.recomputeFailedConnections();
         },
         error: err => this.error.set(`Failed to load workflow: ${err.message ?? err}`)
       });
@@ -1811,6 +1843,44 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
     void this.removeSelectedNode();
+  }
+
+  toggleImplicitFailed(): void {
+    const next = !this.showImplicitFailed();
+    this.showImplicitFailed.set(next);
+    try {
+      localStorage.setItem(WorkflowCanvasComponent.ShowImplicitFailedStorageKey, next ? '1' : '0');
+    } catch {
+      // localStorage may be unavailable (private mode); the toggle still works in-session.
+    }
+    // Re-render every node so its `[hidden]` binding picks up the new toggle state.
+    if (this.editor && this.area) {
+      for (const node of this.editor.getNodes() as WorkflowEditorNode[]) {
+        void this.area.update('node', node.id);
+      }
+    }
+  }
+
+  /**
+   * VZ5: walk current connections and mark each node's `failedHasConnection` so the node
+   * component knows whether to render the implicit Failed row even when the toggle is off.
+   * Called on every structural change.
+   */
+  private recomputeFailedConnections(): void {
+    if (!this.editor || !this.area) return;
+    const wired = new Set<string>();
+    for (const c of this.editor.getConnections() as WorkflowEditorConnection[]) {
+      // Rete connection has `sourceOutput`, the port key on the source node.
+      const sourceOutput = (c as unknown as { sourceOutput?: string }).sourceOutput;
+      if (sourceOutput === 'Failed') wired.add(c.source);
+    }
+    for (const node of this.editor.getNodes() as WorkflowEditorNode[]) {
+      const has = wired.has(node.id);
+      if (node.failedHasConnection !== has) {
+        node.failedHasConnection = has;
+        void this.area.update('node', node.id);
+      }
+    }
   }
 
   async tidy(): Promise<void> {
