@@ -80,6 +80,83 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
     }
 
     [Fact]
+    public async Task Replay_PrunedArtifact_Returns409Conflict()
+    {
+        // T2-D: when an artifact referenced by a recorded decision has been pruned, the endpoint
+        // surfaces a 409 with a clear message rather than letting the FileNotFoundException
+        // bubble up as a 500.
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflowKey = $"replay-pruned-{Guid.NewGuid():N}";
+
+        using (var setupScope = factory.Services.CreateScope())
+        {
+            var workflowRepo = setupScope.ServiceProvider.GetRequiredService<IWorkflowRepository>();
+            var draft = new WorkflowDraft(
+                Key: workflowKey,
+                Name: "Pruned-artifact test",
+                MaxRoundsPerRound: 64,
+                Nodes: new[]
+                {
+                    new WorkflowNodeDraft(
+                        Id: Guid.NewGuid(), Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                        OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 0, LayoutY: 0),
+                    new WorkflowNodeDraft(
+                        Id: nodeId, Kind: WorkflowNodeKind.Agent, AgentKey: "echo", AgentVersion: 1,
+                        OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 100, LayoutY: 0),
+                },
+                Edges: Array.Empty<WorkflowEdgeDraft>(),
+                Inputs: Array.Empty<WorkflowInputDraft>());
+            var version = await workflowRepo.CreateNewVersionAsync(draft);
+
+            var db = setupScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Completed",
+                CurrentNodeId = nodeId,
+                CurrentAgentKey = "echo",
+                CurrentRoundId = roundId,
+                RoundCount = 1,
+                AgentVersionsJson = """{"echo":1}""",
+                DecisionHistoryJson = "[]",
+                LogicEvaluationHistoryJson = "[]",
+                DecisionCount = 1,
+                LogicEvaluationCount = 0,
+                WorkflowKey = workflowKey,
+                WorkflowVersion = version,
+                InputsJson = "{}",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Version = 1,
+            });
+            db.WorkflowSagaDecisions.Add(new WorkflowSagaDecisionEntity
+            {
+                SagaCorrelationId = correlationId,
+                TraceId = traceId,
+                Ordinal = 0,
+                AgentKey = "echo",
+                AgentVersion = 1,
+                Decision = "Completed",
+                OutputPortName = "Completed",
+                OutputRef = "file:///tmp/codeflow-pruned-artifact-does-not-exist.bin",
+                NodeId = nodeId,
+                RoundId = roundId,
+                RecordedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var response = await client.PostAsJsonAsync($"/api/traces/{traceId}/replay", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
     public async Task Replay_EditWithBadOrdinal_Returns400ValidationProblem()
     {
         var (traceId, _, _, _) = await SeedSimpleEchoTraceAsync();

@@ -93,6 +93,18 @@ public static class TracesReplayEndpoints
                 detail: ex.Message,
                 statusCode: StatusCodes.Status409Conflict);
         }
+        catch (ArgumentException ex) when (ex.ParamName == "uri")
+        {
+            // FileSystemArtifactStore rejects URIs outside the configured root with
+            // ArgumentException — surfaces here when an old trace's recorded OutputRef points at a
+            // path the current artifact-store config can no longer resolve (storage migration,
+            // retention sweep that moved the root, etc.). Same author-facing meaning as a missing
+            // file: the recording can't be replayed.
+            return Results.Problem(
+                title: "An artifact referenced by this trace is no longer resolvable.",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status409Conflict);
+        }
 
         var drift = ReplayDriftDetector.Detect(
             originalWorkflow,
