@@ -19,6 +19,7 @@ import {
 import { ThemeService } from '../../../core/theme.service';
 import { ensureMonacoEnvironment } from './monaco-environment';
 import { getSnippetsForContext, ScriptSnippet, SnippetContext, SnippetKind } from './script-snippets';
+import { buildTemplateSuggestions, isInsideScribanTag } from './template-completion';
 
 export interface MonacoMarker {
   startLineNumber: number;
@@ -114,6 +115,10 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
   /** E2: pairs with `snippetKind`. When the slot is inside a ReviewLoop child (so
    *  `round` / `maxRounds` / `isLastRound` are bound), additional snippets become eligible. */
   @Input() snippetInLoop = false;
+  /** E3: enable Scriban template autocomplete inside `{{ ... }}`. Suggests stock partial
+   *  includes, loop bindings, and the `input` variable. Outside template tags no
+   *  completions fire. Set on prompt-template / Hitl-outputTemplate editors. */
+  @Input() templateCompletion = false;
 
   @Output() valueChange = new EventEmitter<string>();
 
@@ -143,6 +148,8 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       this.configureJavascriptDefaults(monaco);
       // E2: register the snippet completion provider once. Idempotent.
       MonacoScriptEditorComponent.ensureSnippetProvider(monaco);
+      // E3: register the Scriban-template completion provider once. Idempotent.
+      MonacoScriptEditorComponent.ensureTemplateProvider(monaco);
 
       this.ngZone.runOutsideAngular(() => {
         const editor = monaco.editor.create(this.hostRef.nativeElement, {
@@ -182,6 +189,8 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         // E2: register this editor's snippet context against its model URI so the global
         // completion provider returns the right subset for the focused editor.
         this.registerSnippetContextForModel();
+        // E3: opt this editor's model into Scriban-template autocomplete if enabled.
+        this.registerTemplateCompletionForModel();
       });
     } catch (err) {
       console.warn('Monaco editor failed to load; falling back to plain textarea.', err);
@@ -285,6 +294,67 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     MonacoScriptEditorComponent.snippetContextByModelUri.delete(model.uri.toString());
   }
 
+  /** E3: model URIs whose editor has opted into Scriban-template autocomplete. The
+   *  global provider checks membership and gates on cursor-inside-`{{...}}` before firing. */
+  private static templateCompletionModelUris = new Set<string>();
+  private static templateProviderRegistered = false;
+
+  private static ensureTemplateProvider(monaco: typeof import('monaco-editor')): void {
+    if (MonacoScriptEditorComponent.templateProviderRegistered) return;
+    MonacoScriptEditorComponent.templateProviderRegistered = true;
+    monaco.languages.registerCompletionItemProvider('plaintext', {
+      // Trigger on word characters and on '"' (used inside `include "..."`).
+      triggerCharacters: ['{', '"', '@', '/'],
+      provideCompletionItems(model, position): import('monaco-editor').languages.ProviderResult<import('monaco-editor').languages.CompletionList> {
+        const uri = model.uri.toString();
+        if (!MonacoScriptEditorComponent.templateCompletionModelUris.has(uri)) {
+          return { suggestions: [] };
+        }
+        const offset = model.getOffsetAt(position);
+        const text = model.getValue();
+        if (!isInsideScribanTag(text, offset)) {
+          return { suggestions: [] };
+        }
+        const word = model.getWordUntilPosition(position);
+        const range: import('monaco-editor').IRange = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const suggestions = buildTemplateSuggestions().map<import('monaco-editor').languages.CompletionItem>(s => ({
+          label: s.label,
+          kind: monaco.languages.CompletionItemKind.Variable,
+          insertText: s.insertText,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          documentation: { value: s.documentation, isTrusted: false },
+          detail: s.detail,
+          range,
+          sortText: s.sortKey ?? s.label,
+          filterText: s.filterText,
+        }));
+        return { suggestions };
+      },
+    });
+  }
+
+  private registerTemplateCompletionForModel(): void {
+    if (!this.model) return;
+    const model = this.model as import('monaco-editor').editor.ITextModel;
+    const uri = model.uri.toString();
+    if (this.templateCompletion) {
+      MonacoScriptEditorComponent.templateCompletionModelUris.add(uri);
+    } else {
+      MonacoScriptEditorComponent.templateCompletionModelUris.delete(uri);
+    }
+  }
+
+  private unregisterTemplateCompletionForModel(): void {
+    if (!this.model) return;
+    const model = this.model as import('monaco-editor').editor.ITextModel;
+    MonacoScriptEditorComponent.templateCompletionModelUris.delete(model.uri.toString());
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.editor || !this.monacoApi) return;
 
@@ -324,6 +394,10 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     if (changes['snippetKind'] || changes['snippetInLoop']) {
       this.registerSnippetContextForModel();
     }
+
+    if (changes['templateCompletion']) {
+      this.registerTemplateCompletionForModel();
+    }
   }
 
   ngOnDestroy(): void {
@@ -332,6 +406,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     }
     this.disposeListeners = [];
     this.unregisterSnippetContextForModel();
+    this.unregisterTemplateCompletionForModel();
     const editor = this.editor as { dispose?: () => void } | undefined;
     editor?.dispose?.();
     const model = this.model as { dispose?: () => void } | undefined;

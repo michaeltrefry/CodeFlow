@@ -143,10 +143,12 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                 </div>
                 <div class="code-field">
                   <div class="code-field-head"><span>input.scriban</span><span>scriban</span></div>
-                  <textarea class="textarea mono" rows="18"
-                            [(ngModel)]="promptTemplate" name="promptTemplate"
-                            style="border: 0; border-radius: 0; background: var(--bg); min-height: 28rem; resize: vertical"
-                            placeholder="Review the following input: {{ '{{input}}' }}"></textarea>
+                  <cf-monaco-script-editor
+                    class="prompt-template-editor"
+                    language="plaintext"
+                    [value]="promptTemplate()"
+                    [templateCompletion]="true"
+                    (valueChange)="promptTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
               </div>
             </cf-card>
@@ -167,6 +169,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                     class="hitl-template-editor"
                     language="plaintext"
                     [value]="outputTemplate()"
+                    [templateCompletion]="true"
                     (valueChange)="outputTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
               </div>
