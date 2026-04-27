@@ -1,3 +1,4 @@
+using CodeFlow.Api.CascadeBump;
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
 using CodeFlow.Api.Validation.Pipeline;
@@ -77,6 +78,12 @@ public static class ApiServiceCollectionExtensions
         // repositories.
         services.AddSingleton<WorkflowTemplateRegistry>();
         services.AddScoped<IWorkflowTemplateMaterializer, WorkflowTemplateMaterializer>();
+
+        // E4: cascade-bump assistant. Both services are scoped because they depend on per-request
+        // DbContext / repositories. The executor delegates to the planner under the hood, so the
+        // planner is also resolvable directly for the plan endpoint.
+        services.AddScoped<CascadeBumpPlanner>();
+        services.AddScoped<CascadeBumpExecutor>();
 
         return services;
     }

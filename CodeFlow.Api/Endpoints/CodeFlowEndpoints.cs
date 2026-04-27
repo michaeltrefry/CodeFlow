@@ -22,6 +22,7 @@ public static class CodeFlowEndpoints
         routes.MapGitHostEndpoints();
         routes.MapLlmProvidersEndpoints();
         routes.MapWorkflowTemplatesEndpoints();
+        routes.MapCascadeBumpEndpoints();
 
         return routes;
     }
