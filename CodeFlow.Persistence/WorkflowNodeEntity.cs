@@ -37,4 +37,8 @@ public sealed class WorkflowNodeEntity
     public bool OptOutLastRoundReminder { get; set; }
 
     public string? RejectionHistoryConfigJson { get; set; }
+
+    public string? MirrorOutputToWorkflowVar { get; set; }
+
+    public string? OutputPortReplacementsJson { get; set; }
 }

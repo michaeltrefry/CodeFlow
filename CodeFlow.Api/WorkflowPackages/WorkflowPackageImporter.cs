@@ -560,6 +560,8 @@ public sealed class WorkflowPackageImporter(
                         LoopDecision = Trim(node.LoopDecision),
                         OptOutLastRoundReminder = node.OptOutLastRoundReminder,
                         RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
+                        MirrorOutputToWorkflowVar = Trim(node.MirrorOutputToWorkflowVar),
+                        OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -625,7 +627,9 @@ public sealed class WorkflowPackageImporter(
             NormalizeOptional(node.LoopDecision),
             node.InputScript,
             node.OptOutLastRoundReminder,
-            node.RejectionHistory);
+            node.RejectionHistory,
+            NormalizeOptional(node.MirrorOutputToWorkflowVar),
+            node.OutputPortReplacements);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,

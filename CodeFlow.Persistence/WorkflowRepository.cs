@@ -163,6 +163,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         LoopDecision = NormalizeOptionalString(node.LoopDecision),
                         OptOutLastRoundReminder = node.OptOutLastRoundReminder,
                         RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
+                        MirrorOutputToWorkflowVar = NormalizeOptionalString(node.MirrorOutputToWorkflowVar),
+                        OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -267,7 +269,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.LoopDecision,
             entity.InputScript,
             entity.OptOutLastRoundReminder,
-            WorkflowJson.DeserializeRejectionHistoryConfig(entity.RejectionHistoryConfigJson));
+            WorkflowJson.DeserializeRejectionHistoryConfig(entity.RejectionHistoryConfigJson),
+            entity.MirrorOutputToWorkflowVar,
+            WorkflowJson.DeserializePortReplacements(entity.OutputPortReplacementsJson));
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

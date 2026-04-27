@@ -62,4 +62,26 @@ public static class WorkflowJson
 
         return JsonSerializer.Deserialize<RejectionHistoryConfig>(configJson, ConfigSerializerOptions);
     }
+
+    public static string? SerializePortReplacements(IReadOnlyDictionary<string, string>? replacements)
+    {
+        if (replacements is null || replacements.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Serialize(replacements, ConfigSerializerOptions);
+    }
+
+    public static IReadOnlyDictionary<string, string>? DeserializePortReplacements(string? replacementsJson)
+    {
+        if (string.IsNullOrWhiteSpace(replacementsJson))
+        {
+            return null;
+        }
+
+        var deserialized = JsonSerializer.Deserialize<Dictionary<string, string>>(
+            replacementsJson, ConfigSerializerOptions);
+        return deserialized is { Count: > 0 } ? deserialized : null;
+    }
 }

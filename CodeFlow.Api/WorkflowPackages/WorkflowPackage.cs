@@ -76,7 +76,9 @@ public sealed record WorkflowPackageWorkflowNode(
     string? LoopDecision = null,
     string? InputScript = null,
     bool OptOutLastRoundReminder = false,
-    RejectionHistoryConfig? RejectionHistory = null);
+    RejectionHistoryConfig? RejectionHistory = null,
+    string? MirrorOutputToWorkflowVar = null,
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

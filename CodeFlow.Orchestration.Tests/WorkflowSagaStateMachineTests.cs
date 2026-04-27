@@ -722,6 +722,313 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task MirrorOutputToWorkflowVar_WritesArtifactTextToWorkflowBag_BeforeOutputScriptRuns()
+    {
+        // P4: an Agent/Start node configured with `MirrorOutputToWorkflowVar = "currentPlan"`
+        // must mirror the agent's output text into the workflow bag BEFORE the output script
+        // runs, so the script can read `workflow.currentPlan` immediately. The mirror is a
+        // pure side effect — no separate setWorkflow call needed.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/architect-out.bin");
+        var artifactBody = "## Plan\n1. Wire the saga.\n2. Test it.";
+
+        // Output script picks Approved when the mirrored variable is visible at script time,
+        // Rejected otherwise. If P4 ordering is wrong, `workflow.currentPlan` would be
+        // undefined and the script would take the Rejected branch instead.
+        const string script = """
+            if (workflow && workflow.currentPlan && workflow.currentPlan.length > 0) {
+                setNodePath('Approved');
+            } else {
+                setNodePath('Rejected');
+            }
+            """;
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p4-mirror",
+            sourceAgentKey: "architect",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "downstreamPresent",
+                ["Rejected"] = "downstreamMissing",
+            },
+            sourceOutputScript: script,
+            mirrorOutputToWorkflowVar: "currentPlan");
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, artifactBody);
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["downstreamPresent"] = 1, ["downstreamMissing"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "architect"),
+                AgentKey: "architect",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "downstreamPresent"
+                       || x.Context.Message.AgentKey == "downstreamMissing"));
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.CurrentAgentKey.Should().Be("downstreamPresent",
+                "the output script should observe the mirrored variable was already populated");
+
+            // The bag also carries the value into downstream dispatch.
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "downstreamPresent");
+            downstreamDispatch.Context.Message.WorkflowContext
+                .Should().NotBeNull();
+            downstreamDispatch.Context.Message.WorkflowContext!.Should().ContainKey("currentPlan");
+            downstreamDispatch.Context.Message.WorkflowContext["currentPlan"].GetString()
+                .Should().Be(artifactBody);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task MirrorOutputToWorkflowVar_RejectsReservedKey_SilentlyAtRuntime()
+    {
+        // P4: the runtime swallows mirrors targeting the framework-managed __loop.* namespace
+        // — the save-time validator is responsible for surfacing the error. The agent's output
+        // must NOT clobber the reserved bookkeeping namespace under any circumstance.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/architect-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p4-reserved-key",
+            sourceAgentKey: "architect",
+            downstream: new Dictionary<string, string>
+            {
+                ["Completed"] = "downstream",
+            },
+            mirrorOutputToWorkflowVar: "__loop.rejectionHistory");
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "agent-attempt-to-clobber");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["downstream"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "architect"),
+                AgentKey: "architect",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "downstream"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "downstream");
+            (downstreamDispatch.Context.Message.WorkflowContext is null
+                || !downstreamDispatch.Context.Message.WorkflowContext.ContainsKey("__loop.rejectionHistory"))
+                .Should().BeTrue("reserved namespace must remain untouched by mirror");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task OutputPortReplacements_OnApproved_ReplacesArtifactWithWorkflowVariable()
+    {
+        // P5: the reviewer's "Approved" submission text (a one-line rationale) is logged via
+        // the saga but the downstream artifact must be the architect's plan, sourced from the
+        // workflow variable populated upstream. With OutputPortReplacements = { Approved →
+        // currentPlan }, the runtime replaces the artifact only on the Approved port — other
+        // ports continue to flow the agent's verbatim submission.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/reviewer-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p5-replace",
+            sourceAgentKey: "reviewer",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher",
+            },
+            sourceOutputScript: "setNodePath('Approved');",
+            outputPortReplacements: new Dictionary<string, string>
+            {
+                ["Approved"] = "currentPlan",
+            });
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "Looks great — approving.");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["publisher"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            // Seed the workflow bag with `currentPlan` via the start message — simulates an
+            // upstream node that mirrored the architect's plan.
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: workflow.StartNode.Id,
+                AgentKey: workflow.StartNode.AgentKey!,
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>
+                {
+                    ["currentPlan"] = JsonSerializer.SerializeToElement(
+                        "## Plan\n1. Step one.\n2. Step two."),
+                }));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "reviewer"),
+                AgentKey: "reviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "publisher"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "publisher");
+
+            // The downstream input ref must point at the replacement artifact (a fresh write
+            // recorded by the artifact store), not the reviewer's original submission.
+            downstreamDispatch.Context.Message.InputRef.Should().NotBe(artifactRef);
+            var replacementContent = artifactStore.ReadWrittenContent(downstreamDispatch.Context.Message.InputRef);
+            replacementContent.Should().Be("## Plan\n1. Step one.\n2. Step two.");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task OutputPortReplacements_PortWithoutBinding_FlowsAgentArtifactVerbatim()
+    {
+        // P5 contract: only the bound port is replaced. Submitting on a different port (here,
+        // "Rejected") leaves the agent's original artifact in place — the workflow author's
+        // hand-rolled replacement on Approved doesn't accidentally affect Rejected.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var artifactRef = new Uri("file:///tmp/reviewer-out.bin");
+
+        var workflow = BuildWorkflowWithMirrorAndReplacements(
+            key: "p5-replace-non-bound",
+            sourceAgentKey: "reviewer",
+            downstream: new Dictionary<string, string>
+            {
+                ["Approved"] = "publisher",
+                ["Rejected"] = "rework",
+            },
+            sourceOutputScript: "setNodePath('Rejected');",
+            outputPortReplacements: new Dictionary<string, string>
+            {
+                ["Approved"] = "currentPlan",
+            });
+
+        var artifactStore = new RecordingArtifactStore();
+        artifactStore.SeedRead(artifactRef, "## Findings\n- needs more polish");
+        var harness = BuildHarness(
+            workflow,
+            new Dictionary<string, int> { ["publisher"] = 1, ["rework"] = 1 },
+            artifactStore);
+
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: workflow.StartNode.Id,
+                AgentKey: workflow.StartNode.AgentKey!,
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: new Dictionary<string, JsonElement>
+                {
+                    ["currentPlan"] = JsonSerializer.SerializeToElement("the plan"),
+                }));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, s => s.Running);
+
+            await harness.Bus.Publish(new AgentInvocationCompleted(
+                TraceId: traceId,
+                RoundId: roundId,
+                FromNodeId: NodeIdFor(workflow, "reviewer"),
+                AgentKey: "reviewer",
+                AgentVersion: 1,
+                OutputPortName: "Completed",
+                OutputRef: artifactRef,
+                DecisionPayload: JsonDocument.Parse("""{"kind":"Completed"}""").RootElement,
+                Duration: TimeSpan.FromMilliseconds(1),
+                TokenUsage: new Contracts.TokenUsage(0, 0, 0)));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "rework"));
+
+            var downstreamDispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "rework");
+            downstreamDispatch.Context.Message.InputRef.Should().Be(artifactRef,
+                "Rejected has no binding so the original artifact must flow through");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task ScriptedAgent_ScriptThrows_FallsBackToDecisionKindPort()
     {
         var traceId = Guid.NewGuid();
@@ -1624,6 +1931,58 @@ public sealed class WorkflowSagaStateMachineTests
             ConfigJson: "{}",
             CreatedAtUtc: DateTime.UtcNow,
             CreatedBy: null);
+    }
+
+    private static Workflow BuildWorkflowWithMirrorAndReplacements(
+        string key,
+        string sourceAgentKey,
+        IReadOnlyDictionary<string, string> downstream,
+        string? sourceOutputScript = null,
+        string? mirrorOutputToWorkflowVar = null,
+        IReadOnlyDictionary<string, string>? outputPortReplacements = null)
+    {
+        var nodes = new List<WorkflowNode>();
+        var nodeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+
+        var sourceId = Guid.NewGuid();
+        nodeIds[sourceAgentKey] = sourceId;
+        nodes.Add(new WorkflowNode(
+            Id: sourceId,
+            Kind: WorkflowNodeKind.Start,
+            AgentKey: sourceAgentKey,
+            AgentVersion: 1,
+            OutputScript: sourceOutputScript,
+            OutputPorts: AllDecisionPorts,
+            LayoutX: 0,
+            LayoutY: 0,
+            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar,
+            OutputPortReplacements: outputPortReplacements));
+
+        foreach (var downstreamAgent in downstream.Values.Distinct(StringComparer.Ordinal))
+        {
+            var id = Guid.NewGuid();
+            nodeIds[downstreamAgent] = id;
+            nodes.Add(new WorkflowNode(id, WorkflowNodeKind.Agent, downstreamAgent, 1,
+                null, AllDecisionPorts, 500, 0));
+        }
+
+        var edges = new List<WorkflowEdge>();
+        var sortOrder = 0;
+        foreach (var (port, agent) in downstream)
+        {
+            edges.Add(new WorkflowEdge(sourceId, port, nodeIds[agent],
+                WorkflowEdge.DefaultInputPort, false, sortOrder++));
+        }
+
+        return new Workflow(
+            Key: key,
+            Version: 1,
+            Name: key,
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: nodes,
+            Edges: edges,
+            Inputs: Array.Empty<WorkflowInput>());
     }
 
     private static Workflow BuildWorkflowWithScriptedSource(

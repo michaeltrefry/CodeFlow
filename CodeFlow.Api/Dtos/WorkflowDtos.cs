@@ -28,7 +28,9 @@ public sealed record WorkflowNodeDto(
     string? LoopDecision = null,
     string? InputScript = null,
     bool OptOutLastRoundReminder = false,
-    RejectionHistoryConfig? RejectionHistory = null);
+    RejectionHistoryConfig? RejectionHistory = null,
+    string? MirrorOutputToWorkflowVar = null,
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,

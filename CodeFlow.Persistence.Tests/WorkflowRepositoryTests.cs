@@ -445,6 +445,63 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripMirrorAndPortReplacements()
+    {
+        // P4 + P5: mirror-output target and per-port artifact-replacement map are persisted
+        // alongside the rest of the node config and must survive a save/load cycle. Nodes
+        // that don't set either feature must round-trip with both fields null.
+        var workflowKey = $"mirror-port-replace-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var configuredNodeId = Guid.NewGuid();
+        var unconfiguredNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Mirror + port-replacement flow",
+            MaxRoundsPerRound: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(configuredNodeId, WorkflowNodeKind.Agent, "architect", 1,
+                    null, new[] { "Approved", "Rejected", "Failed" }, 250, 0,
+                    MirrorOutputToWorkflowVar: "currentPlan",
+                    OutputPortReplacements: new Dictionary<string, string>
+                    {
+                        ["Approved"] = "currentPlan",
+                        ["Rejected"] = "latestRejection",
+                    }),
+                new WorkflowNodeDraft(unconfiguredNodeId, WorkflowNodeKind.Agent, "reviewer", 1,
+                    null, new[] { "Approved", "Rejected", "Failed" }, 500, 0)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", configuredNodeId, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(configuredNodeId, "Approved", unconfiguredNodeId, WorkflowEdge.DefaultInputPort, false, 1)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var configured = reloaded.Nodes.Single(n => n.Id == configuredNodeId);
+        configured.MirrorOutputToWorkflowVar.Should().Be("currentPlan");
+        configured.OutputPortReplacements.Should().NotBeNull();
+        configured.OutputPortReplacements!.Should().HaveCount(2);
+        configured.OutputPortReplacements!["Approved"].Should().Be("currentPlan");
+        configured.OutputPortReplacements!["Rejected"].Should().Be("latestRejection");
+
+        var unconfigured = reloaded.Nodes.Single(n => n.Id == unconfiguredNodeId);
+        unconfigured.MirrorOutputToWorkflowVar.Should().BeNull();
+        unconfigured.OutputPortReplacements.Should().BeNull(
+            "nodes that don't opt in must round-trip with both fields null");
+    }
+
+    [Fact]
     public async Task GetTerminalPortsAsync_ShouldReturnUnwiredDeclaredPortsAcrossNodes()
     {
         var workflowKey = $"terminal-ports-{Guid.NewGuid():N}";

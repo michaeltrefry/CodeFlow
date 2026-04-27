@@ -80,6 +80,14 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("rejection_history_config_json")
             .HasColumnType("longtext");
 
+        builder.Property(node => node.MirrorOutputToWorkflowVar)
+            .HasColumnName("mirror_output_to_workflow_var")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.OutputPortReplacementsJson)
+            .HasColumnName("output_port_replacements_json")
+            .HasColumnType("longtext");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

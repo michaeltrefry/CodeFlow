@@ -919,9 +919,19 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     {
         var fallbackPort = message.OutputPortName;
         var fromNode = workflow.FindNode(message.FromNodeId);
-        if (fromNode is null
-            || fromNode.Kind == WorkflowNodeKind.Logic
-            || string.IsNullOrWhiteSpace(fromNode.OutputScript))
+        if (fromNode is null || fromNode.Kind == WorkflowNodeKind.Logic)
+        {
+            return new SourcePortResolution(fallbackPort, null);
+        }
+
+        // P4: mirror the agent's output text into the configured workflow variable BEFORE the
+        // output script runs so the script can read `workflow[mirrorKey]`. Even if the node has
+        // no output script, mirroring still applies — the feature is independent.
+        var mirrorTarget = NormalizeMirrorTarget(fromNode.MirrorOutputToWorkflowVar);
+        var hasOutputScript = !string.IsNullOrWhiteSpace(fromNode.OutputScript);
+        var portReplacementsByPort = NormalizePortReplacements(fromNode.OutputPortReplacements);
+
+        if (mirrorTarget is null && !hasOutputScript && portReplacementsByPort is null)
         {
             return new SourcePortResolution(fallbackPort, null);
         }
@@ -931,12 +941,41 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return new SourcePortResolution(fallbackPort, null);
         }
 
+        string? artifactText = null;
+        if (mirrorTarget is not null || hasOutputScript)
+        {
+            artifactText = await ReadArtifactAsTextAsync(
+                artifactStore,
+                message.OutputRef,
+                context.CancellationToken);
+        }
+
+        if (mirrorTarget is not null && artifactText is not null)
+        {
+            ApplyMirrorOutputToWorkflow(saga, mirrorTarget, artifactText);
+        }
+
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
         var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
-        var artifactJson = await ReadArtifactAsJsonAsync(
-            artifactStore,
-            message.OutputRef,
-            context.CancellationToken);
+
+        if (!hasOutputScript)
+        {
+            // P5 may still apply on the no-script path. Use the agent's port verbatim as the
+            // routing decision and apply any binding for that port.
+            var directOverride = portReplacementsByPort is not null
+                ? await TryApplyPortReplacementAsync(
+                    portReplacementsByPort,
+                    fallbackPort,
+                    workflowInputs,
+                    artifactStore,
+                    saga,
+                    fromNode.AgentKey,
+                    context.CancellationToken)
+                : null;
+            return new SourcePortResolution(fallbackPort, directOverride);
+        }
+
+        var artifactJson = ParseArtifactAsJson(artifactText!);
         var scriptInput = ComposeAgentScriptInput(artifactJson, message.OutputPortName, message.DecisionPayload);
 
         var eval = scriptHost.Evaluate(
@@ -971,6 +1010,29 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return new SourcePortResolution(fallbackPort, null);
         }
 
+        var resolvedPort = eval.OutputPortName!;
+
+        // P5: per-port binding takes precedence over setOutput so authors who want both
+        // a script-managed variable AND a per-port artifact replacement get the binding's
+        // value. The setOutput value is still side-effected via WriteOverrideArtifact when
+        // no binding fires for the resolved port.
+        if (portReplacementsByPort is not null)
+        {
+            var refreshedWorkflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+            var bindingOverride = await TryApplyPortReplacementAsync(
+                portReplacementsByPort,
+                resolvedPort,
+                refreshedWorkflowInputs,
+                artifactStore,
+                saga,
+                fromNode.AgentKey,
+                context.CancellationToken);
+            if (bindingOverride is not null)
+            {
+                return new SourcePortResolution(resolvedPort, bindingOverride);
+            }
+        }
+
         Uri? overrideRef = null;
         if (!string.IsNullOrEmpty(eval.OutputOverride))
         {
@@ -982,7 +1044,136 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 context.CancellationToken);
         }
 
-        return new SourcePortResolution(eval.OutputPortName!, overrideRef);
+        return new SourcePortResolution(resolvedPort, overrideRef);
+    }
+
+    private static string? NormalizeMirrorTarget(string? mirrorTarget)
+    {
+        if (string.IsNullOrWhiteSpace(mirrorTarget))
+        {
+            return null;
+        }
+
+        var trimmed = mirrorTarget.Trim();
+        // P4: a configured key targeting the framework-managed __loop.* namespace fails silently
+        // — the save-time validator surfaces the misconfiguration; the runtime never clobbers
+        // framework state. (Mirrors the protection the agent-side setWorkflow tool enforces.)
+        if (Runtime.ProtectedVariables.IsReserved(trimmed))
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static IReadOnlyDictionary<string, string>? NormalizePortReplacements(
+        IReadOnlyDictionary<string, string>? portReplacements)
+    {
+        if (portReplacements is null || portReplacements.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<string, string>? normalized = null;
+        foreach (var (port, key) in portReplacements)
+        {
+            if (string.IsNullOrWhiteSpace(port) || string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            normalized ??= new Dictionary<string, string>(StringComparer.Ordinal);
+            normalized[port.Trim()] = key.Trim();
+        }
+
+        return normalized is { Count: > 0 } ? normalized : null;
+    }
+
+    private static void ApplyMirrorOutputToWorkflow(
+        WorkflowSagaStateEntity saga,
+        string mirrorKey,
+        string artifactText)
+    {
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+
+        workflowBag[mirrorKey] = JsonSerializer.SerializeToElement(artifactText);
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
+    }
+
+    private static async Task<Uri?> TryApplyPortReplacementAsync(
+        IReadOnlyDictionary<string, string> portReplacementsByPort,
+        string? resolvedPort,
+        IReadOnlyDictionary<string, JsonElement> workflowInputs,
+        IArtifactStore artifactStore,
+        WorkflowSagaStateEntity saga,
+        string? agentKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedPort)
+            || !portReplacementsByPort.TryGetValue(resolvedPort, out var workflowKey))
+        {
+            return null;
+        }
+
+        if (!workflowInputs.TryGetValue(workflowKey, out var element))
+        {
+            // Configured but value not present — fail-safe: keep the agent's artifact rather
+            // than substituting an empty string. The save-time validator (E5/V8 follow-up) is
+            // the right place to flag a binding that names a never-written variable.
+            return null;
+        }
+
+        var replacementText = element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => element.GetRawText(),
+        };
+
+        if (replacementText is null)
+        {
+            return null;
+        }
+
+        return await WriteOverrideArtifactAsync(
+            artifactStore,
+            saga,
+            agentKey,
+            replacementText,
+            cancellationToken,
+            fileNameSuffix: "port-replacement");
+    }
+
+    private static async Task<string> ReadArtifactAsTextAsync(
+        IArtifactStore artifactStore,
+        Uri outputRef,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await artifactStore.ReadAsync(outputRef, cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+        return await reader.ReadToEndAsync(cancellationToken);
+    }
+
+    private static JsonElement ParseArtifactAsJson(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can
+            // still read it (mirrors ReadArtifactAsJsonAsync's fallback).
+            var doc = new { text };
+            return JsonSerializer.SerializeToElement(doc);
+        }
     }
 
     private static async Task<Uri> WriteOverrideArtifactAsync(
