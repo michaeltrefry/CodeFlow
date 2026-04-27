@@ -402,6 +402,8 @@ function defaultStartInput(): WorkflowInput {
                     [value]="sel.editor.inputScript ?? ''"
                     [markers]="inputScriptMarkers()"
                     [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -425,6 +427,8 @@ function defaultStartInput(): WorkflowInput {
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
                     [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -610,6 +614,8 @@ function defaultStartInput(): WorkflowInput {
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
                     [ambientLibs]="logicScriptAmbientLibs()"
+                    snippetKind="logic-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -1511,6 +1517,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       !!scope?.loopBindings
     );
   });
+
+  /** E2: whether the selected node is inside a ReviewLoop child. Drives which snippets the
+   *  completion provider offers — loop-binding-dependent snippets stay hidden outside loops. */
+  readonly selectedNodeInLoop = computed<boolean>(() => !!this.selectedNodeDataflow()?.loopBindings);
 
   /** VZ1: scope row shown in the data-flow inspector panel. */
   readonly selectedNodeDataflow = computed<NodeDataflowScope | null>(() => {

@@ -18,6 +18,7 @@ import {
 } from '@angular/core';
 import { ThemeService } from '../../../core/theme.service';
 import { ensureMonacoEnvironment } from './monaco-environment';
+import { getSnippetsForContext, ScriptSnippet, SnippetContext, SnippetKind } from './script-snippets';
 
 export interface MonacoMarker {
   startLineNumber: number;
@@ -107,6 +108,12 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
   /** E1: per-script ambient declarations. Replaces Monaco's global extra-lib set on focus.
    *  Only meaningful when language === 'javascript'. */
   @Input() ambientLibs: MonacoAmbientLib[] = [];
+  /** E2: which CodeFlow script slot this editor backs, used to pick the snippet subset
+   *  whose generated code compiles in this slot's ambient typings. Unset => no snippets. */
+  @Input() snippetKind?: SnippetKind;
+  /** E2: pairs with `snippetKind`. When the slot is inside a ReviewLoop child (so
+   *  `round` / `maxRounds` / `isLastRound` are bound), additional snippets become eligible. */
+  @Input() snippetInLoop = false;
 
   @Output() valueChange = new EventEmitter<string>();
 
@@ -134,6 +141,8 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       // E1: enable TS-style checking on JS so ambient .d.ts is surfaced as autocomplete
       // and unknown-symbol errors. Idempotent — Monaco's defaults are process-wide.
       this.configureJavascriptDefaults(monaco);
+      // E2: register the snippet completion provider once. Idempotent.
+      MonacoScriptEditorComponent.ensureSnippetProvider(monaco);
 
       this.ngZone.runOutsideAngular(() => {
         const editor = monaco.editor.create(this.hostRef.nativeElement, {
@@ -170,6 +179,9 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         this.editor = editor;
         this.model = editor.getModel();
         this.applyMarkers();
+        // E2: register this editor's snippet context against its model URI so the global
+        // completion provider returns the right subset for the focused editor.
+        this.registerSnippetContextForModel();
       });
     } catch (err) {
       console.warn('Monaco editor failed to load; falling back to plain textarea.', err);
@@ -221,6 +233,58 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     })));
   }
 
+  /** E2: model URI → snippet context so the global completion provider can return the
+   *  right subset for the editor whose model is being completed against. */
+  private static snippetContextByModelUri = new Map<string, SnippetContext>();
+  private static snippetProviderRegistered = false;
+
+  private static ensureSnippetProvider(monaco: typeof import('monaco-editor')): void {
+    if (MonacoScriptEditorComponent.snippetProviderRegistered) return;
+    MonacoScriptEditorComponent.snippetProviderRegistered = true;
+    monaco.languages.registerCompletionItemProvider('javascript', {
+      // The snippet labels begin with "cf:"; offer suggestions when authors type any prefix
+      // (no trigger chars) so Monaco's word-based fuzzy match handles ranking.
+      provideCompletionItems(model, position): import('monaco-editor').languages.ProviderResult<import('monaco-editor').languages.CompletionList> {
+        const ctx = MonacoScriptEditorComponent.snippetContextByModelUri.get(model.uri.toString());
+        if (!ctx) return { suggestions: [] };
+        const word = model.getWordUntilPosition(position);
+        const range: import('monaco-editor').IRange = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const suggestions = getSnippetsForContext(ctx)
+          .map<import('monaco-editor').languages.CompletionItem>((s: ScriptSnippet) => ({
+            label: s.legacy ? `${s.label}  (legacy)` : s.label,
+            kind: monaco.languages.CompletionItemKind.Snippet,
+            insertText: s.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            documentation: { value: s.documentation, isTrusted: false },
+            detail: s.detail,
+            range,
+            sortText: (s.legacy ? '1' : '0') + s.label,
+          }));
+        return { suggestions };
+      },
+    });
+  }
+
+  private registerSnippetContextForModel(): void {
+    if (!this.snippetKind || !this.model) return;
+    const model = this.model as import('monaco-editor').editor.ITextModel;
+    MonacoScriptEditorComponent.snippetContextByModelUri.set(model.uri.toString(), {
+      kind: this.snippetKind,
+      inLoop: this.snippetInLoop,
+    });
+  }
+
+  private unregisterSnippetContextForModel(): void {
+    if (!this.model) return;
+    const model = this.model as import('monaco-editor').editor.ITextModel;
+    MonacoScriptEditorComponent.snippetContextByModelUri.delete(model.uri.toString());
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.editor || !this.monacoApi) return;
 
@@ -256,6 +320,10 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         this.applyAmbientLibs();
       }
     }
+
+    if (changes['snippetKind'] || changes['snippetInLoop']) {
+      this.registerSnippetContextForModel();
+    }
   }
 
   ngOnDestroy(): void {
@@ -263,6 +331,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       try { dispose(); } catch { /* ignore */ }
     }
     this.disposeListeners = [];
+    this.unregisterSnippetContextForModel();
     const editor = this.editor as { dispose?: () => void } | undefined;
     editor?.dispose?.();
     const model = this.model as { dispose?: () => void } | undefined;
