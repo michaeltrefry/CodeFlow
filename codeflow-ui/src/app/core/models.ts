@@ -301,6 +301,7 @@ export interface WorkflowEdge {
   toPort: string;
   rotatesRound: boolean;
   sortOrder: number;
+  intentionalBackedge?: boolean;
 }
 
 export interface WorkflowInput {

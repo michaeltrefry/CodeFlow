@@ -727,6 +727,33 @@ function defaultStartInput(): WorkflowInput {
               <div class="muted xsmall">
                 <code class="mono">{{ connectionSummary(sel.editor) }}</code>
               </div>
+              @if (selectedConnectionBackedge(); as bk) {
+                <div class="backedge-card" [class.dismissed]="bk.intentional">
+                  <div class="row-spread">
+                    <span class="tag warn small">Backedge</span>
+                    @if (bk.intentional) {
+                      <span class="muted xsmall">Marked intentional</span>
+                    }
+                  </div>
+                  <p class="muted xsmall">
+                    This edge creates a cycle. ReviewLoop iteration handles loops natively, so
+                    accidental backedges are usually a mistake. Confirm intent or remove the
+                    edge.
+                  </p>
+                  @if (bk.cycle.length > 0) {
+                    <div class="df-group">
+                      <div class="df-group-title">Cycle</div>
+                      <div class="muted xsmall mono">{{ bk.cycle.join(' → ') }} → {{ bk.cycle[0] }}</div>
+                    </div>
+                  }
+                  <label class="field row-inline">
+                    <input type="checkbox"
+                           [checked]="bk.intentional"
+                           (change)="toggleSelectedConnectionIntentional($any($event.target).checked)" />
+                    <span>Yes, intentional — dismiss this warning</span>
+                  </label>
+                </div>
+              }
             </div>
           } @else {
             <div class="inspector-section">
@@ -1175,6 +1202,21 @@ function defaultStartInput(): WorkflowInput {
       font-size: 0.72rem;
     }
     button.link:hover { color: #ffd166; }
+    .backedge-card {
+      margin-top: 0.75rem;
+      padding: 0.5rem 0.6rem;
+      border: 1px dashed #f5b84c;
+      border-radius: 4px;
+      background: rgba(245, 184, 76, 0.06);
+    }
+    .backedge-card.dismissed {
+      border-style: solid;
+      border-color: var(--border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .backedge-card .row-spread { margin-bottom: 0.4rem; }
+    .backedge-card p { margin: 0 0 0.4rem 0; }
+    .backedge-card .field.row-inline { margin-top: 0.4rem; gap: 0.4rem; }
   `]
 })
 export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
@@ -1255,6 +1297,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  effective ports separately). Populated eagerly when the workflows list loads. */
   readonly terminalPortsByKey = signal<Record<string, string[]>>({});
 
+  /** VZ7: backedge detection — connection ids of edges whose target is reachable from the
+   *  source via the forward graph (DFS-tree backedges). Mirrors the V6 BackedgeRule. */
+  private readonly backedgeIds = new Set<string>();
+  private readonly backedgeCycleByConnId = new Map<string, string[]>();
+  private readonly backedgeRevision = signal(0);
+
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
     return this.workflows().filter(w => w.key !== currentKey);
@@ -1272,6 +1320,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (!id || !this.editor) return null;
     const connection = this.editor.getConnection(id) as WorkflowEditorConnection | undefined;
     return connection ? { editor: connection } : null;
+  });
+
+  /** VZ7: backedge metadata for the currently-selected connection. Null if the connection
+   *  isn't a backedge. Re-evaluates on every backedge re-analysis or intentional toggle. */
+  readonly selectedConnectionBackedge = computed<{ intentional: boolean; cycle: string[] } | null>(() => {
+    this.backedgeRevision();
+    const id = this.selectedConnectionId();
+    if (!id || !this.editor) return null;
+    if (!this.backedgeIds.has(id)) return null;
+    const connection = this.editor.getConnection(id) as WorkflowEditorConnection | undefined;
+    if (!connection) return null;
+    return {
+      intentional: connection.intentionalBackedge,
+      cycle: this.backedgeCycleByConnId.get(id) ?? []
+    };
   });
 
   readonly outputPortsText = computed(() => {
@@ -1566,6 +1629,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         // VZ1: any structural change can shift the dataflow scope; mark the cached snapshot
         // stale so the inspector can hint that a save is needed for an accurate read.
         if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+        // VZ7: re-detect backedges. Defer until the editor finishes processing the event so
+        // getConnections()/getNodes() reflect the post-change graph.
+        queueMicrotask(() => this.recomputeBackedges());
       }
       if (context.type === 'noderemoved') {
         if (this.selectedNodeId() === context.data.id) {
@@ -1601,6 +1667,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
             AreaExtensions.zoomAt(area, editor.getNodes());
           }
           this.loadDataflow(detail.key, detail.version);
+          this.recomputeBackedges();
         },
         error: err => this.error.set(`Failed to load workflow: ${err.message ?? err}`)
       });
@@ -2228,6 +2295,18 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.applyConnectionStyles(next.id);
   }
 
+  /** VZ7: toggle the V6 intentional-backedge flag on the selected connection. Suppresses
+   *  this edge's dashed-amber render and the V6 save warning on subsequent saves. */
+  toggleSelectedConnectionIntentional(intentional: boolean): void {
+    const id = this.selectedConnectionId();
+    if (!id) return;
+    const connection = this.editor?.getConnection(id) as WorkflowEditorConnection | undefined;
+    if (!connection) return;
+    connection.intentionalBackedge = intentional;
+    this.applyConnectionStyles(id);
+    this.backedgeRevision.update(v => v + 1);
+  }
+
   private applyConnectionStyles(connectionId: string): void {
     const registered = this.connectionElements.get(connectionId);
     const connection = this.editor?.getConnection(connectionId) as WorkflowEditorConnection | undefined;
@@ -2236,12 +2315,133 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const path = registered.element.querySelector('path') as SVGPathElement | null;
     if (!path) return;
 
+    const isLiveBackedge = this.backedgeIds.has(connectionId) && !connection.intentionalBackedge;
+    const cycleMembers = this.backedgeCycleByConnId.get(connectionId);
+
     path.style.cursor = 'pointer';
     path.style.pointerEvents = 'auto';
     path.style.transition = 'stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease';
-    path.style.stroke = connection.isSelected ? '#ffd166' : '#4682b4';
-    path.style.strokeWidth = connection.isSelected ? '7px' : '5px';
-    path.style.filter = connection.isSelected ? 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))' : '';
+    if (connection.isSelected) {
+      path.style.stroke = '#ffd166';
+      path.style.strokeWidth = '7px';
+      path.style.filter = 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))';
+    } else if (isLiveBackedge) {
+      // VZ7: dashed amber for cycles (target reachable from source).
+      path.style.stroke = '#f5b84c';
+      path.style.strokeWidth = '5px';
+      path.style.filter = '';
+    } else {
+      path.style.stroke = '#4682b4';
+      path.style.strokeWidth = '5px';
+      path.style.filter = '';
+    }
+    path.style.strokeDasharray = isLiveBackedge ? '10 6' : '';
+
+    // Tooltip for backedges. Cleared on connections that are not (or no longer) live
+    // backedges so a previous tooltip doesn't linger after the cycle is broken or marked
+    // intentional.
+    if (isLiveBackedge && cycleMembers && cycleMembers.length > 0) {
+      const memberList = cycleMembers.join(' → ');
+      registered.element.title =
+        `This edge creates a cycle: ${memberList} → ${cycleMembers[0]}. ` +
+        `ReviewLoop iteration handles loops natively — verify the backedge is intentional.`;
+    } else if (registered.element.title) {
+      registered.element.title = '';
+    }
+  }
+
+  /**
+   * VZ7: DFS-coloring backedge detection. Mirrors the V6 BackedgeRule (port from
+   * CodeFlow.Api/Validation/Pipeline/Rules/BackedgeRule.cs). An edge (u, v) is a backedge iff
+   * v is on the active DFS stack when we walk it. Roots are picked by topology (no-incoming
+   * first, leftover whites second) so the closing edge of a cycle is the one flagged, not
+   * forward edges feeding into the cycle.
+   *
+   * ReviewLoop iteration is internal to the loop primitive and never appears in the authored
+   * connection list, so it cannot trip this check.
+   */
+  private recomputeBackedges(): void {
+    if (!this.editor) return;
+    this.backedgeIds.clear();
+    this.backedgeCycleByConnId.clear();
+
+    const connections = this.editor.getConnections() as WorkflowEditorConnection[];
+    const nodeIds = this.editor.getNodes().map(n => n.id);
+
+    if (connections.length === 0 || nodeIds.length === 0) {
+      this.backedgeRevision.update(v => v + 1);
+      return;
+    }
+
+    type Edge = { id: string; source: string; target: string };
+    const outgoing = new Map<string, Edge[]>();
+    const incomingCount = new Map<string, number>();
+    for (const id of nodeIds) {
+      outgoing.set(id, []);
+      incomingCount.set(id, 0);
+    }
+    for (const c of connections) {
+      const list = outgoing.get(c.source);
+      if (!list) continue;
+      list.push({ id: c.id, source: c.source, target: c.target });
+      incomingCount.set(c.target, (incomingCount.get(c.target) ?? 0) + 1);
+    }
+
+    type Color = 'white' | 'gray' | 'black';
+    const color = new Map<string, Color>();
+    for (const id of nodeIds) color.set(id, 'white');
+
+    const rootOrder = [
+      ...nodeIds.filter(id => (incomingCount.get(id) ?? 0) === 0),
+      ...nodeIds
+    ];
+    const seenRoot = new Set<string>();
+
+    for (const root of rootOrder) {
+      if (seenRoot.has(root)) continue;
+      seenRoot.add(root);
+      if (color.get(root) !== 'white') continue;
+
+      const stack: { nodeId: string; nextEdge: number }[] = [];
+      color.set(root, 'gray');
+      stack.push({ nodeId: root, nextEdge: 0 });
+
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const edges = outgoing.get(frame.nodeId);
+        if (!edges || frame.nextEdge >= edges.length) {
+          color.set(frame.nodeId, 'black');
+          stack.pop();
+          continue;
+        }
+        const edge = edges[frame.nextEdge];
+        frame.nextEdge += 1;
+
+        const targetColor = color.get(edge.target);
+        if (targetColor === 'white') {
+          color.set(edge.target, 'gray');
+          stack.push({ nodeId: edge.target, nextEdge: 0 });
+        } else if (targetColor === 'gray') {
+          // Backedge — reconstruct cycle from the active stack: target → ... → source.
+          const cycle: string[] = [];
+          let collecting = false;
+          for (const f of stack) {
+            if (!collecting && f.nodeId === edge.target) collecting = true;
+            if (collecting) cycle.push(this.nodeLabelFor(f.nodeId));
+          }
+          if (cycle.length === 0) cycle.push(this.nodeLabelFor(edge.target));
+          this.backedgeIds.add(edge.id);
+          this.backedgeCycleByConnId.set(edge.id, cycle);
+        }
+      }
+    }
+
+    this.backedgeRevision.update(v => v + 1);
+    for (const c of connections) this.applyConnectionStyles(c.id);
+  }
+
+  private nodeLabelFor(nodeId: string): string {
+    return (this.editor?.getNode(nodeId) as WorkflowEditorNode | undefined)?.label ?? nodeId;
   }
 
   private releaseConnectionElement(element: HTMLElement): void {

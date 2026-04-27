@@ -82,6 +82,8 @@ export class WorkflowEditorConnection
   rotatesRound = false;
   sortOrder = 0;
   isSelected = false;
+  /** Author-marked intentional backedge — suppresses VZ7 dashed-amber and V6 save warnings. */
+  intentionalBackedge = false;
   onPick: (() => void) | null = null;
 }
 
