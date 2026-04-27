@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 
 namespace CodeFlow.Orchestration.DryRun;
 
@@ -10,7 +11,7 @@ namespace CodeFlow.Orchestration.DryRun;
 /// the saga checkpointing layer. Designed for the T1 dry-run UX — the author clicks "run" and
 /// gets a sub-second deterministic trace of which nodes would fire and with what artifacts.
 ///
-/// Scope notes (v2):
+/// Scope notes (v3):
 /// <list type="bullet">
 ///   <item><description>Supports node kinds Start, Agent, Logic, Hitl, Subflow, ReviewLoop.</description></item>
 ///   <item><description>Reuses <see cref="LogicNodeScriptHost"/> for Logic-node script execution
@@ -18,10 +19,14 @@ namespace CodeFlow.Orchestration.DryRun;
 ///     script semantics match the saga byte-for-byte.</description></item>
 ///   <item><description>Honors the built-ins: P3 (rejection-history accumulation in ReviewLoop
 ///     bodies), P4 (mirror output to workflow var), and P5 (output-port replacements).</description></item>
-///   <item><description>Does NOT yet apply decision-output templates, retry-context handoffs for
-///     Failed-port self-loops, or render HITL form templates at suspension. These are documented
-///     v2 limitations; a Diagnostic event surfaces the gap on the trace.</description></item>
-///   <item><description>Does NOT render agent prompt templates; the trace records the input
+///   <item><description>v3 (this iteration): when <see cref="IAgentConfigRepository"/> +
+///     <see cref="IScribanTemplateRenderer"/> are wired, applies decision-output templates to
+///     Agent submissions (skipped when an output script set <c>setOutput</c>) and surfaces HITL
+///     form-template metadata + a best-effort rendered preview on
+///     <see cref="DryRunHitlPayload"/>.</description></item>
+///   <item><description>Does NOT yet handle retry-context handoffs for Failed-port self-loops.
+///     Niche; no first-party workflow exercises it. Documented as a remaining v3+ gap.</description></item>
+///   <item><description>Does NOT render full agent prompt templates; the trace records the input
 ///     artifact a node receives, which is what authors typically want to inspect anyway.</description></item>
 /// </list>
 /// </summary>
@@ -31,13 +36,28 @@ public sealed class DryRunExecutor
 
     private readonly IWorkflowRepository workflowRepository;
     private readonly LogicNodeScriptHost logicScriptHost;
+    private readonly IAgentConfigRepository? agentConfigRepository;
+    private readonly IScribanTemplateRenderer? templateRenderer;
 
     public DryRunExecutor(
         IWorkflowRepository workflowRepository,
-        LogicNodeScriptHost logicScriptHost)
+        LogicNodeScriptHost logicScriptHost,
+        IAgentConfigRepository? agentConfigRepository = null,
+        IScribanTemplateRenderer? templateRenderer = null)
     {
         this.workflowRepository = workflowRepository ?? throw new ArgumentNullException(nameof(workflowRepository));
         this.logicScriptHost = logicScriptHost ?? throw new ArgumentNullException(nameof(logicScriptHost));
+        // The agent-config + template renderer pair is optional. Both must be supplied together
+        // for v3 features to engage; passing only one is a programmer error since neither is
+        // useful without the other.
+        if ((agentConfigRepository is null) ^ (templateRenderer is null))
+        {
+            throw new ArgumentException(
+                $"{nameof(agentConfigRepository)} and {nameof(templateRenderer)} must be supplied together; "
+                + "passing only one disables decision-output templates and HITL form rendering.");
+        }
+        this.agentConfigRepository = agentConfigRepository;
+        this.templateRenderer = templateRenderer;
     }
 
     public async Task<DryRunResult> ExecuteAsync(
@@ -240,6 +260,7 @@ public sealed class DryRunExecutor
                     var effectivePort = mock.Decision;
                     lastEffectivePort = effectivePort;
                     var effectiveOutput = output;
+                    var outputWasScriptOverridden = false;
 
                     // Author-attached output script (Agent only): mirrors saga semantics — the
                     // script sees the agent's `output` (text + decision metadata) and may call
@@ -256,7 +277,29 @@ public sealed class DryRunExecutor
                         }
                         effectivePort = outputScriptOutcome.Port;
                         effectiveOutput = outputScriptOutcome.Output;
+                        outputWasScriptOverridden = outputScriptOutcome.SetOutputCalled;
                         lastEffectivePort = effectivePort;
+                    }
+
+                    // v3: decision-output templates render server-side after the output script
+                    // resolves the port. Skipped when the script issued setOutput() so authors
+                    // retain the documented escape hatch. Mirrors saga TryApplyDecisionOutputTemplateAsync.
+                    if (!outputWasScriptOverridden
+                        && agentConfigRepository is not null
+                        && templateRenderer is not null)
+                    {
+                        var templateOutcome = await TryApplyDecisionOutputTemplateAsync(
+                            currentNode, mock.Decision, effectivePort, effectiveOutput,
+                            currentInput, contextVars, workflowVars,
+                            reviewRound, maxRounds, depth, state, cancellationToken);
+                        if (templateOutcome.FailureReason is not null)
+                        {
+                            return DryRunWalkResult.Failed(templateOutcome.FailureReason, contextVars, workflowVars);
+                        }
+                        if (templateOutcome.OverrideOutput is { } overrideText)
+                        {
+                            effectiveOutput = overrideText;
+                        }
                     }
 
                     // P5: if the port has a configured replacement, swap the artifact for the
@@ -392,6 +435,14 @@ public sealed class DryRunExecutor
                     }
                     currentInput = hitlInputOutcome.EffectiveInput;
 
+                    // v3: when wired, look up the HITL agent's config so the suspension payload can
+                    // surface the legacy `outputTemplate` (form preview rendered client-side in
+                    // hitl-review.component.ts) and structured `decisionOutputTemplates` (saga's
+                    // submit-time render). Plus a best-effort server render so authors can spot
+                    // template typos without launching a real run.
+                    var hitlPayload = await BuildHitlPayloadAsync(
+                        currentNode, currentInput, contextVars, workflowVars, cancellationToken);
+
                     state.RecordEvent(new DryRunEvent(
                         Ordinal: state.NextOrdinal(),
                         Kind: DryRunEventKind.HitlSuspended,
@@ -399,9 +450,11 @@ public sealed class DryRunExecutor
                         NodeKind: currentNode.Kind.ToString(),
                         AgentKey: currentNode.AgentKey,
                         PortName: null,
-                        Message: "Dry-run halted at HITL node; form would be presented to a human reviewer.",
+                        Message: hitlPayload.RenderError is null
+                            ? "Dry-run halted at HITL node; form would be presented to a human reviewer."
+                            : $"Dry-run halted at HITL node; form-template render failed: {hitlPayload.RenderError}",
                         InputPreview: Preview(currentInput),
-                        OutputPreview: null,
+                        OutputPreview: Preview(hitlPayload.RenderedFormPreview),
                         ReviewRound: reviewRound,
                         MaxRounds: maxRounds,
                         SubflowDepth: depth,
@@ -415,10 +468,7 @@ public sealed class DryRunExecutor
                         TerminalPort: null,
                         FailureReason: null,
                         FinalArtifact: currentInput,
-                        HitlPayload: new DryRunHitlPayload(
-                            currentNode.Id,
-                            currentNode.AgentKey ?? string.Empty,
-                            currentInput),
+                        HitlPayload: hitlPayload,
                         ContextVars: contextVars,
                         WorkflowVars: workflowVars);
                 }
@@ -965,6 +1015,7 @@ public sealed class DryRunExecutor
             return new OutputScriptOutcome(
                 mockDecision,
                 output,
+                false,
                 $"Output script for node {node.Id} failed ({eval.Failure}): {eval.FailureMessage}");
         }
 
@@ -979,7 +1030,281 @@ public sealed class DryRunExecutor
 
         var resolvedPort = string.IsNullOrWhiteSpace(eval.OutputPortName) ? mockDecision : eval.OutputPortName!;
         var resolvedOutput = eval.OutputOverride ?? output;
-        return new OutputScriptOutcome(resolvedPort, resolvedOutput, null);
+        return new OutputScriptOutcome(resolvedPort, resolvedOutput, eval.OutputOverride is not null, null);
+    }
+
+    /// <summary>
+    /// v3: render the agent's <c>decisionOutputTemplates[port]</c> entry (or the wildcard <c>*</c>
+    /// fallback) against the saga's <c>{ decision, outputPortName, output, input, context, workflow }</c>
+    /// scope. Mirrors <c>WorkflowSagaStateMachine.TryApplyDecisionOutputTemplateAsync</c>. Skipped
+    /// silently when the agent has no templates or the agent config can't be loaded — the dry-run
+    /// is best-effort by design and a missing agent config in the dry-run repo is not a fatal
+    /// authoring error.
+    /// </summary>
+    private async Task<DecisionOutputTemplateOutcome> TryApplyDecisionOutputTemplateAsync(
+        WorkflowNode node,
+        string mockDecision,
+        string effectivePort,
+        string effectiveOutput,
+        string? currentInput,
+        IReadOnlyDictionary<string, JsonElement> contextVars,
+        IReadOnlyDictionary<string, JsonElement> workflowVars,
+        int? reviewRound,
+        int? maxRounds,
+        int depth,
+        DryRunState state,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(node.AgentKey) || node.AgentVersion is not int agentVersion)
+        {
+            return DecisionOutputTemplateOutcome.None;
+        }
+
+        AgentConfig agentConfig;
+        try
+        {
+            agentConfig = await agentConfigRepository!.GetAsync(
+                node.AgentKey!, agentVersion, cancellationToken);
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            return DecisionOutputTemplateOutcome.None;
+        }
+        catch (Exception)
+        {
+            // The dry-run runs against an in-memory test repo in unit tests; a fake that throws
+            // anything other than AgentConfigNotFoundException should not crash the executor.
+            return DecisionOutputTemplateOutcome.None;
+        }
+
+        var templates = agentConfig.Configuration.DecisionOutputTemplates;
+        var template = ResolveTemplate(templates, effectivePort);
+        if (template is null)
+        {
+            return DecisionOutputTemplateOutcome.None;
+        }
+
+        var outputJson = ParseArtifactAsJsonElement(effectiveOutput);
+        var inputJson = currentInput is null ? (JsonElement?)null : ParseArtifactAsJsonElement(currentInput);
+        var scope = DecisionOutputTemplateContext.Build(
+            decision: mockDecision,
+            outputPortName: effectivePort,
+            outputText: effectiveOutput,
+            outputJson: outputJson.ValueKind is JsonValueKind.Object or JsonValueKind.Array ? outputJson : null,
+            inputJson: inputJson,
+            contextInputs: contextVars,
+            workflowInputs: workflowVars);
+
+        string rendered;
+        try
+        {
+            rendered = templateRenderer!.Render(template, scope, cancellationToken);
+        }
+        catch (PromptTemplateException ex)
+        {
+            return new DecisionOutputTemplateOutcome(
+                null,
+                $"Decision output template for node {node.Id} (port '{effectivePort}') failed: {ex.Message}");
+        }
+
+        state.RecordEvent(new DryRunEvent(
+            Ordinal: state.NextOrdinal(),
+            Kind: DryRunEventKind.BuiltinApplied,
+            NodeId: node.Id,
+            NodeKind: node.Kind.ToString(),
+            AgentKey: node.AgentKey,
+            PortName: effectivePort,
+            Message: $"Decision-output template applied on '{effectivePort}' ({rendered.Length} chars).",
+            InputPreview: null,
+            OutputPreview: Preview(rendered),
+            ReviewRound: reviewRound,
+            MaxRounds: maxRounds,
+            SubflowDepth: depth,
+            SubflowKey: null,
+            SubflowVersion: null,
+            Logs: null,
+            DecisionPayload: null));
+
+        return new DecisionOutputTemplateOutcome(rendered, null);
+    }
+
+    /// <summary>
+    /// Resolve a per-port decision-output template, falling back to the wildcard <c>*</c> entry.
+    /// Mirrors <c>WorkflowSagaStateMachine.ResolveDecisionOutputTemplate</c>.
+    /// </summary>
+    private static string? ResolveTemplate(
+        IReadOnlyDictionary<string, string>? templates,
+        string portName)
+    {
+        if (templates is null || templates.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var entry in templates)
+        {
+            if (string.Equals(entry.Key, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                return entry.Value;
+            }
+        }
+
+        return templates.TryGetValue("*", out var wildcard) ? wildcard : null;
+    }
+
+    /// <summary>
+    /// v3: build the HITL suspension payload, surfacing the agent's <c>outputTemplate</c> (legacy
+    /// single-template form rendered client-side in hitl-review) and any structured
+    /// <c>decisionOutputTemplates</c> the saga applies on submit. When templates are present and
+    /// the renderer is wired, run a best-effort server render against
+    /// <c>{ input, context, workflow }</c> with empty form-field values so authors can spot
+    /// template typos at design time. Render failure surfaces in <see cref="DryRunHitlPayload.RenderError"/>
+    /// instead of failing the whole dry-run — the form may legitimately rely on field values not
+    /// available until a human submits.
+    /// </summary>
+    private async Task<DryRunHitlPayload> BuildHitlPayloadAsync(
+        WorkflowNode node,
+        string? input,
+        IReadOnlyDictionary<string, JsonElement> contextVars,
+        IReadOnlyDictionary<string, JsonElement> workflowVars,
+        CancellationToken cancellationToken)
+    {
+        var basePayload = new DryRunHitlPayload(
+            NodeId: node.Id,
+            AgentKey: node.AgentKey ?? string.Empty,
+            Input: input);
+
+        if (agentConfigRepository is null
+            || templateRenderer is null
+            || string.IsNullOrWhiteSpace(node.AgentKey)
+            || node.AgentVersion is not int agentVersion)
+        {
+            return basePayload;
+        }
+
+        AgentConfig agentConfig;
+        try
+        {
+            agentConfig = await agentConfigRepository.GetAsync(
+                node.AgentKey!, agentVersion, cancellationToken);
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            return basePayload;
+        }
+        catch (Exception)
+        {
+            return basePayload;
+        }
+
+        var outputTemplate = ReadOutputTemplateFromConfigJson(agentConfig.ConfigJson);
+        var decisionOutputTemplates = agentConfig.Configuration.DecisionOutputTemplates;
+
+        // Pick the template most likely to render usefully at suspension. Prefer the singular
+        // outputTemplate (the form preview the human would see); fall back to the first per-port
+        // decisionOutputTemplate or the wildcard.
+        var renderTemplate = outputTemplate;
+        var renderPort = node.OutputPorts.FirstOrDefault() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(renderTemplate) && decisionOutputTemplates is { Count: > 0 })
+        {
+            renderTemplate = ResolveTemplate(decisionOutputTemplates, renderPort);
+        }
+
+        string? renderedPreview = null;
+        string? renderError = null;
+        if (!string.IsNullOrWhiteSpace(renderTemplate))
+        {
+            var inputJson = input is null ? (JsonElement?)null : ParseArtifactAsJsonElement(input);
+            var scope = DecisionOutputTemplateContext.BuildForHitl(
+                decision: renderPort,
+                outputPortName: renderPort,
+                fieldValues: new Dictionary<string, JsonElement>(StringComparer.Ordinal),
+                reason: null,
+                reasons: null,
+                actions: null,
+                contextInputs: contextVars,
+                workflowInputs: workflowVars);
+            // BuildForHitl exposes form fields under `input.*`. The legacy outputTemplate often
+            // also references `{{ input }}` to print the upstream artifact; populate that here so
+            // the preview matches what the hitl-review component renders client-side.
+            if (inputJson is { } parsed)
+            {
+                scope["upstreamInput"] = ConvertJsonElementToScriptValue(parsed);
+                // Most legacy templates write `{{ input }}` expecting the upstream artifact text,
+                // not the form fields. Shadow `input` with the upstream value so the preview
+                // reflects what the human would actually see.
+                scope["input"] = parsed.ValueKind == JsonValueKind.Object
+                        && parsed.TryGetProperty("text", out var textProp)
+                        && textProp.ValueKind == JsonValueKind.String
+                        && parsed.EnumerateObject().Count() == 1
+                    ? textProp.GetString() ?? string.Empty
+                    : ConvertJsonElementToScriptValue(parsed);
+            }
+
+            try
+            {
+                renderedPreview = templateRenderer.Render(renderTemplate!, scope, cancellationToken);
+            }
+            catch (PromptTemplateException ex)
+            {
+                renderError = ex.Message;
+            }
+        }
+
+        return basePayload with
+        {
+            OutputTemplate = outputTemplate,
+            DecisionOutputTemplates = decisionOutputTemplates,
+            RenderedFormPreview = renderedPreview,
+            RenderError = renderError,
+        };
+    }
+
+    private static string? ReadOutputTemplateFromConfigJson(string? configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(configJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            return doc.RootElement.TryGetProperty("outputTemplate", out var element)
+                && element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static object ConvertJsonElementToScriptValue(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString() ?? string.Empty,
+            JsonValueKind.Number => element.TryGetInt64(out var i) ? i : (object)element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => string.Empty,
+            JsonValueKind.Undefined => string.Empty,
+            // For objects/arrays, serialize back to JSON so Scriban can index into them via
+            // member access — the renderer's `EnableRelaxedMemberAccess` makes this resilient.
+            _ => element.GetRawText(),
+        };
+    }
+
+    private readonly record struct DecisionOutputTemplateOutcome(string? OverrideOutput, string? FailureReason)
+    {
+        public static readonly DecisionOutputTemplateOutcome None = new(null, null);
     }
 
     /// <summary>
@@ -1055,7 +1380,11 @@ public sealed class DryRunExecutor
 
     private readonly record struct InputScriptOutcome(string? EffectiveInput, string? FailureReason);
 
-    private readonly record struct OutputScriptOutcome(string Port, string Output, string? FailureReason);
+    private readonly record struct OutputScriptOutcome(
+        string Port,
+        string Output,
+        bool SetOutputCalled,
+        string? FailureReason);
 
     private static string? Preview(string? text)
     {

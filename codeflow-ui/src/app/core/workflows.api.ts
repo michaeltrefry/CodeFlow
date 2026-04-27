@@ -321,7 +321,19 @@ export interface DryRunResponse {
   terminalPort: string | null;
   failureReason: string | null;
   finalArtifact: string | null;
-  hitlPayload: { nodeId: string; agentKey: string; input: string | null } | null;
+  hitlPayload: {
+    nodeId: string;
+    agentKey: string;
+    input: string | null;
+    /** Legacy `outputTemplate` (singular) on the HITL agent — what the form preview renders. */
+    outputTemplate?: string | null;
+    /** Per-port templates the saga renders server-side at submit time. */
+    decisionOutputTemplates?: Record<string, string> | null;
+    /** Best-effort server render of the form preview at suspension; null when no template found. */
+    renderedFormPreview?: string | null;
+    /** Set when the form-template render failed; the dry-run still succeeds. */
+    renderError?: string | null;
+  } | null;
   workflowVariables: Record<string, unknown>;
   contextVariables: Record<string, unknown>;
   events: DryRunEvent[];

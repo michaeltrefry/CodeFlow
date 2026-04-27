@@ -282,7 +282,14 @@ public static class WorkflowFixturesEndpoints
         FinalArtifact: result.FinalArtifact,
         HitlPayload: result.HitlPayload is null
             ? null
-            : new DryRunHitlPayloadDto(result.HitlPayload.NodeId, result.HitlPayload.AgentKey, result.HitlPayload.Input),
+            : new DryRunHitlPayloadDto(
+                result.HitlPayload.NodeId,
+                result.HitlPayload.AgentKey,
+                result.HitlPayload.Input,
+                result.HitlPayload.OutputTemplate,
+                result.HitlPayload.DecisionOutputTemplates,
+                result.HitlPayload.RenderedFormPreview,
+                result.HitlPayload.RenderError),
         WorkflowVariables: result.WorkflowVariables,
         ContextVariables: result.ContextVariables,
         Events: result.Events.Select(MapEvent).ToArray());

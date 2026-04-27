@@ -58,7 +58,11 @@ public sealed record DryRunResponse(
 public sealed record DryRunHitlPayloadDto(
     Guid NodeId,
     string AgentKey,
-    string? Input);
+    string? Input,
+    string? OutputTemplate = null,
+    IReadOnlyDictionary<string, string>? DecisionOutputTemplates = null,
+    string? RenderedFormPreview = null,
+    string? RenderError = null);
 
 public sealed record DryRunEventDto(
     int Ordinal,

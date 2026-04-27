@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -621,6 +622,461 @@ public sealed class DryRunExecutorTests
                 new WorkflowEdge(logicId, "Right", rightId, "in", false, 0),
             },
             Inputs: Array.Empty<WorkflowInput>());
+    }
+
+    // ---------- v3: decision-output templates on Agent submissions ----------
+
+    /// <summary>
+    /// V3 decision-output template: when the agent declares a per-port template and no output
+    /// script set <c>setOutput</c>, the saga renders the template server-side and substitutes the
+    /// effective artifact. Dry-run mirrors this so authors see the rendered text downstream.
+    /// </summary>
+    [Fact]
+    public async Task DecisionOutputTemplate_AppliedToAgentSubmission_RewritesArtifact()
+    {
+        var startId = Guid.Parse("99dd9999-9999-9999-9999-9999999999dd");
+        var agentId = Guid.Parse("aadddddd-dddd-dddd-dddd-dddddddddddd");
+        var sinkId = Guid.Parse("bbdddddd-dddd-dddd-dddd-dddddddddddd");
+
+        var workflow = new Workflow(
+            Key: "decision-template",
+            Version: 1,
+            Name: "Decision-output template",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "templated", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved", "Rejected" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: sinkId, Kind: WorkflowNodeKind.Agent, AgentKey: "sink", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 200, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+                new WorkflowEdge(agentId, "Approved", sinkId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var agentRepo = new FakeAgentConfigRepository(
+            ("templated", 1, AgentConfigJson(new Dictionary<string, string>
+            {
+                ["Approved"] = "shipped {{ output.headline }} on {{ outputPortName }}",
+                ["*"] = "fallback wildcard",
+            }), null));
+
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            // Structured JSON payload — same pattern as the saga's
+            // DecisionOutputTemplate_RendersForExactPortMatch test, so dry-run parity is byte-
+            // for-byte verifiable.
+            ["templated"] = new[] { new DryRunMockResponse("Approved", "{\"headline\":\"the body\"}", null) },
+            ["sink"] = new[] { new DryRunMockResponse("Done", "received", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("decision-template", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        // Sink saw the rendered template, not the agent's raw structured payload.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == sinkId
+            && e.InputPreview == "shipped the body on Approved");
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.BuiltinApplied
+            && e.NodeId == agentId
+            && (e.Message ?? string.Empty).StartsWith("Decision-output template applied"));
+    }
+
+    /// <summary>
+    /// V3 decision-output template: skipped when an output script issued <c>setOutput()</c>, so
+    /// authors retain the explicit escape hatch documented in saga semantics.
+    /// </summary>
+    [Fact]
+    public async Task DecisionOutputTemplate_SkippedWhenOutputScriptCalledSetOutput()
+    {
+        var startId = Guid.Parse("11ee9999-9999-9999-9999-999999999911");
+        var agentId = Guid.Parse("22ee9999-9999-9999-9999-999999999922");
+        var sinkId = Guid.Parse("33ee9999-9999-9999-9999-999999999933");
+
+        const string outputScript = """
+            setOutput('script-controlled');
+            """;
+
+        var workflow = new Workflow(
+            Key: "skip-template",
+            Version: 1,
+            Name: "Skip template when setOutput",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "scripted", AgentVersion: 1,
+                    OutputScript: outputScript, OutputPorts: new[] { "Approved" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: sinkId, Kind: WorkflowNodeKind.Agent, AgentKey: "sink", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 200, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+                new WorkflowEdge(agentId, "Approved", sinkId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var agentRepo = new FakeAgentConfigRepository(
+            ("scripted", 1, AgentConfigJson(new Dictionary<string, string>
+            {
+                ["Approved"] = "TEMPLATE-RENDER",
+            }), null));
+
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["scripted"] = new[] { new DryRunMockResponse("Approved", "ignored", null) },
+            ["sink"] = new[] { new DryRunMockResponse("Done", "ack", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("skip-template", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        // Sink saw the script's setOutput value, not the template render — script wins.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == sinkId
+            && e.InputPreview == "script-controlled");
+        result.Events.Should().NotContain(e =>
+            e.Kind == DryRunEventKind.BuiltinApplied
+            && (e.Message ?? string.Empty).StartsWith("Decision-output template applied"));
+    }
+
+    /// <summary>
+    /// V3 decision-output template: a render failure fails the dry-run with a clear diagnostic so
+    /// the author sees the broken template at design time rather than at runtime.
+    /// </summary>
+    [Fact]
+    public async Task DecisionOutputTemplate_RenderFailure_FailsDryRunWithDiagnostic()
+    {
+        var startId = Guid.Parse("44ee9999-9999-9999-9999-999999999944");
+        var agentId = Guid.Parse("55ee9999-9999-9999-9999-999999999955");
+
+        var workflow = new Workflow(
+            Key: "broken-template",
+            Version: 1,
+            Name: "Broken template",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "broken", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var agentRepo = new FakeAgentConfigRepository(
+            ("broken", 1, AgentConfigJson(new Dictionary<string, string>
+            {
+                // Unterminated `{{ if` — same shape as the saga's render-failure test
+                // (DecisionOutputTemplate_RenderFailure_TransitionsSagaToFailed).
+                ["Approved"] = "{{ if output.missing",
+            }), null));
+
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["broken"] = new[] { new DryRunMockResponse("Approved", "x", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("broken-template", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Failed);
+        result.FailureReason.Should().Contain("Decision output template");
+        result.FailureReason.Should().Contain("Approved");
+    }
+
+    // ---------- v3: HITL form-template surfacing at suspension ----------
+
+    /// <summary>
+    /// V3 HITL: at suspension, the dry-run surfaces the agent's <c>outputTemplate</c> (legacy
+    /// form-preview template) and any <c>decisionOutputTemplates</c>, plus a best-effort server
+    /// render so authors see what the human reviewer would see without launching a real run.
+    /// </summary>
+    [Fact]
+    public async Task HitlSuspension_SurfacesOutputTemplateAndRendersPreview()
+    {
+        var startId = Guid.Parse("aaee0000-0000-0000-0000-aaaaaaaa0000");
+        var hitlId = Guid.Parse("bbee0000-0000-0000-0000-bbbbbbbb0000");
+
+        var workflow = new Workflow(
+            Key: "hitl-form-render",
+            Version: 1,
+            Name: "HITL form render at suspension",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: hitlId, Kind: WorkflowNodeKind.Hitl, AgentKey: "hitl-approver", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved", "Rejected" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", hitlId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        // The HITL agent has both `outputTemplate` (singular legacy field, used by the
+        // hitl-review component for client-side preview) and `decisionOutputTemplates` (plural,
+        // applied server-side when the human submits).
+        const string configJson = """
+            {
+                "type": "hitl",
+                "name": "Approval gate",
+                "outputTemplate": "Please review:\n\n{{ input }}",
+                "decisionOutputTemplates": {
+                    "Approved": "approved: {{ outputPortName }}",
+                    "Rejected": "rejected: {{ outputPortName }}"
+                },
+                "outputs": [
+                    { "kind": "Approved" },
+                    { "kind": "Rejected" }
+                ]
+            }
+            """;
+        var agentRepo = new FakeAgentConfigRepository(
+            ("hitl-approver", 1, configJson, null));
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("hitl-form-render", null, "the upstream artifact", new Dictionary<string, IReadOnlyList<DryRunMockResponse>>()),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.HitlReached);
+        result.HitlPayload.Should().NotBeNull();
+        result.HitlPayload!.OutputTemplate.Should().Be("Please review:\n\n{{ input }}");
+        result.HitlPayload.DecisionOutputTemplates.Should().NotBeNull();
+        result.HitlPayload.DecisionOutputTemplates!["Approved"].Should().Be("approved: {{ outputPortName }}");
+        // Best-effort render of the form preview against the upstream artifact.
+        result.HitlPayload.RenderedFormPreview.Should().Be("Please review:\n\nthe upstream artifact");
+        result.HitlPayload.RenderError.Should().BeNull();
+    }
+
+    /// <summary>
+    /// V3 HITL: when the agent has only <c>decisionOutputTemplates</c> (no legacy
+    /// <c>outputTemplate</c>), the dry-run still surfaces them and best-effort-renders the first
+    /// declared port's template against an empty form-field scope.
+    /// </summary>
+    [Fact]
+    public async Task HitlSuspension_FallsBackToDecisionOutputTemplate_WhenNoOutputTemplate()
+    {
+        var startId = Guid.Parse("ccff0000-0000-0000-0000-cccccccc0000");
+        var hitlId = Guid.Parse("ddff0000-0000-0000-0000-dddddddd0000");
+
+        var workflow = new Workflow(
+            Key: "hitl-decision-only",
+            Version: 1,
+            Name: "HITL decision-only template",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: hitlId, Kind: WorkflowNodeKind.Hitl, AgentKey: "hitl-decision", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", hitlId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        const string configJson = """
+            {
+                "type": "hitl",
+                "decisionOutputTemplates": {
+                    "Approved": "decision={{ decision }}"
+                },
+                "outputs": [{ "kind": "Approved" }]
+            }
+            """;
+        var agentRepo = new FakeAgentConfigRepository(
+            ("hitl-decision", 1, configJson, null));
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("hitl-decision-only", null, "x", new Dictionary<string, IReadOnlyList<DryRunMockResponse>>()),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.HitlReached);
+        result.HitlPayload!.OutputTemplate.Should().BeNull();
+        result.HitlPayload.DecisionOutputTemplates.Should().NotBeNull();
+        result.HitlPayload.RenderedFormPreview.Should().Be("decision=Approved");
+        result.HitlPayload.RenderError.Should().BeNull();
+    }
+
+    /// <summary>
+    /// V3 HITL: a broken form template surfaces on RenderError but does NOT fail the dry-run —
+    /// the form may legitimately rely on field values not available until a human submits, so a
+    /// failed preview shouldn't block the rest of the run.
+    /// </summary>
+    [Fact]
+    public async Task HitlSuspension_RenderFailure_SurfacesOnRenderError_WithoutFailingRun()
+    {
+        var startId = Guid.Parse("eeff0000-0000-0000-0000-eeeeeeee0000");
+        var hitlId = Guid.Parse("ffff0000-0000-0000-0000-ffffffff0000");
+
+        var workflow = new Workflow(
+            Key: "hitl-broken",
+            Version: 1,
+            Name: "HITL with broken template",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: hitlId, Kind: WorkflowNodeKind.Hitl, AgentKey: "hitl-broken", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", hitlId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        const string configJson = """
+            {
+                "type": "hitl",
+                "outputTemplate": "{{ if input.missing",
+                "outputs": [{ "kind": "Approved" }]
+            }
+            """;
+        var agentRepo = new FakeAgentConfigRepository(
+            ("hitl-broken", 1, configJson, null));
+        var executor = BuildExecutorWithAgentConfigs(workflow, agentRepo);
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("hitl-broken", null, "x", new Dictionary<string, IReadOnlyList<DryRunMockResponse>>()),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.HitlReached);
+        result.HitlPayload!.OutputTemplate.Should().Be("{{ if input.missing");
+        result.HitlPayload.RenderedFormPreview.Should().BeNull();
+        result.HitlPayload.RenderError.Should().NotBeNullOrEmpty();
+    }
+
+    // ---------- v3 helpers ----------
+
+    private static DryRunExecutor BuildExecutorWithAgentConfigs(
+        Workflow workflow,
+        FakeAgentConfigRepository agentRepo)
+    {
+        var workflowRepo = new MultiWorkflowFakeRepository(workflow);
+        return new DryRunExecutor(
+            workflowRepo,
+            new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())),
+            agentRepo,
+            new ScribanTemplateRenderer());
+    }
+
+    private static string AgentConfigJson(IReadOnlyDictionary<string, string> decisionOutputTemplates)
+    {
+        var templatesJson = new JsonObject();
+        foreach (var (k, v) in decisionOutputTemplates)
+        {
+            templatesJson[k] = v;
+        }
+        var doc = new JsonObject
+        {
+            ["type"] = "agent",
+            ["provider"] = "openai",
+            ["model"] = "gpt-test",
+            ["decisionOutputTemplates"] = templatesJson,
+        };
+        return doc.ToJsonString();
+    }
+
+    private sealed class FakeAgentConfigRepository : IAgentConfigRepository
+    {
+        private static readonly JsonSerializerOptions WebOptions = new(JsonSerializerDefaults.Web);
+        private readonly Dictionary<(string Key, int Version), AgentConfig> byKeyVersion;
+
+        public FakeAgentConfigRepository(params (string Key, int Version, string ConfigJson, AgentKind? Kind)[] entries)
+        {
+            byKeyVersion = entries.ToDictionary(
+                e => (e.Key, e.Version),
+                e =>
+                {
+                    // Deserialize the AgentInvocationConfiguration the same way the production
+                    // AgentConfigJson helper does (web-style camelCase, ignore unknown fields).
+                    var configuration = JsonSerializer.Deserialize<AgentInvocationConfiguration>(
+                        e.ConfigJson, WebOptions)
+                        ?? throw new InvalidOperationException(
+                            $"Could not deserialize agent config for {e.Key} v{e.Version}.");
+                    return new AgentConfig(
+                        Key: e.Key,
+                        Version: e.Version,
+                        Kind: e.Kind ?? AgentKind.Agent,
+                        Configuration: configuration,
+                        ConfigJson: e.ConfigJson,
+                        CreatedAtUtc: DateTime.UtcNow,
+                        CreatedBy: null,
+                        Outputs: Array.Empty<AgentOutputDeclaration>());
+                });
+        }
+
+        public Task<AgentConfig> GetAsync(string key, int version, CancellationToken cancellationToken = default) =>
+            byKeyVersion.TryGetValue((key, version), out var config)
+                ? Task.FromResult(config)
+                : throw new AgentConfigNotFoundException(key, version);
+
+        public Task<int> CreateNewVersionAsync(string key, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentConfig> CreateForkAsync(string sourceKey, int sourceVersion, string workflowKey, string configJson, string? createdBy, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> CreatePublishedVersionAsync(string targetKey, string configJson, string forkedFromKey, int forkedFromVersion, string? createdBy, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class MultiWorkflowFakeRepository : IWorkflowRepository

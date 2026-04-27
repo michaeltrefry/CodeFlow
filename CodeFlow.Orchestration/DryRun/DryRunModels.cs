@@ -63,15 +63,22 @@ public enum DryRunTerminalState
 }
 
 /// <summary>
-/// Form payload captured when a dry-run halts at a HITL node. The dry-run does not render the
-/// agent's prompt template; it surfaces the raw input artifact the form would receive plus
-/// metadata about the form itself, which is sufficient to verify wiring without rendering the
-/// full template.
+/// Form payload captured when a dry-run halts at a HITL node. The dry-run surfaces the raw input
+/// artifact the form would receive plus, when an <c>IAgentConfigRepository</c> is wired, the
+/// agent's <c>outputTemplate</c> (the legacy single-template form rendered client-side) and any
+/// <c>decisionOutputTemplates</c> the saga would apply on submit. <see cref="RenderedFormPreview"/>
+/// is a best-effort server render of <c>outputTemplate</c> against <c>{ input, context, workflow }</c>
+/// with empty form-field values, so the author can spot template typos without launching a real
+/// run. <see cref="RenderError"/> surfaces any Scriban render failure when the preview is rendered.
 /// </summary>
 public sealed record DryRunHitlPayload(
     Guid NodeId,
     string AgentKey,
-    string? Input);
+    string? Input,
+    string? OutputTemplate = null,
+    IReadOnlyDictionary<string, string>? DecisionOutputTemplates = null,
+    string? RenderedFormPreview = null,
+    string? RenderError = null);
 
 public sealed record DryRunResult(
     DryRunTerminalState State,
