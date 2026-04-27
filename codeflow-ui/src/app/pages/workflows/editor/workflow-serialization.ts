@@ -123,7 +123,7 @@ export async function loadIntoEditor(
   return idToNode;
 }
 
-export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds'>): string {
+export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds' | 'outputType'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
@@ -139,7 +139,7 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
       const rounds = node.reviewMaxRounds ? `×${node.reviewMaxRounds}` : '×?';
       return `ReviewLoop ${rounds} — ${key}`;
     }
-    case 'Transform': return 'Transform';
+    case 'Transform': return `Transform → ${node.outputType ?? 'string'}`;
   }
 }
 

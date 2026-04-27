@@ -27,7 +27,8 @@ import {
   WorkflowCategory,
   WorkflowInput,
   WorkflowNodeKind,
-  WorkflowSummary
+  WorkflowSummary,
+  WorkflowTransformOutputType
 } from '../../../core/models';
 import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
 import { ButtonComponent } from '../../../ui/button.component';
@@ -669,13 +670,19 @@ function defaultStartInput(): WorkflowInput {
                 </div>
                 <div class="field">
                   <span class="field-label">Output type</span>
-                  <p class="muted xsmall">
-                    <strong>String</strong> — rendered text becomes the artifact verbatim.
-                    <strong>JSON</strong> — rendered text must parse as JSON; invalid output
-                    routes to <code>Failed</code>. (TN-5 will add a richer toggle UI.)
-                  </p>
-                  <div class="row">
-                    <span class="tag">{{ sel.editor.outputType }}</span>
+                  <div class="radio-row">
+                    <label class="radio-option">
+                      <input type="radio" name="transform-output-type"
+                             [checked]="sel.editor.outputType === 'string'"
+                             (change)="onTransformOutputTypeChanged(sel.editor, 'string')" />
+                      <span><strong>String</strong> — rendered text becomes the artifact verbatim.</span>
+                    </label>
+                    <label class="radio-option">
+                      <input type="radio" name="transform-output-type"
+                             [checked]="sel.editor.outputType === 'json'"
+                             (change)="onTransformOutputTypeChanged(sel.editor, 'json')" />
+                      <span><strong>JSON</strong> — rendered text must parse as JSON; invalid output routes to <code>Failed</code>.</span>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -1252,6 +1259,9 @@ function defaultStartInput(): WorkflowInput {
     .subflow-nodes li { display: flex; gap: 0.4rem; align-items: center; }
     .row-spread { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .radio-row { display: flex; flex-direction: column; gap: 0.3rem; }
+    .radio-option { display: flex; gap: 0.5rem; align-items: flex-start; cursor: pointer; font-size: 0.8rem; }
+    .radio-option input[type="radio"] { margin-top: 0.15rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
     .muted { color: var(--muted); }
     .xsmall { font-size: 0.72rem; }
@@ -2737,6 +2747,14 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
   onTransformTemplateChanged(node: WorkflowEditorNode, value: string): void {
     node.template = value;
+    if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+  }
+
+  onTransformOutputTypeChanged(node: WorkflowEditorNode, value: WorkflowTransformOutputType): void {
+    if (node.outputType === value) return;
+    node.outputType = value;
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
     if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
   }
 
