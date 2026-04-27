@@ -1,5 +1,6 @@
 using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
+using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -98,6 +99,8 @@ public static class HostExtensions
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
         services.AddScoped<IPromptPartialRepository, PromptPartialRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
+        services.AddScoped<IWorkflowFixtureRepository, WorkflowFixtureRepository>();
+        services.AddScoped<DryRunExecutor>();
         services.AddScoped<IMcpServerRepository, McpServerRepository>();
         services.AddScoped<IAgentRoleRepository, AgentRoleRepository>();
         services.AddScoped<ISkillRepository, SkillRepository>();

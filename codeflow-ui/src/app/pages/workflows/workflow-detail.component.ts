@@ -34,6 +34,9 @@ const KIND_CHIP: Record<string, ChipVariant> = {
           <a [routerLink]="['/workflows', key(), 'edit']">
             <button type="button" cf-button>Edit</button>
           </a>
+          <a [routerLink]="['/workflows', key(), 'dry-run']">
+            <button type="button" cf-button>Dry-run</button>
+          </a>
           <a routerLink="/traces/new" [queryParams]="{ workflow: key() }">
             <button type="button" cf-button variant="primary">Submit run</button>
           </a>

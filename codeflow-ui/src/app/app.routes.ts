@@ -43,6 +43,11 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/workflows/editor/workflow-canvas.component').then(m => m.WorkflowCanvasComponent)
   },
   {
+    path: 'workflows/:key/dry-run',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/workflows/dry-run/workflow-dry-run.component').then(m => m.WorkflowDryRunComponent)
+  },
+  {
     path: 'workflows/:key',
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/workflows/workflow-detail.component').then(m => m.WorkflowDetailComponent)

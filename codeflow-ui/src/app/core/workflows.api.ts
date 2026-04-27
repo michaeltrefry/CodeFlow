@@ -226,4 +226,122 @@ export class WorkflowsApi {
       `/api/workflows/${encodeURIComponent(key)}/${version}/dataflow`
     );
   }
+
+  // ---------- T1: workflow fixtures + dry-run ----------
+
+  listFixtures(workflowKey: string): Observable<WorkflowFixtureSummary[]> {
+    return this.http.get<WorkflowFixtureSummary[]>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures`
+    );
+  }
+
+  getFixture(workflowKey: string, id: number): Observable<WorkflowFixtureDetail> {
+    return this.http.get<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`
+    );
+  }
+
+  createFixture(workflowKey: string, payload: WorkflowFixtureCreate): Observable<WorkflowFixtureDetail> {
+    return this.http.post<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures`,
+      payload
+    );
+  }
+
+  updateFixture(workflowKey: string, id: number, payload: WorkflowFixtureUpdate): Observable<WorkflowFixtureDetail> {
+    return this.http.put<WorkflowFixtureDetail>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`,
+      payload
+    );
+  }
+
+  deleteFixture(workflowKey: string, id: number): Observable<void> {
+    return this.http.delete<void>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/fixtures/${id}`
+    );
+  }
+
+  dryRun(workflowKey: string, payload: DryRunRequestBody): Observable<DryRunResponse> {
+    return this.http.post<DryRunResponse>(
+      `/api/workflows/${encodeURIComponent(workflowKey)}/dry-run`,
+      payload
+    );
+  }
+}
+
+// ---------- T1 types ----------
+
+export interface WorkflowFixtureSummary {
+  id: number;
+  workflowKey: string;
+  fixtureKey: string;
+  displayName: string;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+export interface WorkflowFixtureDetail extends WorkflowFixtureSummary {
+  startingInput: string | null;
+  /** Map of agentKey → ordered array of mock responses. */
+  mockResponses: Record<string, DryRunMockResponse[]>;
+}
+
+export interface DryRunMockResponse {
+  decision: string;
+  output?: string | null;
+  payload?: unknown;
+}
+
+export interface WorkflowFixtureCreate {
+  workflowKey: string;
+  fixtureKey: string;
+  displayName: string;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]>;
+}
+
+export interface WorkflowFixtureUpdate {
+  fixtureKey: string;
+  displayName: string;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]>;
+}
+
+export interface DryRunRequestBody {
+  fixtureId?: number | null;
+  workflowVersion?: number | null;
+  startingInput?: string | null;
+  mockResponses?: Record<string, DryRunMockResponse[]> | null;
+}
+
+export type DryRunState = 'Completed' | 'HitlReached' | 'Failed' | 'StepLimitExceeded';
+
+export interface DryRunResponse {
+  state: DryRunState;
+  terminalPort: string | null;
+  failureReason: string | null;
+  finalArtifact: string | null;
+  hitlPayload: { nodeId: string; agentKey: string; input: string | null } | null;
+  workflowVariables: Record<string, unknown>;
+  contextVariables: Record<string, unknown>;
+  events: DryRunEvent[];
+}
+
+export interface DryRunEvent {
+  ordinal: number;
+  kind: string;
+  nodeId: string;
+  nodeKind: string;
+  agentKey: string | null;
+  portName: string | null;
+  message: string | null;
+  inputPreview: string | null;
+  outputPreview: string | null;
+  reviewRound: number | null;
+  maxRounds: number | null;
+  subflowDepth: number | null;
+  subflowKey: string | null;
+  subflowVersion: number | null;
+  logs: string[] | null;
+  decisionPayload: unknown;
 }

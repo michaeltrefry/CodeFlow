@@ -43,6 +43,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<PromptPartialEntity> PromptPartials => Set<PromptPartialEntity>();
 
+    public DbSet<WorkflowFixtureEntity> WorkflowFixtures => Set<WorkflowFixtureEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
