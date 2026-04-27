@@ -253,7 +253,8 @@ export interface GitHostSettingsResponse {
   mode: GitHostMode;
   baseUrl?: string | null;
   hasToken: boolean;
-  workingDirectoryRoot?: string | null;
+  /** Read-only display value: the working-directory root the deployment is currently using. */
+  workingDirectoryRoot: string;
   workingDirectoryMaxAgeDays?: number | null;
   lastVerifiedAtUtc?: string | null;
   updatedBy?: string | null;
@@ -270,7 +271,6 @@ export interface GitHostTokenUpdateRequest {
 export interface GitHostSettingsRequest {
   mode: GitHostMode;
   baseUrl?: string | null;
-  workingDirectoryRoot?: string | null;
   workingDirectoryMaxAgeDays?: number | null;
   token: GitHostTokenUpdateRequest;
 }

@@ -47,9 +47,10 @@ import { CardComponent } from '../../../ui/card.component';
 
           <div class="field span-2">
             <span class="field-label">Working directory root</span>
-            <input class="input mono" [ngModel]="workingDirectoryRoot()" (ngModelChange)="workingDirectoryRoot.set($event)"
-                   name="workingDirectoryRoot" placeholder="/app/workdirs" />
-            <span class="field-hint">Absolute path inside the api / worker containers — the production stack mounts <code>/app/workdirs</code> as a shared host volume (see <code>deploy/docker-compose.prod.yml</code>). Code-aware workflows materialize per-trace working directories under <code>{{ '{root}/{traceId}/' }}</code>. Leave blank to disable.</span>
+            <div class="row">
+              <cf-chip mono>{{ workingDirectoryRoot() || '—' }}</cf-chip>
+            </div>
+            <span class="field-hint">Locked deployment-wide — the api and worker both mount this path as a shared host volume. Override at deploy time via <code>Workspace__WorkingDirectoryRoot</code>. Code-aware workflows materialize per-trace directories under <code>{{ '{root}/{traceId}/' }}</code>.</span>
           </div>
 
           <div class="field">
@@ -186,13 +187,11 @@ export class GitHostSettingsComponent implements OnInit {
     this.saving.set(true);
     this.error.set(null);
     const isReplacing = !this.hasToken() || this.replacingToken();
-    const trimmedRoot = this.workingDirectoryRoot()?.trim() ?? '';
     const ttl = this.workingDirectoryMaxAgeDays();
     this.api
       .set({
         mode: this.mode(),
         baseUrl: this.mode() === 'GitLab' ? this.baseUrl() : null,
-        workingDirectoryRoot: trimmedRoot.length > 0 ? trimmedRoot : null,
         workingDirectoryMaxAgeDays: ttl != null && ttl > 0 ? ttl : null,
         token: isReplacing
           ? { action: 'Replace', value: this.tokenValue() }
@@ -249,7 +248,7 @@ export class GitHostSettingsComponent implements OnInit {
   private applyResponse(response: GitHostSettingsResponse): void {
     this.mode.set(response.mode);
     this.baseUrl.set(response.baseUrl ?? '');
-    this.workingDirectoryRoot.set(response.workingDirectoryRoot ?? '');
+    this.workingDirectoryRoot.set(response.workingDirectoryRoot);
     this.workingDirectoryMaxAgeDays.set(response.workingDirectoryMaxAgeDays ?? null);
     this.hasToken.set(response.hasToken);
     this.lastVerifiedAtUtc.set(response.lastVerifiedAtUtc ?? null);
@@ -257,8 +256,8 @@ export class GitHostSettingsComponent implements OnInit {
 
   private formatError(err: unknown): string {
     // ASP.NET ValidationProblemDetails: { errors: { fieldName: ["msg", ...], ... }, title, ... }.
-    // Surface field-level messages (joined) when present so workingDirectoryRoot etc. show
-    // their specific complaint rather than the generic "One or more validation errors occurred."
+    // Surface field-level messages (joined) when present so token / baseUrl etc. show their
+    // specific complaint rather than the generic "One or more validation errors occurred."
     if (err && typeof err === 'object' && 'error' in err) {
       const body = (err as { error: unknown }).error;
       if (body && typeof body === 'object') {

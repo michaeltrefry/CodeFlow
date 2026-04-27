@@ -36,11 +36,22 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
         "codeflow-api-tests",
         Guid.NewGuid().ToString("N"));
 
+    // Per-fixture WorkspaceOptions.WorkingDirectoryRoot. The production default
+    // (`/app/codeflow/workdir`) isn't writable in CI / dev; tests get an isolated temp dir so
+    // per-trace workdir creation + delete-cleanup hooks exercise real filesystem state.
+    private readonly string workingDirectoryRoot = Path.Combine(
+        Path.GetTempPath(),
+        "codeflow-api-tests-workdir",
+        Guid.NewGuid().ToString("N"));
+
     public string ArtifactRoot => artifactRoot;
+
+    public string WorkingDirectoryRoot => workingDirectoryRoot;
 
     public async Task InitializeAsync()
     {
         Directory.CreateDirectory(artifactRoot);
+        Directory.CreateDirectory(workingDirectoryRoot);
         await mariaDbContainer.StartAsync();
         await rabbitMqContainer.StartAsync();
     }
@@ -54,6 +65,17 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
             try
             {
                 Directory.Delete(artifactRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+
+        if (Directory.Exists(workingDirectoryRoot))
+        {
+            try
+            {
+                Directory.Delete(workingDirectoryRoot, recursive: true);
             }
             catch (IOException)
             {
@@ -80,6 +102,7 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
                 ["RabbitMq:Username"] = "codeflow",
                 ["RabbitMq:Password"] = "codeflow_dev",
                 ["Artifacts:RootDirectory"] = artifactRoot,
+                ["Workspace:WorkingDirectoryRoot"] = workingDirectoryRoot,
                 ["Auth:DevelopmentBypass"] = "true",
                 ["Auth:RequireHttpsMetadata"] = "false",
                 ["McpEndpointPolicy:AllowInternalTargets"] = "true",

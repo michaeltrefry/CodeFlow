@@ -31,10 +31,6 @@ public sealed class GitHostSettingsEntityConfiguration : IEntityTypeConfiguratio
             .HasColumnType("varbinary(1024)")
             .IsRequired();
 
-        builder.Property(s => s.WorkingDirectoryRoot)
-            .HasColumnName("working_directory_root")
-            .HasMaxLength(512);
-
         builder.Property(s => s.WorkingDirectoryMaxAgeDays)
             .HasColumnName("working_directory_max_age_days");
 

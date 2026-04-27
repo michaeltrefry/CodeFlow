@@ -6,6 +6,7 @@ using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Text;
 using System.Text.Json;
 
@@ -134,7 +135,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// operator can inspect what went wrong. Slice F's periodic sweep catches anything that's
     /// genuinely orphaned past the configured TTL.
     /// </summary>
-    private static async Task TryCleanupHappyPathWorkdirAsync(
+    private static Task TryCleanupHappyPathWorkdirAsync(
         BehaviorContext<WorkflowSagaStateEntity> context)
     {
         var saga = context.Saga;
@@ -142,36 +143,24 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         // Subflow children share the parent's workdir — cleanup happens once at the top level.
         if (saga.ParentTraceId is not null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         if (!AllRepositoriesHavePrUrl(saga.InputsJson))
         {
-            return;
+            return Task.CompletedTask;
         }
 
         var services = context.GetPayload<IServiceProvider>();
-        var settingsRepo = services.GetRequiredService<IGitHostSettingsRepository>();
+        var workspaceOptions = services.GetRequiredService<IOptions<WorkspaceOptions>>();
         var loggerFactory = services.GetRequiredService<ILoggerFactory>();
 
-        Runtime.Workspace.GitHostSettings? settings;
-        try
-        {
-            settings = await settingsRepo.GetAsync();
-        }
-        catch (Exception ex)
-        {
-            loggerFactory.CreateLogger<WorkflowSagaStateMachine>().LogWarning(
-                ex,
-                "Could not read GitHostSettings for happy-path workdir cleanup of trace {TraceId}; skipping.",
-                saga.TraceId);
-            return;
-        }
-
         TraceWorkdirCleanup.TryRemove(
-            settings?.WorkingDirectoryRoot,
+            workspaceOptions.Value.WorkingDirectoryRoot,
             saga.TraceId,
             loggerFactory.CreateLogger<WorkflowSagaStateMachine>());
+
+        return Task.CompletedTask;
     }
 
     /// <summary>

@@ -5,12 +5,14 @@ using CodeFlow.Api.Validation;
 using CodeFlow.Contracts;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -183,7 +185,7 @@ public static class TracesEndpoints
         CodeFlowDbContext dbContext,
         ICurrentUser currentUser,
         LogicNodeScriptHost scriptHost,
-        IGitHostSettingsRepository gitHostSettingsRepository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.WorkflowKey))
@@ -266,12 +268,15 @@ public static class TracesEndpoints
         seededWorkflowVars["traceId"] = JsonDocument.Parse(
             JsonSerializer.Serialize(traceId.ToString("N"))).RootElement.Clone();
 
-        var gitHostSettings = await gitHostSettingsRepository.GetAsync(cancellationToken);
-        if (!string.IsNullOrWhiteSpace(gitHostSettings?.WorkingDirectoryRoot))
+        // The per-trace working-directory root is locked to WorkspaceOptions.WorkingDirectoryRoot
+        // (default `/app/codeflow/workdir`) — a deployment-level constant matched by a shared host
+        // volume on both api and worker. Failure to create the per-trace directory is fatal: it
+        // means the operator hasn't mounted the volume on this side, and proceeding would let
+        // code-aware agents fail later with the path-rejection symptoms the runtime can't fully
+        // diagnose. Override via `Workspace__WorkingDirectoryRoot` for non-container dev.
         {
-            var traceWorkDir = Path.Combine(
-                gitHostSettings.WorkingDirectoryRoot,
-                traceId.ToString("N"));
+            var workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
+            var traceWorkDir = Path.Combine(workingDirectoryRoot, traceId.ToString("N"));
             try
             {
                 Directory.CreateDirectory(traceWorkDir);
@@ -279,7 +284,8 @@ public static class TracesEndpoints
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 return Results.Problem(
-                    detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}",
+                    detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}. "
+                        + $"Ensure '{workingDirectoryRoot}' is mounted as a writable shared volume on the api and worker containers.",
                     statusCode: StatusCodes.Status500InternalServerError);
             }
             seededWorkflowVars["workDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
@@ -425,7 +431,7 @@ public static class TracesEndpoints
     private static async Task<IResult> DeleteTraceAsync(
         Guid id,
         CodeFlowDbContext dbContext,
-        IGitHostSettingsRepository gitHostSettingsRepository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -445,7 +451,7 @@ public static class TracesEndpoints
             });
         }
 
-        await DeleteTracesAsync(dbContext, [saga], gitHostSettingsRepository, loggerFactory, cancellationToken);
+        await DeleteTracesAsync(dbContext, [saga], workspaceOptions, loggerFactory, cancellationToken);
 
         return Results.NoContent();
     }
@@ -453,7 +459,7 @@ public static class TracesEndpoints
     private static async Task<IResult> BulkDeleteTracesAsync(
         BulkDeleteTracesRequest request,
         CodeFlowDbContext dbContext,
-        IGitHostSettingsRepository gitHostSettingsRepository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -490,7 +496,7 @@ public static class TracesEndpoints
 
         var sagas = await query.ToListAsync(cancellationToken);
         var deletedCount = await DeleteTracesAsync(
-            dbContext, sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
+            dbContext, sagas, workspaceOptions, loggerFactory, cancellationToken);
 
         return Results.Ok(new BulkDeleteTracesResponse(deletedCount));
     }
@@ -1180,7 +1186,7 @@ public static class TracesEndpoints
     private static async Task<int> DeleteTracesAsync(
         CodeFlowDbContext dbContext,
         IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
-        IGitHostSettingsRepository gitHostSettingsRepository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -1219,22 +1225,20 @@ public static class TracesEndpoints
         dbContext.WorkflowSagas.RemoveRange(sagas);
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        await TryRemoveTraceWorkdirsAsync(
-            sagas, gitHostSettingsRepository, loggerFactory, cancellationToken);
+        TryRemoveTraceWorkdirs(sagas, workspaceOptions, loggerFactory);
 
         return sagas.Count;
     }
 
     // Best-effort cleanup of per-trace working directories after the DB rows have been removed.
     // Subflow children share the parent's workdir, so only top-level sagas trigger the delete.
-    // All failures (missing config, unset root, missing dir, IO/permission errors) are swallowed
-    // and logged — the API call must not fail because the filesystem cleanup couldn't complete.
-    // Slice F (periodic sweep) catches anything left behind.
-    private static async Task TryRemoveTraceWorkdirsAsync(
+    // All failures (missing dir, IO/permission errors) are swallowed and logged by
+    // TraceWorkdirCleanup.TryRemove — the API call must not fail because filesystem cleanup
+    // couldn't complete. The periodic sweep catches anything left behind.
+    private static void TryRemoveTraceWorkdirs(
         IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
-        IGitHostSettingsRepository gitHostSettingsRepository,
-        ILoggerFactory loggerFactory,
-        CancellationToken cancellationToken)
+        IOptions<WorkspaceOptions> workspaceOptions,
+        ILoggerFactory loggerFactory)
     {
         var topLevel = sagas.Where(s => s.ParentTraceId is null).ToArray();
         if (topLevel.Length == 0)
@@ -1242,28 +1246,12 @@ public static class TracesEndpoints
             return;
         }
 
-        Runtime.Workspace.GitHostSettings? settings;
-        try
-        {
-            settings = await gitHostSettingsRepository.GetAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            loggerFactory.CreateLogger(typeof(TracesEndpoints))
-                .LogWarning(ex, "Could not read GitHostSettings for trace-delete workdir cleanup; skipping.");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(settings?.WorkingDirectoryRoot))
-        {
-            return;
-        }
-
+        var workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
         var logger = loggerFactory.CreateLogger(typeof(TracesEndpoints));
         foreach (var saga in topLevel)
         {
             CodeFlow.Runtime.Workspace.TraceWorkdirCleanup.TryRemove(
-                settings.WorkingDirectoryRoot,
+                workingDirectoryRoot,
                 saga.TraceId,
                 logger);
         }

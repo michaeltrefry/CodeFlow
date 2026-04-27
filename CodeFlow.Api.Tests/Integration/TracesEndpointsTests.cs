@@ -195,105 +195,13 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     [Fact]
     public async Task Delete_ShouldRemoveTraceWorkdirIfPresent()
     {
-        var workDirRoot = Path.Combine(
-            Path.GetTempPath(),
-            $"codeflow-workdir-root-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(workDirRoot);
-
-        try
-        {
-            await ConfigureWorkingDirectoryRootAsync(workDirRoot);
-
-            var traceId = Guid.NewGuid();
-            var traceWorkDir = Path.Combine(workDirRoot, traceId.ToString("N"));
-            Directory.CreateDirectory(traceWorkDir);
-            await File.WriteAllTextAsync(Path.Combine(traceWorkDir, "marker.txt"), "hello");
-
-            await SeedTraceAsync(
-                traceId,
-                Guid.NewGuid(),
-                currentState: "Completed",
-                includePendingHitl: false);
-
-            using var client = factory.CreateClient();
-            var response = await client.DeleteAsync($"/api/traces/{traceId}");
-            response.StatusCode.Should().Be(HttpStatusCode.NoContent);
-
-            Directory.Exists(traceWorkDir).Should().BeFalse(
-                "the trace-delete cleanup hook must remove the per-trace workdir");
-        }
-        finally
-        {
-            await ResetGitHostSettingsAsync();
-            try { Directory.Delete(workDirRoot, recursive: true); } catch { /* best-effort */ }
-        }
-    }
-
-    [Fact]
-    public async Task BulkDelete_ShouldRemoveWorkdirsForEveryDeletedTrace()
-    {
-        var workDirRoot = Path.Combine(
-            Path.GetTempPath(),
-            $"codeflow-workdir-root-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(workDirRoot);
-
-        try
-        {
-            await ConfigureWorkingDirectoryRootAsync(workDirRoot);
-
-            var deletedTraceA = Guid.NewGuid();
-            var deletedTraceB = Guid.NewGuid();
-            var keptTrace = Guid.NewGuid();
-
-            var workDirA = Path.Combine(workDirRoot, deletedTraceA.ToString("N"));
-            var workDirB = Path.Combine(workDirRoot, deletedTraceB.ToString("N"));
-            var workDirKept = Path.Combine(workDirRoot, keptTrace.ToString("N"));
-            Directory.CreateDirectory(workDirA);
-            Directory.CreateDirectory(workDirB);
-            Directory.CreateDirectory(workDirKept);
-
-            await SeedTraceAsync(
-                deletedTraceA, Guid.NewGuid(),
-                currentState: "Completed",
-                includePendingHitl: false,
-                updatedAtUtc: DateTime.UtcNow.AddDays(-10));
-            await SeedTraceAsync(
-                deletedTraceB, Guid.NewGuid(),
-                currentState: "Completed",
-                includePendingHitl: false,
-                updatedAtUtc: DateTime.UtcNow.AddDays(-10));
-            await SeedTraceAsync(
-                keptTrace, Guid.NewGuid(),
-                currentState: "Completed",
-                includePendingHitl: false,
-                updatedAtUtc: DateTime.UtcNow.AddDays(-2));
-
-            using var client = factory.CreateClient();
-            var response = await client.PostAsJsonAsync("/api/traces/bulk-delete", new
-            {
-                state = "Completed",
-                olderThanDays = 7
-            });
-            response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-            Directory.Exists(workDirA).Should().BeFalse();
-            Directory.Exists(workDirB).Should().BeFalse();
-            Directory.Exists(workDirKept).Should().BeTrue(
-                "the recent trace was not deleted, so its workdir must remain");
-        }
-        finally
-        {
-            await ResetGitHostSettingsAsync();
-            try { Directory.Delete(workDirRoot, recursive: true); } catch { /* best-effort */ }
-        }
-    }
-
-    [Fact]
-    public async Task Delete_ShouldSucceedWhenWorkingDirectoryRootIsUnconfigured()
-    {
-        await ResetGitHostSettingsAsync();
+        var workDirRoot = factory.WorkingDirectoryRoot;
 
         var traceId = Guid.NewGuid();
+        var traceWorkDir = Path.Combine(workDirRoot, traceId.ToString("N"));
+        Directory.CreateDirectory(traceWorkDir);
+        await File.WriteAllTextAsync(Path.Combine(traceWorkDir, "marker.txt"), "hello");
+
         await SeedTraceAsync(
             traceId,
             Guid.NewGuid(),
@@ -302,28 +210,56 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         using var client = factory.CreateClient();
         var response = await client.DeleteAsync($"/api/traces/{traceId}");
-        response.StatusCode.Should().Be(HttpStatusCode.NoContent,
-            "trace-delete must succeed when no workdir root is configured (non-code workflows)");
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        Directory.Exists(traceWorkDir).Should().BeFalse(
+            "the trace-delete cleanup hook must remove the per-trace workdir");
     }
 
-    private async Task ConfigureWorkingDirectoryRootAsync(string root)
+    [Fact]
+    public async Task BulkDelete_ShouldRemoveWorkdirsForEveryDeletedTrace()
     {
-        using var scope = factory.Services.CreateScope();
-        var repository = scope.ServiceProvider
-            .GetRequiredService<IGitHostSettingsRepository>();
-        await repository.SetAsync(new CodeFlow.Runtime.Workspace.GitHostSettingsWrite(
-            Mode: CodeFlow.Runtime.Workspace.GitHostMode.GitHub,
-            BaseUrl: null,
-            Token: CodeFlow.Runtime.Workspace.GitHostTokenUpdate.Replace("ghp_workdir_test_token"),
-            UpdatedBy: "test",
-            WorkingDirectoryRoot: root));
-    }
+        var workDirRoot = factory.WorkingDirectoryRoot;
 
-    private async Task ResetGitHostSettingsAsync()
-    {
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
-        await db.GitHostSettings.ExecuteDeleteAsync();
+        var deletedTraceA = Guid.NewGuid();
+        var deletedTraceB = Guid.NewGuid();
+        var keptTrace = Guid.NewGuid();
+
+        var workDirA = Path.Combine(workDirRoot, deletedTraceA.ToString("N"));
+        var workDirB = Path.Combine(workDirRoot, deletedTraceB.ToString("N"));
+        var workDirKept = Path.Combine(workDirRoot, keptTrace.ToString("N"));
+        Directory.CreateDirectory(workDirA);
+        Directory.CreateDirectory(workDirB);
+        Directory.CreateDirectory(workDirKept);
+
+        await SeedTraceAsync(
+            deletedTraceA, Guid.NewGuid(),
+            currentState: "Completed",
+            includePendingHitl: false,
+            updatedAtUtc: DateTime.UtcNow.AddDays(-10));
+        await SeedTraceAsync(
+            deletedTraceB, Guid.NewGuid(),
+            currentState: "Completed",
+            includePendingHitl: false,
+            updatedAtUtc: DateTime.UtcNow.AddDays(-10));
+        await SeedTraceAsync(
+            keptTrace, Guid.NewGuid(),
+            currentState: "Completed",
+            includePendingHitl: false,
+            updatedAtUtc: DateTime.UtcNow.AddDays(-2));
+
+        using var client = factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/traces/bulk-delete", new
+        {
+            state = "Completed",
+            olderThanDays = 7
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        Directory.Exists(workDirA).Should().BeFalse();
+        Directory.Exists(workDirB).Should().BeFalse();
+        Directory.Exists(workDirKept).Should().BeTrue(
+            "the recent trace was not deleted, so its workdir must remain");
     }
 
     [Fact]
