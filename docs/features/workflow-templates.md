@@ -21,6 +21,18 @@ A standalone workflow with one human-in-the-loop checkpoint. Materializes:
 
 Drop the resulting workflow as a Subflow node anywhere you want a human checkpoint between subflows. The Subflow node automatically inherits the Approved + Cancelled ports.
 
+### Setup → loop → finalize (`setup-loop-finalize`)
+
+The doc's "setup agent before a loop" pattern. A setup agent seeds the workflow bag from the input, then a producer/reviewer ReviewLoop iterates against that bag, with an HITL escalation on the Exhausted port. Materializes 6 entities:
+- `<prefix>-setup` (Agent v1) — Start setup agent. The workflow node carries an `inputScript` with a TODO comment block showing where to seed `workflow.*` from `input.*`.
+- `<prefix>-producer` (Agent v1) — pins `@codeflow/producer-base`.
+- `<prefix>-reviewer` (Agent v1) — pins `@codeflow/reviewer-base`; declares `Approved` + `Rejected`.
+- `<prefix>-escalation-form` (Hitl agent v1) — passthrough form with `Approved` + `Cancelled` ports the operator chooses on round-budget exhaustion.
+- `<prefix>-inner` (Workflow v1) — Start (producer) → reviewer.
+- `<prefix>` (Workflow v1) — Start (setup) → ReviewLoop pointing at `<prefix>-inner` → on Approved exits cleanly; on Exhausted routes to the HITL escalation.
+
+Use when the loop body needs to read parsed/seeded workflow vars that don't exist on the raw input artifact.
+
 ### ReviewLoop pair (`review-loop-pair`)
 
 The canonical "draft, critique, finalize" pattern. Materializes:
@@ -63,6 +75,6 @@ Templates live in `CodeFlow.Api/WorkflowTemplates/`. To add one:
 
 Templates currently only describe new versions at v1. Bumping a template doesn't bump existing materialized workflows — those are operator-owned.
 
-## Status: S6/S7
+## Status: S7
 
-S6 (Setup → loop → finalize) and S7 (Lifecycle wrapper) are designed but not yet shipped — they depend on S2 (HITL form presets, frontend) and a few additional editor surfaces. The framework supports them once the prerequisites land.
+S7 (Lifecycle wrapper) is designed but not yet shipped — it depends on S2 (HITL form presets, frontend) and a few additional editor surfaces. The framework supports it once the prerequisites land.

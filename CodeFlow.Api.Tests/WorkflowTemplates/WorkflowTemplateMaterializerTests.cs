@@ -175,6 +175,95 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
             && t.Category == WorkflowTemplateCategory.ReviewLoop);
         listed.Should().Contain(t => t.Id == "hitl-approval-gate"
             && t.Category == WorkflowTemplateCategory.Hitl);
+        listed.Should().Contain(t => t.Id == "setup-loop-finalize"
+            && t.Category == WorkflowTemplateCategory.Other);
+    }
+
+    [Fact]
+    public async Task SetupLoopFinalizeTemplate_Materialize_CreatesAllSixEntities()
+    {
+        // S6 acceptance: scaffold lands setup + producer + reviewer + escalation HITL +
+        // inner workflow + outer workflow. Authors fill in the setup input-script TODO and
+        // the producer/reviewer prompts to operationalize it.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"slf-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        var result = await materializer.MaterializeAsync(
+            templateId: "setup-loop-finalize",
+            namePrefix: prefix,
+            createdBy: "tester");
+
+        result.EntryWorkflowKey.Should().Be(prefix);
+        result.EntryWorkflowVersion.Should().Be(1);
+        result.CreatedEntities.Should().HaveCount(6);
+        result.CreatedEntities.Select(e => e.Key).Should().BeEquivalentTo(new[]
+        {
+            $"{prefix}-setup",
+            $"{prefix}-producer",
+            $"{prefix}-reviewer",
+            $"{prefix}-escalation-form",
+            $"{prefix}-inner",
+            prefix,
+        });
+    }
+
+    [Fact]
+    public async Task SetupLoopFinalizeTemplate_OuterWorkflow_WiresExhaustedToHitlEscalation()
+    {
+        // S6 acceptance: the outer workflow's ReviewLoop routes its Exhausted port to the
+        // HITL escalation form, while Approved exits cleanly as a terminal port.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"slf-wiring-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "setup-loop-finalize",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var outer = await workflowRepo.GetAsync(prefix, 1);
+        var loopNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.ReviewLoop);
+        var hitlNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.Hitl);
+
+        loopNode.SubflowKey.Should().Be($"{prefix}-inner");
+        loopNode.LoopDecision.Should().Be("Rejected");
+        loopNode.RejectionHistory.Should().NotBeNull();
+        loopNode.RejectionHistory!.Enabled.Should().BeTrue();
+
+        var exhaustedEdge = outer.Edges.Single(e =>
+            e.FromNodeId == loopNode.Id && e.FromPort == "Exhausted");
+        exhaustedEdge.ToNodeId.Should().Be(hitlNode.Id);
+
+        // Approved port is unwired → terminal → surfaces on the parent Subflow if used.
+        outer.TerminalPorts.Should().Contain("Approved");
+    }
+
+    [Fact]
+    public async Task SetupLoopFinalizeTemplate_SetupNode_HasInputScriptWithTodoComment()
+    {
+        // S6 acceptance: the setup agent's input-script slot has a TODO comment block
+        // explaining where to seed globals. Author fills in the template before running.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"slf-todo-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "setup-loop-finalize",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var outer = await workflowRepo.GetAsync(prefix, 1);
+        var setupNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start);
+        setupNode.InputScript.Should().NotBeNullOrEmpty();
+        setupNode.InputScript!.Should().Contain("TODO");
+        setupNode.InputScript.Should().Contain("setWorkflow");
     }
 
     [Fact]
