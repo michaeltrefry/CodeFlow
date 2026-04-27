@@ -66,8 +66,76 @@ public static class WorkflowsEndpoints
         group.MapPost("/validate", ValidateWorkflowAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
+        group.MapPost("/templates/render-transform-preview", RenderTransformPreviewAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
+
         return routes;
     }
+
+    private static IResult RenderTransformPreviewAsync(
+        TransformPreviewRequest request,
+        CodeFlow.Runtime.IScribanTemplateRenderer renderer,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrEmpty(request.Template))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["template"] = new[] { "Template must not be empty." }
+            });
+        }
+
+        var outputType = string.IsNullOrWhiteSpace(request.OutputType)
+            ? "string"
+            : request.OutputType.Trim();
+        if (outputType != "string" && outputType != "json")
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["outputType"] = new[] { "outputType must be 'string' or 'json'." }
+            });
+        }
+
+        var inputJson = request.Input ?? EmptyInputElement;
+        var contextInputs = request.Context ?? EmptyJsonElementDictionary;
+        var workflowInputs = request.Workflow ?? EmptyJsonElementDictionary;
+
+        var scope = CodeFlow.Orchestration.TransformNodeContext.Build(
+            inputJson,
+            contextInputs,
+            workflowInputs);
+
+        string rendered;
+        try
+        {
+            rendered = renderer.Render(request.Template, scope, cancellationToken);
+        }
+        catch (CodeFlow.Runtime.PromptTemplateException ex)
+        {
+            return Results.UnprocessableEntity(new TransformPreviewErrorResponse(ex.Message));
+        }
+
+        if (outputType != "json")
+        {
+            return Results.Ok(new TransformPreviewResponse(rendered, null, null));
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rendered);
+            var parsed = document.RootElement.Clone();
+            return Results.Ok(new TransformPreviewResponse(rendered, parsed, null));
+        }
+        catch (JsonException ex)
+        {
+            return Results.Ok(new TransformPreviewResponse(rendered, null, ex.Message));
+        }
+    }
+
+    private static readonly JsonElement EmptyInputElement = JsonDocument.Parse("{}").RootElement.Clone();
+
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyJsonElementDictionary =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
     private static async Task<IResult> ExportPackageAsync(
         string key,

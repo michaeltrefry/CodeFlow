@@ -1339,4 +1339,140 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
     private sealed record ValidateScriptResponseShape(bool Ok, IReadOnlyList<ValidateScriptErrorShape> Errors);
     private sealed record ValidateScriptErrorShape(int Line, int Column, string Message);
+
+    // ---------- TN-6: Transform-node template preview ----------
+
+    [Fact]
+    public async Task TransformPreview_StringMode_RendersAgainstInputContextWorkflowVars()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hello, {{ input.name }} ({{ input.count }}) ctx={{ context.greeting }} wf={{ workflow.flag }}",
+            outputType = "string",
+            input = new { name = "world", count = 3 },
+            context = new Dictionary<string, object> { ["greeting"] = "ctxv" },
+            workflow = new Dictionary<string, object> { ["flag"] = "wfv" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("hello, world (3) ctx=ctxv wf=wfv");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TransformPreview_JsonMode_HappyPath_ReturnsRenderedAndParsed()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{ \"value\": {{ input.x }}, \"label\": \"{{ context.name }}\" }",
+            outputType = "json",
+            input = new { x = 42 },
+            context = new Dictionary<string, object> { ["name"] = "alpha" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("{ \"value\": 42, \"label\": \"alpha\" }");
+        payload.JsonParseError.Should().BeNull();
+        payload.Parsed.Should().NotBeNull();
+        payload.Parsed!.Value.GetProperty("value").GetInt32().Should().Be(42);
+        payload.Parsed.Value.GetProperty("label").GetString().Should().Be("alpha");
+    }
+
+    [Fact]
+    public async Task TransformPreview_JsonMode_InvalidJson_ReturnsRawAndParseError()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "not json {{ input.text }}",
+            outputType = "json",
+            input = new { text = "world" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("not json world");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task TransformPreview_RenderError_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{{ for i in 0..5000 }}x{{ end }}",
+            outputType = "string"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewErrorResponseShape>();
+        payload!.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task TransformPreview_EmptyTemplate_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "",
+            outputType = "string"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TransformPreview_InvalidOutputType_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hi",
+            outputType = "yaml"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TransformPreview_OmittedOutputType_DefaultsToString()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hello {{ input.name }}",
+            input = new { name = "anon" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("hello anon");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().BeNull();
+    }
+
+    private sealed record TransformPreviewResponseShape(string Rendered, JsonElement? Parsed, string? JsonParseError);
+    private sealed record TransformPreviewErrorResponseShape(string Error);
 }

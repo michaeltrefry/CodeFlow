@@ -8,7 +8,9 @@ import {
   OnDestroy,
   ViewChild,
   computed,
+  effect,
   inject,
+  runInInjectionContext,
   signal
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -685,6 +687,44 @@ function defaultStartInput(): WorkflowInput {
                     </label>
                   </div>
                 </div>
+
+                <div class="field transform-preview-block">
+                  <span class="field-label">Sample input <span class="muted xsmall">(JSON, exposed as <code>input.*</code>)</span></span>
+                  <textarea class="mono transform-fixture-textarea" rows="4" spellcheck="false"
+                            [value]="transformPreviewFixture()"
+                            (input)="onTransformPreviewFixtureChanged($any($event.target).value)"
+                            placeholder='{ "example": 1 }'></textarea>
+                  @if (transformPreviewFixtureError(); as err) {
+                    <p class="tag error xsmall transform-preview-fixture-error">{{ err }}</p>
+                  }
+                </div>
+
+                <div class="field transform-preview-block">
+                  <div class="row-spread">
+                    <span class="field-label" style="margin-bottom: 0;">Preview</span>
+                    @if (transformPreviewPending()) {
+                      <span class="muted xsmall">rendering…</span>
+                    }
+                  </div>
+                  @if (transformPreviewError(); as err) {
+                    <p class="tag error xsmall">Render error — would route to <code>Failed</code>:</p>
+                    <pre class="transform-preview-output error">{{ err }}</pre>
+                  } @else if (transformPreviewRendered() === null) {
+                    <p class="muted xsmall">Enter a template above to see the rendered output.</p>
+                  } @else if (sel.editor.outputType === 'json') {
+                    @if (transformPreviewJsonParseError(); as parseErr) {
+                      <p class="tag error xsmall">JSON parse error — would route to <code>Failed</code>:</p>
+                      <pre class="transform-preview-output error">{{ parseErr }}</pre>
+                      <p class="muted xsmall transform-preview-subhead">Raw render:</p>
+                      <pre class="transform-preview-output">{{ transformPreviewRendered() }}</pre>
+                    } @else {
+                      <p class="muted xsmall transform-preview-subhead">Parsed JSON:</p>
+                      <pre class="transform-preview-output">{{ transformPreviewParsedPretty() }}</pre>
+                    }
+                  } @else {
+                    <pre class="transform-preview-output">{{ transformPreviewRendered() }}</pre>
+                  }
+                </div>
               </div>
             }
 
@@ -1262,6 +1302,34 @@ function defaultStartInput(): WorkflowInput {
     .radio-row { display: flex; flex-direction: column; gap: 0.3rem; }
     .radio-option { display: flex; gap: 0.5rem; align-items: flex-start; cursor: pointer; font-size: 0.8rem; }
     .radio-option input[type="radio"] { margin-top: 0.15rem; }
+    .transform-fixture-textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      resize: vertical;
+      min-height: 4.5rem;
+    }
+    .transform-preview-output {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 0.5rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface-2);
+      max-height: 18rem;
+      overflow: auto;
+      margin: 0;
+    }
+    .transform-preview-output.error {
+      color: #f85149;
+      border-color: rgba(248, 81, 73, 0.4);
+      background: rgba(248, 81, 73, 0.05);
+    }
+    .transform-preview-subhead { margin: 0.4rem 0 0.2rem 0; }
+    .transform-preview-fixture-error { margin-top: 0.3rem; display: inline-block; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
     .muted { color: var(--muted); }
     .xsmall { font-size: 0.72rem; }
@@ -1423,6 +1491,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly dataflowLoading = signal(false);
   readonly dataflowError = signal<string | null>(null);
   readonly dataflowDirty = signal(false);
+
+  /** TN-6: Transform-node live preview state. Per-component (not per-node) so the fixture text
+   *  carries across selections when the author is iterating, but reset when the selection
+   *  switches off Transform. The preview re-renders on debounced template / outputType /
+   *  fixture changes; client-side fixture-JSON validation gates the call to avoid round-trips
+   *  that the backend would just reject as malformed input. */
+  readonly transformPreviewFixture = signal<string>('{}');
+  readonly transformPreviewRendered = signal<string | null>(null);
+  readonly transformPreviewParsedPretty = signal<string | null>(null);
+  readonly transformPreviewJsonParseError = signal<string | null>(null);
+  readonly transformPreviewError = signal<string | null>(null);
+  readonly transformPreviewPending = signal(false);
+  readonly transformPreviewFixtureError = signal<string | null>(null);
+  private transformPreviewTimer?: ReturnType<typeof setTimeout>;
+  private transformPreviewSelectedNodeId: string | null = null;
 
   /** VZ5: when true, every node renders its implicit Failed port (faded) so authors can wire
    *  recovery edges. When false (default), only Failed ports that already have an edge are
@@ -1848,6 +1931,23 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.editor = editor;
     this.area = area;
 
+    runInInjectionContext(this.injector, () => {
+      effect(() => {
+        const sel = this.selectedNode();
+        if (!sel || sel.editor.kind !== 'Transform') {
+          if (this.transformPreviewSelectedNodeId !== null) {
+            this.transformPreviewSelectedNodeId = null;
+            this.cancelTransformPreview();
+            this.resetTransformPreviewSignals();
+          }
+          return;
+        }
+        if (this.transformPreviewSelectedNodeId === sel.editor.id) return;
+        this.transformPreviewSelectedNodeId = sel.editor.id;
+        this.scheduleTransformPreview();
+      });
+    });
+
     const key = this.route.snapshot.paramMap.get('key');
     if (key) {
       this.hasExistingKey.set(true);
@@ -1881,6 +1981,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       element.removeEventListener('click', onClick);
     }
     this.connectionElements.clear();
+    this.cancelTransformPreview();
     this.area?.destroy();
   }
 
@@ -2748,6 +2849,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   onTransformTemplateChanged(node: WorkflowEditorNode, value: string): void {
     node.template = value;
     if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+    this.scheduleTransformPreview();
   }
 
   onTransformOutputTypeChanged(node: WorkflowEditorNode, value: WorkflowTransformOutputType): void {
@@ -2756,6 +2858,114 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     node.label = labelFor(node);
     this.area?.update('node', node.id);
     if (this.dataflowSnapshot()) this.dataflowDirty.set(true);
+    this.scheduleTransformPreview();
+  }
+
+  onTransformPreviewFixtureChanged(value: string): void {
+    this.transformPreviewFixture.set(value);
+    this.scheduleTransformPreview();
+  }
+
+  private scheduleTransformPreview(): void {
+    this.cancelTransformPreview();
+    const sel = this.selectedNode();
+    if (!sel || sel.editor.kind !== 'Transform') {
+      this.resetTransformPreviewSignals();
+      return;
+    }
+    const template = sel.editor.template ?? '';
+    if (!template.trim()) {
+      this.resetTransformPreviewSignals();
+      return;
+    }
+    this.transformPreviewPending.set(true);
+    this.transformPreviewTimer = setTimeout(() => {
+      this.transformPreviewTimer = undefined;
+      const current = this.selectedNode();
+      if (!current || current.editor.kind !== 'Transform' || current.editor.id !== sel.editor.id) return;
+      this.runTransformPreview(current.editor);
+    }, 200);
+  }
+
+  private cancelTransformPreview(): void {
+    if (this.transformPreviewTimer !== undefined) {
+      clearTimeout(this.transformPreviewTimer);
+      this.transformPreviewTimer = undefined;
+    }
+  }
+
+  private resetTransformPreviewSignals(): void {
+    this.transformPreviewRendered.set(null);
+    this.transformPreviewParsedPretty.set(null);
+    this.transformPreviewJsonParseError.set(null);
+    this.transformPreviewError.set(null);
+    this.transformPreviewPending.set(false);
+    this.transformPreviewFixtureError.set(null);
+  }
+
+  private runTransformPreview(node: WorkflowEditorNode): void {
+    const template = node.template ?? '';
+    const outputType: WorkflowTransformOutputType = node.outputType ?? 'string';
+    const fixtureText = this.transformPreviewFixture();
+
+    let inputValue: unknown;
+    if (!fixtureText.trim()) {
+      inputValue = {};
+    } else {
+      try {
+        inputValue = JSON.parse(fixtureText);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.transformPreviewFixtureError.set(`Sample input is not valid JSON: ${message}`);
+        this.transformPreviewPending.set(false);
+        this.transformPreviewRendered.set(null);
+        this.transformPreviewParsedPretty.set(null);
+        this.transformPreviewJsonParseError.set(null);
+        this.transformPreviewError.set(null);
+        return;
+      }
+    }
+    this.transformPreviewFixtureError.set(null);
+
+    this.api.renderTransformPreview({
+      template,
+      outputType,
+      input: inputValue,
+      context: {},
+      workflow: {}
+    }).subscribe({
+      next: response => {
+        this.transformPreviewRendered.set(response.rendered);
+        this.transformPreviewError.set(null);
+        this.transformPreviewPending.set(false);
+        this.transformPreviewJsonParseError.set(response.jsonParseError ?? null);
+        if (outputType === 'json' && !response.jsonParseError && response.parsed !== undefined) {
+          try {
+            this.transformPreviewParsedPretty.set(JSON.stringify(response.parsed, null, 2));
+          } catch {
+            this.transformPreviewParsedPretty.set(null);
+          }
+        } else {
+          this.transformPreviewParsedPretty.set(null);
+        }
+      },
+      error: err => {
+        const body = err && typeof err === 'object' ? (err as { error?: unknown }).error : null;
+        let message: string;
+        if (body && typeof body === 'object') {
+          message = (body as { error?: string }).error ?? 'Preview render failed.';
+        } else if (typeof body === 'string') {
+          message = body;
+        } else {
+          message = 'Preview render failed.';
+        }
+        this.transformPreviewError.set(message);
+        this.transformPreviewRendered.set(null);
+        this.transformPreviewParsedPretty.set(null);
+        this.transformPreviewJsonParseError.set(null);
+        this.transformPreviewPending.set(false);
+      }
+    });
   }
 
   validateNodeScript(node: WorkflowEditorNode, slot: 'input' | 'output'): void {
