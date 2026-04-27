@@ -28,6 +28,52 @@ We already have everything required:
 Replay-with-edit is the trivial composition of those two: lift recorded responses into the dry-run
 mocks dictionary, expose an editor that lets the author swap any cell, and run the dry-run.
 
+## Design choice: substitution-only, no fresh LLM calls
+
+The MVP plays back **only recorded agent/HITL responses**. We never re-issue an LLM request, even
+past the edit point. An edit overrides a single recorded response; everything downstream is also
+served from the original recordings (or fails fast — see "queue exhaustion" below).
+
+This trades off some power for a much simpler, cheaper, and more deterministic system. Concrete
+implications:
+
+| Concern                                | Implication of substitution-only                                                        |
+|----------------------------------------|-----------------------------------------------------------------------------------------|
+| Recording granularity                  | Existing `DecisionRecord` + `OutputRef` artifacts are *sufficient*. No need to capture LLM request payloads (system prompt, conversation history, tool list). The workflow definition is replayable from itself. |
+| Logic-node evaluations                 | Re-run from the workflow definition every replay. Logic scripts are deterministic on `(input, context, workflow)`, so we don't need to record their evaluations to replay them. (Saga *does* persist `WorkflowSagaLogicEvaluationEntity` rows for the trace UI; replay ignores them.) |
+| Input/output scripts, decision-output templates, P3/P4/P5 built-ins | All re-run from the workflow definition — `DryRunExecutor` v4 has full parity. |
+| HITL nodes during replay               | The recorded human submission is replayed verbatim, indistinguishable from an agent response (the saga emits `AgentInvocationCompleted` on submit). Editing a HITL response works the same way as editing an agent response. |
+| Subflow / ReviewLoop bodies            | Always replay from the root. The dry-run executor walks subflows recursively; mocks are global per agent key, queued in saga-traversal order across the parent + descendant sagas. (Covered by T2-D.) |
+| "Fresh vs. substituted" UI signaling   | Not needed — every event is substituted. The diff view simply highlights *where the substituted timeline diverged from the original*, which is a different and simpler problem. |
+| Cost guard rails                       | **None needed.** Replay never spends tokens. A user can replay aggressively without budget concerns. |
+
+### When substitution-only is the wrong model
+
+It can't answer "what would the model *actually* produce if the prompt changed?" — for that the
+author needs a real run with the new workflow draft. The "replay against newer workflow version"
+lever is the supported workaround for prompt edits; for response edits the substitution model is
+exactly what's wanted ("if the reviewer had said *this* instead, what would happen next?").
+
+### Edge case: queue exhaustion
+
+If an edit changes routing such that a given agent is invoked *more times in the replay than the
+original trace recorded* (e.g., flipping `Approved → Rejected` early extends a ReviewLoop), the
+mock queue runs dry. Behavior:
+
+- `DryRunExecutor` already fails the run with `No mock response queued for agent '<key>'`. The
+  endpoint surfaces this as a structured `replayState=Failed` with a `failureReason` of
+  `"queue_exhausted"` and includes `{ agentKey, exhaustedAfterRound }` in the response.
+- The UI surfaces this as a clear "your edit extended the run past the recorded responses; pad
+  the queue or shorten the run" hint. The author can supply *additional* mocks via an
+  `additionalMocks` field on the request body to extend the queue past the recorded floor —
+  this is the only way replay can "explore beyond" the original recording without making fresh
+  LLM calls.
+
+This is a deliberate design choice: shortening edits replay cleanly, lengthening edits require
+the author to explicitly supply the new responses (turning the replay into a hybrid replay +
+fixture). The alternative — silent fresh inference — would re-introduce cost concerns, recording
+gaps, and UI complexity we just paid to avoid.
+
 ## Scope
 
 ### MVP (this card)
@@ -43,9 +89,17 @@ mocks dictionary, expose an editor that lets the author swap any cell, and run t
      `DryRunRequest.MockResponses` (the existing dictionary `agentKey → ordered list`).
    - Apply the request body's `Edits[]` to override specific positions:
      ```json
-     { "edits": [{ "agentKey": "reviewer", "ordinal": 3, "decision": "Approved", "output": "looks good", "payload": null }] }
+     {
+       "edits": [{ "agentKey": "reviewer", "ordinal": 3, "decision": "Approved", "output": "looks good", "payload": null }],
+       "additionalMocks": { "reviewer": [{ "decision": "Approved", "output": "...", "payload": null }] },
+       "workflowVersionOverride": null,
+       "force": false
+     }
      ```
-     The ordinal is the per-agent invocation index (1-based) in the original trace.
+     `edits[].ordinal` is the per-agent invocation index (1-based) in the original trace.
+     `additionalMocks` are appended to each agent's mock queue *after* the recorded responses, so
+     a lengthening edit (one that causes more invocations than the recording covers) can succeed
+     by supplying the extra responses. Optional; if absent, queue exhaustion fails the run.
    - Optional `WorkflowVersionOverride` lets the author replay against a newer workflow version
      for "what if I edit the script and re-run?". Defaults to the original trace's version.
    - Run `DryRunExecutor.ExecuteAsync` and return:
@@ -133,13 +187,32 @@ T2-A unblocks T2-B and T2-D in parallel. T2-C lands after T2-B (needs the endpoi
 | Replay engine refuses if the workflow has materially diverged; warns and offers best-effort.    | T2-B drift detector (Hard/Soft/None) + `force=true` opt-in.       |
 | Card opens with a design doc link before implementation begins.                                 | This document — attached to the card before T2-B starts.          |
 
+## Resolved-by-design (would be open questions under a fresh-LLM model)
+
+The following come "free" from the substitution-only design choice and are **not** open:
+
+- **Recording granularity** — DecisionRecord + artifacts is sufficient. We don't need to record
+  full LLM request payloads (system prompts, conversation history, tool lists).
+- **HITL replay semantics** — replay the recorded human submission verbatim (it's an
+  `AgentInvocationCompleted` in the decisions table); editable identically to an agent response.
+- **Subflow boundary semantics** — replay always from the root, recursively walking subflows. The
+  saga-traversal order across parent + descendants is the mock-queue order. (Verified by T2-D.)
+- **Logic-node evaluations** — re-run from the workflow definition (deterministic on input + bag
+  state). Saga's `WorkflowSagaLogicEvaluationEntity` rows are not consulted by replay.
+- **"Fresh vs. substituted" UI signaling** — every event is substituted; the diff view highlights
+  divergence from the original trace, which is a different and simpler problem.
+- **Cost guard rails** — N/A. Replay never spends tokens.
+
 ## Open questions
 
 1. Is "replay produces a stored trace" a hard requirement for shipping, or can MVP ship without
-   it? The card's acceptance lists it; my recommendation is to defer to Phase 2 unless the author
-   explicitly asks otherwise. Captured as a follow-up risk.
+   it? The original card's acceptance lists it; my recommendation is to defer to Phase 2 (T2-E)
+   unless an author explicitly asks otherwise.
 2. What should the diff render look like? Side-by-side full timelines are usable but heavy; a
    "first divergence + N events of context" summary may be more readable. Decide during T2-C.
 3. Replay against a newer workflow version: should drift detection downgrade to "soft" if the
    only changes are layout-only? Defer to T2-B; the cascade-bump's structural-equivalence check
    already gives us the answer for free.
+4. Should `additionalMocks` be authorable in the UI for the lengthening-edit case, or only via
+   the API (with a clear "this edit extends the run past recorded responses; the supported
+   workflow is to start a new fixture from this replay" message)? Decide during T2-C.
