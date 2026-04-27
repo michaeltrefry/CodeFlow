@@ -868,9 +868,6 @@ function defaultStartInput(): WorkflowInput {
     .script-editor {
       display: block;
       min-height: 320px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      overflow: hidden;
     }
     .inputs-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
     .input-card {

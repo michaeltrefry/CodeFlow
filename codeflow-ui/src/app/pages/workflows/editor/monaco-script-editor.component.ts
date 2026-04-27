@@ -3,6 +3,7 @@ import {
   AfterViewInit,
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   EventEmitter,
   Input,
@@ -12,8 +13,10 @@ import {
   Output,
   SimpleChanges,
   ViewChild,
+  effect,
   inject
 } from '@angular/core';
+import { ThemeService } from '../../../core/theme.service';
 import { ensureMonacoEnvironment } from './monaco-environment';
 
 export interface MonacoMarker {
@@ -26,9 +29,10 @@ export interface MonacoMarker {
 }
 
 /**
- * Minimal Monaco wrapper for editing Logic-node scripts. Monaco is lazy-loaded
- * the first time the component mounts so the canvas bundle stays small; the
- * fallback path (loader failure) still renders a working textarea.
+ * Monaco wrapper for editing scripts and templates anywhere in the authoring
+ * surface. Monaco is lazy-loaded the first time the component mounts so route
+ * bundles stay small; the fallback path (loader failure) still renders a
+ * working textarea so authors are never locked out.
  */
 @Component({
   selector: 'cf-monaco-script-editor',
@@ -47,7 +51,14 @@ export interface MonacoMarker {
     }
   `,
   styles: [`
-    :host { display: block; position: relative; min-height: 240px; }
+    :host {
+      display: block;
+      position: relative;
+      min-height: 240px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
     .monaco-host { position: absolute; inset: 0; }
     .monaco-fallback {
       width: 100%;
@@ -55,21 +66,23 @@ export interface MonacoMarker {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 13px;
       padding: 0.5rem;
-      background: #0d1117;
-      color: #e5e9f0;
-      border: 1px solid var(--border);
-      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text);
+      border: 0;
     }
   `]
 })
 export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, OnDestroy {
   private readonly ngZone = inject(NgZone);
+  private readonly themeService = inject(ThemeService);
+  private readonly destroyRef = inject(DestroyRef);
 
   @ViewChild('host', { static: true }) hostRef!: ElementRef<HTMLDivElement>;
 
   @Input() value = '';
   @Input() language = 'javascript';
   @Input() markers: MonacoMarker[] = [];
+  @Input() readOnly = false;
 
   @Output() valueChange = new EventEmitter<string>();
 
@@ -79,7 +92,14 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
   private monacoApi?: typeof import('monaco-editor');
   private model?: unknown;
   private disposeListeners: Array<() => void> = [];
-  private readonly ownerId = `logic-script-${Math.random().toString(36).slice(2)}`;
+  private readonly ownerId = `cf-monaco-${Math.random().toString(36).slice(2)}`;
+
+  constructor() {
+    effect(() => {
+      const mode = this.themeService.theme();
+      this.applyTheme(mode === 'light' ? 'vs' : 'vs-dark');
+    });
+  }
 
   async ngAfterViewInit(): Promise<void> {
     try {
@@ -91,14 +111,15 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         const editor = monaco.editor.create(this.hostRef.nativeElement, {
           value: this.value,
           language: this.language,
-          theme: 'vs-dark',
+          theme: this.themeService.theme() === 'light' ? 'vs' : 'vs-dark',
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           automaticLayout: true,
           fontSize: 13,
           tabSize: 2,
           wordWrap: 'on',
-          fixedOverflowWidgets: true
+          fixedOverflowWidgets: true,
+          readOnly: this.readOnly
         });
 
         const changeDisposable = editor.onDidChangeModelContent(() => {
@@ -133,6 +154,18 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       }
     }
 
+    if (changes['language'] && this.model) {
+      this.monacoApi.editor.setModelLanguage(
+        this.model as import('monaco-editor').editor.ITextModel,
+        this.language
+      );
+    }
+
+    if (changes['readOnly']) {
+      const editor = this.editor as { updateOptions(opts: { readOnly: boolean }): void };
+      editor.updateOptions({ readOnly: this.readOnly });
+    }
+
     if (changes['markers']) {
       this.applyMarkers();
     }
@@ -153,6 +186,11 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     const value = (event.target as HTMLTextAreaElement).value;
     this.value = value;
     this.valueChange.emit(value);
+  }
+
+  private applyTheme(theme: 'vs' | 'vs-dark'): void {
+    if (!this.monacoApi) return;
+    this.monacoApi.editor.setTheme(theme);
   }
 
   private applyMarkers(): void {

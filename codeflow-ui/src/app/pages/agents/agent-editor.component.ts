@@ -21,6 +21,7 @@ import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { TabsComponent, TabItem } from '../../ui/tabs.component';
+import { MonacoScriptEditorComponent } from '../workflows/editor/monaco-script-editor.component';
 
 interface DecisionTemplateRow {
   port: string;
@@ -49,6 +50,7 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
   imports: [
     CommonModule, FormsModule, RouterLink,
     PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent, TabsComponent,
+    MonacoScriptEditorComponent,
   ],
   template: `
     <div [class.page]="!embedded()">
@@ -161,10 +163,11 @@ type EditorTab = 'identity' | 'prompt' | 'model' | 'outputs';
                 </div>
                 <div class="code-field">
                   <div class="code-field-head"><span>hitl.template</span><span>form</span></div>
-                  <textarea class="textarea mono" rows="10"
-                            [(ngModel)]="outputTemplate" name="outputTemplate"
-                            style="border: 0; border-radius: 0; background: var(--bg)"
-                            placeholder="HITL decision: {{ '{{decision:Approved|Rejected}}' }}&#10;{{ '{{feedback}}' }}"></textarea>
+                  <cf-monaco-script-editor
+                    class="hitl-template-editor"
+                    language="plaintext"
+                    [value]="outputTemplate()"
+                    (valueChange)="outputTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
               </div>
             </cf-card>
