@@ -65,6 +65,7 @@ import {
   VersionUpdateResult,
   VersionUpdateTarget
 } from './version-update-dialog.component';
+import { WorkflowVersionHistoryDialogComponent } from './workflow-version-history-dialog.component';
 
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
@@ -212,7 +213,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'app-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent],
+  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -257,6 +258,12 @@ function defaultStartInput(): WorkflowInput {
                     title="Show implicit Failed port on every node (Shift+F)"
                     accesskey="f">
               {{ showImplicitFailed() ? 'Hide Failed ports' : 'Show Failed ports' }}
+            </button>
+            <button type="button" cf-button variant="ghost" size="sm"
+                    (click)="historyOpen.set(true)"
+                    [disabled]="!hasExistingKey()"
+                    title="Compare versions of this workflow">
+              History
             </button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="tidy()">Tidy up</button>
             <button type="button" cf-button variant="ghost" size="sm" (click)="cancel()">Cancel</button>
@@ -937,6 +944,11 @@ function defaultStartInput(): WorkflowInput {
       [target]="versionUpdateTarget()"
       (confirmed)="onVersionUpdateConfirmed($event)"
       (cancelled)="versionUpdateTarget.set(null)"></cf-version-update-dialog>
+
+    <cf-workflow-version-history-dialog
+      [open]="historyOpen()"
+      [workflowKey]="workflowKey()"
+      (closed)="historyOpen.set(false)"></cf-workflow-version-history-dialog>
   `,
   styles: [`
     :host { display: block; height: 100%; }
@@ -1375,6 +1387,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  workflow JSON (lives in localStorage so it survives page reloads). */
   readonly showImplicitFailed = signal(false);
   private static readonly ShowImplicitFailedStorageKey = 'cf:editor:showImplicitFailed';
+
+  /** T3: workflow version history dialog visibility. */
+  readonly historyOpen = signal(false);
 
   /** VZ6: per-candidate terminal-port cache for the Subflow / ReviewLoop pickers. Keyed by
    *  workflow key, value is the candidate's terminal port list at its latest version (the
