@@ -539,4 +539,162 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     private sealed record PreviewResponse(string Rendered);
 
     private sealed record PreviewErrorResponse(string Error);
+
+    [Fact]
+    public async Task RenderPromptPreview_RendersSystemAndPromptAgainstWorkflowVars()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            systemPrompt = "Reviewer: {{ workflow.task }}",
+            promptTemplate = "Plan:\n{{ workflow.currentPlan }}\n\nFeedback: {{ rejectionHistory }}",
+            workflow = new Dictionary<string, object>
+            {
+                ["task"] = "review the impl plan",
+                ["currentPlan"] = "draft v1"
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewResponse>();
+        payload.Should().NotBeNull();
+        payload!.RenderedSystemPrompt.Should().Be("Reviewer: review the impl plan");
+        payload.RenderedPromptTemplate.Should().Contain("Plan:\ndraft v1");
+        payload.AutoInjections.Should().BeEmpty();
+        payload.MissingPartials.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_TypoInVariableRendersVerbatim()
+    {
+        using var client = factory.CreateClient();
+
+        // Acceptance: editing a reviewer prompt that references {{ wokflow.foo }} (typo) shows the
+        // typo unresolved in the preview before the author runs the workflow.
+        var body = new
+        {
+            promptTemplate = "Hello {{ wokflow.foo }}",
+            workflow = new Dictionary<string, object> { ["foo"] = "world" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewResponse>();
+        payload!.RenderedPromptTemplate.Should().Be("Hello {{ wokflow.foo }}");
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_ReviewLoop_AutoInjectsLastRoundReminder()
+    {
+        using var client = factory.CreateClient();
+
+        // Acceptance: auto-injected last-round-reminder is visibly annotated as [auto-injected]
+        // in the preview. The endpoint surfaces it as a structured AutoInjections entry that the
+        // UI renders as a labelled block.
+        var body = new
+        {
+            promptTemplate = "Review {{ workflow.draft }}",
+            workflow = new Dictionary<string, object> { ["draft"] = "the artifact" },
+            reviewRound = 3,
+            reviewMaxRounds = 3
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewResponse>();
+        payload!.RenderedPromptTemplate.Should().Be("Review the artifact");
+        payload.AutoInjections.Should().HaveCount(1);
+        var injection = payload.AutoInjections[0];
+        injection.Key.Should().Be("@codeflow/last-round-reminder");
+        injection.RenderedBody.Should().Contain("FINAL ROUND");
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_ReviewLoop_OptOutSkipsAutoInjection()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            promptTemplate = "Review",
+            reviewRound = 3,
+            reviewMaxRounds = 3,
+            optOutLastRoundReminder = true
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewResponse>();
+        payload!.AutoInjections.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_MalformedTemplate_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new { promptTemplate = "{{ if unterminated" };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewErrorResponse>();
+        payload!.Error.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_StockPartialResolves()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            promptTemplate = "{{ include \"@codeflow/last-round-reminder\" }}",
+            partialPins = new[] { new { key = "@codeflow/last-round-reminder", version = 1 } },
+            reviewRound = 2,
+            reviewMaxRounds = 2
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewResponse>();
+        payload!.RenderedPromptTemplate.Should().Contain("FINAL ROUND");
+        // Explicit include de-dups the auto-injection.
+        payload.AutoInjections.Should().BeEmpty();
+        payload.MissingPartials.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RenderPromptPreview_MissingPartialIsSurfacedInErrorResponse()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            promptTemplate = "{{ include \"@codeflow/never-existed\" }}",
+            partialPins = new[] { new { key = "@codeflow/never-existed", version = 1 } }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-prompt-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<PromptPreviewErrorResponseWithMissing>();
+        payload!.MissingPartials.Should().HaveCount(1);
+        payload.MissingPartials![0].Key.Should().Be("@codeflow/never-existed");
+        payload.Error.Should().NotBeNullOrEmpty();
+    }
+
+    private sealed record PromptPreviewErrorResponseWithMissing(
+        string Error,
+        IReadOnlyList<PromptPreviewMissingPartial>? MissingPartials);
+
+    private sealed record PromptPreviewResponse(
+        string? RenderedSystemPrompt,
+        string? RenderedPromptTemplate,
+        IReadOnlyList<PromptPreviewAutoInjection> AutoInjections,
+        IReadOnlyList<PromptPreviewMissingPartial> MissingPartials);
+
+    private sealed record PromptPreviewAutoInjection(string Key, string RenderedBody, string Reason);
+
+    private sealed record PromptPreviewMissingPartial(string Key, int Version);
 }

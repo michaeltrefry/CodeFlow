@@ -52,7 +52,116 @@ public static class AgentsEndpoints
         group.MapPost("/templates/render-preview", RenderDecisionOutputTemplatePreviewAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
+        group.MapPost("/templates/render-prompt-preview", RenderPromptTemplatePreviewAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+
         return routes;
+    }
+
+    private static async Task<IResult> RenderPromptTemplatePreviewAsync(
+        PromptTemplatePreviewRequest request,
+        CodeFlow.Runtime.ContextAssembler contextAssembler,
+        CodeFlow.Persistence.IPromptPartialRepository partialRepository,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return Results.BadRequest(new { error = "Request body is required." });
+        }
+
+        // Resolve partial bodies first so we can both pass them to the renderer and surface any
+        // missing pins back to the author rather than letting the include silently render the
+        // unresolved `{{ include ... }}` token.
+        var pinTuples = (request.PartialPins ?? Array.Empty<PromptPartialPinDto>())
+            .Where(p => !string.IsNullOrWhiteSpace(p.Key) && p.Version >= 1)
+            .Select(p => (p.Key, p.Version))
+            .ToArray();
+
+        var resolvedBodies = pinTuples.Length == 0
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : (Dictionary<string, string>)(await partialRepository.ResolveBodiesAsync(pinTuples, cancellationToken))
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
+
+        var missing = pinTuples
+            .Where(p => !resolvedBodies.ContainsKey(p.Key))
+            .Select(p => new PromptTemplatePreviewMissingPartial(p.Key, p.Version))
+            .ToArray();
+
+        // If any pin failed to resolve, render against the partials we did get and let the include
+        // for the missing key surface as a Scriban runtime error caught below — but include the
+        // structured `missing` list so the UI can call out exactly which pin is broken instead of
+        // making the author parse the renderer's "Unknown partial" message.
+
+        // P2 mirror: if both review-round bindings are present and the agent didn't pin or include
+        // the partial explicitly, the runtime auto-injects @codeflow/last-round-reminder. Surface
+        // it as a separate AutoInjection block (rendered against the same scope) so the UI can
+        // annotate it `[auto-injected]` rather than trying to fish a Scriban comment out of the
+        // rendered output.
+        var injection = CodeFlow.Orchestration.AgentInvocationConsumer
+            .InjectLastRoundReminderIfApplicable(
+                request.SystemPrompt,
+                request.PromptTemplate,
+                resolvedBodies.Count == 0 ? null : resolvedBodies,
+                request.ReviewRound,
+                request.OptOutLastRoundReminder ?? false);
+
+        IReadOnlyDictionary<string, string>? partialsForRender = injection.Partials
+            ?? (resolvedBodies.Count == 0 ? null : resolvedBodies);
+
+        var variables = CodeFlow.Orchestration.AgentPromptScopeBuilder.BuildAll(
+            request.Workflow,
+            request.Context,
+            request.ReviewRound,
+            request.ReviewMaxRounds,
+            request.Input);
+
+        PromptTemplatePreviewAutoInjection? autoInjection = null;
+        if (injection.Injected)
+        {
+            string renderedReminderBody;
+            try
+            {
+                var reminderRender = contextAssembler.RenderPreview(
+                    systemPrompt: null,
+                    promptTemplate: "{{ include \"" + CodeFlow.Persistence.SystemPromptPartials.LastRoundReminderKey + "\" }}",
+                    variables,
+                    input: request.Input,
+                    partialsForRender);
+                renderedReminderBody = reminderRender.RenderedPromptTemplate ?? string.Empty;
+            }
+            catch (CodeFlow.Runtime.PromptTemplateException ex)
+            {
+                return Results.UnprocessableEntity(new PromptTemplatePreviewErrorResponse(ex.Message, missing));
+            }
+
+            autoInjection = new PromptTemplatePreviewAutoInjection(
+                Key: CodeFlow.Persistence.SystemPromptPartials.LastRoundReminderKey,
+                RenderedBody: renderedReminderBody,
+                Reason: "Auto-injected because the agent runs inside a ReviewLoop and did not opt out or include the partial explicitly.");
+        }
+
+        CodeFlow.Runtime.PromptPreviewRenderResult render;
+        try
+        {
+            render = contextAssembler.RenderPreview(
+                request.SystemPrompt,
+                request.PromptTemplate,
+                variables,
+                request.Input,
+                partialsForRender);
+        }
+        catch (CodeFlow.Runtime.PromptTemplateException ex)
+        {
+            return Results.UnprocessableEntity(new PromptTemplatePreviewErrorResponse(ex.Message, missing));
+        }
+
+        return Results.Ok(new PromptTemplatePreviewResponse(
+            RenderedSystemPrompt: render.RenderedSystemPrompt,
+            RenderedPromptTemplate: render.RenderedPromptTemplate,
+            AutoInjections: autoInjection is null
+                ? Array.Empty<PromptTemplatePreviewAutoInjection>()
+                : new[] { autoInjection },
+            MissingPartials: missing));
     }
 
     private static IResult RenderDecisionOutputTemplatePreviewAsync(

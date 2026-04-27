@@ -7,7 +7,9 @@ import {
   AgentVersion,
   AgentVersionSummary,
   DecisionOutputTemplatePreviewRequest,
-  DecisionOutputTemplatePreviewResponse
+  DecisionOutputTemplatePreviewResponse,
+  PromptTemplatePreviewRequest,
+  PromptTemplatePreviewResponse
 } from './models';
 
 @Injectable({ providedIn: 'root' })
@@ -106,6 +108,15 @@ export class AgentsApi {
   ): Observable<DecisionOutputTemplatePreviewResponse> {
     return this.http.post<DecisionOutputTemplatePreviewResponse>(
       '/api/agents/templates/render-preview',
+      request
+    );
+  }
+
+  renderPromptTemplate(
+    request: PromptTemplatePreviewRequest
+  ): Observable<PromptTemplatePreviewResponse> {
+    return this.http.post<PromptTemplatePreviewResponse>(
+      '/api/agents/templates/render-prompt-preview',
       request
     );
   }

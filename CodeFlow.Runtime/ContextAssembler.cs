@@ -47,6 +47,25 @@ public sealed class ContextAssembler
         "endif", "endunless", "endcapture", "endwhile"
     };
 
+    /// <summary>
+    /// Render system prompt and prompt template independently against the supplied scope, mirroring
+    /// the per-template render path used by <see cref="Assemble"/>. Used by the live prompt-template
+    /// preview endpoint (VZ3) so authors see exactly what the model would receive — including
+    /// legacy-placeholder escaping (typos like <c>{{ wokflow.foo }}</c> render verbatim) and partial
+    /// resolution (when <paramref name="partials"/> is populated).
+    /// </summary>
+    public PromptPreviewRenderResult RenderPreview(
+        string? systemPrompt,
+        string? promptTemplate,
+        IReadOnlyDictionary<string, string?>? variables,
+        string? input,
+        IReadOnlyDictionary<string, string>? partials)
+    {
+        var renderedSystemPrompt = RenderTemplate(systemPrompt, variables, input, partials);
+        var renderedPromptTemplate = RenderTemplate(promptTemplate, variables, input, partials);
+        return new PromptPreviewRenderResult(renderedSystemPrompt, renderedPromptTemplate);
+    }
+
     public IReadOnlyList<ChatMessage> Assemble(ContextAssemblyRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -514,6 +533,8 @@ public sealed class ContextAssembler
             });
     }
 }
+
+public sealed record PromptPreviewRenderResult(string? RenderedSystemPrompt, string? RenderedPromptTemplate);
 
 public sealed class PromptTemplateException : Exception
 {

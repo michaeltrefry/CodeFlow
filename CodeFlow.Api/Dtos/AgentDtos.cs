@@ -86,3 +86,41 @@ public sealed record DecisionOutputTemplatePreviewRequest(
 public sealed record DecisionOutputTemplatePreviewResponse(string Rendered);
 
 public sealed record DecisionOutputTemplatePreviewErrorResponse(string Error);
+
+public sealed record PromptPartialPinDto(string Key, int Version);
+
+/// <summary>
+/// Request body for the live prompt-template preview endpoint (VZ3). Mirrors the runtime invocation
+/// scope so the rendered output matches what the model would actually receive: workflow / context /
+/// input flatten through the same Scriban dotted-key shape, ReviewLoop bindings (<c>round</c>,
+/// <c>maxRounds</c>, <c>isLastRound</c>, <c>rejectionHistory</c>) are surfaced when both
+/// <see cref="ReviewRound"/> and <see cref="ReviewMaxRounds"/> are supplied, and partial pins
+/// resolve via <see cref="CodeFlow.Persistence.IPromptPartialRepository"/> exactly like runtime.
+/// </summary>
+public sealed record PromptTemplatePreviewRequest(
+    string? SystemPrompt,
+    string? PromptTemplate,
+    IReadOnlyDictionary<string, JsonElement>? Workflow,
+    IReadOnlyDictionary<string, JsonElement>? Context,
+    string? Input,
+    int? ReviewRound,
+    int? ReviewMaxRounds,
+    bool? OptOutLastRoundReminder,
+    IReadOnlyList<PromptPartialPinDto>? PartialPins);
+
+public sealed record PromptTemplatePreviewAutoInjection(
+    string Key,
+    string RenderedBody,
+    string Reason);
+
+public sealed record PromptTemplatePreviewMissingPartial(string Key, int Version);
+
+public sealed record PromptTemplatePreviewResponse(
+    string? RenderedSystemPrompt,
+    string? RenderedPromptTemplate,
+    IReadOnlyList<PromptTemplatePreviewAutoInjection> AutoInjections,
+    IReadOnlyList<PromptTemplatePreviewMissingPartial> MissingPartials);
+
+public sealed record PromptTemplatePreviewErrorResponse(
+    string Error,
+    IReadOnlyList<PromptTemplatePreviewMissingPartial>? MissingPartials = null);

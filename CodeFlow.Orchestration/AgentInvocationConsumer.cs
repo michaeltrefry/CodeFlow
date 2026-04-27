@@ -109,15 +109,15 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             var invocationConfig = agentConfig.Configuration with
             {
                 PromptTemplate = effectivePromptTemplate,
-                Variables = MergeVariables(
+                Variables = AgentPromptScopeBuilder.Merge(
                     agentConfig.Configuration.Variables,
-                    BuildContextTemplateVariables(message.ContextInputs),
-                    BuildWorkflowTemplateVariables(message.WorkflowContext),
-                    BuildReviewLoopTemplateVariables(
+                    AgentPromptScopeBuilder.BuildContextVariables(message.ContextInputs),
+                    AgentPromptScopeBuilder.BuildWorkflowVariables(message.WorkflowContext),
+                    AgentPromptScopeBuilder.BuildReviewLoopVariables(
                         message.ReviewRound,
                         message.ReviewMaxRounds,
                         message.WorkflowContext),
-                    BuildInputTemplateVariables(input)),
+                    AgentPromptScopeBuilder.BuildInputVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
                     : null,
@@ -399,203 +399,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
         merged[SystemPromptPartials.LastRoundReminderKey] = seed;
         return merged;
-    }
-
-    private static IReadOnlyDictionary<string, string?>? MergeVariables(
-        IReadOnlyDictionary<string, string?>? configured,
-        IReadOnlyDictionary<string, string?> contextVariables,
-        IReadOnlyDictionary<string, string?> workflowVariables,
-        IReadOnlyDictionary<string, string?> reviewLoopVariables,
-        IReadOnlyDictionary<string, string?> inputVariables)
-    {
-        if ((configured is null || configured.Count == 0)
-            && contextVariables.Count == 0
-            && workflowVariables.Count == 0
-            && reviewLoopVariables.Count == 0
-            && inputVariables.Count == 0)
-        {
-            return configured;
-        }
-
-        var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        if (configured is not null)
-        {
-            foreach (var entry in configured)
-            {
-                merged[entry.Key] = entry.Value;
-            }
-        }
-
-        foreach (var entry in contextVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in workflowVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in reviewLoopVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        foreach (var entry in inputVariables)
-        {
-            merged[entry.Key] = entry.Value;
-        }
-
-        return merged;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildContextTemplateVariables(
-        IReadOnlyDictionary<string, JsonElement> contextInputs)
-    {
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, value) in contextInputs)
-        {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                continue;
-            }
-
-            AddContextTemplateVariables(variables, $"context.{key}", value);
-        }
-
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildWorkflowTemplateVariables(
-        IReadOnlyDictionary<string, JsonElement>? workflowContext)
-    {
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        if (workflowContext is null)
-        {
-            return variables;
-        }
-
-        foreach (var (key, value) in workflowContext)
-        {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                continue;
-            }
-
-            AddContextTemplateVariables(variables, $"workflow.{key}", value);
-        }
-
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildReviewLoopTemplateVariables(
-        int? reviewRound,
-        int? reviewMaxRounds,
-        IReadOnlyDictionary<string, JsonElement>? workflowContext = null)
-    {
-        // Outside a ReviewLoop, emit no template variables — an unused {{round}} placeholder in
-        // a prompt will render as the literal unresolved token, matching the documented "child
-        // saga not spawned by a ReviewLoop does not see these bindings" rule.
-        // (Jint bindings still default to round=0/maxRounds=0/isLastRound=false so shared scripts
-        // can reference them without a ReferenceError — that lives in LogicNodeScriptHost.)
-        if (reviewRound is not int round || reviewMaxRounds is not int maxRounds)
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["maxRounds"] = maxRounds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["isLastRound"] = maxRounds > 0 && round >= maxRounds ? "true" : "false"
-        };
-
-        // P3: surface the framework-managed `__loop.rejectionHistory` workflow variable as the
-        // un-prefixed `{{ rejectionHistory }}` alias so reviewer/producer prompts (and the
-        // stock partials) reference it cleanly. Empty string when not yet populated so
-        // `{{ if rejectionHistory }}...{{ end }}` blocks don't render the literal token.
-        if (workflowContext is not null
-            && workflowContext.TryGetValue(RejectionHistoryAccumulator.WorkflowVariableKey, out var historyElement))
-        {
-            variables["rejectionHistory"] = historyElement.ValueKind switch
-            {
-                JsonValueKind.String => historyElement.GetString(),
-                JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
-                _ => historyElement.GetRawText(),
-            };
-        }
-        else
-        {
-            variables["rejectionHistory"] = string.Empty;
-        }
-
-        return variables;
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildInputTemplateVariables(string? input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(input);
-            var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-
-            switch (document.RootElement.ValueKind)
-            {
-                case JsonValueKind.Object:
-                case JsonValueKind.Array:
-                    AddContextTemplateVariables(variables, "input", document.RootElement);
-                    break;
-            }
-
-            return variables;
-        }
-        catch (JsonException)
-        {
-            return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        }
-    }
-
-    private static void AddContextTemplateVariables(
-        IDictionary<string, string?> variables,
-        string key,
-        JsonElement value)
-    {
-        variables[key] = ToTemplateValue(value);
-
-        switch (value.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var property in value.EnumerateObject())
-                {
-                    AddContextTemplateVariables(variables, $"{key}.{property.Name}", property.Value);
-                }
-                break;
-
-            case JsonValueKind.Array:
-                var index = 0;
-                foreach (var item in value.EnumerateArray())
-                {
-                    AddContextTemplateVariables(variables, $"{key}.{index}", item);
-                    index += 1;
-                }
-                break;
-        }
-    }
-
-    private static string? ToTemplateValue(JsonElement value)
-    {
-        return value.ValueKind switch
-        {
-            JsonValueKind.String => value.GetString(),
-            JsonValueKind.Null => null,
-            JsonValueKind.Undefined => null,
-            _ => value.GetRawText()
-        };
     }
 
     // Tool plumbing for an agent invocation. Code-aware workflows expose a per-trace working
