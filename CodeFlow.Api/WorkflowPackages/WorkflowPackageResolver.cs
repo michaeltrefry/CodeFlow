@@ -147,7 +147,9 @@ public sealed class WorkflowPackageResolver(
                 OptOutLastRoundReminder: node.OptOutLastRoundReminder,
                 RejectionHistory: node.RejectionHistory,
                 MirrorOutputToWorkflowVar: NormalizeOptional(node.MirrorOutputToWorkflowVar),
-                OutputPortReplacements: node.OutputPortReplacements));
+                OutputPortReplacements: node.OutputPortReplacements,
+                Template: node.Template,
+                OutputType: node.OutputType));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

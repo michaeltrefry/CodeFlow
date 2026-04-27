@@ -662,6 +662,99 @@ public sealed class DryRunExecutor
                     break;
                 }
 
+                case WorkflowNodeKind.Transform:
+                {
+                    if (string.IsNullOrWhiteSpace(currentNode.Template))
+                    {
+                        return DryRunWalkResult.Failed(
+                            $"Transform node {currentNode.Id} has no template.",
+                            contextVars, workflowVars);
+                    }
+                    if (templateRenderer is null)
+                    {
+                        return DryRunWalkResult.Failed(
+                            $"Transform node {currentNode.Id} cannot render: dry-run was not configured with an IScribanTemplateRenderer.",
+                            contextVars, workflowVars);
+                    }
+
+                    var inputElement = ParseInputAsJson(currentInput);
+                    var scope = TransformNodeContext.Build(inputElement, contextVars, workflowVars);
+
+                    string rendered;
+                    try
+                    {
+                        rendered = templateRenderer.Render(currentNode.Template!, scope, cancellationToken);
+                    }
+                    catch (PromptTemplateException ex)
+                    {
+                        var failedEdge = workflow.FindNext(currentNode.Id, "Failed");
+                        var transformFailMessage = $"Transform node {currentNode.Id} render failed: {ex.Message}";
+                        state.RecordEvent(new DryRunEvent(
+                            Ordinal: state.NextOrdinal(),
+                            Kind: DryRunEventKind.TransformRendered,
+                            NodeId: currentNode.Id,
+                            NodeKind: currentNode.Kind.ToString(),
+                            AgentKey: null,
+                            PortName: "Failed",
+                            Message: transformFailMessage,
+                            InputPreview: Preview(currentInput),
+                            OutputPreview: null,
+                            ReviewRound: reviewRound,
+                            MaxRounds: maxRounds,
+                            SubflowDepth: depth,
+                            SubflowKey: null,
+                            SubflowVersion: null,
+                            Logs: null,
+                            DecisionPayload: null));
+
+                        if (failedEdge is null)
+                        {
+                            return DryRunWalkResult.Failed(transformFailMessage, contextVars, workflowVars);
+                        }
+
+                        lastEffectivePort = "Failed";
+                        state.RecordEvent(EdgeEvent(state, currentNode, "Failed", failedEdge, depth));
+                        currentNode = workflow.FindNode(failedEdge.ToNodeId)
+                            ?? throw new InvalidOperationException(
+                                $"Edge from transform {currentNode.Id} on 'Failed' targets unknown node {failedEdge.ToNodeId}.");
+                        // Pass the failure message through as the input artifact so downstream
+                        // diagnostics see the same context the saga's Failed-route would carry.
+                        currentInput = transformFailMessage;
+                        break;
+                    }
+
+                    state.RecordEvent(new DryRunEvent(
+                        Ordinal: state.NextOrdinal(),
+                        Kind: DryRunEventKind.TransformRendered,
+                        NodeId: currentNode.Id,
+                        NodeKind: currentNode.Kind.ToString(),
+                        AgentKey: null,
+                        PortName: "Out",
+                        Message: null,
+                        InputPreview: Preview(currentInput),
+                        OutputPreview: Preview(rendered),
+                        ReviewRound: reviewRound,
+                        MaxRounds: maxRounds,
+                        SubflowDepth: depth,
+                        SubflowKey: null,
+                        SubflowVersion: null,
+                        Logs: null,
+                        DecisionPayload: null));
+
+                    lastEffectivePort = "Out";
+                    var transformEdge = workflow.FindNext(currentNode.Id, "Out");
+                    if (transformEdge is null)
+                    {
+                        return CompleteWorkflow(workflow, currentNode, "Out", rendered, contextVars, workflowVars, state);
+                    }
+                    state.RecordEvent(EdgeEvent(state, currentNode, "Out", transformEdge, depth));
+                    currentNode = workflow.FindNode(transformEdge.ToNodeId)
+                        ?? throw new InvalidOperationException(
+                            $"Edge from transform {currentNode.Id} on 'Out' targets unknown node {transformEdge.ToNodeId}.");
+                    currentInput = rendered;
+                    break;
+                }
+
                 default:
                     return DryRunWalkResult.Failed(
                         $"Unknown node kind {currentNode.Kind} on node {currentNode.Id}.",

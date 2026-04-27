@@ -7,5 +7,6 @@ public enum WorkflowNodeKind
     Logic = 2,
     Hitl = 3,
     Subflow = 4,
-    ReviewLoop = 5
+    ReviewLoop = 5,
+    Transform = 6
 }

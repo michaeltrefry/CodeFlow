@@ -167,6 +167,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
                         MirrorOutputToWorkflowVar = NormalizeOptionalString(node.MirrorOutputToWorkflowVar),
                         OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
+                        Template = node.Template,
+                        OutputType = NormalizeOutputType(node.OutputType),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -294,7 +296,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.OptOutLastRoundReminder,
             WorkflowJson.DeserializeRejectionHistoryConfig(entity.RejectionHistoryConfigJson),
             entity.MirrorOutputToWorkflowVar,
-            WorkflowJson.DeserializePortReplacements(entity.OutputPortReplacementsJson));
+            WorkflowJson.DeserializePortReplacements(entity.OutputPortReplacementsJson),
+            entity.Template,
+            NormalizeOutputType(entity.OutputType));
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)
@@ -336,5 +340,15 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         }
 
         return value.Trim();
+    }
+
+    private static string NormalizeOutputType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "string";
+        }
+
+        return value.Trim().ToLowerInvariant();
     }
 }

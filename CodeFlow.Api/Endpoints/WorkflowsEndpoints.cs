@@ -654,7 +654,9 @@ public static class WorkflowsEndpoints
                     OptOutLastRoundReminder: node.OptOutLastRoundReminder,
                     RejectionHistory: node.RejectionHistory,
                     MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
-                    OutputPortReplacements: node.OutputPortReplacements))
+                    OutputPortReplacements: node.OutputPortReplacements,
+                    Template: node.Template,
+                    OutputType: node.OutputType))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -717,7 +719,9 @@ public static class WorkflowsEndpoints
                 OptOutLastRoundReminder: node.OptOutLastRoundReminder,
                 RejectionHistory: node.RejectionHistory,
                 MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
-                OutputPortReplacements: node.OutputPortReplacements))
+                OutputPortReplacements: node.OutputPortReplacements,
+                Template: node.Template,
+                OutputType: node.OutputType))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

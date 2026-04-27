@@ -26,6 +26,9 @@ public static class WorkflowValidator
     /// <summary>Default loopDecision used by ReviewLoop when an author has not overridden it.</summary>
     internal const string DefaultLoopDecisionPort = "Rejected";
 
+    /// <summary>Synthesized output port emitted by a Transform node on successful render.</summary>
+    internal const string TransformOutputPort = "Out";
+
     public static async Task<ValidationResult> ValidateAsync(
         string key,
         string? name,
@@ -113,6 +116,54 @@ public static class WorkflowValidator
                     if (node.OutputPorts is null || node.OutputPorts.Count == 0)
                     {
                         return ValidationResult.Fail($"Logic node {node.Id} must declare at least one output port.");
+                    }
+                    break;
+
+                case WorkflowNodeKind.Transform:
+                    if (node.OutputPorts is { Count: > 0 } transformPorts)
+                    {
+                        var unexpected = transformPorts
+                            .Where(p => !string.IsNullOrWhiteSpace(p))
+                            .Where(p => !string.Equals(p, TransformOutputPort, StringComparison.Ordinal))
+                            .ToArray();
+                        if (unexpected.Length > 0)
+                        {
+                            return ValidationResult.Fail(
+                                $"Transform node {node.Id} declares output port(s) {FormatPortList(unexpected)}. "
+                                + $"Transform nodes have a single synthesized '{TransformOutputPort}' port plus the implicit '{ImplicitFailedPort}'.");
+                        }
+                    }
+                    if (string.IsNullOrWhiteSpace(node.Template))
+                    {
+                        return ValidationResult.Fail($"Transform node {node.Id} must declare a non-empty template.");
+                    }
+                    try
+                    {
+                        var parsed = Scriban.Template.Parse(node.Template);
+                        if (parsed.HasErrors)
+                        {
+                            var details = string.Join(
+                                "; ",
+                                parsed.Messages
+                                    .Where(m => m.Type == Scriban.Parsing.ParserMessageType.Error)
+                                    .Select(m => m.Message));
+                            return ValidationResult.Fail(
+                                string.IsNullOrWhiteSpace(details)
+                                    ? $"Transform node {node.Id} template has Scriban syntax errors."
+                                    : $"Transform node {node.Id} template has Scriban syntax errors: {details}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        return ValidationResult.Fail(
+                            $"Transform node {node.Id} template could not be parsed: {ex.Message}");
+                    }
+                    if (!string.Equals(node.OutputType, "string", StringComparison.Ordinal)
+                        && !string.Equals(node.OutputType, "json", StringComparison.Ordinal))
+                    {
+                        return ValidationResult.Fail(
+                            $"Transform node {node.Id} has outputType '{node.OutputType}'. "
+                            + "Allowed values are 'string' and 'json'.");
                     }
                     break;
 
@@ -671,6 +722,11 @@ public static class WorkflowValidator
                 return node.OutputPorts is { Count: > 0 } declared
                     ? declared.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.Ordinal).ToArray()
                     : Array.Empty<string>();
+
+            case WorkflowNodeKind.Transform:
+                // Transform nodes have a single implicit "Out" port plus the universal Failed.
+                // Authors don't declare it; the validator synthesizes it so edges can leave it.
+                return new[] { TransformOutputPort };
 
             case WorkflowNodeKind.Subflow:
                 {

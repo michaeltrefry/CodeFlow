@@ -23,4 +23,10 @@ public sealed record WorkflowNode(
     // P5: per-port map of "if this port is taken, replace the downstream artifact with the
     // contents of workflow[<value>] after the output script runs". Replaces the hand-rolled
     // Pattern-2 output script. Only port names that have a binding need to appear in the dict.
-    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null,
+    // Transform nodes: Scriban template body rendered against `input.* + context.* + workflow.*`.
+    // Required and must Scriban-parse on save for Transform; null on every other node kind.
+    string? Template = null,
+    // Transform nodes: "string" (default) — rendered text becomes the Out artifact verbatim.
+    // "json" mode (deserialize rendered text before emitting) is gated behind TN-2.
+    string OutputType = "string");

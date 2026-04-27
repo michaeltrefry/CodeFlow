@@ -23,6 +23,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
     /// </summary>
     public const string ImplicitFailedPort = "Failed";
 
+    /// <summary>
+    /// Synthesized success port emitted by a Transform node after its template renders. Authors
+    /// don't declare it in <c>OutputPorts</c>; the saga and validator both reference this name
+    /// when wiring outgoing edges from Transform nodes.
+    /// </summary>
+    public const string TransformOutputPort = "Out";
+
     private const int MaxLogicChainHops = 32;
 
     /// <summary>
@@ -641,6 +648,16 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             throw new InvalidOperationException("Logic chain resolver returned no outcome.");
         }
 
+        var dispatchInputRef = resolution.OverrideInputRef ?? message.OutputRef;
+
+        if (resolution is { CleanlyCompleted: true })
+        {
+            saga.LastEffectivePort = resolution.CleanlyCompletedPort ?? TransformOutputPort;
+            saga.PendingTransition = PendingTransitionCompleted;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
         var targetNode = resolution.TerminalNode!;
         var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
@@ -672,7 +689,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga,
             workflow,
             targetNode,
-            inputRef: message.OutputRef,
+            inputRef: dispatchInputRef,
             roundId: targetRoundId,
             retryContext: null);
 
@@ -847,6 +864,22 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             throw new InvalidOperationException("Logic chain resolver returned no outcome.");
         }
 
+        // A Transform node in the chain may have rewritten the artifact. The dispatched node
+        // (and the saga's CurrentInputRef in PublishHandoffAsync / PublishSubflowDispatchAsync)
+        // must see the rendered ref, not the original agent output ref.
+        var dispatchInputRef = resolution.OverrideInputRef ?? effectiveOutputRef;
+
+        if (resolution is { CleanlyCompleted: true })
+        {
+            // Transform with no edge from "Out" — clean workflow termination with the rendered
+            // artifact as the final output. Mirrors the unwired-author-port rule above for Agent
+            // terminals; the terminal port is "Out" so a parent Subflow node can route from it.
+            saga.LastEffectivePort = resolution.CleanlyCompletedPort ?? TransformOutputPort;
+            saga.PendingTransition = PendingTransitionCompleted;
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
         var targetNode = resolution.TerminalNode!;
         var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
@@ -879,7 +912,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga,
             workflow,
             targetNode,
-            inputRef: effectiveOutputRef,
+            inputRef: dispatchInputRef,
             roundId: targetRoundId,
             retryContext: retryContext);
 
@@ -1547,21 +1580,86 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             ?? throw new InvalidOperationException(
                 $"Edge {initialEdge.FromNodeId}:{initialEdge.FromPort} → {initialEdge.ToNodeId} references a missing node.");
 
-        if (currentNode.Kind != WorkflowNodeKind.Logic)
+        if (currentNode.Kind != WorkflowNodeKind.Logic
+            && currentNode.Kind != WorkflowNodeKind.Transform)
         {
             return new LogicChainResolution(currentNode, rotates, FailureTerminal: false);
         }
 
         JsonElement inputJson = default;
         var inputLoaded = false;
+        var currentUpstreamRef = upstreamOutputRef;
+        Uri? renderedRefSinceUpstream = null;
         var contextInputs = DeserializeContextInputs(saga.InputsJson);
         var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+        var templateRenderer = context.GetPayload<IServiceProvider>()
+            .GetRequiredService<Runtime.IScribanTemplateRenderer>();
 
         for (var hops = 0; hops < MaxLogicChainHops; hops++)
         {
+            if (currentNode.Kind == WorkflowNodeKind.Transform)
+            {
+                var transformOutcome = await ExecuteTransformInChainAsync(
+                    context,
+                    saga,
+                    workflow,
+                    currentNode,
+                    currentUpstreamRef,
+                    contextInputs,
+                    workflowInputs,
+                    templateRenderer,
+                    artifactStore);
+
+                if (transformOutcome.Failure is { } failure)
+                {
+                    saga.FailureReason ??= failure;
+                    return new LogicChainResolution(null, rotates, FailureTerminal: true);
+                }
+
+                currentUpstreamRef = transformOutcome.OutputRef!;
+                renderedRefSinceUpstream = transformOutcome.OutputRef;
+                inputLoaded = false;
+
+                var transformEdge = workflow.FindNext(currentNode.Id, TransformOutputPort);
+                if (transformEdge is null)
+                {
+                    // No edge from Transform's Out — terminate the saga cleanly with the rendered
+                    // artifact as the final output, mirroring the unwired-author-port rule that
+                    // applies to Agent terminals in RouteCompletionAsync.
+                    return new LogicChainResolution(
+                        TerminalNode: null,
+                        RotatesRound: rotates,
+                        FailureTerminal: false,
+                        OverrideInputRef: currentUpstreamRef,
+                        CleanlyCompleted: true,
+                        CleanlyCompletedPort: TransformOutputPort);
+                }
+
+                if (transformEdge.RotatesRound)
+                {
+                    rotates = true;
+                }
+
+                currentNode = workflow.FindNode(transformEdge.ToNodeId)
+                    ?? throw new InvalidOperationException(
+                        $"Edge {transformEdge.FromNodeId}:{transformEdge.FromPort} → {transformEdge.ToNodeId} references a missing node.");
+
+                if (currentNode.Kind != WorkflowNodeKind.Logic
+                    && currentNode.Kind != WorkflowNodeKind.Transform)
+                {
+                    return new LogicChainResolution(
+                        currentNode,
+                        rotates,
+                        FailureTerminal: false,
+                        OverrideInputRef: renderedRefSinceUpstream);
+                }
+
+                continue;
+            }
+
             if (!inputLoaded)
             {
-                inputJson = await ReadArtifactAsJsonAsync(artifactStore, upstreamOutputRef, context.CancellationToken);
+                inputJson = await ReadArtifactAsJsonAsync(artifactStore, currentUpstreamRef, context.CancellationToken);
                 inputLoaded = true;
             }
 
@@ -1644,9 +1742,14 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 ?? throw new InvalidOperationException(
                     $"Edge {nextEdge.FromNodeId}:{nextEdge.FromPort} → {nextEdge.ToNodeId} references a missing node.");
 
-            if (currentNode.Kind != WorkflowNodeKind.Logic)
+            if (currentNode.Kind != WorkflowNodeKind.Logic
+                && currentNode.Kind != WorkflowNodeKind.Transform)
             {
-                return new LogicChainResolution(currentNode, rotates, FailureTerminal: false);
+                return new LogicChainResolution(
+                    currentNode,
+                    rotates,
+                    FailureTerminal: false,
+                    OverrideInputRef: renderedRefSinceUpstream);
             }
         }
 
@@ -1694,10 +1797,95 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             FailureMessage: message,
             RecordedAtUtc: DateTime.UtcNow);
 
+    private readonly record struct TransformChainOutcome(Uri? OutputRef, string? Failure)
+    {
+        public static TransformChainOutcome Ok(Uri outputRef) => new(outputRef, null);
+        public static TransformChainOutcome Fail(string reason) => new(null, reason);
+    }
+
+    /// <summary>
+    /// Render a Transform node's template against <c>input.* / context.* / workflow.*</c> and
+    /// persist the rendered text as a new artifact. Used by the inline chain resolver so a
+    /// Transform that follows an Agent (or another Transform) reshapes the artifact without
+    /// allocating a saga round. Render errors and template parse errors surface as
+    /// <see cref="TransformChainOutcome.Failure"/>; the caller routes them to the implicit
+    /// <see cref="ImplicitFailedPort"/>.
+    /// </summary>
+    private static async Task<TransformChainOutcome> ExecuteTransformInChainAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode transformNode,
+        Uri inputRef,
+        IReadOnlyDictionary<string, JsonElement> contextInputs,
+        IReadOnlyDictionary<string, JsonElement> workflowInputs,
+        Runtime.IScribanTemplateRenderer templateRenderer,
+        IArtifactStore artifactStore)
+    {
+        if (string.IsNullOrWhiteSpace(transformNode.Template))
+        {
+            return TransformChainOutcome.Fail(
+                $"Transform node {transformNode.Id} has no template (workflow {workflow.Key} v{workflow.Version}).");
+        }
+
+        JsonElement inputJson;
+        try
+        {
+            inputJson = await ReadArtifactAsJsonAsync(artifactStore, inputRef, context.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return TransformChainOutcome.Fail(
+                $"Transform node {transformNode.Id} failed to read upstream artifact: {ex.Message}");
+        }
+
+        var scope = TransformNodeContext.Build(inputJson, contextInputs, workflowInputs);
+
+        string rendered;
+        try
+        {
+            rendered = templateRenderer.Render(transformNode.Template!, scope, context.CancellationToken);
+        }
+        catch (Runtime.PromptTemplateException ex)
+        {
+            return TransformChainOutcome.Fail(
+                $"Transform node {transformNode.Id} template render failed: {ex.Message}");
+        }
+
+        var outputRef = await WriteOverrideArtifactAsync(
+            artifactStore,
+            saga,
+            agentKey: null,
+            rendered,
+            context.CancellationToken,
+            fileNameSuffix: "transform-output");
+
+        return TransformChainOutcome.Ok(outputRef);
+    }
+
+    /// <summary>
+    /// Outcome of walking the inline-node chain (Logic + Transform) starting from the edge that
+    /// leaves the most-recently-completed node. Three mutually exclusive shapes:
+    /// <list type="bullet">
+    ///   <item><description><c>FailureTerminal</c> — the chain hit a misconfiguration or the
+    ///     resolver synthesized <see cref="ImplicitFailedPort"/>. Caller must read
+    ///     <c>saga.FailureReason</c> and transition the saga to Failed.</description></item>
+    ///   <item><description><c>CleanlyCompleted</c> — a Transform node rendered successfully but
+    ///     its <c>Out</c> port has no outgoing edge. Caller terminates the saga as Completed with
+    ///     <see cref="OverrideInputRef"/> as the final artifact, mirroring the unwired-author-port
+    ///     rule for Agent terminals.</description></item>
+    ///   <item><description>Otherwise — <see cref="TerminalNode"/> is the next dispatchable node;
+    ///     <see cref="OverrideInputRef"/>, when non-null, replaces the upstream output ref because
+    ///     a Transform node in the chain rewrote the artifact.</description></item>
+    /// </list>
+    /// </summary>
     private sealed record LogicChainResolution(
         WorkflowNode? TerminalNode,
         bool RotatesRound,
-        bool FailureTerminal);
+        bool FailureTerminal,
+        Uri? OverrideInputRef = null,
+        bool CleanlyCompleted = false,
+        string? CleanlyCompletedPort = null);
 
     private static async Task<JsonElement> ReadArtifactAsJsonAsync(
         IArtifactStore artifactStore,

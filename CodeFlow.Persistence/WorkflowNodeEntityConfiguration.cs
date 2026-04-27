@@ -88,6 +88,16 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("output_port_replacements_json")
             .HasColumnType("longtext");
 
+        builder.Property(node => node.Template)
+            .HasColumnName("template")
+            .HasColumnType("longtext");
+
+        builder.Property(node => node.OutputType)
+            .HasColumnName("output_type")
+            .HasMaxLength(32)
+            .HasDefaultValue("string")
+            .IsRequired();
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

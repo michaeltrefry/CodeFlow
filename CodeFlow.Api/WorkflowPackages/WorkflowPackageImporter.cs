@@ -564,6 +564,8 @@ public sealed class WorkflowPackageImporter(
                         RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
                         MirrorOutputToWorkflowVar = Trim(node.MirrorOutputToWorkflowVar),
                         OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
+                        Template = node.Template,
+                        OutputType = NormalizeOutputType(node.OutputType),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -631,7 +633,9 @@ public sealed class WorkflowPackageImporter(
             node.OptOutLastRoundReminder,
             node.RejectionHistory,
             NormalizeOptional(node.MirrorOutputToWorkflowVar),
-            node.OutputPortReplacements);
+            node.OutputPortReplacements,
+            node.Template,
+            NormalizeOutputType(node.OutputType));
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,
@@ -720,6 +724,9 @@ public sealed class WorkflowPackageImporter(
 
     private static string? Trim(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string NormalizeOutputType(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "string" : value.Trim().ToLowerInvariant();
 
     private static DateTime UsePackageDateOrNow(DateTime value, DateTime now) =>
         value == default ? now : DateTime.SpecifyKind(value, DateTimeKind.Utc);

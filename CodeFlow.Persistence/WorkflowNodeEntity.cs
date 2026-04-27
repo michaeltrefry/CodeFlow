@@ -41,4 +41,8 @@ public sealed class WorkflowNodeEntity
     public string? MirrorOutputToWorkflowVar { get; set; }
 
     public string? OutputPortReplacementsJson { get; set; }
+
+    public string? Template { get; set; }
+
+    public string OutputType { get; set; } = "string";
 }

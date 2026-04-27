@@ -48,8 +48,8 @@ import { CardComponent } from '../../../ui/card.component';
           <div class="field span-2">
             <span class="field-label">Working directory root</span>
             <input class="input mono" [ngModel]="workingDirectoryRoot()" (ngModelChange)="workingDirectoryRoot.set($event)"
-                   name="workingDirectoryRoot" placeholder="/var/lib/codeflow/workdirs" />
-            <span class="field-hint">Absolute path on the server. Code-aware workflows materialize per-trace working directories under <code>{{ '{root}/{traceId}/' }}</code>. Leave blank to disable.</span>
+                   name="workingDirectoryRoot" placeholder="/app/workdirs" />
+            <span class="field-hint">Absolute path inside the api / worker containers — the production stack mounts <code>/app/workdirs</code> as a shared host volume (see <code>deploy/docker-compose.prod.yml</code>). Code-aware workflows materialize per-trace working directories under <code>{{ '{root}/{traceId}/' }}</code>. Leave blank to disable.</span>
           </div>
 
           <div class="field">

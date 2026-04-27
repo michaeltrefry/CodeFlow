@@ -950,6 +950,14 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("output_script");
 
+                    b.Property<string>("OutputType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("string")
+                        .HasColumnName("output_type");
+
                     b.Property<string>("RejectionHistoryConfigJson")
                         .HasColumnType("longtext")
                         .HasColumnName("rejection_history_config_json");
@@ -966,6 +974,10 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<int?>("SubflowVersion")
                         .HasColumnType("int")
                         .HasColumnName("subflow_version");
+
+                    b.Property<string>("Template")
+                        .HasColumnType("longtext")
+                        .HasColumnName("template");
 
                     b.Property<long>("WorkflowId")
                         .HasColumnType("bigint")
