@@ -58,6 +58,11 @@ services:
       - "127.0.0.1:${CODEFLOW_API_HOST_PORT:-5080}:8080"
     volumes:
       - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
+      # Host-shared per-trace git workdirs for code-aware workflows. Both api and worker mount
+      # the same host path so saga workdir cleanup (api side) and saga workdir provisioning
+      # (worker side) see identical contents. Operator selects the path inside the container
+      # via the GitHostSettings "Working directory root" — typically `/app/workdirs`.
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/workdirs
     networks:
       - default
       - trefry-network
@@ -86,6 +91,7 @@ services:
       Observability__EnableConsoleExporter: "false"
     volumes:
       - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/workdirs
     networks:
       - default
       - trefry-network
