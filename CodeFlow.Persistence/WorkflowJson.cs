@@ -84,4 +84,30 @@ public static class WorkflowJson
             replacementsJson, ConfigSerializerOptions);
         return deserialized is { Count: > 0 } ? deserialized : null;
     }
+
+    public static string? SerializeStringList(IReadOnlyList<string>? values)
+    {
+        if (values is null)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Serialize(values, SerializerOptions);
+    }
+
+    public static IReadOnlyList<string>? DeserializeStringList(string? json)
+    {
+        if (json is null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return Array.Empty<string>();
+        }
+
+        var deserialized = JsonSerializer.Deserialize<string[]>(json, SerializerOptions);
+        return deserialized ?? Array.Empty<string>();
+    }
 }

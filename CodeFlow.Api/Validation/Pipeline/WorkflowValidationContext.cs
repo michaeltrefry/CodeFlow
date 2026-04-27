@@ -33,4 +33,9 @@ public sealed record WorkflowValidationContext(
     CodeFlowDbContext DbContext,
     IWorkflowRepository WorkflowRepository,
     IAgentConfigRepository AgentRepository,
-    IAgentRoleRepository AgentRoleRepository);
+    IAgentRoleRepository AgentRoleRepository,
+    // VZ2: optional declarations of which workflow variables this workflow reads/writes.
+    // NULL = author hasn't opted in (the WorkflowVarDeclarationRule skips). Non-null
+    // (including empty array) = opted in; rule warns on undeclared usage.
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);

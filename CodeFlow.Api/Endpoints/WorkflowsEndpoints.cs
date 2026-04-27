@@ -334,7 +334,9 @@ public static class WorkflowsEndpoints
             roleRepository,
             pipeline,
             telemetry,
-            cancellationToken);
+            cancellationToken,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         if (pipelineBlock is not null)
         {
             return pipelineBlock;
@@ -359,7 +361,9 @@ public static class WorkflowsEndpoints
             request.Tags,
             resolvedNodes,
             request.Edges!,
-            request.Inputs);
+            request.Inputs,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -410,7 +414,9 @@ public static class WorkflowsEndpoints
             roleRepository,
             pipeline,
             telemetry,
-            cancellationToken);
+            cancellationToken,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         if (pipelineBlock is not null)
         {
             return pipelineBlock;
@@ -435,7 +441,9 @@ public static class WorkflowsEndpoints
             request.Tags,
             resolvedNodes,
             request.Edges!,
-            request.Inputs);
+            request.Inputs,
+            request.WorkflowVarsReads,
+            request.WorkflowVarsWrites);
         var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
@@ -460,7 +468,9 @@ public static class WorkflowsEndpoints
         IAgentRoleRepository roleRepository,
         WorkflowValidationPipeline pipeline,
         IAuthoringTelemetry telemetry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? workflowVarsReads = null,
+        IReadOnlyList<string>? workflowVarsWrites = null)
     {
         var context = new WorkflowValidationContext(
             Key: key ?? string.Empty,
@@ -472,7 +482,9 @@ public static class WorkflowsEndpoints
             DbContext: dbContext,
             WorkflowRepository: repository,
             AgentRepository: agentRepository,
-            AgentRoleRepository: roleRepository);
+            AgentRoleRepository: roleRepository,
+            WorkflowVarsReads: workflowVarsReads,
+            WorkflowVarsWrites: workflowVarsWrites);
 
         var report = await pipeline.RunAsync(context, cancellationToken);
 
@@ -532,7 +544,9 @@ public static class WorkflowsEndpoints
             DbContext: dbContext,
             WorkflowRepository: repository,
             AgentRepository: agentRepository,
-            AgentRoleRepository: roleRepository);
+            AgentRoleRepository: roleRepository,
+            WorkflowVarsReads: request.WorkflowVarsReads,
+            WorkflowVarsWrites: request.WorkflowVarsWrites);
 
         var report = await pipeline.RunAsync(context, cancellationToken);
 
@@ -610,7 +624,9 @@ public static class WorkflowsEndpoints
         IReadOnlyList<string>? tags,
         IReadOnlyList<WorkflowNodeDto> nodes,
         IReadOnlyList<WorkflowEdgeDto> edges,
-        IReadOnlyList<WorkflowInputDto>? inputs)
+        IReadOnlyList<WorkflowInputDto>? inputs,
+        IReadOnlyList<string>? workflowVarsReads = null,
+        IReadOnlyList<string>? workflowVarsWrites = null)
     {
         return new WorkflowDraft(
             Key: key,
@@ -618,6 +634,8 @@ public static class WorkflowsEndpoints
             MaxRoundsPerRound: maxRoundsPerRound ?? 3,
             Category: category,
             Tags: tags ?? Array.Empty<string>(),
+            WorkflowVarsReads: workflowVarsReads,
+            WorkflowVarsWrites: workflowVarsWrites,
             Nodes: nodes
                 .Select(node => new WorkflowNodeDraft(
                     Id: node.Id,
@@ -720,5 +738,7 @@ public static class WorkflowsEndpoints
                 DefaultValueJson: input.DefaultValueJson,
                 Description: input.Description,
                 Ordinal: input.Ordinal))
-            .ToArray());
+            .ToArray(),
+        WorkflowVarsReads: workflow.WorkflowVarsReads,
+        WorkflowVarsWrites: workflow.WorkflowVarsWrites);
 }

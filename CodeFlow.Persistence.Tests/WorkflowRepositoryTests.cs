@@ -502,6 +502,85 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripWorkflowVarsDeclarations()
+    {
+        // VZ2 (Workflow Authoring DX): the workflow carries optional WorkflowVarsReads /
+        // WorkflowVarsWrites declarations. Both fields are nullable: NULL = no opt-in;
+        // empty array = opted in with explicit "reads/writes nothing"; non-empty = the
+        // declared list. All three states must round-trip.
+        var workflowKey = $"vz2-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "VZ2 declarations",
+            MaxRoundsPerRound: 3,
+            Nodes: new[]
+            {
+                new WorkflowNodeDraft(
+                    Id: startNodeId,
+                    Kind: WorkflowNodeKind.Start,
+                    AgentKey: "kickoff",
+                    AgentVersion: 1,
+                    OutputScript: null,
+                    OutputPorts: new[] { "Continue" },
+                    LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdgeDraft>(),
+            Inputs: Array.Empty<WorkflowInputDraft>(),
+            WorkflowVarsReads: new[] { "currentPlan", "requestSummary" },
+            WorkflowVarsWrites: new[] { "currentPlan" });
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        reloaded.WorkflowVarsReads.Should().NotBeNull();
+        reloaded.WorkflowVarsReads!.Should().BeEquivalentTo(new[] { "currentPlan", "requestSummary" });
+        reloaded.WorkflowVarsWrites.Should().NotBeNull();
+        reloaded.WorkflowVarsWrites!.Should().BeEquivalentTo(new[] { "currentPlan" });
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripNullWorkflowVarsAsNotOptedIn()
+    {
+        // VZ2 CR1 contract: workflows that don't opt in (both lists NULL) must round-trip
+        // with both fields still null — the validator MUST NOT misinterpret a NULL as "opted
+        // in with empty declaration".
+        var workflowKey = $"vz2-null-{Guid.NewGuid():N}";
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "VZ2 null declarations",
+            MaxRoundsPerRound: 3,
+            Nodes: new[]
+            {
+                new WorkflowNodeDraft(
+                    Id: Guid.NewGuid(),
+                    Kind: WorkflowNodeKind.Start,
+                    AgentKey: "kickoff",
+                    AgentVersion: 1,
+                    OutputScript: null,
+                    OutputPorts: new[] { "Continue" },
+                    LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdgeDraft>(),
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        reloaded.WorkflowVarsReads.Should().BeNull();
+        reloaded.WorkflowVarsWrites.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetTerminalPortsAsync_ShouldReturnUnwiredDeclaredPortsAcrossNodes()
     {
         var workflowKey = $"terminal-ports-{Guid.NewGuid():N}";

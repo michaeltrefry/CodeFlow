@@ -59,7 +59,9 @@ public sealed record WorkflowPackageWorkflow(
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowPackageWorkflowNode> Nodes,
     IReadOnlyList<WorkflowPackageWorkflowEdge> Edges,
-    IReadOnlyList<WorkflowPackageWorkflowInput> Inputs);
+    IReadOnlyList<WorkflowPackageWorkflowInput> Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record WorkflowPackageWorkflowNode(
     Guid Id,

@@ -40,7 +40,9 @@ public sealed record WorkflowDraft(
     IReadOnlyList<WorkflowEdgeDraft> Edges,
     IReadOnlyList<WorkflowInputDraft> Inputs,
     WorkflowCategory Category = WorkflowCategory.Workflow,
-    IReadOnlyList<string>? Tags = null);
+    IReadOnlyList<string>? Tags = null,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record WorkflowNodeDraft(
     Guid Id,

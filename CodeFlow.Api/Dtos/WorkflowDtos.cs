@@ -60,7 +60,9 @@ public sealed record WorkflowDetailDto(
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowNodeDto> Nodes,
     IReadOnlyList<WorkflowEdgeDto> Edges,
-    IReadOnlyList<WorkflowInputDto> Inputs);
+    IReadOnlyList<WorkflowInputDto> Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record CreateWorkflowRequest(
     string? Key,
@@ -70,7 +72,9 @@ public sealed record CreateWorkflowRequest(
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
-    IReadOnlyList<WorkflowInputDto>? Inputs);
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record UpdateWorkflowRequest(
     string? Name,
@@ -79,7 +83,9 @@ public sealed record UpdateWorkflowRequest(
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
-    IReadOnlyList<WorkflowInputDto>? Inputs);
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record ValidateScriptRequest(
     string? Script,
@@ -101,7 +107,9 @@ public sealed record ValidateWorkflowRequest(
     int? MaxRoundsPerRound,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
-    IReadOnlyList<WorkflowInputDto>? Inputs);
+    IReadOnlyList<WorkflowInputDto>? Inputs,
+    IReadOnlyList<string>? WorkflowVarsReads = null,
+    IReadOnlyList<string>? WorkflowVarsWrites = null);
 
 public sealed record WorkflowValidationLocationDto(
     Guid? NodeId,

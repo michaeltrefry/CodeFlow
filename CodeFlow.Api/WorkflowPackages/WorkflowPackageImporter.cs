@@ -541,6 +541,8 @@ public sealed class WorkflowPackageImporter(
                 MaxRoundsPerRound = workflow.MaxRoundsPerRound,
                 Category = workflow.Category,
                 TagsJson = JsonSerializer.Serialize(workflow.Tags, SerializerOptions),
+                WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsReads),
+                WorkflowVarsWritesJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsWrites),
                 CreatedAtUtc = UsePackageDateOrNow(workflow.CreatedAtUtc, now),
                 Nodes = workflow.Nodes
                     .Select(node => new WorkflowNodeEntity
@@ -645,7 +647,22 @@ public sealed class WorkflowPackageImporter(
             input.Required,
             input.DefaultValueJson,
             input.Description,
-            input.Ordinal)));
+            input.Ordinal))) &&
+        WorkflowVarsListEqual(packageWorkflow.WorkflowVarsReads, existing.WorkflowVarsReads) &&
+        WorkflowVarsListEqual(packageWorkflow.WorkflowVarsWrites, existing.WorkflowVarsWrites);
+
+    private static bool WorkflowVarsListEqual(IReadOnlyList<string>? a, IReadOnlyList<string>? b)
+    {
+        if (a is null && b is null)
+        {
+            return true;
+        }
+        if (a is null || b is null)
+        {
+            return false;
+        }
+        return a.SequenceEqual(b, StringComparer.Ordinal);
+    }
 
     private static bool Equivalent(WorkflowPackageAgent packageAgent, AgentConfig existing) =>
         packageAgent.Kind == existing.Kind &&

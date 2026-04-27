@@ -177,7 +177,9 @@ public sealed class WorkflowPackageResolver(
                     DefaultValueJson: input.DefaultValueJson,
                     Description: input.Description,
                     Ordinal: input.Ordinal))
-                .ToArray());
+                .ToArray(),
+            WorkflowVarsReads: workflow.WorkflowVarsReads,
+            WorkflowVarsWrites: workflow.WorkflowVarsWrites);
     }
 
     private async Task<int?> ResolveAgentVersionAsync(
