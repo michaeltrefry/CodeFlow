@@ -377,12 +377,12 @@ function defaultStartInput(): WorkflowInput {
             @if (sel.editor.kind === 'Subflow') {
               <div class="inspector-section">
                 <label class="field">
-                  <span>Workflow <span class="muted xsmall">(the subflow to invoke)</span></span>
+                  <span>Workflow <span class="muted xsmall">(the subflow to invoke; ports preview at latest version)</span></span>
                   <select [ngModel]="sel.editor.subflowKey ?? ''"
                           (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
                     <option value="">(pick workflow)</option>
                     @for (wf of availableSubflowTargets(); track wf.key) {
-                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                      <option [value]="wf.key">{{ subflowPickerLabel(wf) }}</option>
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
@@ -449,12 +449,12 @@ function defaultStartInput(): WorkflowInput {
             @if (sel.editor.kind === 'ReviewLoop') {
               <div class="inspector-section">
                 <label class="field">
-                  <span>Child workflow <span class="muted xsmall">(re-invoked every round)</span></span>
+                  <span>Child workflow <span class="muted xsmall">(re-invoked every round; ports preview at latest version)</span></span>
                   <select [ngModel]="sel.editor.subflowKey ?? ''"
                           (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
                     <option value="">(pick workflow)</option>
                     @for (wf of availableSubflowTargets(); track wf.key) {
-                      <option [value]="wf.key">{{ wf.key }} (v{{ wf.latestVersion }})</option>
+                      <option [value]="wf.key">{{ subflowPickerLabel(wf) }}</option>
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
@@ -1249,6 +1249,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly dataflowError = signal<string | null>(null);
   readonly dataflowDirty = signal(false);
 
+  /** VZ6: per-candidate terminal-port cache for the Subflow / ReviewLoop pickers. Keyed by
+   *  workflow key, value is the candidate's terminal port list at its latest version (the
+   *  picker shows latest; once an author pins a specific version the inspector loads the
+   *  effective ports separately). Populated eagerly when the workflows list loads. */
+  readonly terminalPortsByKey = signal<Record<string, string[]>>({});
+
   readonly availableSubflowTargets = computed<WorkflowSummary[]>(() => {
     const currentKey = this.workflowKey().trim();
     return this.workflows().filter(w => w.key !== currentKey);
@@ -1489,7 +1495,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
     });
     this.api.list().subscribe({
-      next: workflows => this.workflows.set(workflows),
+      next: workflows => {
+        this.workflows.set(workflows);
+        this.preloadTerminalPortsForCandidates(workflows);
+      },
       error: err => this.error.set(`Failed to load workflows: ${err.message ?? err}`)
     });
 
@@ -2022,6 +2031,33 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (node.kind === 'ReviewLoop') {
       this.refreshSubflowPorts(node);
     }
+  }
+
+  /** VZ6: Eagerly fetch the latest-version terminal ports for every candidate workflow so
+   *  the Subflow / ReviewLoop picker can show "{key} (vN) → port1, port2, …" inline. The
+   *  current workflow itself is excluded (`availableSubflowTargets` filters it before render
+   *  anyway, but we still skip the fetch). Failures per-candidate are silently dropped — a
+   *  missing entry just means the picker option falls back to the bare `{key} (vN)` label. */
+  private preloadTerminalPortsForCandidates(workflows: WorkflowSummary[]): void {
+    const currentKey = this.workflowKey().trim();
+    for (const wf of workflows) {
+      if (wf.key === currentKey) continue;
+      this.api.getTerminalPorts(wf.key, wf.latestVersion).subscribe({
+        next: ports => {
+          this.terminalPortsByKey.update(prev => ({ ...prev, [wf.key]: ports }));
+        },
+        error: () => { /* best-effort cache; option falls back to bare label */ }
+      });
+    }
+  }
+
+  /** VZ6: option text for a candidate workflow in the Subflow / ReviewLoop picker. */
+  subflowPickerLabel(wf: WorkflowSummary): string {
+    const ports = this.terminalPortsByKey()[wf.key];
+    const base = `${wf.key} (v${wf.latestVersion})`;
+    if (!ports) return base;
+    const portList = ports.length > 0 ? ports.join(', ') + ', Failed' : 'Failed';
+    return `${base} → ${portList}`;
   }
 
   /** Fetch the child workflow's terminal ports and apply them to this Subflow / ReviewLoop
