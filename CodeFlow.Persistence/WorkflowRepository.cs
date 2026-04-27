@@ -162,6 +162,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         ReviewMaxRounds = node.ReviewMaxRounds,
                         LoopDecision = NormalizeOptionalString(node.LoopDecision),
                         OptOutLastRoundReminder = node.OptOutLastRoundReminder,
+                        RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -265,7 +266,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.ReviewMaxRounds,
             entity.LoopDecision,
             entity.InputScript,
-            entity.OptOutLastRoundReminder);
+            entity.OptOutLastRoundReminder,
+            WorkflowJson.DeserializeRejectionHistoryConfig(entity.RejectionHistoryConfigJson));
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

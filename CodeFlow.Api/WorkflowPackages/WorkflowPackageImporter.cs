@@ -559,6 +559,7 @@ public sealed class WorkflowPackageImporter(
                         ReviewMaxRounds = node.ReviewMaxRounds,
                         LoopDecision = Trim(node.LoopDecision),
                         OptOutLastRoundReminder = node.OptOutLastRoundReminder,
+                        RejectionHistoryConfigJson = WorkflowJson.SerializeRejectionHistoryConfig(node.RejectionHistory),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -623,7 +624,8 @@ public sealed class WorkflowPackageImporter(
             node.ReviewMaxRounds,
             NormalizeOptional(node.LoopDecision),
             node.InputScript,
-            node.OptOutLastRoundReminder);
+            node.OptOutLastRoundReminder,
+            node.RejectionHistory);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,

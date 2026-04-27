@@ -547,6 +547,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     return;
                 }
 
+                await AccumulateRejectionHistoryAsync(
+                    saga,
+                    parentNode,
+                    message,
+                    artifactStore,
+                    context.CancellationToken);
+
                 await PublishSubflowDispatchAsync(
                     context,
                     saga,
@@ -1521,10 +1528,64 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         }
         catch (JsonException)
         {
-            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can still read it.
+            // Upstream agent produced plain text — expose as { "text": "…" } so scripts can still let it.
             var doc = new { text };
             return JsonSerializer.SerializeToElement(doc);
         }
+    }
+
+    /// <summary>
+    /// P3: when a ReviewLoop's reviewer rejects on a non-final round, append the loop-decision
+    /// artifact to the framework-managed <c>__loop.rejectionHistory</c> workflow variable so
+    /// the next round's child workflow renders it via the auto-injected
+    /// <c>{{ rejectionHistory }}</c> binding. No-op when the parent ReviewLoop has the feature
+    /// disabled (NULL config, or <c>Enabled=false</c>) — that's the migration-safe default.
+    /// </summary>
+    private static async Task AccumulateRejectionHistoryAsync(
+        WorkflowSagaStateEntity saga,
+        WorkflowNode parentNode,
+        SubflowCompleted message,
+        IArtifactStore artifactStore,
+        CancellationToken cancellationToken)
+    {
+        var config = parentNode.RejectionHistory;
+        if (config is null || !config.Enabled)
+        {
+            return;
+        }
+
+        string artifactBody;
+        try
+        {
+            await using var stream = await artifactStore.ReadAsync(message.OutputRef, cancellationToken);
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: false);
+            artifactBody = await reader.ReadToEndAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            // Accumulation is a best-effort enrichment — never fail the loop because the
+            // history couldn't be appended. The next round simply runs without the new entry.
+            return;
+        }
+
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+
+        workflowBag.TryGetValue(RejectionHistoryAccumulator.WorkflowVariableKey, out var existingElement);
+        var existingValue = existingElement.ValueKind == JsonValueKind.String
+            ? existingElement.GetString()
+            : existingElement.ValueKind == JsonValueKind.Undefined || existingElement.ValueKind == JsonValueKind.Null
+                ? null
+                : existingElement.GetRawText();
+
+        var justFinishedRound = message.ReviewRound ?? 1;
+        var updated = RejectionHistoryAccumulator.Append(existingValue, justFinishedRound, artifactBody, config);
+
+        workflowBag[RejectionHistoryAccumulator.WorkflowVariableKey] =
+            JsonSerializer.SerializeToElement(updated);
+
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
     }
 
     private static Task DispatchToNodeAsync(

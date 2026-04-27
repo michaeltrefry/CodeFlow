@@ -76,6 +76,10 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasDefaultValue(false)
             .IsRequired();
 
+        builder.Property(node => node.RejectionHistoryConfigJson)
+            .HasColumnName("rejection_history_config_json")
+            .HasColumnType("longtext");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

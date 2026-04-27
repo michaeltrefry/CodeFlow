@@ -75,7 +75,8 @@ public sealed record WorkflowPackageWorkflowNode(
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
     string? InputScript = null,
-    bool OptOutLastRoundReminder = false);
+    bool OptOutLastRoundReminder = false,
+    RejectionHistoryConfig? RejectionHistory = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

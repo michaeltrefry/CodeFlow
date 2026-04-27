@@ -35,4 +35,6 @@ public sealed class WorkflowNodeEntity
     public string? LoopDecision { get; set; }
 
     public bool OptOutLastRoundReminder { get; set; }
+
+    public string? RejectionHistoryConfigJson { get; set; }
 }

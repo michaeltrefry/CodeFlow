@@ -383,6 +383,68 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripRejectionHistoryConfig()
+    {
+        // P3: a ReviewLoop carries a JSON RejectionHistoryConfig that controls runtime
+        // accumulation of the loop-decision artifact into __loop.rejectionHistory. The
+        // record must survive a save/load cycle with all three fields preserved (Enabled,
+        // MaxBytes, Format), and nodes that don't set the config must round-trip as null.
+        var workflowKey = $"rejection-history-config-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var loopWithConfig = Guid.NewGuid();
+        var loopWithoutConfig = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Rejection-history config flow",
+            MaxRoundsPerRound: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(loopWithConfig, WorkflowNodeKind.ReviewLoop, AgentKey: null,
+                    AgentVersion: null, OutputScript: null,
+                    OutputPorts: new[] { "Approved", "Exhausted", "Failed" },
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "critique-revise", SubflowVersion: 1,
+                    ReviewMaxRounds: 3,
+                    RejectionHistory: new RejectionHistoryConfig(
+                        Enabled: true,
+                        MaxBytes: 16_384,
+                        Format: RejectionHistoryFormat.Json)),
+                new WorkflowNodeDraft(loopWithoutConfig, WorkflowNodeKind.ReviewLoop, AgentKey: null,
+                    AgentVersion: null, OutputScript: null,
+                    OutputPorts: new[] { "Approved", "Exhausted", "Failed" },
+                    LayoutX: 500, LayoutY: 0,
+                    SubflowKey: "follow-up", SubflowVersion: 1,
+                    ReviewMaxRounds: 2)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", loopWithConfig, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(loopWithConfig, "Approved", loopWithoutConfig, WorkflowEdge.DefaultInputPort, false, 1)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var configured = reloaded.Nodes.Single(n => n.Id == loopWithConfig);
+        configured.RejectionHistory.Should().NotBeNull();
+        configured.RejectionHistory!.Enabled.Should().BeTrue();
+        configured.RejectionHistory.MaxBytes.Should().Be(16_384);
+        configured.RejectionHistory.Format.Should().Be(RejectionHistoryFormat.Json);
+
+        var unconfigured = reloaded.Nodes.Single(n => n.Id == loopWithoutConfig);
+        unconfigured.RejectionHistory.Should().BeNull(
+            "ReviewLoops that don't opt in must round-trip with NULL config — pre-P3 rows are unaffected");
+    }
+
+    [Fact]
     public async Task GetTerminalPortsAsync_ShouldReturnUnwiredDeclaredPortsAcrossNodes()
     {
         var workflowKey = $"terminal-ports-{Guid.NewGuid():N}";

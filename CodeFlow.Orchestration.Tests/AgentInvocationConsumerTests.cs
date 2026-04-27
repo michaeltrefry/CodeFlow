@@ -1022,6 +1022,148 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
+    public async Task Consumer_InsideReviewLoop_ExposesRejectionHistoryAlias_FromWorkflowContext()
+    {
+        // P3: when the framework-managed `__loop.rejectionHistory` accumulator is set in the
+        // per-trace workflow bag, the consumer surfaces it under the un-prefixed
+        // `rejectionHistory` Scriban variable so reviewer/producer prompts can `{{ rejectionHistory }}`
+        // without fighting through `{{ workflow.__loop.rejectionHistory }}`.
+        var historyValue = "## Round 1\nfeedback v1\n\n## Round 2\nfeedback v2";
+        var workflowContext = new Dictionary<string, JsonElement>
+        {
+            ["__loop.rejectionHistory"] = JsonSerializer.SerializeToElement(historyValue),
+        };
+
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "rejection-history-flow",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            WorkflowContext: workflowContext,
+            ReviewRound: 3,
+            ReviewMaxRounds: 3);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", PromptTemplate: "p"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-rejection-history-alias-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!.Should().ContainKey("rejectionHistory").WhoseValue.Should().Be(historyValue);
+            variables.Should().ContainKey("workflow.__loop.rejectionHistory").WhoseValue.Should().Be(historyValue,
+                "the original namespaced workflow variable still flows through too");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_RejectionHistoryAlias_DefaultsToEmptyWhenAbsent()
+    {
+        // P3: when the accumulator is empty (round 1 of a fresh loop, or feature disabled),
+        // the alias still exists as an empty string so `{{ if rejectionHistory }}` blocks
+        // evaluate falsy without rendering a literal `{{ rejectionHistory }}` token.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "rejection-history-empty",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 1,
+            ReviewMaxRounds: 3);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4", PromptTemplate: "p"),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("draft", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "done",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-rejection-history-empty-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var variables = agentInvoker.Invocations[0].Configuration.Variables;
+            variables.Should().NotBeNull();
+            variables!.Should().ContainKey("rejectionHistory").WhoseValue.Should().Be(string.Empty);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Consumer_WhenHitlAgentReenteredSameRoundWithDifferentInputRef_ShouldCreateAnotherTask()
     {
         var traceId = Guid.NewGuid();

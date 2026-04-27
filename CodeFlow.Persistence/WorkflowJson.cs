@@ -1,10 +1,16 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodeFlow.Persistence;
 
-internal static class WorkflowJson
+public static class WorkflowJson
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+
+    private static readonly JsonSerializerOptions ConfigSerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     public static string SerializePorts(IReadOnlyList<string> ports)
     {
@@ -38,5 +44,22 @@ internal static class WorkflowJson
 
         var deserialized = JsonSerializer.Deserialize<string[]>(tagsJson, SerializerOptions);
         return deserialized ?? Array.Empty<string>();
+    }
+
+    public static string? SerializeRejectionHistoryConfig(RejectionHistoryConfig? config)
+    {
+        return config is null
+            ? null
+            : JsonSerializer.Serialize(config, ConfigSerializerOptions);
+    }
+
+    public static RejectionHistoryConfig? DeserializeRejectionHistoryConfig(string? configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<RejectionHistoryConfig>(configJson, ConfigSerializerOptions);
     }
 }

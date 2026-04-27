@@ -14,4 +14,5 @@ public sealed record WorkflowNode(
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
     string? InputScript = null,
-    bool OptOutLastRoundReminder = false);
+    bool OptOutLastRoundReminder = false,
+    RejectionHistoryConfig? RejectionHistory = null);

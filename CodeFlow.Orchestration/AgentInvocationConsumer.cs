@@ -113,7 +113,10 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     agentConfig.Configuration.Variables,
                     BuildContextTemplateVariables(message.ContextInputs),
                     BuildWorkflowTemplateVariables(message.WorkflowContext),
-                    BuildReviewLoopTemplateVariables(message.ReviewRound, message.ReviewMaxRounds),
+                    BuildReviewLoopTemplateVariables(
+                        message.ReviewRound,
+                        message.ReviewMaxRounds,
+                        message.WorkflowContext),
                     BuildInputTemplateVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
@@ -487,7 +490,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
     private static IReadOnlyDictionary<string, string?> BuildReviewLoopTemplateVariables(
         int? reviewRound,
-        int? reviewMaxRounds)
+        int? reviewMaxRounds,
+        IReadOnlyDictionary<string, JsonElement>? workflowContext = null)
     {
         // Outside a ReviewLoop, emit no template variables — an unused {{round}} placeholder in
         // a prompt will render as the literal unresolved token, matching the documented "child
@@ -505,6 +509,26 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             ["maxRounds"] = maxRounds.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["isLastRound"] = maxRounds > 0 && round >= maxRounds ? "true" : "false"
         };
+
+        // P3: surface the framework-managed `__loop.rejectionHistory` workflow variable as the
+        // un-prefixed `{{ rejectionHistory }}` alias so reviewer/producer prompts (and the
+        // stock partials) reference it cleanly. Empty string when not yet populated so
+        // `{{ if rejectionHistory }}...{{ end }}` blocks don't render the literal token.
+        if (workflowContext is not null
+            && workflowContext.TryGetValue(RejectionHistoryAccumulator.WorkflowVariableKey, out var historyElement))
+        {
+            variables["rejectionHistory"] = historyElement.ValueKind switch
+            {
+                JsonValueKind.String => historyElement.GetString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+                _ => historyElement.GetRawText(),
+            };
+        }
+        else
+        {
+            variables["rejectionHistory"] = string.Empty;
+        }
+
         return variables;
     }
 

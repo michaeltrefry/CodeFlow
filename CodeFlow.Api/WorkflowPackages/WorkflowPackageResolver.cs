@@ -144,7 +144,8 @@ public sealed class WorkflowPackageResolver(
                 ReviewMaxRounds: node.ReviewMaxRounds,
                 LoopDecision: NormalizeOptional(node.LoopDecision),
                 InputScript: node.InputScript,
-                OptOutLastRoundReminder: node.OptOutLastRoundReminder));
+                OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+                RejectionHistory: node.RejectionHistory));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

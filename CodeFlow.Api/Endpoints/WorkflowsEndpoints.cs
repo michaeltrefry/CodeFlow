@@ -633,7 +633,8 @@ public static class WorkflowsEndpoints
                     ReviewMaxRounds: node.ReviewMaxRounds,
                     LoopDecision: node.LoopDecision,
                     InputScript: node.InputScript,
-                    OptOutLastRoundReminder: node.OptOutLastRoundReminder))
+                    OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+                    RejectionHistory: node.RejectionHistory))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -693,7 +694,8 @@ public static class WorkflowsEndpoints
                 ReviewMaxRounds: node.ReviewMaxRounds,
                 LoopDecision: node.LoopDecision,
                 InputScript: node.InputScript,
-                OptOutLastRoundReminder: node.OptOutLastRoundReminder))
+                OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+                RejectionHistory: node.RejectionHistory))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

@@ -2293,6 +2293,153 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task ReviewLoopCompleted_RejectionHistoryEnabled_AccumulatesArtifactBodyAcrossRounds()
+    {
+        // P3: when the parent ReviewLoop has rejection history enabled, each non-final Rejected
+        // round appends the loop-decision artifact body to the framework-managed
+        // `__loop.rejectionHistory` workflow variable. The final Approved round exits via the
+        // Approved port and the accumulated history rides up on the parent saga's workflow bag
+        // (so a downstream node can still read it after the loop completes).
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-rejection-history", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 3,
+            rejectionHistory: new RejectionHistoryConfig(Enabled: true));
+
+        var round1Body = "## Findings\n- missing API in section 2";
+        var round2Body = "## Findings\n- still missing the GET endpoint";
+        var round1OutputRef = new Uri("file:///tmp/r1-feedback.bin");
+        var round2OutputRef = new Uri("file:///tmp/r2-feedback.bin");
+        var round3OutputRef = new Uri("file:///tmp/r3-approved.bin");
+
+        var artifactStore = new StubArtifactStore(uri =>
+            uri == round1OutputRef ? round1Body
+            : uri == round2OutputRef ? round2Body
+            : "{}");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>(), artifactStore: artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            // Round 1 reject — accumulator should record the artifact body before round 2 spawns.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: round1OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
+
+            var round2 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2))[1].Context.Message;
+            round2.ReviewRound.Should().Be(2);
+
+            // Verify the accumulator captured round 1 before spawning round 2.
+            var afterRound1Saga = sagaHarness.Sagas.Contains(traceId)!;
+            var afterRound1Bag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                afterRound1Saga.WorkflowInputsJson)!;
+            afterRound1Bag.Should().ContainKey(RejectionHistoryAccumulator.WorkflowVariableKey);
+            afterRound1Bag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()
+                .Should().Contain("## Round 1").And.Contain("missing API in section 2");
+
+            // Round 2 reject — second round body appends.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round2.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: round2OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 2, TerminalPort: "Rejected"));
+
+            var round3 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 3))[2].Context.Message;
+            round3.ReviewRound.Should().Be(3);
+
+            var afterRound2Saga = sagaHarness.Sagas.Contains(traceId)!;
+            var afterRound2Bag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                afterRound2Saga.WorkflowInputsJson)!;
+            var historyAfterRound2 = afterRound2Bag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()!;
+            historyAfterRound2.Should().Contain("## Round 1").And.Contain("missing API in section 2");
+            historyAfterRound2.Should().Contain("## Round 2").And.Contain("still missing the GET endpoint");
+
+            // Round 3 approves — loop exits Approved, accumulator is NOT extended (approval is not
+            // a rejection event), and the saga terminates cleanly.
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round3.ChildTraceId, OutputPortName: "Approved",
+                OutputRef: round3OutputRef,
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Approved", ReviewRound: 3, TerminalPort: "Approved"));
+
+            await sagaHarness.Exists(traceId, x => x.Completed);
+
+            var finalSaga = sagaHarness.Sagas.Contains(traceId)!;
+            var finalBag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                finalSaga.WorkflowInputsJson)!;
+            finalBag[RejectionHistoryAccumulator.WorkflowVariableKey].GetString()
+                .Should().Be(historyAfterRound2,
+                    "the Approved exit must not extend the rejection history");
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
+    public async Task ReviewLoopCompleted_RejectionHistoryDisabled_DoesNotPopulateAccumulator()
+    {
+        // P3 CR1 contract: a ReviewLoop without the feature configured (NULL = pre-P3 row, or
+        // explicit Enabled=false) must behave identically to today — no `__loop.rejectionHistory`
+        // entry appears on the saga bag, so existing hand-rolled accumulation paths are untouched.
+        var traceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var reviewLoopNodeId = Guid.NewGuid();
+
+        var workflow = BuildWorkflowWithReviewLoop(
+            "rl-rejection-history-disabled", startNodeId, "kickoff", reviewLoopNodeId,
+            subflowKey: "critique-revise", subflowVersion: 1, maxRounds: 2,
+            rejectionHistory: null);
+
+        var artifactStore = new StubArtifactStore("## Findings\n- something to ignore");
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int>(), artifactStore: artifactStore);
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, parentRoundId);
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, parentRoundId, "kickoff", 1, "Completed"));
+            var round1 = (await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 1))[0].Context.Message;
+
+            await harness.Bus.Publish(new SubflowCompleted(
+                ParentTraceId: traceId, ParentNodeId: reviewLoopNodeId, ParentRoundId: parentRoundId,
+                ChildTraceId: round1.ChildTraceId, OutputPortName: "Rejected",
+                OutputRef: new Uri("file:///tmp/r1.bin"),
+                WorkflowContext: new Dictionary<string, JsonElement>(),
+                Decision: "Rejected", ReviewRound: 1, TerminalPort: "Rejected"));
+
+            await WaitForPublishedAsync<SubflowInvokeRequested>(harness, expectedCount: 2);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            // Pre-P3 sagas leave WorkflowInputsJson null until something writes; an empty bag
+            // is the expected disabled-feature outcome too.
+            var bag = string.IsNullOrEmpty(saga.WorkflowInputsJson)
+                ? new Dictionary<string, JsonElement>()
+                : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(saga.WorkflowInputsJson)!;
+            bag.Should().NotContainKey(RejectionHistoryAccumulator.WorkflowVariableKey);
+        }
+        finally { await harness.Stop(); }
+    }
+
+    [Fact]
     public async Task ReviewLoopCompleted_FailedOnRound2_ShouldExitFailedPort_AndKeepRound1GlobalMerged()
     {
         // Slice 10 scenario 5: a Failed return from round 2 exits the Failed port (no edge →
@@ -2820,7 +2967,8 @@ public sealed class WorkflowSagaStateMachineTests
         string subflowKey,
         int subflowVersion,
         int maxRounds,
-        string? loopDecision = null)
+        string? loopDecision = null,
+        RejectionHistoryConfig? rejectionHistory = null)
     {
         var nodes = new List<WorkflowNode>
         {
@@ -2829,7 +2977,8 @@ public sealed class WorkflowSagaStateMachineTests
             new(reviewLoopNodeId, WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null, OutputScript: null,
                 OutputPorts: new[] { "Approved", "Exhausted", "Failed" }, LayoutX: 250, LayoutY: 0,
                 SubflowKey: subflowKey, SubflowVersion: subflowVersion, ReviewMaxRounds: maxRounds,
-                LoopDecision: loopDecision),
+                LoopDecision: loopDecision,
+                RejectionHistory: rejectionHistory),
         };
 
         var edges = new[]
