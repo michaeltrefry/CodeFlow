@@ -180,23 +180,41 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, I
     }
 
     [Fact]
-    public async Task Put_rejects_nonexistent_workingDirectoryRoot()
+    public async Task Put_creates_missing_workingDirectoryRoot_on_save()
     {
         using var client = factory.CreateClient();
 
-        var path = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-missing-{Guid.NewGuid():N}");
-        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
-        {
-            mode = "GitHub",
-            baseUrl = (string?)null,
-            workingDirectoryRoot = path,
-            token = new { action = "Replace", value = "ghp_for_workdir_missing" },
-        });
+        // Operator typically lacks shell access on the server, so the save path creates the
+        // directory rather than rejecting it. Nest two levels deep to confirm Directory.CreateDirectory
+        // produces the full tree.
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"codeflow-workdir-autocreate-{Guid.NewGuid():N}",
+            "nested");
 
-        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var body = await put.Content.ReadAsStringAsync();
-        body.Should().Contain("workingDirectoryRoot");
-        body.Should().Contain("does not exist");
+        Directory.Exists(path).Should().BeFalse(
+            "precondition: the directory must not exist before the save creates it.");
+
+        try
+        {
+            var put = await client.PutAsJsonAsync("/api/admin/git-host", new
+            {
+                mode = "GitHub",
+                baseUrl = (string?)null,
+                workingDirectoryRoot = path,
+                token = new { action = "Replace", value = "ghp_for_autocreate" },
+            });
+
+            put.EnsureSuccessStatusCode();
+            Directory.Exists(path).Should().BeTrue();
+
+            var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
+            settings.WorkingDirectoryRoot.Should().Be(path);
+        }
+        finally
+        {
+            try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch { /* best-effort */ }
+        }
     }
 
     [Fact]
