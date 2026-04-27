@@ -94,6 +94,7 @@ public static class HostExtensions
         services.AddSingleton<IArtifactStore, FileSystemArtifactStore>();
         services.AddMemoryCache();
         services.AddSingleton<LogicNodeScriptHost>();
+        services.AddSingleton<IWorkflowDataflowAnalyzer, WorkflowDataflowAnalyzer>();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
         services.AddScoped<IPromptPartialRepository, PromptPartialRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();

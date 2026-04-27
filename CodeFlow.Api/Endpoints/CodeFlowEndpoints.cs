@@ -23,6 +23,7 @@ public static class CodeFlowEndpoints
         routes.MapLlmProvidersEndpoints();
         routes.MapWorkflowTemplatesEndpoints();
         routes.MapCascadeBumpEndpoints();
+        routes.MapWorkflowDataflowEndpoints();
 
         return routes;
     }
