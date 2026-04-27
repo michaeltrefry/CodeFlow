@@ -532,6 +532,88 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task ApplyPackageImport_TransformDemoLibraryPackage_RoundTripsBothModes()
+    {
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("transform-demo-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(3);
+
+        var detailJson = await client.GetStringAsync("/api/workflows/transform-demo/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(4);
+
+        var transformNodes = nodes
+            .Where(n => string.Equals(n.GetProperty("kind").GetString(), "Transform", StringComparison.Ordinal))
+            .ToList();
+        transformNodes.Should().HaveCount(2, "the demo features one Transform per output mode");
+
+        var jsonModeNode = transformNodes.Single(n =>
+            string.Equals(n.GetProperty("outputType").GetString(), "json", StringComparison.Ordinal));
+        jsonModeNode.GetProperty("template").GetString().Should().Contain("string.literal",
+            "the JSON-mode template uses Scriban's string.literal helper to safely escape arbitrary string content");
+
+        var stringModeNode = transformNodes.Single(n =>
+            string.Equals(n.GetProperty("outputType").GetString(), "string", StringComparison.Ordinal));
+        stringModeNode.GetProperty("template").GetString().Should().Contain("# {{ input.title }}",
+            "the string-mode template renders a Markdown summary headed by the topic title");
+
+        // Render the JSON-mode template against a representative analyzer payload via the TN-6
+        // preview endpoint and confirm it actually emits valid JSON. Without this, the package
+        // could import cleanly but fail at saga runtime if the template references an unknown
+        // Scriban helper.
+        var renderRequest = new
+        {
+            template = jsonModeNode.GetProperty("template").GetString(),
+            outputType = "json",
+            input = JsonNode.Parse("""
+                {"title":"Sample \"topic\"","summary":"S","bullets":["alpha","\"quoted\"","gamma"],"risks":["r1"]}
+                """),
+            context = new Dictionary<string, object>(),
+            workflow = new Dictionary<string, object> { ["topic"] = "Demo" }
+        };
+        var render = await client.PostAsJsonAsync(
+            "/api/workflows/templates/render-transform-preview",
+            renderRequest);
+        render.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var renderDoc = JsonDocument.Parse(await render.Content.ReadAsStringAsync());
+        renderDoc.RootElement.TryGetProperty("jsonParseError", out var parseError).Should().BeFalse(
+            $"the JSON-mode template must produce valid JSON; got jsonParseError='{(parseError.ValueKind == JsonValueKind.String ? parseError.GetString() : "(none)")}' and rendered='{renderDoc.RootElement.GetProperty("rendered").GetString()}'");
+        var parsed = renderDoc.RootElement.GetProperty("parsed");
+        parsed.GetProperty("title").GetString().Should().Be("Sample \"topic\"");
+        parsed.GetProperty("bullets").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "alpha", "\"quoted\"", "gamma" });
+        parsed.GetProperty("risks").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "r1" });
+    }
+
+    private static string LocateLibraryPackage(string fileName)
+    {
+        var dir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(dir))
+        {
+            var candidate = Path.Combine(dir, "workflows", fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            dir = Path.GetDirectoryName(dir);
+        }
+        throw new FileNotFoundException(
+            $"Could not locate workflows/{fileName} by walking up from {AppContext.BaseDirectory}.");
+    }
+
+    [Fact]
     public async Task ExportPackage_RedactsMcpBearerToken_AndPreviewWarns()
     {
         using var client = factory.CreateClient();

@@ -1,0 +1,173 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-27T18:30:00Z",
+    "migrationNotes": "TN-7 reference workflow. Demonstrates the Transform node in both modes within a single flow: analyzer agent emits structured JSON about a topic, Transform A extracts a subset (outputType=json), Transform B renders the subset as a Markdown summary (outputType=string). Transform B's Out port is unwired, so the rendered Markdown becomes the workflow's terminal artifact."
+  },
+  "entryPoint": {
+    "key": "transform-demo",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "transform-demo",
+      "version": 1,
+      "name": "Transform Demo",
+      "maxRoundsPerRound": 3,
+      "category": "Workflow",
+      "tags": ["transform", "reference", "scriban"],
+      "createdAtUtc": "2026-04-27T18:30:00Z",
+      "workflowVarsReads": ["topic"],
+      "workflowVarsWrites": ["topic"],
+      "nodes": [
+        {
+          "id": "cccccccc-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "transform-demo-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "setWorkflow('topic', input.text);"
+        },
+        {
+          "id": "cccccccc-0001-0001-0001-000000000002",
+          "kind": "Agent",
+          "agentKey": "transform-demo-analyzer",
+          "agentVersion": 1,
+          "outputPorts": ["Analyzed"],
+          "layoutX": 350,
+          "layoutY": 200
+        },
+        {
+          "id": "cccccccc-0001-0001-0001-000000000003",
+          "kind": "Transform",
+          "outputPorts": ["Out"],
+          "layoutX": 650,
+          "layoutY": 200,
+          "template": "{\n  \"title\": {{ (input.title ?? \"\") | string.literal }},\n  \"bullets\": [{{ for b in (input.bullets ?? []) }}{{ if !for.first }},{{ end }}{{ b | string.literal }}{{ end }}],\n  \"risks\": [{{ for r in (input.risks ?? []) }}{{ if !for.first }},{{ end }}{{ r | string.literal }}{{ end }}]\n}",
+          "outputType": "json"
+        },
+        {
+          "id": "cccccccc-0001-0001-0001-000000000004",
+          "kind": "Transform",
+          "outputPorts": ["Out"],
+          "layoutX": 950,
+          "layoutY": 200,
+          "template": "# {{ input.title }}\n\n## Key points\n{{~ for bullet in input.bullets ~}}\n- {{ bullet }}\n{{~ end ~}}\n\n## Risks\n{{~ for risk in input.risks ~}}\n- {{ risk }}\n{{~ end ~}}\n\n_Source topic: {{ workflow.topic }}_\n",
+          "outputType": "string"
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "cccccccc-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "cccccccc-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "cccccccc-0001-0001-0001-000000000002",
+          "fromPort": "Analyzed",
+          "toNodeId": "cccccccc-0001-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "cccccccc-0001-0001-0001-000000000003",
+          "fromPort": "Out",
+          "toNodeId": "cccccccc-0001-0001-0001-000000000004",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Topic",
+          "kind": "Text",
+          "required": true,
+          "description": "Free-text topic the analyzer agent should describe. The Start node's inputScript copies it into workflow.topic so both Transform B and any future downstream node can read it via {{ workflow.topic }}.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "transform-demo-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Transform Demo Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the Transform Demo flow. The topic has already been seeded into workflow state by an input script — you do not need to do anything with it.\n\nYour only job: write the single word `Initialized.` as your message content, then submit with port `Continue`.",
+        "promptTemplate": "Topic has been seeded into the workflow bag. Acknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Seeds the topic into the workflow bag and hands off to the analyzer."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-27T18:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Seeds the topic into the workflow bag and hands off to the analyzer."
+        }
+      ]
+    },
+    {
+      "key": "transform-demo-analyzer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Transform Demo Analyzer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a topic analyst. You produce a compact structured analysis of a topic that downstream Transform nodes will reshape into a Markdown summary.\n\n## Output\n\nWrite **valid JSON only** as your message content. No prose, no backtick fences. Submit on port `Analyzed`.\n\nThe JSON object MUST have exactly these fields:\n- `title` (string) — a short title for the topic.\n- `summary` (string) — one sentence describing the topic.\n- `bullets` (array of strings) — 3 to 8 key points about the topic.\n- `risks` (array of strings) — 0 to 5 risks or caveats. Empty array is fine.\n\nThe downstream Transform A node extracts a subset of these fields; Transform B renders that subset as Markdown.",
+        "promptTemplate": "## Topic\n{{ workflow.topic }}\n\nProduce the structured JSON described in your instructions. Output JSON only.",
+        "maxTokens": 1500,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Analyzed",
+            "description": "Structured JSON object with title, summary, bullets, risks. Consumed by Transform A."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-27T18:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Analyzed",
+          "description": "Structured JSON object with title, summary, bullets, risks. Consumed by Transform A.",
+          "payloadExample": {
+            "title": "Sample topic",
+            "summary": "A short one-sentence description.",
+            "bullets": ["First key point", "Second key point", "Third key point"],
+            "risks": ["A potential risk", "Another caveat"]
+          }
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "transform-demo-init", "roleKeys": [] },
+    { "agentKey": "transform-demo-analyzer", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}
