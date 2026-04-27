@@ -392,7 +392,10 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             WorkflowContext: workflowContext,
             Decision: terminalDecision,
             ReviewRound: saga.ParentReviewRound,
-            TerminalPort: saga.LastEffectivePort));
+            TerminalPort: saga.LastEffectivePort,
+            FailureReason: string.Equals(terminalPortName, ImplicitFailedPort, StringComparison.Ordinal)
+                ? saga.FailureReason
+                : null));
     }
 
     private readonly record struct ReviewLoopOutcome(
@@ -601,6 +604,15 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             OutputPortName: effectivePortName,
             InputRef: saga.CurrentInputRef,
             OutputRef: message.OutputRef.ToString()));
+
+        // Mirror the agent-completion path: when the child's effective port is Failed, lift its
+        // saga-level FailureReason onto the parent before edge lookup, so the unwired-Failed-port
+        // branch below doesn't bury the underlying cause behind a generic "no outgoing edge" string.
+        if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(message.FailureReason))
+        {
+            saga.FailureReason ??= message.FailureReason;
+        }
 
         var edge = workflow.FindNext(message.ParentNodeId, effectivePortName);
 
@@ -813,6 +825,18 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         // TerminalPort — the ReviewLoop parent compares that against its configured
         // LoopDecision to decide whether to iterate or exit.
         saga.LastEffectivePort = effectivePortName;
+
+        // When the agent submitted a Failed decision, lift its reason onto the saga *before* the
+        // edge lookup. Otherwise the unwired-Failed-port branch below would stamp a generic "no
+        // outgoing edge" message that hides the real cause, which is buried in DecisionPayload.
+        if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal))
+        {
+            var (agentReason, _) = ExtractFailureContext(message.DecisionPayload);
+            if (!string.IsNullOrWhiteSpace(agentReason))
+            {
+                saga.FailureReason ??= agentReason;
+            }
+        }
 
         var edge = workflow.FindNext(message.FromNodeId, effectivePortName);
 
@@ -2322,8 +2346,30 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             return (null, null);
         }
 
+        // The decision payload published by AgentInvocationConsumer wraps the agent's submitted
+        // payload under "payload" and adds a sibling "failure_context" object whose own "reason"
+        // mirrors the agent's. Older code paths and tests sometimes emit reason at the top level,
+        // so check all three locations and prefer the most-specific available source.
         string? reason = null;
-        if (payload.Value.TryGetProperty("reason", out var reasonProperty)
+        if (payload.Value.TryGetProperty("failure_context", out var failureContextProbe)
+            && failureContextProbe.ValueKind == JsonValueKind.Object
+            && failureContextProbe.TryGetProperty("reason", out var fcReasonProperty)
+            && fcReasonProperty.ValueKind == JsonValueKind.String)
+        {
+            reason = fcReasonProperty.GetString();
+        }
+
+        if (string.IsNullOrWhiteSpace(reason)
+            && payload.Value.TryGetProperty("payload", out var nestedPayload)
+            && nestedPayload.ValueKind == JsonValueKind.Object
+            && nestedPayload.TryGetProperty("reason", out var nestedReasonProperty)
+            && nestedReasonProperty.ValueKind == JsonValueKind.String)
+        {
+            reason = nestedReasonProperty.GetString();
+        }
+
+        if (string.IsNullOrWhiteSpace(reason)
+            && payload.Value.TryGetProperty("reason", out var reasonProperty)
             && reasonProperty.ValueKind == JsonValueKind.String)
         {
             reason = reasonProperty.GetString();

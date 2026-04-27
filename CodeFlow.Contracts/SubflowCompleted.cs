@@ -32,6 +32,11 @@ namespace CodeFlow.Contracts;
 ///   agent's submitted port name. Used by a ReviewLoop parent to compare against its
 ///   configured <c>LoopDecision</c> so authors can drive iteration off any port name they
 ///   choose. Null for legacy completions.</param>
+/// <param name="FailureReason">When the child saga terminated Failed, the saga-level
+///   <c>FailureReason</c> string. The parent uses this to surface the underlying cause if its
+///   own Subflow/ReviewLoop node has no outgoing edge wired for the Failed port — otherwise the
+///   parent would stamp a generic "no outgoing edge" message that hides the real reason. Null
+///   when the child completed any non-Failed terminal port.</param>
 public sealed record SubflowCompleted(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -42,4 +47,5 @@ public sealed record SubflowCompleted(
     IReadOnlyDictionary<string, JsonElement> WorkflowContext,
     string? Decision = null,
     int? ReviewRound = null,
-    string? TerminalPort = null);
+    string? TerminalPort = null,
+    string? FailureReason = null);
