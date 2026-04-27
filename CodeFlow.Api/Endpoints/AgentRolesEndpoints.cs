@@ -142,6 +142,16 @@ public static class AgentRolesEndpoints
             return Results.ValidationProblem(errors);
         }
 
+        var existing = await repository.GetAsync(id, cancellationToken);
+        if (existing is null)
+        {
+            return Results.NotFound();
+        }
+        if (existing.IsSystemManaged)
+        {
+            return SystemManagedConflict("update", existing.Key);
+        }
+
         try
         {
             await repository.UpdateAsync(id, new AgentRoleUpdate(
@@ -163,6 +173,16 @@ public static class AgentRolesEndpoints
         IAgentRoleRepository repository,
         CancellationToken cancellationToken)
     {
+        var existing = await repository.GetAsync(id, cancellationToken);
+        if (existing is null)
+        {
+            return Results.NotFound();
+        }
+        if (existing.IsSystemManaged)
+        {
+            return SystemManagedConflict("archive", existing.Key);
+        }
+
         try
         {
             await repository.ArchiveAsync(id, cancellationToken);
@@ -173,6 +193,14 @@ public static class AgentRolesEndpoints
         }
         return Results.NoContent();
     }
+
+    private static IResult SystemManagedConflict(string verb, string key) =>
+        Results.Conflict(new
+        {
+            error = $"Cannot {verb} system-managed role '{key}'. The platform owns this role; "
+                + "fork it to a new key if you need a customized variant.",
+            code = "SystemManagedRole",
+        });
 
     private static async Task<IResult> ReplaceGrantsAsync(
         long id,
@@ -187,6 +215,16 @@ public static class AgentRolesEndpoints
             {
                 ["body"] = ["Grant list is required."]
             });
+        }
+
+        var existingRole = await roleRepository.GetAsync(id, cancellationToken);
+        if (existingRole is null)
+        {
+            return Results.NotFound();
+        }
+        if (existingRole.IsSystemManaged)
+        {
+            return SystemManagedConflict("edit grants on", existingRole.Key);
         }
 
         var errors = new Dictionary<string, string[]>();
@@ -300,5 +338,6 @@ public static class AgentRolesEndpoints
         CreatedBy: role.CreatedBy,
         UpdatedAtUtc: role.UpdatedAtUtc,
         UpdatedBy: role.UpdatedBy,
-        IsArchived: role.IsArchived);
+        IsArchived: role.IsArchived,
+        IsSystemManaged: role.IsSystemManaged);
 }

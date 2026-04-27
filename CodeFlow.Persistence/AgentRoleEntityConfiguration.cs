@@ -52,6 +52,11 @@ public sealed class AgentRoleEntityConfiguration : IEntityTypeConfiguration<Agen
             .HasDefaultValue(false)
             .IsRequired();
 
+        builder.Property(role => role.IsSystemManaged)
+            .HasColumnName("is_system_managed")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.HasIndex(role => role.Key).IsUnique();
         builder.HasIndex(role => role.IsArchived);
     }

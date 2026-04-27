@@ -232,6 +232,7 @@ public static class HostExtensions
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
         await dbContext.Database.MigrateAsync();
         await SystemPromptPartialSeeder.SeedAsync(dbContext);
+        await SystemAgentRoleSeeder.SeedAsync(dbContext);
     }
 
     public static async Task ApplyDatabaseMigrationsAsync(this IServiceProvider services)
@@ -242,6 +243,7 @@ public static class HostExtensions
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
         await dbContext.Database.MigrateAsync();
         await SystemPromptPartialSeeder.SeedAsync(dbContext);
+        await SystemAgentRoleSeeder.SeedAsync(dbContext);
     }
 
     private static FileSystemArtifactStoreOptions ResolveArtifactOptions(IConfiguration configuration)

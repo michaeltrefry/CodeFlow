@@ -20,7 +20,8 @@ public sealed record AgentRoleResponse(
     string? CreatedBy,
     DateTime UpdatedAtUtc,
     string? UpdatedBy,
-    bool IsArchived);
+    bool IsArchived,
+    bool IsSystemManaged = false);
 
 public sealed record AgentRoleGrantRequest(
     AgentRoleToolCategory Category,
