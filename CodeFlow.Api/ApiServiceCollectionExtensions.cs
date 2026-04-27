@@ -3,6 +3,7 @@ using CodeFlow.Api.TraceEvents;
 using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.Validation.Pipeline.Rules;
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Api.WorkflowTemplates;
 using CodeFlow.Host;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
@@ -70,6 +71,12 @@ public static class ApiServiceCollectionExtensions
         // Authoring telemetry (O1). Singleton sink — stateless logger wrapper with stable event
         // names. Substituted with a recording fake in tests.
         services.AddSingleton<IAuthoringTelemetry, LoggerAuthoringTelemetry>();
+
+        // S3: workflow-template framework. Registry is a singleton (in-memory catalog of
+        // static-shipped templates); the materializer is scoped because it pulls scoped
+        // repositories.
+        services.AddSingleton<WorkflowTemplateRegistry>();
+        services.AddScoped<IWorkflowTemplateMaterializer, WorkflowTemplateMaterializer>();
 
         return services;
     }
