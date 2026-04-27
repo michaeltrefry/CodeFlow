@@ -688,6 +688,78 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string Error,
         IReadOnlyList<PromptPreviewMissingPartial>? MissingPartials);
 
+    // S2: lock in the rendered behavior of each form preset's templates so a regression in the
+    // preset definitions or the renderer surfaces immediately. Templates copied verbatim from
+    // codeflow-ui/src/app/pages/agents/form-presets.ts.
+
+    [Fact]
+    public async Task FormPreset_Passthrough_RendersInputArtifactUnchanged()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{{ input }}",
+            mode = "hitl",
+            decision = "Approved",
+            outputPortName = "Approved",
+            fieldValues = new Dictionary<string, object> { ["body"] = "upstream artifact" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewResponse>();
+        // Passthrough renders the form-fields object — the runtime delivers the form's submitted
+        // JSON as the artifact downstream when the template is just `{{ input }}`.
+        payload!.Rendered.Should().Contain("upstream artifact");
+    }
+
+    [Theory]
+    [InlineData("reviewer override", "reviewer override")]   // edited path
+    [InlineData("", "original v1")]                          // empty edit falls back to workflow var
+    public async Task FormPreset_EditThenApprove_PrefersEditOverWorkflowVar(string editedText, string expected)
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = """{{ if (input.editedText ?? "").size > 0 }}{{ input.editedText }}{{ else }}{{ workflow.currentPlan }}{{ end }}""",
+            mode = "hitl",
+            decision = "Approved",
+            outputPortName = "Approved",
+            fieldValues = new Dictionary<string, object> { ["editedText"] = editedText },
+            workflow = new Dictionary<string, object> { ["currentPlan"] = "original v1" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewResponse>();
+        payload!.Rendered.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task FormPreset_EditThenApprove_MissingFieldFallsBackToWorkflowVar()
+    {
+        using var client = factory.CreateClient();
+
+        // The reviewer never expanded the textarea; `input.editedText` is absent entirely.
+        // The preset's null-coalesce ensures we fall through to the workflow var.
+        var body = new
+        {
+            template = """{{ if (input.editedText ?? "").size > 0 }}{{ input.editedText }}{{ else }}{{ workflow.currentPlan }}{{ end }}""",
+            mode = "hitl",
+            decision = "Approved",
+            outputPortName = "Approved",
+            fieldValues = new Dictionary<string, object>(),
+            workflow = new Dictionary<string, object> { ["currentPlan"] = "original v1" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/templates/render-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<PreviewResponse>();
+        payload!.Rendered.Should().Be("original v1");
+    }
+
     private sealed record PromptPreviewResponse(
         string? RenderedSystemPrompt,
         string? RenderedPromptTemplate,

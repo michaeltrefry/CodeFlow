@@ -25,6 +25,7 @@ import {
   PromptTemplatePreviewAutoInjection,
   PromptTemplatePreviewMissingPartial,
 } from '../../core/models';
+import { FORM_PRESETS, FormPresetKey, getFormPreset } from './form-presets';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
@@ -163,6 +164,46 @@ type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
             </cf-card>
           } @else {
             <cf-card>
+              @if (canShowFormPresets()) {
+                <div class="form-section preset-picker">
+                  <div class="form-section-head">
+                    <h3>Start from a preset</h3>
+                    <p>Templates for the most common HITL form shapes. Apply a preset to seed the output template, ports, and per-port templates — then customize from there.</p>
+                  </div>
+                  <div class="preset-grid">
+                    @for (preset of formPresets; track preset.key) {
+                      <div class="preset-card">
+                        <div class="preset-card-head">
+                          <h4>{{ preset.label }}</h4>
+                          <p class="muted small">{{ preset.summary }}</p>
+                        </div>
+                        @if (preset.key === 'edit-then-approve') {
+                          <label class="field">
+                            <span class="field-label small">Pre-fill from workflow variable</span>
+                            <input class="input mono" type="text"
+                                   [ngModel]="presetEditSourceKey()"
+                                   (ngModelChange)="presetEditSourceKey.set($event)"
+                                   name="presetEditSourceKey" placeholder="draft" />
+                          </label>
+                        }
+                        @if (preset.key === 'multi-action') {
+                          <label class="field">
+                            <span class="field-label small">Port names <span class="muted">(comma-separated)</span></span>
+                            <input class="input mono" type="text"
+                                   [ngModel]="presetMultiActionPorts()"
+                                   (ngModelChange)="presetMultiActionPorts.set($event)"
+                                   name="presetMultiActionPorts" placeholder="Approved, Rejected" />
+                          </label>
+                        }
+                        <button type="button" cf-button variant="primary" size="sm" icon="plus"
+                                (click)="applyFormPreset(preset.key)">
+                          Apply preset
+                        </button>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
               <div class="form-section">
                 <div class="form-section-head">
                   <h3>Output template</h3>
@@ -561,6 +602,29 @@ type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
       border-left: 3px solid var(--accent, var(--fg));
       padding-left: 12px;
     }
+    .preset-picker {
+      background: var(--surface-2);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .preset-card {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+    }
+    .preset-card h4 { margin: 0 0 4px; font-size: var(--fs-md); }
+    .preset-card-head p { margin: 0; }
+    .preset-card .field-label.small { font-size: var(--fs-sm); }
   `]
 })
 export class AgentEditorComponent implements OnInit {
@@ -594,6 +658,22 @@ export class AgentEditorComponent implements OnInit {
   readonly fallbackTemplates = signal<DecisionTemplateRow[]>([]);
 
   readonly partialPins = signal<PromptPartialPinDto[]>([]);
+
+  // S2: form-preset picker state. Visible only when type=hitl AND the form looks empty
+  // (so editing an existing form doesn't get clobbered by an accidental Apply).
+  readonly formPresets = FORM_PRESETS;
+  readonly presetEditSourceKey = signal('draft');
+  readonly presetMultiActionPorts = signal('Approved, Rejected');
+  readonly canShowFormPresets = computed(() => {
+    if (this.type() !== 'hitl') return false;
+    const tpl = this.outputTemplate().trim();
+    const outs = this.outputs();
+    const isFreshOutputs = outs.length === 2
+      && outs[0].kind === 'Completed'
+      && outs[1].kind === 'Failed'
+      && !outs[0].template && !outs[1].template;
+    return tpl.length === 0 && (outs.length === 0 || isFreshOutputs);
+  });
 
   // VZ3: live prompt-template preview state (separate from the decision-template preview).
   readonly promptPreviewScopeText = signal(defaultPromptPreviewScope());
@@ -1011,6 +1091,32 @@ export class AgentEditorComponent implements OnInit {
       next: response => commit({ preview: response.rendered, previewError: null, previewPending: false }),
       error: err => commit({ preview: '', previewError: extractPreviewError(err), previewPending: false })
     });
+  }
+
+  applyFormPreset(key: FormPresetKey): void {
+    const preset = getFormPreset(key);
+    if (!preset) return;
+
+    const sourceVariableKey = key === 'edit-then-approve' ? this.presetEditSourceKey().trim() : undefined;
+    const portNames = key === 'multi-action'
+      ? this.presetMultiActionPorts().split(',').map(p => p.trim()).filter(p => p.length > 0)
+      : undefined;
+
+    const result = preset.build({ sourceVariableKey, portNames });
+
+    this.outputTemplate.set(result.outputTemplate);
+    this.outputs.set(result.outputs.map(o => ({
+      kind: o.kind,
+      description: o.description ?? null,
+      payloadExample: o.payloadExample ?? null,
+      template: result.decisionOutputTemplates?.[o.kind] ?? '',
+      preview: '',
+      previewError: null,
+      previewPending: false,
+      expanded: !!result.decisionOutputTemplates?.[o.kind],
+    })));
+    this.fallbackTemplates.set([]);
+    this.previewContextText.set(defaultHitlPreviewContext());
   }
 
   addOutput(): void {
