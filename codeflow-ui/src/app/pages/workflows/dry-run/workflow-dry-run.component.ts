@@ -198,7 +198,7 @@ const EMPTY_DRAFT: FixtureDraft = {
                     <td class="mono small">{{ ev.agentKey ?? '—' }}</td>
                     <td class="mono small">{{ ev.portName ?? '—' }}</td>
                     <td class="mono small">
-                      {{ ev.reviewRound !== null && ev.maxRounds !== null ? ev.reviewRound + '/' + ev.maxRounds : '—' }}
+                      {{ ev.reviewRound != null && ev.maxRounds != null ? ev.reviewRound + '/' + ev.maxRounds : '—' }}
                     </td>
                     <td class="event-detail">
                       @if (ev.message) {
