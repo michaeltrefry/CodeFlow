@@ -52,6 +52,7 @@ public enum DryRunEventKind
     WorkflowFailed = 10,
     BuiltinApplied = 11,
     Diagnostic = 12,
+    RetryContextHandoff = 13,
 }
 
 public enum DryRunTerminalState

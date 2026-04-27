@@ -456,6 +456,266 @@ public sealed class DryRunExecutorTests
             .Should().HaveCount(2);
     }
 
+    /// <summary>
+    /// V4 retry-context handoff: when an Agent's effective port resolves to "Failed" and routes
+    /// to a wired edge, the dry-run emits a RetryContextHandoff event mirroring the saga's
+    /// BuildRetryContextForHandoff. The first failure builds attempt #2 (saga
+    /// CountPriorFailedAttempts + 1 — the just-recorded Failed decision counts as one prior
+    /// attempt). The payload's <c>reason</c> + <c>failure_context.last_output</c> +
+    /// <c>tool_calls_executed</c> propagate to the synthesized retry context.
+    /// </summary>
+    [Fact]
+    public async Task RetryContextHandoff_AgentFailsAndSelfLoops_EmitsAttemptTwoWithReasonAndSummary()
+    {
+        var startId = Guid.Parse("99ee9999-9999-9999-9999-9999999999ee");
+        var workerId = Guid.Parse("aaee0001-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var sinkId = Guid.Parse("aaee0002-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+        var workflow = new Workflow(
+            Key: "retry-self-loop",
+            Version: 1,
+            Name: "Failed self-loop with retry-context",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: workerId, Kind: WorkflowNodeKind.Agent, AgentKey: "worker", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Completed", "Failed" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: sinkId, Kind: WorkflowNodeKind.Agent, AgentKey: "sink", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 200, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Completed", workerId, "in", false, 0),
+                // Failed self-loop: Failed → worker (retry).
+                new WorkflowEdge(workerId, "Failed", workerId, "in", false, 0),
+                new WorkflowEdge(workerId, "Completed", sinkId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var failurePayload = JsonNode.Parse("""
+            {
+              "reason": "tool call timed out",
+              "failure_context": {
+                "last_output": "partial response truncated",
+                "tool_calls_executed": 3
+              }
+            }
+            """);
+
+        var repo = new MultiWorkflowFakeRepository(workflow);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["worker"] = new[]
+            {
+                new DryRunMockResponse("Failed", "first attempt failed", failurePayload),
+                new DryRunMockResponse("Completed", "second attempt succeeded", null),
+            },
+            ["sink"] = new[] { new DryRunMockResponse("Done", "sink ack", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("retry-self-loop", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+
+        var handoffs = result.Events.Where(e => e.Kind == DryRunEventKind.RetryContextHandoff).ToList();
+        handoffs.Should().HaveCount(1, because: "only one Failed-port handoff happened in this run.");
+
+        var handoff = handoffs[0];
+        handoff.NodeId.Should().Be(workerId, because: "the Failed edge targets the same worker for a retry.");
+        handoff.AgentKey.Should().Be("worker");
+        handoff.PortName.Should().Be("Failed");
+        handoff.Message.Should().Contain("attempt #2");
+        handoff.Message.Should().Contain("tool call timed out");
+        handoff.Message.Should().Contain("partial response truncated");
+
+        handoff.DecisionPayload.Should().NotBeNull();
+        var payload = handoff.DecisionPayload!.AsObject();
+        payload["attemptNumber"]!.GetValue<int>().Should().Be(2);
+        payload["priorFailureReason"]!.GetValue<string>().Should().Be("tool call timed out");
+        payload["priorAttemptSummary"]!.GetValue<string>()
+            .Should().Contain("Last output: partial response truncated")
+            .And.Contain("Tool calls executed: 3");
+    }
+
+    /// <summary>
+    /// V4 retry-context handoff: two consecutive Failed-port routings in the same walk produce
+    /// attempt #2 then attempt #3 — the per-walk counter mirrors the saga's
+    /// CountPriorFailedAttempts which sums all Failed records in the current round.
+    /// </summary>
+    [Fact]
+    public async Task RetryContextHandoff_TwoConsecutiveFailures_AttemptNumberIncrements()
+    {
+        var startId = Guid.Parse("bbee0001-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var workerId = Guid.Parse("bbee0002-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var sinkId = Guid.Parse("bbee0003-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        var workflow = new Workflow(
+            Key: "retry-twice",
+            Version: 1,
+            Name: "Two consecutive retries",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: workerId, Kind: WorkflowNodeKind.Agent, AgentKey: "worker", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Completed", "Failed" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: sinkId, Kind: WorkflowNodeKind.Agent, AgentKey: "sink", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 200, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Completed", workerId, "in", false, 0),
+                new WorkflowEdge(workerId, "Failed", workerId, "in", false, 0),
+                new WorkflowEdge(workerId, "Completed", sinkId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(workflow);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["worker"] = new[]
+            {
+                new DryRunMockResponse("Failed", "fail 1", null),
+                new DryRunMockResponse("Failed", "fail 2", null),
+                new DryRunMockResponse("Completed", "ok", null),
+            },
+            ["sink"] = new[] { new DryRunMockResponse("Done", "ack", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("retry-twice", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+
+        var handoffs = result.Events.Where(e => e.Kind == DryRunEventKind.RetryContextHandoff).ToList();
+        handoffs.Should().HaveCount(2);
+        handoffs[0].DecisionPayload!.AsObject()["attemptNumber"]!.GetValue<int>().Should().Be(2);
+        handoffs[1].DecisionPayload!.AsObject()["attemptNumber"]!.GetValue<int>().Should().Be(3);
+    }
+
+    /// <summary>
+    /// V4 retry-context handoff: a Failed-port edge inside a ReviewLoop body resets the counter
+    /// per round since each iteration walks the body fresh — saga parity with per-RoundId
+    /// counting in CountPriorFailedAttempts.
+    /// </summary>
+    [Fact]
+    public async Task RetryContextHandoff_InsideReviewLoop_CounterResetsEachRound()
+    {
+        var outerStartId = Guid.Parse("ccee0001-cccc-cccc-cccc-cccccccccccc");
+        var loopId = Guid.Parse("ccee0002-cccc-cccc-cccc-cccccccccccc");
+        var innerStartId = Guid.Parse("ccee0003-cccc-cccc-cccc-cccccccccccc");
+        var workerId = Guid.Parse("ccee0004-cccc-cccc-cccc-cccccccccccc");
+        var reviewerId = Guid.Parse("ccee0005-cccc-cccc-cccc-cccccccccccc");
+
+        var inner = new Workflow(
+            Key: "retry-loop-inner",
+            Version: 1,
+            Name: "Loop body with worker self-retry",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: innerStartId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: workerId, Kind: WorkflowNodeKind.Agent, AgentKey: "worker", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Completed", "Failed" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: reviewerId, Kind: WorkflowNodeKind.Agent, AgentKey: "reviewer", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Approved", "Rejected" }, LayoutX: 200, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(innerStartId, "Completed", workerId, "in", false, 0),
+                new WorkflowEdge(workerId, "Failed", workerId, "in", false, 0),
+                new WorkflowEdge(workerId, "Completed", reviewerId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var outer = new Workflow(
+            Key: "retry-loop-outer",
+            Version: 1,
+            Name: "ReviewLoop wrapping a retry-prone body",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: outerStartId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Completed" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: loopId, Kind: WorkflowNodeKind.ReviewLoop, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Approved", "Exhausted" },
+                    LayoutX: 100, LayoutY: 0,
+                    SubflowKey: "retry-loop-inner", SubflowVersion: 1,
+                    ReviewMaxRounds: 3, LoopDecision: "Rejected"),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(outerStartId, "Completed", loopId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(outer, inner);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        // Round 1: worker fails once, then completes; reviewer rejects.
+        // Round 2: worker fails once, then completes; reviewer approves.
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["worker"] = new[]
+            {
+                new DryRunMockResponse("Failed", "r1 fail", null),
+                new DryRunMockResponse("Completed", "r1 ok", null),
+                new DryRunMockResponse("Failed", "r2 fail", null),
+                new DryRunMockResponse("Completed", "r2 ok", null),
+            },
+            ["reviewer"] = new[]
+            {
+                new DryRunMockResponse("Rejected", "needs work", null),
+                new DryRunMockResponse("Approved", "ship it", null),
+            },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("retry-loop-outer", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.TerminalPort.Should().Be("Approved");
+
+        var handoffs = result.Events
+            .Where(e => e.Kind == DryRunEventKind.RetryContextHandoff)
+            .OrderBy(e => e.Ordinal)
+            .ToList();
+        handoffs.Should().HaveCount(2, because: "each round saw exactly one Failed-port handoff.");
+
+        // Both handoffs are attempt #2 because each ReviewLoop iteration resets the counter.
+        handoffs[0].DecisionPayload!.AsObject()["attemptNumber"]!.GetValue<int>().Should().Be(2);
+        handoffs[0].ReviewRound.Should().Be(1);
+        handoffs[1].DecisionPayload!.AsObject()["attemptNumber"]!.GetValue<int>().Should().Be(2);
+        handoffs[1].ReviewRound.Should().Be(2);
+    }
+
     // ---------- workflow builders ----------
 
     private static (Workflow Outer, Workflow Inner) BuildReviewLoopPair(int maxRounds)

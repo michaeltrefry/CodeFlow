@@ -465,6 +465,7 @@ export class WorkflowDryRunComponent implements OnInit {
     if (kind === 'WorkflowCompleted' || kind === 'AgentMockApplied') return 'ok';
     if (kind === 'HitlSuspended' || kind === 'LoopExhausted') return 'warn';
     if (kind === 'BuiltinApplied' || kind === 'LoopIteration' || kind === 'SubflowEntered' || kind === 'SubflowExited') return 'accent';
+    if (kind === 'RetryContextHandoff') return 'warn';
     return 'default';
   }
 

@@ -11,7 +11,7 @@ namespace CodeFlow.Orchestration.DryRun;
 /// the saga checkpointing layer. Designed for the T1 dry-run UX — the author clicks "run" and
 /// gets a sub-second deterministic trace of which nodes would fire and with what artifacts.
 ///
-/// Scope notes (v3):
+/// Scope notes (v4):
 /// <list type="bullet">
 ///   <item><description>Supports node kinds Start, Agent, Logic, Hitl, Subflow, ReviewLoop.</description></item>
 ///   <item><description>Reuses <see cref="LogicNodeScriptHost"/> for Logic-node script execution
@@ -19,13 +19,18 @@ namespace CodeFlow.Orchestration.DryRun;
 ///     script semantics match the saga byte-for-byte.</description></item>
 ///   <item><description>Honors the built-ins: P3 (rejection-history accumulation in ReviewLoop
 ///     bodies), P4 (mirror output to workflow var), and P5 (output-port replacements).</description></item>
-///   <item><description>v3 (this iteration): when <see cref="IAgentConfigRepository"/> +
+///   <item><description>v3: when <see cref="IAgentConfigRepository"/> +
 ///     <see cref="IScribanTemplateRenderer"/> are wired, applies decision-output templates to
 ///     Agent submissions (skipped when an output script set <c>setOutput</c>) and surfaces HITL
 ///     form-template metadata + a best-effort rendered preview on
 ///     <see cref="DryRunHitlPayload"/>.</description></item>
-///   <item><description>Does NOT yet handle retry-context handoffs for Failed-port self-loops.
-///     Niche; no first-party workflow exercises it. Documented as a remaining v3+ gap.</description></item>
+///   <item><description>v4 (this iteration): emits a <see cref="DryRunEventKind.RetryContextHandoff"/>
+///     event when an Agent's effective port resolves to <c>Failed</c> and routes to a wired edge —
+///     mirrors the saga's <c>BuildRetryContextForHandoff</c> +
+///     <c>CountPriorFailedAttempts</c> per-walk semantics so authors can see the saga would
+///     synthesize <c>{ attemptNumber, priorFailureReason, priorAttemptSummary }</c> for the next
+///     invocation. The dry-run never invokes a model so the retry note isn't injected anywhere,
+///     but the diagnostic event captures the parity surface.</description></item>
 ///   <item><description>Does NOT render full agent prompt templates; the trace records the input
 ///     artifact a node receives, which is what authors typically want to inspect anyway.</description></item>
 /// </list>
@@ -136,6 +141,11 @@ public sealed class DryRunExecutor
 
         var currentInput = startingInput;
         string? lastEffectivePort = null;
+        // Saga parity: per-round Failed-decision count drives the retry-context attemptNumber.
+        // Each WalkWorkflowAsync invocation models one saga round (top-level walk, single subflow
+        // body, or one ReviewLoop iteration), so the counter resets on entry exactly the way the
+        // saga's CurrentRoundId rotation resets CountPriorFailedAttempts.
+        var failedAttemptCount = 0;
 
         for (var step = 0; step < MaxStepsPerRun; step++)
         {
@@ -343,6 +353,42 @@ public sealed class DryRunExecutor
                         return CompleteWorkflow(workflow, currentNode, effectivePort, effectiveOutput, contextVars, workflowVars, state);
                     }
                     state.RecordEvent(EdgeEvent(state, currentNode, effectivePort, agentEdge, depth));
+
+                    // Saga-parity retry-context handoff: a Failed effective port routing to any
+                    // wired edge means the saga's BuildRetryContextForHandoff would synthesize a
+                    // RetryContext for the next invocation. Increment the counter to mirror the
+                    // saga's CountPriorFailedAttempts (history-based count + 1 for the new event).
+                    if (string.Equals(effectivePort, "Failed", StringComparison.Ordinal))
+                    {
+                        failedAttemptCount++;
+                        var retryTargetNode = workflow.FindNode(agentEdge.ToNodeId);
+                        var (failureReason, attemptSummary) = ExtractFailureContext(mock.Payload);
+                        var retryContextNode = BuildRetryContextNode(
+                            attemptNumber: failedAttemptCount + 1,
+                            priorFailureReason: failureReason,
+                            priorAttemptSummary: attemptSummary);
+                        state.RecordEvent(new DryRunEvent(
+                            Ordinal: state.NextOrdinal(),
+                            Kind: DryRunEventKind.RetryContextHandoff,
+                            NodeId: agentEdge.ToNodeId,
+                            NodeKind: retryTargetNode?.Kind.ToString() ?? "Unknown",
+                            AgentKey: retryTargetNode?.AgentKey,
+                            PortName: effectivePort,
+                            Message: BuildRetryContextMessage(
+                                attemptNumber: failedAttemptCount + 1,
+                                priorFailureReason: failureReason,
+                                priorAttemptSummary: attemptSummary),
+                            InputPreview: null,
+                            OutputPreview: null,
+                            ReviewRound: reviewRound,
+                            MaxRounds: maxRounds,
+                            SubflowDepth: depth,
+                            SubflowKey: null,
+                            SubflowVersion: null,
+                            Logs: null,
+                            DecisionPayload: retryContextNode));
+                    }
+
                     currentNode = workflow.FindNode(agentEdge.ToNodeId)
                         ?? throw new InvalidOperationException(
                             $"Edge from {currentNode.Id} on '{effectivePort}' targets unknown node {agentEdge.ToNodeId}.");
@@ -1394,6 +1440,106 @@ public sealed class DryRunExecutor
         }
         const int max = 2048;
         return text.Length <= max ? text : text[..max] + "…";
+    }
+
+    /// <summary>
+    /// Saga-parity payload extraction. Mirrors
+    /// <c>WorkflowSagaStateMachine.ExtractFailureContext</c> for <see cref="JsonNode"/> payloads:
+    /// reads <c>reason</c> (top-level string) and a <c>failure_context</c> object containing
+    /// <c>last_output</c> (string) and <c>tool_calls_executed</c> (number).
+    /// </summary>
+    private static (string? Reason, string? Summary) ExtractFailureContext(JsonNode? payload)
+    {
+        if (payload is not JsonObject obj)
+        {
+            return (null, null);
+        }
+
+        string? reason = null;
+        if (obj.TryGetPropertyValue("reason", out var reasonNode)
+            && reasonNode is JsonValue reasonValue
+            && reasonValue.TryGetValue<string>(out var reasonText))
+        {
+            reason = reasonText;
+        }
+
+        if (!obj.TryGetPropertyValue("failure_context", out var contextNode)
+            || contextNode is not JsonObject contextObj)
+        {
+            return (reason, null);
+        }
+
+        string? lastOutput = null;
+        if (contextObj.TryGetPropertyValue("last_output", out var lastOutputNode)
+            && lastOutputNode is JsonValue lastOutputValue
+            && lastOutputValue.TryGetValue<string>(out var lastOutputText))
+        {
+            lastOutput = lastOutputText;
+        }
+
+        int? toolCallsExecuted = null;
+        if (contextObj.TryGetPropertyValue("tool_calls_executed", out var toolCallsNode)
+            && toolCallsNode is JsonValue toolCallsValue
+            && toolCallsValue.TryGetValue<int>(out var toolCalls))
+        {
+            toolCallsExecuted = toolCalls;
+        }
+
+        var summaryBuilder = new System.Text.StringBuilder();
+        if (!string.IsNullOrWhiteSpace(lastOutput))
+        {
+            summaryBuilder.Append("Last output: ").Append(lastOutput!.Trim());
+        }
+
+        if (toolCallsExecuted is { } calls)
+        {
+            if (summaryBuilder.Length > 0)
+            {
+                summaryBuilder.Append(Environment.NewLine);
+            }
+            summaryBuilder.Append("Tool calls executed: ").Append(calls);
+        }
+
+        var summary = summaryBuilder.Length == 0 ? null : summaryBuilder.ToString();
+        return (reason, summary);
+    }
+
+    private static JsonNode BuildRetryContextNode(
+        int attemptNumber,
+        string? priorFailureReason,
+        string? priorAttemptSummary)
+    {
+        var node = new JsonObject
+        {
+            ["attemptNumber"] = attemptNumber,
+        };
+        if (priorFailureReason is not null)
+        {
+            node["priorFailureReason"] = priorFailureReason;
+        }
+        if (priorAttemptSummary is not null)
+        {
+            node["priorAttemptSummary"] = priorAttemptSummary;
+        }
+        return node;
+    }
+
+    private static string BuildRetryContextMessage(
+        int attemptNumber,
+        string? priorFailureReason,
+        string? priorAttemptSummary)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append("Saga would inject RetryContext: attempt #").Append(attemptNumber).Append('.');
+        if (!string.IsNullOrWhiteSpace(priorFailureReason))
+        {
+            builder.Append(" Reason: ").Append(priorFailureReason!.Trim()).Append('.');
+        }
+        if (!string.IsNullOrWhiteSpace(priorAttemptSummary))
+        {
+            builder.Append(" Summary: ").Append(priorAttemptSummary!.Trim());
+        }
+        return builder.ToString();
     }
 
     private sealed record DryRunWalkResult(
