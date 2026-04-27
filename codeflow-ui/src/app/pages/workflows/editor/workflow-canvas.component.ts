@@ -256,11 +256,13 @@ function defaultStartInput(): WorkflowInput {
                   <span class="field-label">Output ports <span class="muted xsmall">(derived from agent's declared outputs)</span></span>
                   @if (derivedPortRows().length > 0) {
                     <ul class="port-list mono">
-                      @for (p of derivedPortRows(); track p.name) {
-                        <li>
+                      @for (p of derivedPortRows(); track p.name + ':' + p.status) {
+                        <li [attr.data-port-status]="p.status">
                           <code>{{ p.name }}</code>
-                          @if (p.broken) {
-                            <span class="tag error xsmall">stale (not in agent outputs)</span>
+                          @if (p.status === 'stale') {
+                            <span class="tag error xsmall" title="Wired on this node but the pinned agent can't submit it. Agents reaching this port at runtime would crash.">stale (not declared by agent)</span>
+                          } @else if (p.status === 'missing') {
+                            <span class="tag warn xsmall" title="Declared by the pinned agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</span>
                           }
                         </li>
                       }
@@ -268,6 +270,14 @@ function defaultStartInput(): WorkflowInput {
                         <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
                       </li>
                     </ul>
+                    @if (selectedNodeHasPortDrift()) {
+                      <div class="row" style="gap: 8px; align-items: center; margin-top: 8px">
+                        <button type="button" cf-button variant="default" size="sm" (click)="syncPortsFromAgent(sel.editor)">
+                          Sync from agent
+                        </button>
+                        <span class="muted xsmall">Replaces this node's ports with the agent's declared outputs. Wires on still-declared ports are preserved.</span>
+                      </div>
+                    }
                   } @else {
                     <p class="muted xsmall">
                       @if (sel.editor.agentKey) {
@@ -936,6 +946,7 @@ function defaultStartInput(): WorkflowInput {
       font-size: 0.75rem;
     }
     .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
+    .tag.warn { background: rgba(245, 184, 76, 0.18); color: #f5b84c; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
     .tag.small { font-size: 0.7rem; }
   `]
@@ -1054,10 +1065,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     });
   });
 
-  /** Per-port rows for the inspector's "derived from agent outputs" listing. Marks any port
-   *  the editor still has but the agent no longer declares as `broken: true` so authors see
-   *  drift inline before saving. */
-  readonly derivedPortRows = computed<{ name: string; broken: boolean }[]>(() => {
+  /** Per-port rows for the inspector's "derived from agent outputs" listing.
+   *  - `status: 'ok'` — port present on the node and declared by the agent.
+   *  - `status: 'stale'` (red) — port wired on the node but the agent can no longer submit it.
+   *  - `status: 'missing'` (orange) — port declared by the agent but not yet on the node. */
+  readonly derivedPortRows = computed<{ name: string; status: 'ok' | 'stale' | 'missing' }[]>(() => {
     this.portsRevision();
     const sel = this.selectedNode();
     if (!sel) return [];
@@ -1065,14 +1077,36 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     const docs = this.selectedAgentDocs();
     const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs.map(o => o.kind).filter((k): k is string => typeof k === 'string' && k.length > 0)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
       : null;
     const declaredSet = declared ? new Set(declared) : null;
+    const nodePorts = sel.editor.outputPortNames;
+    const nodePortSet = new Set(nodePorts);
 
-    return sel.editor.outputPortNames.map(name => ({
+    const rows: { name: string; status: 'ok' | 'stale' | 'missing' }[] = nodePorts.map(name => ({
       name,
-      broken: declaredSet ? !declaredSet.has(name) : false,
+      status: declaredSet
+        ? (declaredSet.has(name) ? 'ok' : 'stale')
+        : 'ok',
     }));
+
+    if (declared) {
+      for (const name of declared) {
+        if (!nodePortSet.has(name)) {
+          rows.push({ name, status: 'missing' });
+        }
+      }
+    }
+
+    return rows;
+  });
+
+  /** True when the selected agent-bearing node's ports drift from its pinned agent's declared
+   *  outputs in either direction (stale or missing). Drives the "Sync from agent" affordance. */
+  readonly selectedNodeHasPortDrift = computed(() => {
+    return this.derivedPortRows().some(r => r.status !== 'ok');
   });
 
   /** Inline warnings for edges whose source port is no longer declared by the source node. */
@@ -1745,6 +1779,21 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       .map(line => line.trim())
       .filter(line => line.length > 0);
     this.applyNodePorts(node, next);
+  }
+
+  /** Reconcile the selected agent-bearing node's ports with its pinned agent's declared
+   *  outputs. Stale ports are removed (and any wires on them dropped); missing ports are
+   *  added. Wires on ports that survive the diff are left untouched. */
+  syncPortsFromAgent(node: WorkflowEditorNode): void {
+    if (!AGENT_BEARING_KINDS.has(node.kind)) return;
+    const docs = this.selectedAgentDocs();
+    const declared = Array.isArray(docs?.config.outputs)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
+      : null;
+    if (!declared) return;
+    this.applyNodePorts(node, declared);
   }
 
   private applyNodePorts(node: WorkflowEditorNode, desired: string[]): void {
