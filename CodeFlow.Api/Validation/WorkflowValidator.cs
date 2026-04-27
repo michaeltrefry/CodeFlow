@@ -436,7 +436,7 @@ public static class WorkflowValidator
         return ValidationResult.Ok();
     }
 
-    private static string? ValidateRepositoriesShape(JsonElement root)
+    internal static string? ValidateRepositoriesShape(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Array)
         {

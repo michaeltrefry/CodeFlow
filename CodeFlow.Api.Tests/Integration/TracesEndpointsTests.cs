@@ -949,6 +949,75 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
             "the original request body must still be persisted alongside the override");
     }
 
+    [Fact]
+    public async Task CreateTrace_ShouldRejectInvalidRepositoriesInputShape()
+    {
+        var agentKey = $"repo-shape-writer-{Guid.NewGuid():N}";
+        var workflowKey = $"repo-shape-flow-{Guid.NewGuid():N}";
+
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, agentKey);
+
+        var startId = Guid.NewGuid();
+        var createWorkflow = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = workflowKey,
+            name = "Repository shape flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    inputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>(),
+            inputs = new object[]
+            {
+                new
+                {
+                    key = "repositories",
+                    displayName = "Repositories",
+                    kind = "Json",
+                    required = true,
+                    defaultValueJson = (string?)null,
+                    description = (string?)null,
+                    ordinal = 0
+                }
+            }
+        });
+        createWorkflow.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var createTrace = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey,
+            input = "raw user input",
+            inputs = new
+            {
+                repositories = new object[]
+                {
+                    new Dictionary<string, string>
+                    {
+                        ["Tic-Tac-Toe"] = "https://github.com/michaeltrefry/tic-tac-toe.git"
+                    }
+                }
+            }
+        });
+
+        createTrace.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var body = await createTrace.Content.ReadAsStringAsync();
+        body.Should().Contain("repositories");
+        body.Should().Contain("url");
+    }
+
     private async Task<IReadOnlyList<(string FileName, string Content)>> ReadTraceArtifactsAsync(Guid traceId)
     {
         // The running host canonicalizes the artifact root via Path.GetFullPath, which on macOS

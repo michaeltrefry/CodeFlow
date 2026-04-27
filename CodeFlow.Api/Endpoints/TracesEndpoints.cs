@@ -1,6 +1,7 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TraceEvents;
+using CodeFlow.Api.Validation;
 using CodeFlow.Contracts;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
@@ -235,7 +236,7 @@ public static class TracesEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["inputs"] = new[] { resolvedInputsResult.Error }
-            });
+            }, statusCode: StatusCodes.Status422UnprocessableEntity);
         }
 
         var startAgentVersion = startNode.AgentVersion
@@ -510,6 +511,17 @@ public static class TracesEndpoints
         {
             if (supplied is not null && supplied.TryGetValue(definition.Key, out var value))
             {
+                if (string.Equals(definition.Key, WorkflowValidator.RepositoriesInputKey, StringComparison.Ordinal)
+                    && definition.Kind == WorkflowInputKind.Json)
+                {
+                    var shapeError = WorkflowValidator.ValidateRepositoriesShape(value);
+                    if (shapeError is not null)
+                    {
+                        return (resolved,
+                            $"Input 'repositories' has an invalid shape: {shapeError}");
+                    }
+                }
+
                 resolved[definition.Key] = value.Clone();
                 continue;
             }
