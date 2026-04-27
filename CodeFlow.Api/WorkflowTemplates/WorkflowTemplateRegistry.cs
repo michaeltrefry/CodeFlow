@@ -16,7 +16,7 @@ public sealed class WorkflowTemplateRegistry
     private readonly IReadOnlyDictionary<string, WorkflowTemplate> templates;
 
     public WorkflowTemplateRegistry()
-        : this(EmptyWorkflowTemplate.Build())
+        : this(EmptyWorkflowTemplate.Build(), ReviewLoopPairTemplate.Build())
     {
     }
 

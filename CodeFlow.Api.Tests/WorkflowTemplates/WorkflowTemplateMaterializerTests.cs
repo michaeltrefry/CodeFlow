@@ -162,15 +162,133 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
     }
 
     [Fact]
-    public void TemplateRegistry_ListsEmptyWorkflowByDefault()
+    public void TemplateRegistry_ListsBundledTemplatesByDefault()
     {
         var registry = new WorkflowTemplateRegistry();
 
         var listed = registry.List();
 
-        listed.Should().ContainSingle();
-        listed[0].Id.Should().Be(WorkflowTemplateRegistry.EmptyWorkflowId);
-        listed[0].Category.Should().Be(WorkflowTemplateCategory.Empty);
+        listed.Should().NotBeEmpty();
+        listed.Should().Contain(t => t.Id == WorkflowTemplateRegistry.EmptyWorkflowId
+            && t.Category == WorkflowTemplateCategory.Empty);
+        listed.Should().Contain(t => t.Id == "review-loop-pair"
+            && t.Category == WorkflowTemplateCategory.ReviewLoop);
+    }
+
+    [Fact]
+    public async Task ReviewLoopPairTemplate_Materialize_CreatesAllFiveEntities()
+    {
+        // S4 acceptance: scaffold lands trigger + producer + reviewer agents and inner +
+        // outer workflows, all stitched up. Authors run the outer workflow with their input
+        // and the loop iterates against the producer/reviewer pair without further wiring.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"rlp-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        var result = await materializer.MaterializeAsync(
+            templateId: "review-loop-pair",
+            namePrefix: prefix,
+            createdBy: "tester");
+
+        result.EntryWorkflowKey.Should().Be(prefix);
+        result.EntryWorkflowVersion.Should().Be(1);
+        result.CreatedEntities.Should().HaveCount(5);
+        result.CreatedEntities.Select(e => e.Key).Should().BeEquivalentTo(new[]
+        {
+            $"{prefix}-trigger",
+            $"{prefix}-producer",
+            $"{prefix}-reviewer",
+            $"{prefix}-inner",
+            prefix,
+        });
+    }
+
+    [Fact]
+    public async Task ReviewLoopPairTemplate_Materialize_OuterWorkflowConfiguresReviewLoopWithRejectionHistory()
+    {
+        // S4 acceptance: ReviewLoop node carries loopDecision=Rejected, maxRounds=5, and
+        // rejection-history enabled (P3 feature) so the producer/reviewer get
+        // {{ rejectionHistory }} populated from round 2 onward.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"rlp-cfg-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "review-loop-pair",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var outer = await workflowRepo.GetAsync(prefix, 1);
+        var loopNode = outer.Nodes.SingleOrDefault(n => n.Kind == WorkflowNodeKind.ReviewLoop);
+        loopNode.Should().NotBeNull();
+        loopNode!.SubflowKey.Should().Be($"{prefix}-inner");
+        loopNode.SubflowVersion.Should().Be(1);
+        loopNode.ReviewMaxRounds.Should().Be(5);
+        loopNode.LoopDecision.Should().Be("Rejected");
+        loopNode.RejectionHistory.Should().NotBeNull();
+        loopNode.RejectionHistory!.Enabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ReviewLoopPairTemplate_Materialize_AgentsPinPartials()
+    {
+        // S4 acceptance: producer pins @codeflow/producer-base, reviewer pins
+        // @codeflow/reviewer-base. The author can swap or extend the pinned partials by
+        // editing the agent without breaking the include directive.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"rlp-pin-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "review-loop-pair",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var agentRepo = new AgentConfigRepository(verifyCtx);
+
+        var producer = await agentRepo.GetAsync($"{prefix}-producer", 1);
+        producer.Configuration.PartialPins.Should().NotBeNull();
+        producer.Configuration.PartialPins!.Should().Contain(p =>
+            p.Key == "@codeflow/producer-base" && p.Version == 1);
+
+        var reviewer = await agentRepo.GetAsync($"{prefix}-reviewer", 1);
+        reviewer.Configuration.PartialPins.Should().NotBeNull();
+        reviewer.Configuration.PartialPins!.Should().Contain(p =>
+            p.Key == "@codeflow/reviewer-base" && p.Version == 1);
+    }
+
+    [Fact]
+    public async Task ReviewLoopPairTemplate_Materialize_InnerWorkflowWiresStartToReviewer()
+    {
+        // S4 acceptance: inner workflow's Start node is the producer (kind=Start), wired by
+        // a Continue edge to the reviewer; reviewer declares Approved and Rejected ports so
+        // the outer ReviewLoop can iterate.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"rlp-inner-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "review-loop-pair",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var inner = await workflowRepo.GetAsync($"{prefix}-inner", 1);
+        var startNode = inner.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start);
+        startNode.AgentKey.Should().Be($"{prefix}-producer");
+        var reviewerNode = inner.Nodes.Single(n => n.Kind == WorkflowNodeKind.Agent);
+        reviewerNode.AgentKey.Should().Be($"{prefix}-reviewer");
+        reviewerNode.OutputPorts.Should().Contain(new[] { "Approved", "Rejected" });
+        inner.Edges.Should().ContainSingle();
+        inner.Edges[0].FromNodeId.Should().Be(startNode.Id);
+        inner.Edges[0].FromPort.Should().Be("Continue");
+        inner.Edges[0].ToNodeId.Should().Be(reviewerNode.Id);
     }
 
     [Fact]
