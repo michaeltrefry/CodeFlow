@@ -24,6 +24,7 @@ public static class CodeFlowActivity
         public const string FailureReason = "codeflow.failure.reason";
         public const string RetryAttempt = "codeflow.retry.attempt";
         public const string SagaState = "codeflow.saga.state";
+        public const string LastRoundReminderAutoInjected = "codeflow.feature.last_round_reminder.auto_injected";
     }
 
     /// <summary>

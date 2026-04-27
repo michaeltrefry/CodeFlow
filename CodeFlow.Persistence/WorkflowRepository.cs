@@ -160,7 +160,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         SubflowKey = NormalizeOptionalString(node.SubflowKey),
                         SubflowVersion = node.SubflowVersion,
                         ReviewMaxRounds = node.ReviewMaxRounds,
-                        LoopDecision = NormalizeOptionalString(node.LoopDecision)
+                        LoopDecision = NormalizeOptionalString(node.LoopDecision),
+                        OptOutLastRoundReminder = node.OptOutLastRoundReminder,
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -263,7 +264,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.SubflowVersion,
             entity.ReviewMaxRounds,
             entity.LoopDecision,
-            entity.InputScript);
+            entity.InputScript,
+            entity.OptOutLastRoundReminder);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

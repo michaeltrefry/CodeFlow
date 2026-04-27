@@ -558,6 +558,7 @@ public sealed class WorkflowPackageImporter(
                         SubflowVersion = node.SubflowVersion,
                         ReviewMaxRounds = node.ReviewMaxRounds,
                         LoopDecision = Trim(node.LoopDecision),
+                        OptOutLastRoundReminder = node.OptOutLastRoundReminder,
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -621,7 +622,8 @@ public sealed class WorkflowPackageImporter(
             node.SubflowVersion ?? packageNode?.SubflowVersion,
             node.ReviewMaxRounds,
             NormalizeOptional(node.LoopDecision),
-            node.InputScript);
+            node.InputScript,
+            node.OptOutLastRoundReminder);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,

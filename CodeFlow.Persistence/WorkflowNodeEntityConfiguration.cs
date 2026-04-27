@@ -71,6 +71,11 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("loop_decision")
             .HasMaxLength(64);
 
+        builder.Property(node => node.OptOutLastRoundReminder)
+            .HasColumnName("opt_out_last_round_reminder")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

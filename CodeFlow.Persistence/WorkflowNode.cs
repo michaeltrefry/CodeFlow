@@ -13,4 +13,5 @@ public sealed record WorkflowNode(
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
-    string? InputScript = null);
+    string? InputScript = null,
+    bool OptOutLastRoundReminder = false);

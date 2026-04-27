@@ -17,4 +17,8 @@ public sealed record AgentInvokeRequested(
     ToolExecutionContext? ToolExecutionContext = null,
     IReadOnlyDictionary<string, JsonElement>? WorkflowContext = null,
     int? ReviewRound = null,
-    int? ReviewMaxRounds = null);
+    int? ReviewMaxRounds = null,
+    // P2: when set on a node inside a ReviewLoop child saga, suppresses runtime injection of
+    // the @codeflow/last-round-reminder partial. Default false: agents inside loops get the
+    // reminder unless the author explicitly opts out on the workflow node.
+    bool OptOutLastRoundReminder = false);

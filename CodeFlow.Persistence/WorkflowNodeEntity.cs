@@ -33,4 +33,6 @@ public sealed class WorkflowNodeEntity
     public int? ReviewMaxRounds { get; set; }
 
     public string? LoopDecision { get; set; }
+
+    public bool OptOutLastRoundReminder { get; set; }
 }

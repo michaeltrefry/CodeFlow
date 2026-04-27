@@ -1269,6 +1269,283 @@ public sealed class AgentInvocationConsumerTests
         }
     }
 
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_AppendsLastRoundReminderToPromptTemplate()
+    {
+        // P2 end-to-end: a reviewer agent dispatched inside a ReviewLoop child saga has its
+        // prompt template augmented before reaching the ContextAssembler — the auto-injected
+        // include directive lands in the configuration the IAgentInvoker observes.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "review-loop-p2",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 2,
+            ReviewMaxRounds: 3,
+            OptOutLastRoundReminder: false);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai", "gpt-5.4",
+                SystemPrompt: "you are a reviewer",
+                PromptTemplate: "Please review."),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("artifact body", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "ok",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-p2-inject-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var observedConfig = agentInvoker.Invocations[0].Configuration;
+            observedConfig.PromptTemplate.Should().Contain("Please review.");
+            observedConfig.PromptTemplate.Should().Contain("@codeflow/last-round-reminder");
+            observedConfig.PromptTemplate.Should().Contain("[auto-injected]");
+            observedConfig.ResolvedPartials.Should().NotBeNull();
+            observedConfig.ResolvedPartials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_InsideReviewLoop_OptOut_DoesNotAppendReminder()
+    {
+        // P2: when the workflow node sets OptOutLastRoundReminder, the auto-inject path is
+        // suppressed even inside a ReviewLoop — the agent runs with its authored template only.
+        var request = new AgentInvokeRequested(
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            WorkflowKey: "review-loop-p2-optout",
+            WorkflowVersion: 1,
+            NodeId: Guid.NewGuid(),
+            AgentKey: "reviewer",
+            AgentVersion: 1,
+            InputRef: new Uri("file:///tmp/input.bin"),
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            ReviewRound: 1,
+            ReviewMaxRounds: 3,
+            OptOutLastRoundReminder: true);
+
+        var agentConfig = new AgentConfig(
+            Key: request.AgentKey,
+            Version: request.AgentVersion,
+            Kind: AgentKind.Agent,
+            Configuration: new AgentInvocationConfiguration(
+                "openai", "gpt-5.4",
+                PromptTemplate: "Please review."),
+            ConfigJson: "{}",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+        var artifactStore = new RecordingArtifactStore(("artifact body", "text/plain"));
+        var agentInvoker = new FakeAgentInvoker(new AgentInvocationResult(
+            Output: "ok",
+            Decision: new AgentDecision("Approved"),
+            Transcript: []));
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(artifactStore)
+            .AddSingleton<IAgentInvoker>(agentInvoker)
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(options => options
+                .UseInMemoryDatabase($"consumer-p2-optout-{Guid.NewGuid():N}"))
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<AgentInvocationCompleted>()).Should().BeTrue();
+
+            agentInvoker.Invocations.Should().ContainSingle();
+            var observedConfig = agentInvoker.Invocations[0].Configuration;
+            observedConfig.PromptTemplate.Should().Be("Please review.");
+            observedConfig.PromptTemplate.Should().NotContain("@codeflow/last-round-reminder");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_OutsideReviewLoop_DoesNothing()
+    {
+        // P2: outside a ReviewLoop child saga (ReviewRound is null) the reminder must not be
+        // appended — the partial's `{{ if isLastRound }}` block has no meaningful binding to
+        // anchor against.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "system",
+            promptTemplate: "user prompt",
+            resolvedPartials: null,
+            reviewRound: null,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("user prompt");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_InReviewLoop_AppendsPartialAndSeedsBody()
+    {
+        // P2 happy path: in a ReviewLoop child, no opt-out, no explicit include — the consumer
+        // appends the include directive to the prompt template AND seeds the bundled v1 body
+        // into the partials map so render-time `{{ include }}` resolves without a DB lookup.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "you are a reviewer",
+            promptTemplate: "review the artifact",
+            resolvedPartials: null,
+            reviewRound: 2,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().Contain("review the artifact");
+        template.Should().Contain("@codeflow/last-round-reminder");
+        template.Should().Contain("[auto-injected]");
+        partials.Should().NotBeNull();
+        partials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
+        partials[SystemPromptPartials.LastRoundReminderKey].Should().Contain("isLastRound");
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_OptOut_DoesNothing()
+    {
+        // P2: workflow-node opt-out wins even when the agent is in a ReviewLoop. Authors who
+        // want a different reminder shape (or none) toggle this.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review the artifact",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: true);
+
+        injected.Should().BeFalse();
+        template.Should().Be("review the artifact");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_ExplicitIncludeInPromptTemplate_DedupSkipsInjection()
+    {
+        // P2: the author already includes the partial explicitly — auto-injection would render
+        // the reminder twice. Skip cleanly.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review\n{{ include \"@codeflow/last-round-reminder\" }}",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("review\n{{ include \"@codeflow/last-round-reminder\" }}");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_ExplicitIncludeInSystemPrompt_DedupSkipsInjection()
+    {
+        // P2: an explicit include in the system prompt also counts for de-dup — we don't want a
+        // double reminder regardless of which template surface the author placed it on.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "{{ include '@codeflow/last-round-reminder' }}\nreviewer base",
+            promptTemplate: "go review",
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeFalse();
+        template.Should().Be("go review");
+        partials.Should().BeNull();
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_PreservesAuthorPinnedPartials()
+    {
+        // P2: when the agent already has resolved partials (from its own pins), the seeded body
+        // is added without disturbing the existing entries — so authors who pinned a different
+        // version of @codeflow/last-round-reminder keep their pinned body.
+        var existing = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [SystemPromptPartials.ReviewerBaseKey] = "reviewer base body",
+            [SystemPromptPartials.LastRoundReminderKey] = "AUTHOR-PINNED V2 BODY",
+        };
+
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: null,
+            promptTemplate: "review",
+            resolvedPartials: existing,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().Contain("@codeflow/last-round-reminder");
+        partials.Should().BeSameAs(existing,
+            "the consumer should not allocate a fresh dict when the partial body is already supplied");
+        partials![SystemPromptPartials.LastRoundReminderKey].Should().Be("AUTHOR-PINNED V2 BODY");
+    }
+
+    [Fact]
+    public void InjectLastRoundReminder_NullPromptTemplate_StillInjects()
+    {
+        // P2: an agent with no PromptTemplate (system-only agent) still gets the reminder when
+        // it lands in a ReviewLoop. The injected snippet becomes the only user-side template.
+        var (template, partials, injected) = AgentInvocationConsumer.InjectLastRoundReminderIfApplicable(
+            systemPrompt: "you are a reviewer",
+            promptTemplate: null,
+            resolvedPartials: null,
+            reviewRound: 1,
+            optOut: false);
+
+        injected.Should().BeTrue();
+        template.Should().NotBeNullOrEmpty();
+        template.Should().Contain("@codeflow/last-round-reminder");
+        partials.Should().NotBeNull();
+        partials!.Should().ContainKey(SystemPromptPartials.LastRoundReminderKey);
+    }
+
     private static JsonElement Json(string json)
     {
         using var document = JsonDocument.Parse(json);

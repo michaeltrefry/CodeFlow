@@ -331,6 +331,58 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripOptOutLastRoundReminderFlag()
+    {
+        // P2 (Workflow Authoring DX): the workflow node carries an OptOutLastRoundReminder flag
+        // that suppresses runtime auto-injection of @codeflow/last-round-reminder for agents
+        // dispatched inside ReviewLoop child sagas. Default false means new agents get the
+        // reminder; setting true must survive a save/load cycle.
+        var workflowKey = $"opt-out-reminder-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var defaultReviewerId = Guid.NewGuid();
+        var optedOutReviewerId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Opt-out reminder flow",
+            MaxRoundsPerRound: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(defaultReviewerId, WorkflowNodeKind.Agent, "default-reviewer", 1,
+                    null, new[] { "Approved", "Rejected", "Failed" }, 250, 0),
+                new WorkflowNodeDraft(optedOutReviewerId, WorkflowNodeKind.Agent, "opted-out-reviewer", 1,
+                    null, new[] { "Approved", "Rejected", "Failed" }, 500, 0,
+                    OptOutLastRoundReminder: true)
+            ],
+            Edges:
+            [
+                new WorkflowEdgeDraft(startNodeId, "Completed", defaultReviewerId, WorkflowEdge.DefaultInputPort, false, 0),
+                new WorkflowEdgeDraft(defaultReviewerId, "Approved", optedOutReviewerId, WorkflowEdge.DefaultInputPort, false, 1)
+            ],
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var defaultReviewer = reloaded.Nodes.Single(n => n.Id == defaultReviewerId);
+        defaultReviewer.OptOutLastRoundReminder.Should().BeFalse(
+            "agents that don't set the flag must default to opt-in (auto-injection enabled)");
+
+        var optedOutReviewer = reloaded.Nodes.Single(n => n.Id == optedOutReviewerId);
+        optedOutReviewer.OptOutLastRoundReminder.Should().BeTrue();
+
+        var startNode = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        startNode.OptOutLastRoundReminder.Should().BeFalse(
+            "non-agent nodes carry the column too but always default to false");
+    }
+
+    [Fact]
     public async Task GetTerminalPortsAsync_ShouldReturnUnwiredDeclaredPortsAcrossNodes()
     {
         var workflowKey = $"terminal-ports-{Guid.NewGuid():N}";

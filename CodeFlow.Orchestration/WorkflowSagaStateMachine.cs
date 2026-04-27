@@ -1670,7 +1670,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             RetryContext: retryContext,
             WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: saga.ParentReviewRound,
-            ReviewMaxRounds: saga.ParentReviewMaxRounds));
+            ReviewMaxRounds: saga.ParentReviewMaxRounds,
+            OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(

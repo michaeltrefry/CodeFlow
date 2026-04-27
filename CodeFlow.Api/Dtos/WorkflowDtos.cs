@@ -26,7 +26,8 @@ public sealed record WorkflowNodeDto(
     int? SubflowVersion = null,
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
-    string? InputScript = null);
+    string? InputScript = null,
+    bool OptOutLastRoundReminder = false);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,

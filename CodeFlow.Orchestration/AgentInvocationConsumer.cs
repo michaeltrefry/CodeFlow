@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using ContractsToolExecutionContext = CodeFlow.Contracts.ToolExecutionContext;
 using ContractsToolWorkspaceContext = CodeFlow.Contracts.ToolWorkspaceContext;
 using RuntimeToolExecutionContext = CodeFlow.Runtime.ToolExecutionContext;
@@ -19,6 +20,20 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 {
     private const int HitlInputPreviewLength = 2048;
     private const string AgentInvocationFailedReason = "AgentInvocationFailed";
+
+    // P2: a Scriban comment block carrying the auto-inject annotation. Comments do not render at
+    // model time but stay visible in the templated source so the live prompt preview (VZ3) can
+    // surface the `[auto-injected]` marker by scanning for this delimiter.
+    public const string AutoInjectedLastRoundReminderTemplate =
+        "{{# [auto-injected] @codeflow/last-round-reminder #}}\n{{ include \"@codeflow/last-round-reminder\" }}";
+
+    // Matches `{{ include "@codeflow/last-round-reminder" }}` (single or double quotes, any
+    // surrounding whitespace) in a system prompt or user template, so we can de-dup an explicit
+    // include and skip auto-injection.
+    private static readonly Regex ExplicitLastRoundReminderInclude = new(
+        @"{{\s*include\s+[""']@codeflow/last-round-reminder[""']\s*}}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
 
     private readonly IAgentConfigRepository agentConfigRepository;
     private readonly IArtifactStore artifactStore;
@@ -83,8 +98,17 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 agentConfig.Configuration.PartialPins,
                 context.CancellationToken);
 
+            var (effectivePromptTemplate, partialsForInvocation, lastRoundReminderInjected) =
+                InjectLastRoundReminderIfApplicable(
+                    agentConfig.Configuration.SystemPrompt,
+                    agentConfig.Configuration.PromptTemplate,
+                    resolvedPartials,
+                    message.ReviewRound,
+                    message.OptOutLastRoundReminder);
+
             var invocationConfig = agentConfig.Configuration with
             {
+                PromptTemplate = effectivePromptTemplate,
                 Variables = MergeVariables(
                     agentConfig.Configuration.Variables,
                     BuildContextTemplateVariables(message.ContextInputs),
@@ -94,8 +118,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
                     : null,
-                ResolvedPartials = resolvedPartials,
+                ResolvedPartials = partialsForInvocation,
             };
+
+            if (lastRoundReminderInjected)
+            {
+                activity?.SetTag(CodeFlowActivity.TagNames.LastRoundReminderAutoInjected, true);
+            }
             if (message.RetryContext is { } retryContext)
             {
                 invocationConfig = invocationConfig with
@@ -292,6 +321,81 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         var pinTuples = pins.Select(p => (p.Key, p.Version)).ToArray();
         var bodies = await promptPartialRepository.ResolveBodiesAsync(pinTuples, cancellationToken);
         return bodies.Count == 0 ? null : bodies;
+    }
+
+    /// <summary>
+    /// P2: when an agent runs inside a ReviewLoop child saga (<paramref name="reviewRound"/>
+    /// is non-null), append <c>@codeflow/last-round-reminder</c> to the prompt template and seed
+    /// its body into the partials map so the include resolves at render time.
+    ///
+    /// Skip cases:
+    /// - The agent is not in a ReviewLoop (no round binding to anchor the reminder).
+    /// - The author opted out at the workflow node (<paramref name="optOut"/>).
+    /// - The agent already includes the partial explicitly in its system prompt or prompt template
+    ///   (de-dup so authors who opted in by hand pre-P2 don't get the reminder twice).
+    ///
+    /// When injection happens and the agent didn't pin the partial, fall back to the bundled
+    /// <see cref="SystemPromptPartials.LastRoundReminderKey"/> body — the seeded version 1 is the
+    /// runtime contract for the auto-injected case.
+    /// </summary>
+    public static (string? PromptTemplate,
+        IReadOnlyDictionary<string, string>? Partials,
+        bool Injected) InjectLastRoundReminderIfApplicable(
+        string? systemPrompt,
+        string? promptTemplate,
+        IReadOnlyDictionary<string, string>? resolvedPartials,
+        int? reviewRound,
+        bool optOut)
+    {
+        if (reviewRound is null || optOut)
+        {
+            return (promptTemplate, resolvedPartials, false);
+        }
+
+        if (HasExplicitLastRoundReminder(systemPrompt) || HasExplicitLastRoundReminder(promptTemplate))
+        {
+            return (promptTemplate, resolvedPartials, false);
+        }
+
+        var augmentedTemplate = string.IsNullOrEmpty(promptTemplate)
+            ? AutoInjectedLastRoundReminderTemplate
+            : promptTemplate + "\n\n" + AutoInjectedLastRoundReminderTemplate;
+
+        var augmentedPartials = EnsureLastRoundReminderBody(resolvedPartials);
+
+        return (augmentedTemplate, augmentedPartials, true);
+    }
+
+    private static bool HasExplicitLastRoundReminder(string? template)
+    {
+        return !string.IsNullOrEmpty(template)
+            && ExplicitLastRoundReminderInclude.IsMatch(template);
+    }
+
+    private static IReadOnlyDictionary<string, string> EnsureLastRoundReminderBody(
+        IReadOnlyDictionary<string, string>? resolvedPartials)
+    {
+        if (resolvedPartials is not null
+            && resolvedPartials.ContainsKey(SystemPromptPartials.LastRoundReminderKey))
+        {
+            return resolvedPartials;
+        }
+
+        var seed = SystemPromptPartials.All
+            .First(p => p.Key == SystemPromptPartials.LastRoundReminderKey)
+            .Body;
+
+        var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (resolvedPartials is not null)
+        {
+            foreach (var entry in resolvedPartials)
+            {
+                merged[entry.Key] = entry.Value;
+            }
+        }
+
+        merged[SystemPromptPartials.LastRoundReminderKey] = seed;
+        return merged;
     }
 
     private static IReadOnlyDictionary<string, string?>? MergeVariables(
