@@ -28,6 +28,27 @@ export interface MonacoMarker {
   severity?: 'error' | 'warning' | 'info';
 }
 
+/** E1: ambient TS declarations Monaco merges into the JS language service so authors get
+ *  IntelliSense + inline errors against the script sandbox API. Globally scoped (Monaco's
+ *  TS service is process-wide), so the active set is replaced on editor focus — only one
+ *  editor is focused at a time, which matches the typical authoring workflow. */
+export interface MonacoAmbientLib {
+  filePath: string;
+  content: string;
+}
+
+interface TypescriptDefaults {
+  setCompilerOptions(options: Record<string, unknown>): void;
+  setDiagnosticsOptions(options: { noSemanticValidation: boolean; noSyntaxValidation: boolean; diagnosticCodesToIgnore?: number[] }): void;
+  setExtraLibs(libs: Array<{ content: string; filePath: string }>): void;
+}
+
+interface TypescriptRuntime {
+  javascriptDefaults: TypescriptDefaults;
+  ScriptTarget: { ES2020: number };
+  ModuleResolutionKind: { NodeJs: number };
+}
+
 /**
  * Monaco wrapper for editing scripts and templates anywhere in the authoring
  * surface. Monaco is lazy-loaded the first time the component mounts so route
@@ -83,6 +104,9 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
   @Input() language = 'javascript';
   @Input() markers: MonacoMarker[] = [];
   @Input() readOnly = false;
+  /** E1: per-script ambient declarations. Replaces Monaco's global extra-lib set on focus.
+   *  Only meaningful when language === 'javascript'. */
+  @Input() ambientLibs: MonacoAmbientLib[] = [];
 
   @Output() valueChange = new EventEmitter<string>();
 
@@ -106,6 +130,10 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       ensureMonacoEnvironment();
       const monaco = await import('monaco-editor');
       this.monacoApi = monaco;
+
+      // E1: enable TS-style checking on JS so ambient .d.ts is surfaced as autocomplete
+      // and unknown-symbol errors. Idempotent — Monaco's defaults are process-wide.
+      this.configureJavascriptDefaults(monaco);
 
       this.ngZone.runOutsideAngular(() => {
         const editor = monaco.editor.create(this.hostRef.nativeElement, {
@@ -131,6 +159,14 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         });
         this.disposeListeners.push(() => changeDisposable.dispose());
 
+        // E1: when this editor takes focus, swap its ambient libs into Monaco's global
+        // TS service. Other editors lose their IntelliSense until they regain focus —
+        // acceptable since only one editor is interactive at a time.
+        const focusDisposable = editor.onDidFocusEditorWidget(() => {
+          this.applyAmbientLibs();
+        });
+        this.disposeListeners.push(() => focusDisposable.dispose());
+
         this.editor = editor;
         this.model = editor.getModel();
         this.applyMarkers();
@@ -139,6 +175,50 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
       console.warn('Monaco editor failed to load; falling back to plain textarea.', err);
       this.fallback = true;
     }
+  }
+
+  private static javascriptDefaultsConfigured = false;
+
+  /** Runtime accessor for Monaco's TS language service. The 0.55 typings deprecate the
+   *  surface (typed as `{ deprecated: true }`), but the runtime exports `javascriptDefaults`,
+   *  `ScriptTarget`, and friends. The Vite/esbuild build resolves correctly without the
+   *  `monaco.contribution` import (which has only `export {}` types). */
+  private static getTsRuntime(monaco: typeof import('monaco-editor')): TypescriptRuntime {
+    return (monaco.languages as unknown as { typescript: TypescriptRuntime }).typescript;
+  }
+
+  private configureJavascriptDefaults(monaco: typeof import('monaco-editor')): void {
+    if (MonacoScriptEditorComponent.javascriptDefaultsConfigured) return;
+    const ts = MonacoScriptEditorComponent.getTsRuntime(monaco);
+    ts.javascriptDefaults.setCompilerOptions({
+      allowJs: true,
+      checkJs: true,
+      noLib: false,
+      target: ts.ScriptTarget.ES2020,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      allowNonTsExtensions: true,
+      noEmit: true,
+      strict: false
+    });
+    ts.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+      // Suppress "Parameter 'x' implicitly has an 'any' type" — script authors don't write
+      // function defs but do use callbacks freely. 1375 = "await' expressions are only
+      // allowed at the top level of a file when that file is a module" — we run scripts
+      // outside module scope, so allow.
+      diagnosticCodesToIgnore: [7006, 7044, 1375]
+    });
+    MonacoScriptEditorComponent.javascriptDefaultsConfigured = true;
+  }
+
+  private applyAmbientLibs(): void {
+    if (!this.monacoApi) return;
+    const ts = MonacoScriptEditorComponent.getTsRuntime(this.monacoApi);
+    ts.javascriptDefaults.setExtraLibs(this.ambientLibs.map(lib => ({
+      content: lib.content,
+      filePath: lib.filePath
+    })));
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -168,6 +248,13 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
 
     if (changes['markers']) {
       this.applyMarkers();
+    }
+
+    if (changes['ambientLibs'] && this.editor) {
+      const editor = this.editor as { hasTextFocus(): boolean };
+      if (editor.hasTextFocus?.()) {
+        this.applyAmbientLibs();
+      }
     }
   }
 

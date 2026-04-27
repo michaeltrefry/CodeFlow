@@ -48,7 +48,7 @@ import {
 } from './workflow-serialization';
 import { tidyLayout } from './auto-layout';
 import { WorkflowNodeComponent } from './workflow-node.component';
-import { MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
+import { MonacoAmbientLib, MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
 import { NodeContextMenuComponent, NodeContextMenuItem } from './node-context-menu.component';
 import {
   AgentInPlaceEditDialogComponent,
@@ -133,6 +133,68 @@ function extractWorkflowAndContextRefsFromScript(text: string, wf: Set<string>, 
   extractMatches(WORKFLOW_REF_SCRIPT_BRACKET, text, wf);
   extractMatches(CONTEXT_REF_SCRIPT_DOT, text, ctx);
   extractMatches(CONTEXT_REF_SCRIPT_BRACKET, text, ctx);
+}
+
+/** E1: compose Monaco ambient declarations for a script-editor slot. The active set is
+ *  swapped into Monaco's TS service when an editor takes focus. Symbol availability is
+ *  gated by script kind so `output` is undefined inside an input script (and vice versa),
+ *  matching runtime semantics. F2 dataflow narrows `workflow` / `context` to known keys
+ *  while keeping an index signature so unknown keys don't error. */
+type ScriptSlotKind = 'input-script' | 'output-script' | 'logic-script';
+
+function buildScriptAmbientLibs(
+  kind: ScriptSlotKind,
+  workflowKeys: readonly string[],
+  contextKeys: readonly string[],
+  inLoop: boolean
+): MonacoAmbientLib[] {
+  const wfNarrow = workflowKeys.length === 0
+    ? '[key: string]: unknown;'
+    : workflowKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
+  const ctxNarrow = contextKeys.length === 0
+    ? '[key: string]: unknown;'
+    : contextKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
+
+  const sharedHeader = [
+    '// CodeFlow script sandbox — auto-generated ambient declarations.',
+    '// Do not edit; regenerated when this script-editor takes focus.',
+    `declare const workflow: { ${wfNarrow} };`,
+    `declare const context: { ${ctxNarrow} };`,
+    'declare function setWorkflow(key: string, value: unknown): void;',
+    'declare function setContext(key: string, value: unknown): void;',
+    'declare function log(message: string): void;'
+  ];
+
+  const loopBlock = inLoop
+    ? [
+        'declare const round: number;',
+        'declare const maxRounds: number;',
+        'declare const isLastRound: boolean;'
+      ]
+    : [];
+
+  const slotBlock = kind === 'input-script'
+    ? [
+        '// Input scripts run BEFORE the node receives the upstream artifact.',
+        'declare const input: unknown;',
+        'declare function setInput(text: string): void;'
+      ]
+    : kind === 'output-script'
+    ? [
+        '// Output scripts run AFTER the agent submits.',
+        'declare const output: { decision: string; text: string };',
+        'declare function setOutput(text: string): void;',
+        'declare function setNodePath(port: string): void;'
+      ]
+    : [
+        '// Logic-node scripts evaluate the node\'s decision against the upstream artifact.',
+        'declare const output: { decision: string; text: string };',
+        'declare function setOutput(text: string): void;',
+        'declare function setNodePath(port: string): void;'
+      ];
+
+  const content = [...sharedHeader, ...loopBlock, ...slotBlock, ''].join('\n');
+  return [{ filePath: `inmemory://codeflow/${kind}.d.ts`, content }];
 }
 
 function defaultStartInput(): WorkflowInput {
@@ -339,6 +401,7 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.inputScript ?? ''"
                     [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -361,6 +424,7 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -545,6 +609,7 @@ function defaultStartInput(): WorkflowInput {
                     class="script-editor"
                     [value]="sel.editor.outputScript ?? ''"
                     [markers]="scriptMarkers()"
+                    [ambientLibs]="logicScriptAmbientLibs()"
                     (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
                 </div>
                 <div class="row">
@@ -1411,6 +1476,40 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  outputs in either direction (stale or missing). Drives the "Sync from agent" affordance. */
   readonly selectedNodeHasPortDrift = computed(() => {
     return this.derivedPortRows().some(r => r.status !== 'ok');
+  });
+
+  /** E1: ambient TS declarations for the input-script editor on the selected node.
+   *  Narrows workflow / context to F2-detected keys; gates `input` + `setInput` to this slot. */
+  readonly inputScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'input-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
+  });
+
+  /** E1: ambient TS declarations for the output-script editor on the selected node. */
+  readonly outputScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'output-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
+  });
+
+  /** E1: ambient TS declarations for the Logic-node script editor. */
+  readonly logicScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
+    const scope = this.selectedNodeDataflow();
+    return buildScriptAmbientLibs(
+      'logic-script',
+      (scope?.workflowVariables ?? []).map(v => v.key),
+      (scope?.contextKeys ?? []).map(v => v.key),
+      !!scope?.loopBindings
+    );
   });
 
   /** VZ1: scope row shown in the data-flow inspector panel. */
