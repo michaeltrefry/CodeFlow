@@ -173,6 +173,71 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
             && t.Category == WorkflowTemplateCategory.Empty);
         listed.Should().Contain(t => t.Id == "review-loop-pair"
             && t.Category == WorkflowTemplateCategory.ReviewLoop);
+        listed.Should().Contain(t => t.Id == "hitl-approval-gate"
+            && t.Category == WorkflowTemplateCategory.Hitl);
+    }
+
+    [Fact]
+    public async Task HitlApprovalGateTemplate_Materialize_CreatesAllThreeEntities()
+    {
+        // S5 acceptance: scaffold lands trigger + Hitl form + outer workflow with the
+        // passthrough outputTemplate and Approved/Cancelled ports. Author drops the resulting
+        // workflow as a Subflow node anywhere they want a human checkpoint.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"hitl-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        var result = await materializer.MaterializeAsync(
+            templateId: "hitl-approval-gate",
+            namePrefix: prefix,
+            createdBy: "tester");
+
+        result.EntryWorkflowKey.Should().Be(prefix);
+        result.EntryWorkflowVersion.Should().Be(1);
+        result.CreatedEntities.Should().HaveCount(3);
+        result.CreatedEntities.Select(e => e.Key).Should().BeEquivalentTo(new[]
+        {
+            $"{prefix}-trigger",
+            $"{prefix}-form",
+            prefix,
+        });
+    }
+
+    [Fact]
+    public async Task HitlApprovalGateTemplate_Materialize_HitlFormHasPassthroughOutputAndExpectedPorts()
+    {
+        // S5 contract: the HITL agent has outputTemplate "{{ input }}" (passthrough) and
+        // declares Approved + Cancelled ports. The workflow's Hitl node wires both ports
+        // as terminals (no outgoing edges) so they surface on the parent Subflow node.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"hitl-cfg-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "hitl-approval-gate",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var workflow = await workflowRepo.GetAsync(prefix, 1);
+        var hitlNode = workflow.Nodes.SingleOrDefault(n => n.Kind == WorkflowNodeKind.Hitl);
+        hitlNode.Should().NotBeNull();
+        hitlNode!.AgentKey.Should().Be($"{prefix}-form");
+        hitlNode.OutputPorts.Should().BeEquivalentTo(new[] { "Approved", "Cancelled" });
+
+        // Both ports are terminals (no outgoing edges) — Subflow consumers see them.
+        workflow.TerminalPorts.Should().Contain("Approved");
+        // Cancelled is filtered from TerminalPorts in the same way Failed is — but the port
+        // is on the node so a Subflow consumer can wire it. Just verify it's declared.
+        hitlNode.OutputPorts.Should().Contain("Cancelled");
+
+        var startNode = workflow.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start);
+        startNode.AgentKey.Should().Be($"{prefix}-trigger");
+        workflow.Edges.Should().ContainSingle();
+        workflow.Edges[0].FromPort.Should().Be("Continue");
+        workflow.Edges[0].ToNodeId.Should().Be(hitlNode.Id);
     }
 
     [Fact]

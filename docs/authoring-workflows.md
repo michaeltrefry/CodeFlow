@@ -256,6 +256,7 @@ If you've configured an MCP server (e.g., the Kanban MCP), grant access via a ro
 The "New from Template" picker on the Workflows page collapses 30 minutes of wiring into 30 seconds. Available templates:
 
 - **Empty workflow** — a single Start node + placeholder agent. Use when you want full structural control.
+- **HITL approval gate** — a standalone trigger → Hitl form workflow with `Approved` + `Cancelled` ports. Drop it as a Subflow node anywhere you want a human checkpoint.
 - **ReviewLoop pair** — producer + reviewer + inner workflow + outer ReviewLoop with `@codeflow/*` partials and P3 rejection-history pre-enabled. The canonical "draft, critique, finalize" shape.
 
 Each template prompts for a name prefix and materializes 5+ entities (agents + workflows) at v1 with that prefix. Templates fail with a clear 409 if any of their planned keys collide with existing entities — pick a different prefix.

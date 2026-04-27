@@ -12,6 +12,15 @@ A single Start node + placeholder agent. Materializes:
 
 Use when you want full structural control without scaffolding decisions.
 
+### HITL approval gate (`hitl-approval-gate`)
+
+A standalone workflow with one human-in-the-loop checkpoint. Materializes:
+- `<prefix>-trigger` (Agent v1) — minimal kickoff that forwards the workflow input verbatim into the HITL form.
+- `<prefix>-form` (Hitl agent v1) — passthrough `outputTemplate: "{{ input }}"`; declares `Approved` + `Cancelled` ports.
+- `<prefix>` (Workflow v1) — Start (trigger) → Hitl (form).
+
+Drop the resulting workflow as a Subflow node anywhere you want a human checkpoint between subflows. The Subflow node automatically inherits the Approved + Cancelled ports.
+
 ### ReviewLoop pair (`review-loop-pair`)
 
 The canonical "draft, critique, finalize" pattern. Materializes:
@@ -54,6 +63,6 @@ Templates live in `CodeFlow.Api/WorkflowTemplates/`. To add one:
 
 Templates currently only describe new versions at v1. Bumping a template doesn't bump existing materialized workflows — those are operator-owned.
 
-## Status: S5/S6/S7
+## Status: S6/S7
 
-S5 (HITL approval gate), S6 (Setup → loop → finalize), and S7 (Lifecycle wrapper) are designed but not yet shipped — they depend on S2 (HITL form presets, frontend) for the passthrough preset. The framework supports them once the prerequisites land.
+S6 (Setup → loop → finalize) and S7 (Lifecycle wrapper) are designed but not yet shipped — they depend on S2 (HITL form presets, frontend) and a few additional editor surfaces. The framework supports them once the prerequisites land.
