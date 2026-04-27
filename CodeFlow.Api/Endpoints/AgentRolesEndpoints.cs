@@ -147,10 +147,6 @@ public static class AgentRolesEndpoints
         {
             return Results.NotFound();
         }
-        if (existing.IsSystemManaged)
-        {
-            return SystemManagedConflict("update", existing.Key);
-        }
 
         try
         {
@@ -178,10 +174,6 @@ public static class AgentRolesEndpoints
         {
             return Results.NotFound();
         }
-        if (existing.IsSystemManaged)
-        {
-            return SystemManagedConflict("archive", existing.Key);
-        }
 
         try
         {
@@ -193,14 +185,6 @@ public static class AgentRolesEndpoints
         }
         return Results.NoContent();
     }
-
-    private static IResult SystemManagedConflict(string verb, string key) =>
-        Results.Conflict(new
-        {
-            error = $"Cannot {verb} system-managed role '{key}'. The platform owns this role; "
-                + "fork it to a new key if you need a customized variant.",
-            code = "SystemManagedRole",
-        });
 
     private static async Task<IResult> ReplaceGrantsAsync(
         long id,
@@ -221,10 +205,6 @@ public static class AgentRolesEndpoints
         if (existingRole is null)
         {
             return Results.NotFound();
-        }
-        if (existingRole.IsSystemManaged)
-        {
-            return SystemManagedConflict("edit grants on", existingRole.Key);
         }
 
         var errors = new Dictionary<string, string[]>();

@@ -7,7 +7,6 @@ public sealed record GitHostSettings(
     DateTime? LastVerifiedAtUtc,
     string? UpdatedBy,
     DateTime UpdatedAtUtc,
-    string? WorkingDirectoryRoot = null,
     int? WorkingDirectoryMaxAgeDays = null);
 
 public sealed record GitHostSettingsWrite(
@@ -15,7 +14,6 @@ public sealed record GitHostSettingsWrite(
     string? BaseUrl,
     GitHostTokenUpdate Token,
     string? UpdatedBy,
-    string? WorkingDirectoryRoot = null,
     int? WorkingDirectoryMaxAgeDays = null);
 
 /// <summary>

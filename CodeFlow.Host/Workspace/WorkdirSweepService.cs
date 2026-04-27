@@ -3,14 +3,15 @@ using CodeFlow.Runtime.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Host.Workspace;
 
 /// <summary>
 /// Periodic sweep that catches orphan trace workdirs (failed runs, abandoned work, anything the
-/// trace-delete and happy-path cleanup hooks missed). Reads <see cref="GitHostSettings"/> on each
-/// tick to pick up live config changes without a restart. No-ops cleanly when
-/// <c>WorkingDirectoryRoot</c> is unset.
+/// trace-delete and happy-path cleanup hooks missed). The root is locked to
+/// <see cref="WorkspaceOptions.WorkingDirectoryRoot"/> and cannot be changed at runtime; the
+/// per-tick DB read is for the operator-editable max-age (TTL) only.
 /// </summary>
 internal sealed class WorkdirSweepService : BackgroundService
 {
@@ -23,17 +24,21 @@ internal sealed class WorkdirSweepService : BackgroundService
     private readonly IServiceScopeFactory scopeFactory;
     private readonly ILogger<WorkdirSweepService> logger;
     private readonly TimeProvider timeProvider;
+    private readonly string workingDirectoryRoot;
 
     public WorkdirSweepService(
         IServiceScopeFactory scopeFactory,
+        IOptions<WorkspaceOptions> workspaceOptions,
         ILogger<WorkdirSweepService> logger,
         TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(workspaceOptions);
         ArgumentNullException.ThrowIfNull(logger);
         this.scopeFactory = scopeFactory;
         this.logger = logger;
         this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -82,16 +87,11 @@ internal sealed class WorkdirSweepService : BackgroundService
         var repo = scope.ServiceProvider.GetRequiredService<IGitHostSettingsRepository>();
         var settings = await repo.GetAsync(cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(settings?.WorkingDirectoryRoot))
-        {
-            return;
-        }
-
-        var maxAgeDays = settings.WorkingDirectoryMaxAgeDays ?? WorkdirSweep.DefaultMaxAgeDays;
+        var maxAgeDays = settings?.WorkingDirectoryMaxAgeDays ?? WorkdirSweep.DefaultMaxAgeDays;
         var maxAge = TimeSpan.FromDays(maxAgeDays);
 
         var deleted = WorkdirSweep.Sweep(
-            settings.WorkingDirectoryRoot,
+            workingDirectoryRoot,
             maxAge,
             timeProvider.GetUtcNow(),
             logger);
@@ -101,7 +101,7 @@ internal sealed class WorkdirSweepService : BackgroundService
             logger.LogInformation(
                 "Workdir sweep removed {Count} stale entries from {Root} (TTL {Days}d).",
                 deleted,
-                settings.WorkingDirectoryRoot,
+                workingDirectoryRoot,
                 maxAgeDays);
         }
     }

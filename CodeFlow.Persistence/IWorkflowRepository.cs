@@ -61,7 +61,9 @@ public sealed record WorkflowNodeDraft(
     bool OptOutLastRoundReminder = false,
     RejectionHistoryConfig? RejectionHistory = null,
     string? MirrorOutputToWorkflowVar = null,
-    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null,
+    string? Template = null,
+    string OutputType = "string");
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,

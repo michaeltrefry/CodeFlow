@@ -688,6 +688,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .wf-node[data-kind="start"]      { --_kind: var(--sem-green); border-left-color: var(--sem-green); }
 .wf-node[data-kind="agent"]      { --_kind: var(--sem-blue); border-left-color: var(--sem-blue); }
 .wf-node[data-kind="logic"]      { --_kind: var(--sem-amber); border-left-color: var(--sem-amber); }
+.wf-node[data-kind="transform"]  { --_kind: var(--sem-teal); border-left-color: var(--sem-teal); }
 .wf-node[data-kind="hitl"]       { --_kind: var(--sem-purple); border-left-color: var(--sem-purple); }
 .wf-node[data-kind="escalation"] { --_kind: var(--sem-red); border-left-color: var(--sem-red); }
 .wf-node[data-kind="subflow"]    { --_kind: var(--sem-cyan); border-left-color: var(--sem-cyan); }

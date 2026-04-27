@@ -179,10 +179,9 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task SystemManagedRole_PutTools_Returns409()
+    public async Task SystemManagedRole_PutTools_Succeeds()
     {
-        // S1: stock platform roles are seeded on startup with IsSystemManaged=true and the
-        // API rejects edits — the operator must fork to a new key to customize.
+        // Seeded roles ship as starting points; operators can edit grants without forking.
         using var client = factory.CreateClient();
 
         var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
@@ -192,35 +191,35 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var response = await client.PutAsJsonAsync(
             $"/api/agent-roles/{systemRole!.Id}/tools",
             new object[] { new { category = "Host", toolIdentifier = "echo" } });
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
-    public async Task SystemManagedRole_Put_Returns409()
+    public async Task SystemManagedRole_Put_Succeeds()
     {
         using var client = factory.CreateClient();
 
         var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
-        var systemRole = roles.SingleOrDefault(r => r.Key == "code-worker" && r.IsSystemManaged);
+        var systemRole = roles.SingleOrDefault(r => r.Key == "kanban-worker" && r.IsSystemManaged);
         systemRole.Should().NotBeNull();
 
         var response = await client.PutAsJsonAsync(
             $"/api/agent-roles/{systemRole!.Id}",
             new { displayName = "Renamed", description = (string?)null });
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
-    public async Task SystemManagedRole_Delete_Returns409()
+    public async Task SystemManagedRole_Delete_Succeeds()
     {
         using var client = factory.CreateClient();
 
         var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
-        var systemRole = roles.SingleOrDefault(r => r.Key == "code-worker" && r.IsSystemManaged);
+        var systemRole = roles.SingleOrDefault(r => r.Key == "read-only-shell" && r.IsSystemManaged);
         systemRole.Should().NotBeNull();
 
         var response = await client.DeleteAsync($"/api/agent-roles/{systemRole!.Id}");
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
     private sealed record AgentRoleDto(

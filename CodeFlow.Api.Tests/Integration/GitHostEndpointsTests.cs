@@ -161,105 +161,36 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, I
     }
 
     [Fact]
-    public async Task Put_rejects_relative_workingDirectoryRoot()
+    public async Task Get_surfaces_locked_workingDirectoryRoot_from_workspace_options()
     {
         using var client = factory.CreateClient();
 
+        var settings = (await client.GetFromJsonAsync<GitHostSettingsResponseDto>("/api/admin/git-host"))!;
+
+        // The factory injects WorkingDirectoryRoot via Workspace:WorkingDirectoryRoot configuration;
+        // the response should surface that exact value (read-only — there is no operator override
+        // path through the API any more).
+        settings.WorkingDirectoryRoot.Should().Be(factory.WorkingDirectoryRoot);
+    }
+
+    [Fact]
+    public async Task Put_ignores_workingDirectoryRoot_in_request_body()
+    {
+        using var client = factory.CreateClient();
+
+        // Even when an old client sends `workingDirectoryRoot` it must be silently ignored — the
+        // path is locked deployment-wide, not per-row in the database.
         var put = await client.PutAsJsonAsync("/api/admin/git-host", new
         {
             mode = "GitHub",
             baseUrl = (string?)null,
-            workingDirectoryRoot = "relative/path/workdirs",
-            token = new { action = "Replace", value = "ghp_for_workdir_relative" },
-        });
-
-        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var body = await put.Content.ReadAsStringAsync();
-        body.Should().Contain("workingDirectoryRoot");
-        body.Should().Contain("absolute path");
-    }
-
-    [Fact]
-    public async Task Put_creates_missing_workingDirectoryRoot_on_save()
-    {
-        using var client = factory.CreateClient();
-
-        // Operator typically lacks shell access on the server, so the save path creates the
-        // directory rather than rejecting it. Nest two levels deep to confirm Directory.CreateDirectory
-        // produces the full tree.
-        var path = Path.Combine(
-            Path.GetTempPath(),
-            $"codeflow-workdir-autocreate-{Guid.NewGuid():N}",
-            "nested");
-
-        Directory.Exists(path).Should().BeFalse(
-            "precondition: the directory must not exist before the save creates it.");
-
-        try
-        {
-            var put = await client.PutAsJsonAsync("/api/admin/git-host", new
-            {
-                mode = "GitHub",
-                baseUrl = (string?)null,
-                workingDirectoryRoot = path,
-                token = new { action = "Replace", value = "ghp_for_autocreate" },
-            });
-
-            put.EnsureSuccessStatusCode();
-            Directory.Exists(path).Should().BeTrue();
-
-            var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
-            settings.WorkingDirectoryRoot.Should().Be(path);
-        }
-        finally
-        {
-            try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch { /* best-effort */ }
-        }
-    }
-
-    [Fact]
-    public async Task Put_accepts_valid_writable_workingDirectoryRoot()
-    {
-        using var client = factory.CreateClient();
-
-        var path = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-ok-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        try
-        {
-            var put = await client.PutAsJsonAsync("/api/admin/git-host", new
-            {
-                mode = "GitHub",
-                baseUrl = (string?)null,
-                workingDirectoryRoot = path,
-                token = new { action = "Replace", value = "ghp_for_workdir_ok" },
-            });
-            put.EnsureSuccessStatusCode();
-
-            var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
-            settings.WorkingDirectoryRoot.Should().Be(path);
-        }
-        finally
-        {
-            try { Directory.Delete(path, recursive: true); } catch { /* best-effort */ }
-        }
-    }
-
-    [Fact]
-    public async Task Put_accepts_null_workingDirectoryRoot()
-    {
-        using var client = factory.CreateClient();
-
-        var put = await client.PutAsJsonAsync("/api/admin/git-host", new
-        {
-            mode = "GitHub",
-            baseUrl = (string?)null,
-            workingDirectoryRoot = (string?)null,
-            token = new { action = "Replace", value = "ghp_for_workdir_null" },
+            workingDirectoryRoot = "/should/be/ignored",
+            token = new { action = "Replace", value = "ghp_legacy_field_ignored" },
         });
         put.EnsureSuccessStatusCode();
 
         var settings = (await put.Content.ReadFromJsonAsync<GitHostSettingsResponseDto>())!;
-        settings.WorkingDirectoryRoot.Should().BeNull();
+        settings.WorkingDirectoryRoot.Should().Be(factory.WorkingDirectoryRoot);
     }
 
     [Fact]
@@ -335,7 +266,7 @@ public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, I
         string Mode,
         string? BaseUrl,
         bool HasToken,
-        string? WorkingDirectoryRoot,
+        string WorkingDirectoryRoot,
         DateTime? LastVerifiedAtUtc,
         string? UpdatedBy,
         DateTime? UpdatedAtUtc);

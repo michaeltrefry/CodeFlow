@@ -1,6 +1,6 @@
 import { ClassicPreset, GetSchemes } from 'rete';
 import { AreaExtra } from './workflow-area-extra';
-import { WorkflowNodeKind } from '../../../core/models';
+import { WorkflowNodeKind, WorkflowTransformOutputType } from '../../../core/models';
 
 export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
 
@@ -21,6 +21,10 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   subflowVersion: number | null;
   reviewMaxRounds: number | null;
   loopDecision: string | null;
+  // Transform nodes only: Scriban template body and output-type mode. Default 'string'
+  // when the node is a Transform; null on every other kind.
+  template: string | null = null;
+  outputType: WorkflowTransformOutputType = 'string';
   traceState: WorkflowNodeTraceState = null;
 
   // VZ5: tracks whether the implicit Failed port is wired and whether the canvas-level
@@ -43,6 +47,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     subflowVersion?: number | null;
     reviewMaxRounds?: number | null;
     loopDecision?: string | null;
+    template?: string | null;
+    outputType?: WorkflowTransformOutputType;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -55,6 +61,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.subflowVersion = params.subflowVersion ?? null;
     this.reviewMaxRounds = params.reviewMaxRounds ?? null;
     this.loopDecision = params.loopDecision ?? null;
+    this.template = params.template ?? null;
+    this.outputType = params.outputType ?? 'string';
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));

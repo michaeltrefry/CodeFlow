@@ -59,7 +59,6 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
                 Mode = write.Mode,
                 BaseUrl = NormalizeBaseUrl(write),
                 EncryptedToken = secretProtector.Protect(write.Token.Value!),
-                WorkingDirectoryRoot = NormalizeWorkingDirectoryRoot(write.WorkingDirectoryRoot),
                 WorkingDirectoryMaxAgeDays = NormalizeMaxAgeDays(write.WorkingDirectoryMaxAgeDays),
                 LastVerifiedAtUtc = null,
                 UpdatedBy = Trim(write.UpdatedBy),
@@ -71,7 +70,6 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
             var modeChanged = entity.Mode != write.Mode;
             entity.Mode = write.Mode;
             entity.BaseUrl = NormalizeBaseUrl(write);
-            entity.WorkingDirectoryRoot = NormalizeWorkingDirectoryRoot(write.WorkingDirectoryRoot);
             entity.WorkingDirectoryMaxAgeDays = NormalizeMaxAgeDays(write.WorkingDirectoryMaxAgeDays);
             entity.UpdatedBy = Trim(write.UpdatedBy);
             entity.UpdatedAtUtc = now;
@@ -115,22 +113,10 @@ public sealed class GitHostSettingsRepository(CodeFlowDbContext dbContext, ISecr
         Mode: entity.Mode,
         BaseUrl: entity.BaseUrl,
         HasToken: entity.EncryptedToken.Length > 0,
-        WorkingDirectoryRoot: entity.WorkingDirectoryRoot,
-        WorkingDirectoryMaxAgeDays: entity.WorkingDirectoryMaxAgeDays,
         LastVerifiedAtUtc: entity.LastVerifiedAtUtc is DateTime lv ? DateTime.SpecifyKind(lv, DateTimeKind.Utc) : null,
         UpdatedBy: entity.UpdatedBy,
-        UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc));
-
-    private static string? NormalizeWorkingDirectoryRoot(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-        var trimmed = value.Trim();
-        // Strip trailing separators so {root}/{traceId}/ is consistent regardless of operator input.
-        return trimmed.TrimEnd('/', '\\');
-    }
+        UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc),
+        WorkingDirectoryMaxAgeDays: entity.WorkingDirectoryMaxAgeDays);
 
     private static int? NormalizeMaxAgeDays(int? value)
     {

@@ -253,7 +253,8 @@ export interface GitHostSettingsResponse {
   mode: GitHostMode;
   baseUrl?: string | null;
   hasToken: boolean;
-  workingDirectoryRoot?: string | null;
+  /** Read-only display value: the working-directory root the deployment is currently using. */
+  workingDirectoryRoot: string;
   workingDirectoryMaxAgeDays?: number | null;
   lastVerifiedAtUtc?: string | null;
   updatedBy?: string | null;
@@ -270,7 +271,6 @@ export interface GitHostTokenUpdateRequest {
 export interface GitHostSettingsRequest {
   mode: GitHostMode;
   baseUrl?: string | null;
-  workingDirectoryRoot?: string | null;
   workingDirectoryMaxAgeDays?: number | null;
   token: GitHostTokenUpdateRequest;
 }
@@ -314,9 +314,11 @@ export interface LlmProviderModelOption {
   model: string;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform';
 
 export type WorkflowInputKind = 'Text' | 'Json';
+
+export type WorkflowTransformOutputType = 'string' | 'json';
 
 export interface WorkflowNode {
   id: string;
@@ -332,6 +334,9 @@ export interface WorkflowNode {
   subflowVersion?: number | null;
   reviewMaxRounds?: number | null;
   loopDecision?: string | null;
+  // Transform nodes only: the Scriban template body and how its rendered output is interpreted.
+  template?: string | null;
+  outputType?: WorkflowTransformOutputType;
 }
 
 export interface WorkflowEdge {

@@ -20,7 +20,7 @@ Set it via `PUT /api/admin/git-host`:
 {
   "mode": "GitHub",
   "baseUrl": null,
-  "workingDirectoryRoot": "/var/lib/codeflow/workdirs",
+  "workingDirectoryRoot": "/app/workdirs",
   "workingDirectoryMaxAgeDays": 14,
   "token": { "action": "Replace", "value": "ghp_..." }
 }
@@ -29,7 +29,11 @@ Set it via `PUT /api/admin/git-host`:
 Validation runs at save time:
 
 - The path must be **absolute** (`Path.IsPathFullyQualified`).
-- It must **exist** — the platform doesn't auto-create it.
+- It is auto-created if missing — the API process calls `Directory.CreateDirectory` so operators
+  don't need shell access to mkdir before saving. The path must therefore be one the api/worker
+  process can write to: in the production stack that means a path under the host-bound
+  `/app/workdirs` volume (operator chowns the host directory to UID 1654, the APP_UID baked into
+  the api/worker images — see `deploy/.env.example`).
 - It must be **writable** by the CodeFlow service account; the endpoint probes by writing +
   deleting a temp file.
 
@@ -184,7 +188,7 @@ Its job, in three steps:
    [{
      "url": "...",
      "branch": "main",
-     "localPath": "/var/lib/codeflow/workdirs/{traceId-N}/<repo>",
+     "localPath": "/app/workdirs/{traceId-N}/<repo>",
      "featureBranch": "add-todo-list-3b70fc02"
    }]
    ```

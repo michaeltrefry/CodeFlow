@@ -53,6 +53,7 @@ public enum DryRunEventKind
     BuiltinApplied = 11,
     Diagnostic = 12,
     RetryContextHandoff = 13,
+    TransformRendered = 14,
 }
 
 public enum DryRunTerminalState

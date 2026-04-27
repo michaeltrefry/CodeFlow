@@ -165,7 +165,7 @@
           "displayName": "Repositories",
           "kind": "Json",
           "required": true,
-          "description": "Array of {url, branch?} objects identifying the repos to clone and operate on.",
+          "description": "JSON array of repository entries. Each entry needs a url property and may include branch, e.g. [{\"url\":\"https://github.com/org/repo.git\",\"branch\":\"main\"}].",
           "ordinal": 1
         }
       ]
@@ -489,7 +489,7 @@
           "displayName": "Repositories",
           "kind": "Json",
           "required": true,
-          "description": "Array of {url, branch?} objects. The repos the dev workflow will clone and push to. For greenfield projects, an empty repo at the URL is required.",
+          "description": "JSON array of repository entries. Each entry needs a url property and may include branch, e.g. [{\"url\":\"https://github.com/org/repo.git\",\"branch\":\"main\"}]. For greenfield projects, an empty repo at the URL is required.",
           "ordinal": 1
         }
       ]

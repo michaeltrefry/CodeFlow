@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260427155905_AddTransformNodeFields")]
+    partial class AddTransformNodeFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -293,6 +296,11 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<int?>("WorkingDirectoryMaxAgeDays")
                         .HasColumnType("int")
                         .HasColumnName("working_directory_max_age_days");
+
+                    b.Property<string>("WorkingDirectoryRoot")
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)")
+                        .HasColumnName("working_directory_root");
 
                     b.HasKey("Key");
 

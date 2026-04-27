@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeFlow.Persistence;
 
 namespace CodeFlow.Api.Dtos;
@@ -30,7 +31,9 @@ public sealed record WorkflowNodeDto(
     bool OptOutLastRoundReminder = false,
     RejectionHistoryConfig? RejectionHistory = null,
     string? MirrorOutputToWorkflowVar = null,
-    IReadOnlyDictionary<string, string>? OutputPortReplacements = null);
+    IReadOnlyDictionary<string, string>? OutputPortReplacements = null,
+    string? Template = null,
+    string OutputType = "string");
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,
@@ -126,3 +129,26 @@ public sealed record ValidateWorkflowResponse(
     bool HasErrors,
     bool HasWarnings,
     IReadOnlyList<WorkflowValidationFindingDto> Findings);
+
+/// <summary>
+/// Request body for the live Transform-node template preview endpoint (TN-6). Mirrors the saga's
+/// Transform render scope: <c>input.*</c> (the structured upstream artifact), plus the same
+/// <c>context.*</c> / <c>workflow.*</c> dotted-key surfaces the runtime exposes. <c>OutputType</c>
+/// matches the persisted node field — when <c>"json"</c>, the rendered output is JSON-parsed and
+/// the parsed payload is returned alongside the raw rendered text so the UI can render structure
+/// or surface a parse error. When <c>"string"</c> (or null/missing, which defaults to string),
+/// only the raw render is returned.
+/// </summary>
+public sealed record TransformPreviewRequest(
+    string? Template,
+    string? OutputType,
+    JsonElement? Input,
+    IReadOnlyDictionary<string, JsonElement>? Context,
+    IReadOnlyDictionary<string, JsonElement>? Workflow);
+
+public sealed record TransformPreviewResponse(
+    string Rendered,
+    JsonElement? Parsed,
+    string? JsonParseError);
+
+public sealed record TransformPreviewErrorResponse(string Error);

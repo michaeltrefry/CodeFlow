@@ -662,6 +662,181 @@ public sealed class DryRunExecutor
                     break;
                 }
 
+                case WorkflowNodeKind.Transform:
+                {
+                    if (string.IsNullOrWhiteSpace(currentNode.Template))
+                    {
+                        return DryRunWalkResult.Failed(
+                            $"Transform node {currentNode.Id} has no template.",
+                            contextVars, workflowVars);
+                    }
+                    if (templateRenderer is null)
+                    {
+                        return DryRunWalkResult.Failed(
+                            $"Transform node {currentNode.Id} cannot render: dry-run was not configured with an IScribanTemplateRenderer.",
+                            contextVars, workflowVars);
+                    }
+
+                    // 1. inputScript shapes the structured input the template will see. Reuses the
+                    //    same helper Start/Agent/Hitl nodes use, so semantics match byte-for-byte.
+                    var transformInputOutcome = RunInputScriptIfPresent(
+                        workflow, currentNode, currentInput, contextVars, workflowVars,
+                        reviewRound, maxRounds, depth, state, cancellationToken);
+                    if (transformInputOutcome.FailureReason is not null)
+                    {
+                        return DryRunWalkResult.Failed(transformInputOutcome.FailureReason, contextVars, workflowVars);
+                    }
+                    currentInput = transformInputOutcome.EffectiveInput;
+
+                    var inputElement = ParseInputAsJson(currentInput);
+                    var scope = TransformNodeContext.Build(inputElement, contextVars, workflowVars);
+
+                    string rendered;
+                    try
+                    {
+                        rendered = templateRenderer.Render(currentNode.Template!, scope, cancellationToken);
+                    }
+                    catch (PromptTemplateException ex)
+                    {
+                        var failedEdge = workflow.FindNext(currentNode.Id, "Failed");
+                        var transformFailMessage = $"Transform node {currentNode.Id} render failed: {ex.Message}";
+                        state.RecordEvent(new DryRunEvent(
+                            Ordinal: state.NextOrdinal(),
+                            Kind: DryRunEventKind.TransformRendered,
+                            NodeId: currentNode.Id,
+                            NodeKind: currentNode.Kind.ToString(),
+                            AgentKey: null,
+                            PortName: "Failed",
+                            Message: transformFailMessage,
+                            InputPreview: Preview(currentInput),
+                            OutputPreview: null,
+                            ReviewRound: reviewRound,
+                            MaxRounds: maxRounds,
+                            SubflowDepth: depth,
+                            SubflowKey: null,
+                            SubflowVersion: null,
+                            Logs: null,
+                            DecisionPayload: null));
+
+                        if (failedEdge is null)
+                        {
+                            return DryRunWalkResult.Failed(transformFailMessage, contextVars, workflowVars);
+                        }
+
+                        lastEffectivePort = "Failed";
+                        state.RecordEvent(EdgeEvent(state, currentNode, "Failed", failedEdge, depth));
+                        currentNode = workflow.FindNode(failedEdge.ToNodeId)
+                            ?? throw new InvalidOperationException(
+                                $"Edge from transform {currentNode.Id} on 'Failed' targets unknown node {failedEdge.ToNodeId}.");
+                        // Pass the failure message through as the input artifact so downstream
+                        // diagnostics see the same context the saga's Failed-route would carry.
+                        currentInput = transformFailMessage;
+                        break;
+                    }
+
+                    var isJsonMode = string.Equals(currentNode.OutputType, "json", StringComparison.Ordinal);
+                    if (isJsonMode)
+                    {
+                        try
+                        {
+                            using var _ = JsonDocument.Parse(rendered);
+                        }
+                        catch (JsonException ex)
+                        {
+                            var failedEdge = workflow.FindNext(currentNode.Id, "Failed");
+                            var jsonFailMessage = $"Transform node {currentNode.Id} produced invalid JSON (outputType=json): {ex.Message}";
+                            state.RecordEvent(new DryRunEvent(
+                                Ordinal: state.NextOrdinal(),
+                                Kind: DryRunEventKind.TransformRendered,
+                                NodeId: currentNode.Id,
+                                NodeKind: currentNode.Kind.ToString(),
+                                AgentKey: null,
+                                PortName: "Failed",
+                                Message: jsonFailMessage,
+                                InputPreview: Preview(currentInput),
+                                OutputPreview: Preview(rendered),
+                                ReviewRound: reviewRound,
+                                MaxRounds: maxRounds,
+                                SubflowDepth: depth,
+                                SubflowKey: null,
+                                SubflowVersion: null,
+                                Logs: null,
+                                DecisionPayload: null));
+
+                            if (failedEdge is null)
+                            {
+                                return DryRunWalkResult.Failed(jsonFailMessage, contextVars, workflowVars);
+                            }
+
+                            lastEffectivePort = "Failed";
+                            state.RecordEvent(EdgeEvent(state, currentNode, "Failed", failedEdge, depth));
+                            currentNode = workflow.FindNode(failedEdge.ToNodeId)
+                                ?? throw new InvalidOperationException(
+                                    $"Edge from transform {currentNode.Id} on 'Failed' targets unknown node {failedEdge.ToNodeId}.");
+                            currentInput = jsonFailMessage;
+                            break;
+                        }
+                    }
+
+                    // 5. outputScript: can mutate context/workflow vars and override the artifact
+                    //    via setOutput. In JSON mode the override is re-validated.
+                    var transformFinal = rendered;
+                    if (!string.IsNullOrWhiteSpace(currentNode.OutputScript))
+                    {
+                        var transformOutputScriptOutcome = RunTransformOutputScript(
+                            workflow, currentNode, rendered, isJsonMode,
+                            contextVars, workflowVars,
+                            reviewRound, maxRounds, depth, state, cancellationToken);
+                        if (transformOutputScriptOutcome.FailureReason is not null)
+                        {
+                            var failedEdge = workflow.FindNext(currentNode.Id, "Failed");
+                            if (failedEdge is null)
+                            {
+                                return DryRunWalkResult.Failed(transformOutputScriptOutcome.FailureReason, contextVars, workflowVars);
+                            }
+                            lastEffectivePort = "Failed";
+                            state.RecordEvent(EdgeEvent(state, currentNode, "Failed", failedEdge, depth));
+                            currentNode = workflow.FindNode(failedEdge.ToNodeId)
+                                ?? throw new InvalidOperationException(
+                                    $"Edge from transform {currentNode.Id} on 'Failed' targets unknown node {failedEdge.ToNodeId}.");
+                            currentInput = transformOutputScriptOutcome.FailureReason;
+                            break;
+                        }
+                        transformFinal = transformOutputScriptOutcome.Output;
+                    }
+
+                    state.RecordEvent(new DryRunEvent(
+                        Ordinal: state.NextOrdinal(),
+                        Kind: DryRunEventKind.TransformRendered,
+                        NodeId: currentNode.Id,
+                        NodeKind: currentNode.Kind.ToString(),
+                        AgentKey: null,
+                        PortName: "Out",
+                        Message: null,
+                        InputPreview: Preview(currentInput),
+                        OutputPreview: Preview(transformFinal),
+                        ReviewRound: reviewRound,
+                        MaxRounds: maxRounds,
+                        SubflowDepth: depth,
+                        SubflowKey: null,
+                        SubflowVersion: null,
+                        Logs: null,
+                        DecisionPayload: null));
+
+                    lastEffectivePort = "Out";
+                    var transformEdge = workflow.FindNext(currentNode.Id, "Out");
+                    if (transformEdge is null)
+                    {
+                        return CompleteWorkflow(workflow, currentNode, "Out", transformFinal, contextVars, workflowVars, state);
+                    }
+                    state.RecordEvent(EdgeEvent(state, currentNode, "Out", transformEdge, depth));
+                    currentNode = workflow.FindNode(transformEdge.ToNodeId)
+                        ?? throw new InvalidOperationException(
+                            $"Edge from transform {currentNode.Id} on 'Out' targets unknown node {transformEdge.ToNodeId}.");
+                    currentInput = transformFinal;
+                    break;
+                }
+
                 default:
                     return DryRunWalkResult.Failed(
                         $"Unknown node kind {currentNode.Kind} on node {currentNode.Id}.",
@@ -1080,6 +1255,108 @@ public sealed class DryRunExecutor
     }
 
     /// <summary>
+    /// Saga-parity output-script invocation for Transform nodes. The script sees the rendered
+    /// text as <c>output</c> — parsed JSON in <c>outputType=json</c> mode, plain string in string
+    /// mode — and may call setWorkflow / setContext to mutate vars and setOutput to override the
+    /// artifact text. In JSON mode an override is re-validated; an invalid JSON override surfaces
+    /// as a script failure (mirrors the saga's <c>ApplyTransformOutputScriptAsync</c> branch).
+    /// </summary>
+    private TransformOutputScriptOutcome RunTransformOutputScript(
+        Workflow workflow,
+        WorkflowNode node,
+        string rendered,
+        bool jsonMode,
+        Dictionary<string, JsonElement> contextVars,
+        Dictionary<string, JsonElement> workflowVars,
+        int? reviewRound,
+        int? maxRounds,
+        int depth,
+        DryRunState state,
+        CancellationToken cancellationToken)
+    {
+        JsonElement scriptInput;
+        if (jsonMode)
+        {
+            using var doc = JsonDocument.Parse(rendered);
+            scriptInput = doc.RootElement.Clone();
+        }
+        else
+        {
+            scriptInput = JsonSerializer.SerializeToElement(rendered);
+        }
+
+        var eval = logicScriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: node.Id,
+            script: node.OutputScript!,
+            declaredPorts: node.OutputPorts,
+            input: scriptInput,
+            context: contextVars,
+            cancellationToken: cancellationToken,
+            workflow: workflowVars,
+            reviewRound: reviewRound,
+            reviewMaxRounds: maxRounds,
+            allowOutputOverride: true,
+            inputVariableName: "output",
+            requireSetNodePath: false);
+
+        state.RecordEvent(new DryRunEvent(
+            Ordinal: state.NextOrdinal(),
+            Kind: DryRunEventKind.LogicEvaluated,
+            NodeId: node.Id,
+            NodeKind: node.Kind.ToString(),
+            AgentKey: null,
+            PortName: eval.OutputPortName,
+            Message: eval.Failure is null
+                ? $"Transform output script ran (override={(eval.OutputOverride is null ? "no" : $"yes, {eval.OutputOverride.Length} chars")})."
+                : $"Transform output script failed ({eval.Failure}): {eval.FailureMessage}",
+            InputPreview: Preview(rendered),
+            OutputPreview: Preview(eval.OutputOverride),
+            ReviewRound: reviewRound,
+            MaxRounds: maxRounds,
+            SubflowDepth: depth,
+            SubflowKey: null,
+            SubflowVersion: null,
+            Logs: eval.LogEntries,
+            DecisionPayload: null));
+
+        if (eval.Failure is not null)
+        {
+            return new TransformOutputScriptOutcome(
+                rendered,
+                $"Transform node {node.Id} output script failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        foreach (var (k, v) in eval.ContextUpdates)
+        {
+            contextVars[k] = v;
+        }
+        foreach (var (k, v) in eval.WorkflowUpdates)
+        {
+            workflowVars[k] = v;
+        }
+
+        var finalText = string.IsNullOrEmpty(eval.OutputOverride) ? rendered : eval.OutputOverride!;
+
+        if (jsonMode && eval.OutputOverride is not null)
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(finalText);
+            }
+            catch (JsonException ex)
+            {
+                return new TransformOutputScriptOutcome(
+                    rendered,
+                    $"Transform node {node.Id} output script setOutput value is not valid JSON (outputType=json): {ex.Message}");
+            }
+        }
+
+        return new TransformOutputScriptOutcome(finalText, null);
+    }
+
+    /// <summary>
     /// v3: render the agent's <c>decisionOutputTemplates[port]</c> entry (or the wildcard <c>*</c>
     /// fallback) against the saga's <c>{ decision, outputPortName, output, input, context, workflow }</c>
     /// scope. Mirrors <c>WorkflowSagaStateMachine.TryApplyDecisionOutputTemplateAsync</c>. Skipped
@@ -1431,6 +1708,8 @@ public sealed class DryRunExecutor
         string Output,
         bool SetOutputCalled,
         string? FailureReason);
+
+    private readonly record struct TransformOutputScriptOutcome(string Output, string? FailureReason);
 
     private static string? Preview(string? text)
     {

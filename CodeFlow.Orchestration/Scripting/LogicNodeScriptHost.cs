@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using CodeFlow.Runtime;
 using Jint;
@@ -406,12 +408,23 @@ public sealed class LogicNodeScriptHost
 
     private Prepared<Acornima.Ast.Script> GetOrPrepare(string workflowKey, int workflowVersion, Guid nodeId, string script)
     {
-        var cacheKey = $"logic:{workflowKey}:{workflowVersion}:{nodeId:N}";
+        // The cache key includes a content hash so input + output scripts on the same node (or
+        // versioned-in-place edits) don't collide. Without the hash, the second compile call
+        // for the same nodeId would see the first script's cached AST.
+        var hash = ComputeScriptHash(script);
+        var cacheKey = $"logic:{workflowKey}:{workflowVersion}:{nodeId:N}:{hash}";
         return cache.GetOrCreate(cacheKey, entry =>
         {
             entry.SetPriority(CacheItemPriority.Low);
             return Engine.PrepareScript(script);
         });
+    }
+
+    private static string ComputeScriptHash(string script)
+    {
+        var bytes = Encoding.UTF8.GetBytes(script);
+        var digest = SHA256.HashData(bytes);
+        return Convert.ToHexString(digest, 0, 8);
     }
 
     private static Engine BuildSandboxedEngine(CancellationToken cancellationToken)

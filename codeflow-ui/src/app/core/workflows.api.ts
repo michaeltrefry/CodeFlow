@@ -151,6 +151,30 @@ export interface WorkflowDataflowSnapshot {
   diagnostics: WorkflowDataflowDiagnostic[];
 }
 
+/** TN-6: live preview of a Transform node's Scriban template against a sample fixture.
+ *  Mirrors the saga's render scope (`input.* + context.* + workflow.*`). When `outputType`
+ *  is `'json'`, the rendered text is also JSON-parsed server-side and either `parsed` or
+ *  `jsonParseError` is populated; for `'string'`, only `rendered` is populated. */
+export type TransformPreviewOutputType = 'string' | 'json';
+
+export interface TransformPreviewRequest {
+  template: string;
+  outputType: TransformPreviewOutputType;
+  input?: unknown;
+  context?: Record<string, unknown> | null;
+  workflow?: Record<string, unknown> | null;
+}
+
+export interface TransformPreviewResponse {
+  rendered: string;
+  parsed?: unknown;
+  jsonParseError?: string | null;
+}
+
+export interface TransformPreviewErrorResponse {
+  error: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class WorkflowsApi {
   private readonly http = inject(HttpClient);
@@ -218,6 +242,18 @@ export class WorkflowsApi {
 
   validateScript(request: ValidateScriptRequest): Observable<ValidateScriptResponse> {
     return this.http.post<ValidateScriptResponse>('/api/workflows/validate-script', request);
+  }
+
+  /** TN-6: render a Transform node's template against a sample fixture for the inspector
+   *  preview pane. Backend validates `template` non-empty and `outputType` ∈ {string,json}; a
+   *  Scriban parse/render failure surfaces as 422 with `{ error }`. JSON-parse failure on
+   *  `outputType=json` returns 200 with `jsonParseError` set so the UI can show the raw render
+   *  alongside the parse-error annotation. */
+  renderTransformPreview(request: TransformPreviewRequest): Observable<TransformPreviewResponse> {
+    return this.http.post<TransformPreviewResponse>(
+      '/api/workflows/templates/render-transform-preview',
+      request
+    );
   }
 
   /** F2: per-node dataflow snapshot for the saved workflow at this version. */

@@ -50,6 +50,17 @@ services:
     volumes:
       - codeflow-artifacts:/app/artifacts
 
+  codeflow-workdir-init:
+    image: alpine:3.20
+    container_name: codeflow-workdir-init
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - mkdir -p /app/codeflow/workdir && chown -R 1654:1654 /app/codeflow/workdir
+    volumes:
+      - codeflow-workdir:/app/codeflow/workdir
+
   codeflow-api:
     build:
       context: .
@@ -60,6 +71,8 @@ services:
       rabbitmq:
         condition: service_healthy
       codeflow-artifacts-init:
+        condition: service_completed_successfully
+      codeflow-workdir-init:
         condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -92,6 +105,7 @@ services:
       - "5080:8080"
     volumes:
       - codeflow-artifacts:/app/artifacts
+      - codeflow-workdir:/app/codeflow/workdir
     networks:
       - default
       - mcp-shared
@@ -109,6 +123,8 @@ services:
       codeflow-api:
         condition: service_started
       codeflow-artifacts-init:
+        condition: service_completed_successfully
+      codeflow-workdir-init:
         condition: service_completed_successfully
     environment:
       DOTNET_ENVIRONMENT: Development
@@ -130,6 +146,7 @@ services:
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
     volumes:
       - codeflow-artifacts:/app/artifacts
+      - codeflow-workdir:/app/codeflow/workdir
     networks:
       - default
       - mcp-shared
@@ -153,3 +170,4 @@ services:
 volumes:
   codeflow-rabbitmq-data:
   codeflow-artifacts:
+  codeflow-workdir:

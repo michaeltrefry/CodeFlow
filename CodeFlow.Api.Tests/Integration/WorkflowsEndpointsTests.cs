@@ -286,7 +286,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task PreviewPackageImport_ReportsConflict_AndApplyRefuses()
+    public async Task ApplyPackageImport_BumpsWorkflowVersion_WhenSameVersionDiffers()
     {
         using var client = factory.CreateClient();
         await SeedAgentAsync(client, "wf-conflict-writer");
@@ -324,19 +324,168 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
-        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
-        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        previewDocument.RootElement.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(2);
         previewDocument.RootElement.GetProperty("items").EnumerateArray()
             .Should().Contain(item =>
                 item.GetProperty("kind").GetString() == "Workflow" &&
                 item.GetProperty("key").GetString() == "conflict-flow" &&
-                item.GetProperty("action").GetString() == "Conflict");
+                item.GetProperty("version").GetInt32() == 2 &&
+                item.GetProperty("action").GetString() == "Create" &&
+                item.GetProperty("message").GetString()!.Contains("imported v1", StringComparison.Ordinal));
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
             new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
 
-        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var imported = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/conflict-flow/2");
+        imported.Should().NotBeNull();
+        imported!.Name.Should().Be("Different imported flow");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_BumpsWorkflowPins_WhenAgentVersionIsBumped()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-agent-remap-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "agent-remap-flow",
+            name = "Agent remap flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-agent-remap-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/agent-remap-flow/1/package");
+        var package = JsonNode.Parse(packageJson)!.AsObject();
+        var agent = package["agents"]!.AsArray()[0]!.AsObject();
+        agent["config"]!.AsObject()["systemPrompt"] = "Do imported work.";
+        var changedPackage = package.ToJsonString();
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        previewDocument.RootElement.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(2);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Agent" &&
+                item.GetProperty("key").GetString() == "wf-agent-remap-writer" &&
+                item.GetProperty("version").GetInt32() == 2);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Workflow" &&
+                item.GetProperty("key").GetString() == "agent-remap-flow" &&
+                item.GetProperty("version").GetInt32() == 2);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var imported = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/agent-remap-flow/2");
+        imported.Should().NotBeNull();
+        imported!.Nodes.Should().ContainSingle()
+            .Which.AgentVersion.Should().Be(2);
+
+        var importedAgent = await client.GetAsync("/api/agents/wf-agent-remap-writer/2");
+        importedAgent.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_ReportsConflict_WhenTargetHasHigherWorkflowVersion()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-higher-conflict-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "higher-conflict-flow",
+            name = "Higher conflict flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-higher-conflict-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/higher-conflict-flow/1/package");
+
+        var update = await client.PutAsJsonAsync("/api/workflows/higher-conflict-flow", new
+        {
+            name = "Higher conflict flow v2",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-higher-conflict-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        previewDocument.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        previewDocument.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        previewDocument.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Workflow" &&
+                item.GetProperty("key").GetString() == "higher-conflict-flow" &&
+                item.GetProperty("version").GetInt32() == 1 &&
+                item.GetProperty("action").GetString() == "Conflict" &&
+                item.GetProperty("message").GetString()!.Contains("higher than imported v1", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -380,6 +529,88 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         preview.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await preview.Content.ReadAsStringAsync();
         body.Should().Contain("references missing agent");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_TransformDemoLibraryPackage_RoundTripsBothModes()
+    {
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("transform-demo-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(3);
+
+        var detailJson = await client.GetStringAsync("/api/workflows/transform-demo/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(4);
+
+        var transformNodes = nodes
+            .Where(n => string.Equals(n.GetProperty("kind").GetString(), "Transform", StringComparison.Ordinal))
+            .ToList();
+        transformNodes.Should().HaveCount(2, "the demo features one Transform per output mode");
+
+        var jsonModeNode = transformNodes.Single(n =>
+            string.Equals(n.GetProperty("outputType").GetString(), "json", StringComparison.Ordinal));
+        jsonModeNode.GetProperty("template").GetString().Should().Contain("string.literal",
+            "the JSON-mode template uses Scriban's string.literal helper to safely escape arbitrary string content");
+
+        var stringModeNode = transformNodes.Single(n =>
+            string.Equals(n.GetProperty("outputType").GetString(), "string", StringComparison.Ordinal));
+        stringModeNode.GetProperty("template").GetString().Should().Contain("# {{ input.title }}",
+            "the string-mode template renders a Markdown summary headed by the topic title");
+
+        // Render the JSON-mode template against a representative analyzer payload via the TN-6
+        // preview endpoint and confirm it actually emits valid JSON. Without this, the package
+        // could import cleanly but fail at saga runtime if the template references an unknown
+        // Scriban helper.
+        var renderRequest = new
+        {
+            template = jsonModeNode.GetProperty("template").GetString(),
+            outputType = "json",
+            input = JsonNode.Parse("""
+                {"title":"Sample \"topic\"","summary":"S","bullets":["alpha","\"quoted\"","gamma"],"risks":["r1"]}
+                """),
+            context = new Dictionary<string, object>(),
+            workflow = new Dictionary<string, object> { ["topic"] = "Demo" }
+        };
+        var render = await client.PostAsJsonAsync(
+            "/api/workflows/templates/render-transform-preview",
+            renderRequest);
+        render.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var renderDoc = JsonDocument.Parse(await render.Content.ReadAsStringAsync());
+        renderDoc.RootElement.TryGetProperty("jsonParseError", out var parseError).Should().BeFalse(
+            $"the JSON-mode template must produce valid JSON; got jsonParseError='{(parseError.ValueKind == JsonValueKind.String ? parseError.GetString() : "(none)")}' and rendered='{renderDoc.RootElement.GetProperty("rendered").GetString()}'");
+        var parsed = renderDoc.RootElement.GetProperty("parsed");
+        parsed.GetProperty("title").GetString().Should().Be("Sample \"topic\"");
+        parsed.GetProperty("bullets").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "alpha", "\"quoted\"", "gamma" });
+        parsed.GetProperty("risks").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "r1" });
+    }
+
+    private static string LocateLibraryPackage(string fileName)
+    {
+        var dir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(dir))
+        {
+            var candidate = Path.Combine(dir, "workflows", fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            dir = Path.GetDirectoryName(dir);
+        }
+        throw new FileNotFoundException(
+            $"Could not locate workflows/{fileName} by walking up from {AppContext.BaseDirectory}.");
     }
 
     [Fact]
@@ -572,7 +803,10 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string? AgentKey,
         string? OutputScript,
         IReadOnlyList<string> OutputPorts,
-        string? InputScript = null);
+        string? InputScript = null,
+        int? AgentVersion = null,
+        string? SubflowKey = null,
+        int? SubflowVersion = null);
 
     private sealed record EdgePayload(Guid FromNodeId, string FromPort, Guid ToNodeId, string ToPort, bool RotatesRound);
 
@@ -1339,4 +1573,140 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
     private sealed record ValidateScriptResponseShape(bool Ok, IReadOnlyList<ValidateScriptErrorShape> Errors);
     private sealed record ValidateScriptErrorShape(int Line, int Column, string Message);
+
+    // ---------- TN-6: Transform-node template preview ----------
+
+    [Fact]
+    public async Task TransformPreview_StringMode_RendersAgainstInputContextWorkflowVars()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hello, {{ input.name }} ({{ input.count }}) ctx={{ context.greeting }} wf={{ workflow.flag }}",
+            outputType = "string",
+            input = new { name = "world", count = 3 },
+            context = new Dictionary<string, object> { ["greeting"] = "ctxv" },
+            workflow = new Dictionary<string, object> { ["flag"] = "wfv" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("hello, world (3) ctx=ctxv wf=wfv");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TransformPreview_JsonMode_HappyPath_ReturnsRenderedAndParsed()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{ \"value\": {{ input.x }}, \"label\": \"{{ context.name }}\" }",
+            outputType = "json",
+            input = new { x = 42 },
+            context = new Dictionary<string, object> { ["name"] = "alpha" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("{ \"value\": 42, \"label\": \"alpha\" }");
+        payload.JsonParseError.Should().BeNull();
+        payload.Parsed.Should().NotBeNull();
+        payload.Parsed!.Value.GetProperty("value").GetInt32().Should().Be(42);
+        payload.Parsed.Value.GetProperty("label").GetString().Should().Be("alpha");
+    }
+
+    [Fact]
+    public async Task TransformPreview_JsonMode_InvalidJson_ReturnsRawAndParseError()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "not json {{ input.text }}",
+            outputType = "json",
+            input = new { text = "world" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("not json world");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task TransformPreview_RenderError_Returns422()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "{{ for i in 0..5000 }}x{{ end }}",
+            outputType = "string"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewErrorResponseShape>();
+        payload!.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task TransformPreview_EmptyTemplate_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "",
+            outputType = "string"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TransformPreview_InvalidOutputType_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hi",
+            outputType = "yaml"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TransformPreview_OmittedOutputType_DefaultsToString()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            template = "hello {{ input.name }}",
+            input = new { name = "anon" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows/templates/render-transform-preview", body);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<TransformPreviewResponseShape>();
+        payload!.Rendered.Should().Be("hello anon");
+        payload.Parsed.Should().BeNull();
+        payload.JsonParseError.Should().BeNull();
+    }
+
+    private sealed record TransformPreviewResponseShape(string Rendered, JsonElement? Parsed, string? JsonParseError);
+    private sealed record TransformPreviewErrorResponseShape(string Error);
 }

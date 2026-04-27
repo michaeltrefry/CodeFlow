@@ -276,6 +276,7 @@ jobs:
           CODEFLOW_API_HOST_PORT: ${{ vars.CODEFLOW_API_HOST_PORT || '5080' }}
           CODEFLOW_UI_HOST_PORT: ${{ vars.CODEFLOW_UI_HOST_PORT || '4280' }}
           CODEFLOW_ARTIFACTS_DIR: ${{ vars.CODEFLOW_ARTIFACTS_DIR || '/opt/codeflow/artifacts' }}
+          CODEFLOW_WORKDIRS_DIR: ${{ vars.CODEFLOW_WORKDIRS_DIR || '/opt/codeflow/workdirs' }}
         run: |
           set -eu
           owner_lc="$(echo "${IMAGE_OWNER_LC}" | tr '[:upper:]' '[:lower:]')"
@@ -306,6 +307,7 @@ jobs:
             q CODEFLOW_API_HOST_PORT "${CODEFLOW_API_HOST_PORT}"
             q CODEFLOW_UI_HOST_PORT "${CODEFLOW_UI_HOST_PORT}"
             q CODEFLOW_ARTIFACTS_DIR "${CODEFLOW_ARTIFACTS_DIR}"
+            q CODEFLOW_WORKDIRS_DIR "${CODEFLOW_WORKDIRS_DIR}"
           } > .env.release
           chmod 600 .env.release
           echo "Generated .env.release ($(wc -l < .env.release) lines)"
@@ -320,7 +322,7 @@ jobs:
           set -eu
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
-              "mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts'"
+              "mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs'"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               deploy/docker-compose.prod.yml \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/deploy/docker-compose.prod.yml"

@@ -5,6 +5,7 @@ using CodeFlow.Runtime.Workspace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Endpoints;
 
@@ -30,8 +31,10 @@ public static class GitHostEndpoints
 
     private static async Task<IResult> GetAsync(
         IGitHostSettingsRepository repository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         CancellationToken cancellationToken)
     {
+        var workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
         var settings = await repository.GetAsync(cancellationToken);
         if (settings is null)
         {
@@ -39,7 +42,7 @@ public static class GitHostEndpoints
                 Mode: GitHostMode.GitHub,
                 BaseUrl: null,
                 HasToken: false,
-                WorkingDirectoryRoot: null,
+                WorkingDirectoryRoot: workingDirectoryRoot,
                 WorkingDirectoryMaxAgeDays: null,
                 LastVerifiedAtUtc: null,
                 UpdatedBy: null,
@@ -50,7 +53,7 @@ public static class GitHostEndpoints
             Mode: settings.Mode,
             BaseUrl: settings.BaseUrl,
             HasToken: settings.HasToken,
-            WorkingDirectoryRoot: settings.WorkingDirectoryRoot,
+            WorkingDirectoryRoot: workingDirectoryRoot,
             WorkingDirectoryMaxAgeDays: settings.WorkingDirectoryMaxAgeDays,
             LastVerifiedAtUtc: settings.LastVerifiedAtUtc,
             UpdatedBy: settings.UpdatedBy,
@@ -60,6 +63,7 @@ public static class GitHostEndpoints
     private static async Task<IResult> PutAsync(
         GitHostSettingsRequest request,
         IGitHostSettingsRepository repository,
+        IOptions<WorkspaceOptions> workspaceOptions,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -84,7 +88,6 @@ public static class GitHostEndpoints
                 Mode: request.Mode,
                 BaseUrl: request.BaseUrl,
                 Token: tokenUpdate,
-                WorkingDirectoryRoot: request.WorkingDirectoryRoot,
                 WorkingDirectoryMaxAgeDays: request.WorkingDirectoryMaxAgeDays,
                 UpdatedBy: currentUser.Id), cancellationToken);
         }
@@ -101,7 +104,7 @@ public static class GitHostEndpoints
             Mode: updated!.Mode,
             BaseUrl: updated.BaseUrl,
             HasToken: updated.HasToken,
-            WorkingDirectoryRoot: updated.WorkingDirectoryRoot,
+            WorkingDirectoryRoot: workspaceOptions.Value.WorkingDirectoryRoot,
             WorkingDirectoryMaxAgeDays: updated.WorkingDirectoryMaxAgeDays,
             LastVerifiedAtUtc: updated.LastVerifiedAtUtc,
             UpdatedBy: updated.UpdatedBy,
@@ -177,61 +180,6 @@ public static class GitHostEndpoints
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(request.WorkingDirectoryRoot))
-        {
-            var path = request.WorkingDirectoryRoot.Trim();
-            if (!Path.IsPathFullyQualified(path))
-            {
-                errors["workingDirectoryRoot"] = ["Working directory root must be an absolute path."];
-            }
-            else if (TryEnsureDirectoryExists(path) is { } createError)
-            {
-                errors["workingDirectoryRoot"] =
-                    [$"Working directory root could not be created on the server: {createError}"];
-            }
-            else if (TryProbeWritability(path) is { } probeError)
-            {
-                errors["workingDirectoryRoot"] =
-                    [$"Working directory root is not writable by the CodeFlow service: {probeError}"];
-            }
-        }
-
         return errors;
-    }
-
-    // Creates the directory tree if it does not already exist. The user generally does not have
-    // shell access to the server, so requiring them to mkdir before saving is friction we don't
-    // need — surface a clear error only if creation actually fails.
-    private static string? TryEnsureDirectoryExists(string directory)
-    {
-        try
-        {
-            Directory.CreateDirectory(directory);
-            return null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return ex.Message;
-        }
-    }
-
-    // Attempts to create + delete a temp file in the directory. Returns null on success, or the
-    // failure message on any IO/permission error. Probing is the most reliable way to catch the
-    // common "operator pointed at a path the service account can't write" mistake before it
-    // surfaces as a 500 from `TracesEndpoints.CreateTraceAsync`.
-    private static string? TryProbeWritability(string directory)
-    {
-        var probePath = Path.Combine(directory, $".codeflow-write-probe-{Guid.NewGuid():N}");
-        try
-        {
-            File.WriteAllText(probePath, string.Empty);
-            File.Delete(probePath);
-            return null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            try { File.Delete(probePath); } catch { /* best-effort cleanup */ }
-            return ex.Message;
-        }
     }
 }
