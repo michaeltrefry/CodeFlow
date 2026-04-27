@@ -65,6 +65,34 @@ export interface WorkflowPackageImportPreview {
   canApply: boolean;
 }
 
+/** V8 manifest — flat enumeration of every (key, version) the package includes.
+ *  E5 surfaces this in the export-preview dialog before the author downloads. */
+export interface WorkflowPackageManifest {
+  workflows: WorkflowPackageReference[];
+  agents: WorkflowPackageReference[];
+  roles: string[];
+  skills: string[];
+  mcpServers: string[];
+}
+
+export interface WorkflowPackageMetadata {
+  exportedFrom: string;
+  exportedAtUtc: string;
+}
+
+export interface WorkflowPackageDocument {
+  schemaVersion: string;
+  metadata: WorkflowPackageMetadata;
+  entryPoint: WorkflowPackageReference;
+  workflows: { key: string; version: number; name: string }[];
+  agents: { key: string; version: number; kind?: string }[];
+  agentRoleAssignments: { agentKey: string; roleKeys: string[] }[];
+  roles: { key: string; displayName: string }[];
+  skills: { name: string }[];
+  mcpServers: { key: string; displayName: string }[];
+  manifest?: WorkflowPackageManifest;
+}
+
 export interface WorkflowPackageImportApplyResult {
   entryPoint: WorkflowPackageReference;
   items: WorkflowPackageImportItem[];
@@ -157,6 +185,16 @@ export class WorkflowsApi {
       observe: 'response',
       responseType: 'blob'
     });
+  }
+
+  /** E5 / R5.5: fetch the parsed package JSON for the export-preview dialog. Same endpoint
+   *  as downloadPackage; the response body is the entire serialized package including the
+   *  V8 manifest. We surface counts and the manifest tree before letting the author save. */
+  getPackage(key: string, version: number): Observable<HttpResponse<WorkflowPackageDocument>> {
+    return this.http.get<WorkflowPackageDocument>(
+      `/api/workflows/${encodeURIComponent(key)}/${version}/package`,
+      { observe: 'response' }
+    );
   }
 
   previewPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportPreview> {
