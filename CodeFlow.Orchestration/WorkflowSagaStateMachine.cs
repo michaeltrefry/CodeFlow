@@ -1607,6 +1607,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                     currentUpstreamRef,
                     contextInputs,
                     workflowInputs,
+                    scriptHost,
                     templateRenderer,
                     artifactStore);
 
@@ -1619,6 +1620,11 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 currentUpstreamRef = transformOutcome.OutputRef!;
                 renderedRefSinceUpstream = transformOutcome.OutputRef;
                 inputLoaded = false;
+
+                // Transform's input/output scripts may have written context/workflow updates to
+                // saga; refresh locals so any subsequent Logic node in the chain sees them.
+                contextInputs = DeserializeContextInputs(saga.InputsJson);
+                workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
 
                 var transformEdge = workflow.FindNext(currentNode.Id, TransformOutputPort);
                 if (transformEdge is null)
@@ -1819,6 +1825,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         Uri inputRef,
         IReadOnlyDictionary<string, JsonElement> contextInputs,
         IReadOnlyDictionary<string, JsonElement> workflowInputs,
+        LogicNodeScriptHost scriptHost,
         Runtime.IScribanTemplateRenderer templateRenderer,
         IArtifactStore artifactStore)
     {
@@ -1828,10 +1835,43 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 $"Transform node {transformNode.Id} has no template (workflow {workflow.Key} v{workflow.Version}).");
         }
 
+        var effectiveInputRef = inputRef;
+        var jsonMode = string.Equals(transformNode.OutputType, "json", StringComparison.Ordinal);
+
+        // 1. inputScript: shape the structured input the template will see. Reuses the
+        //    saga-wide setInput helper so the same setContext/setWorkflow/setInput semantics
+        //    apply byte-for-byte as on Agent/HITL/Subflow nodes.
+        if (!string.IsNullOrWhiteSpace(transformNode.InputScript))
+        {
+            var inputOutcome = await TryEvaluateInputScriptAsync(
+                context,
+                saga,
+                workflow,
+                transformNode,
+                effectiveInputRef,
+                scriptHost,
+                artifactStore);
+
+            if (inputOutcome.Failed)
+            {
+                return TransformChainOutcome.Fail(
+                    $"Transform node {transformNode.Id} input script failed: {inputOutcome.FailureReason}");
+            }
+
+            effectiveInputRef = inputOutcome.InputRef!;
+
+            // setContext/setWorkflow updates landed in saga.InputsJson / saga.WorkflowInputsJson
+            // via ApplyScriptUpdates. The chain-resolver's locals are stale; refresh them so the
+            // template scope below reflects what the input script just set.
+            contextInputs = DeserializeContextInputs(saga.InputsJson);
+            workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+        }
+
+        // 2. Build template scope from the (possibly script-mutated) input + vars.
         JsonElement inputJson;
         try
         {
-            inputJson = await ReadArtifactAsJsonAsync(artifactStore, inputRef, context.CancellationToken);
+            inputJson = await ReadArtifactAsJsonAsync(artifactStore, effectiveInputRef, context.CancellationToken);
         }
         catch (Exception ex)
         {
@@ -1841,6 +1881,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
 
         var scope = TransformNodeContext.Build(inputJson, contextInputs, workflowInputs);
 
+        // 3. Render template.
         string rendered;
         try
         {
@@ -1852,15 +1893,149 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                 $"Transform node {transformNode.Id} template render failed: {ex.Message}");
         }
 
+        // 4. JSON validation (TN-2).
+        if (jsonMode)
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(rendered);
+            }
+            catch (JsonException ex)
+            {
+                return TransformChainOutcome.Fail(
+                    $"Transform node {transformNode.Id} produced invalid JSON (outputType=json): {ex.Message}");
+            }
+        }
+
+        // 5. outputScript: can mutate context/workflow vars and override the artifact text via
+        //    setOutput(). In JSON mode the override is re-validated.
+        var finalText = rendered;
+        if (!string.IsNullOrWhiteSpace(transformNode.OutputScript))
+        {
+            var outputScriptOutcome = await ApplyTransformOutputScriptAsync(
+                context,
+                saga,
+                workflow,
+                transformNode,
+                rendered,
+                jsonMode,
+                contextInputs,
+                workflowInputs,
+                scriptHost);
+
+            if (outputScriptOutcome.Failure is { } failure)
+            {
+                return TransformChainOutcome.Fail(failure);
+            }
+
+            finalText = outputScriptOutcome.FinalText!;
+        }
+
+        // 6. Persist artifact.
         var outputRef = await WriteOverrideArtifactAsync(
             artifactStore,
             saga,
             agentKey: null,
-            rendered,
+            finalText,
             context.CancellationToken,
             fileNameSuffix: "transform-output");
 
         return TransformChainOutcome.Ok(outputRef);
+    }
+
+    private readonly record struct TransformOutputScriptOutcome(string? FinalText, string? Failure)
+    {
+        public static TransformOutputScriptOutcome Ok(string finalText) => new(finalText, null);
+        public static TransformOutputScriptOutcome Fail(string reason) => new(null, reason);
+    }
+
+    /// <summary>
+    /// Run a Transform node's <c>outputScript</c> after the template has rendered (and after JSON
+    /// validation when <c>outputType=="json"</c>). The script sees:
+    /// <list type="bullet">
+    ///   <item><description><c>output</c> — the rendered text. In JSON mode it's the parsed
+    ///     object/array so authors can do <c>output.foo</c>; in string mode it's a JS string.</description></item>
+    ///   <item><description><c>context</c>, <c>workflow</c> — same frozen snapshots every other
+    ///     script sees.</description></item>
+    /// </list>
+    /// Allowed mutations: <c>setContext</c>, <c>setWorkflow</c>, <c>setOutput(text)</c>. The
+    /// <c>setOutput</c> override replaces the artifact text. In JSON mode the override is
+    /// re-validated; an invalid JSON override surfaces as a chain failure.
+    /// </summary>
+    private static async Task<TransformOutputScriptOutcome> ApplyTransformOutputScriptAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode transformNode,
+        string rendered,
+        bool jsonMode,
+        IReadOnlyDictionary<string, JsonElement> contextInputs,
+        IReadOnlyDictionary<string, JsonElement> workflowInputs,
+        LogicNodeScriptHost scriptHost)
+    {
+        JsonElement scriptInput;
+        if (jsonMode)
+        {
+            // Already validated upstream; this Parse must succeed.
+            using var doc = JsonDocument.Parse(rendered);
+            scriptInput = doc.RootElement.Clone();
+        }
+        else
+        {
+            scriptInput = JsonSerializer.SerializeToElement(rendered);
+        }
+
+        var eval = scriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: transformNode.Id,
+            script: transformNode.OutputScript!,
+            declaredPorts: transformNode.OutputPorts,
+            input: scriptInput,
+            context: contextInputs,
+            cancellationToken: context.CancellationToken,
+            workflow: workflowInputs,
+            reviewRound: saga.ParentReviewRound,
+            reviewMaxRounds: saga.ParentReviewMaxRounds,
+            allowOutputOverride: true,
+            inputVariableName: "output",
+            requireSetNodePath: false);
+
+        saga.AppendLogicEvaluation(new LogicEvaluationRecord(
+            NodeId: transformNode.Id,
+            OutputPortName: eval.OutputPortName,
+            RoundId: saga.CurrentRoundId,
+            Duration: eval.Duration,
+            Logs: eval.LogEntries,
+            FailureKind: eval.Failure?.ToString(),
+            FailureMessage: eval.FailureMessage,
+            RecordedAtUtc: DateTime.UtcNow));
+
+        if (eval.Failure is not null)
+        {
+            return TransformOutputScriptOutcome.Fail(
+                $"Transform node {transformNode.Id} output script failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
+
+        var finalText = string.IsNullOrEmpty(eval.OutputOverride) ? rendered : eval.OutputOverride!;
+
+        if (jsonMode && eval.OutputOverride is not null)
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(finalText);
+            }
+            catch (JsonException ex)
+            {
+                return TransformOutputScriptOutcome.Fail(
+                    $"Transform node {transformNode.Id} output script setOutput value is not valid JSON (outputType=json): {ex.Message}");
+            }
+        }
+
+        await Task.CompletedTask; // helper is async-ready for future I/O paths; current body is sync.
+        return TransformOutputScriptOutcome.Ok(finalText);
     }
 
     /// <summary>
