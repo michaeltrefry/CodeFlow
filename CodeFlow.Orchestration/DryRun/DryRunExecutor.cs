@@ -10,18 +10,17 @@ namespace CodeFlow.Orchestration.DryRun;
 /// the saga checkpointing layer. Designed for the T1 dry-run UX — the author clicks "run" and
 /// gets a sub-second deterministic trace of which nodes would fire and with what artifacts.
 ///
-/// Scope notes (v1):
+/// Scope notes (v2):
 /// <list type="bullet">
 ///   <item><description>Supports node kinds Start, Agent, Logic, Hitl, Subflow, ReviewLoop.</description></item>
 ///   <item><description>Reuses <see cref="LogicNodeScriptHost"/> for Logic-node script execution
-///     so script semantics match the saga byte-for-byte.</description></item>
-///   <item><description>Honors the new built-ins: P4 (mirror output to workflow var) and P5
-///     (output-port replacements). RejectionHistory accumulation is NOT yet honored — fixtures
-///     authored against the new ReviewLoop pair scaffold should still produce a meaningful trace
-///     since rejection-history reads are graceful when the variable is missing.</description></item>
-///   <item><description>Does NOT execute author-attached input/output scripts on agent nodes,
-///     decision-output templates, or retry-context handoffs. These are documented as v1
-///     limitations on the trace itself (a Diagnostic event is emitted).</description></item>
+///     AND for author-attached input scripts (Start/Agent/Hitl) and output scripts (Agent), so
+///     script semantics match the saga byte-for-byte.</description></item>
+///   <item><description>Honors the built-ins: P3 (rejection-history accumulation in ReviewLoop
+///     bodies), P4 (mirror output to workflow var), and P5 (output-port replacements).</description></item>
+///   <item><description>Does NOT yet apply decision-output templates, retry-context handoffs for
+///     Failed-port self-loops, or render HITL form templates at suspension. These are documented
+///     v2 limitations; a Diagnostic event surfaces the gap on the trace.</description></item>
 ///   <item><description>Does NOT render agent prompt templates; the trace records the input
 ///     artifact a node receives, which is what authors typically want to inspect anyway.</description></item>
 /// </list>
@@ -143,6 +142,15 @@ public sealed class DryRunExecutor
             {
                 case WorkflowNodeKind.Start:
                 {
+                    var startInputOutcome = RunInputScriptIfPresent(
+                        workflow, currentNode, currentInput, contextVars, workflowVars,
+                        reviewRound, maxRounds, depth, state, cancellationToken);
+                    if (startInputOutcome.FailureReason is not null)
+                    {
+                        return DryRunWalkResult.Failed(startInputOutcome.FailureReason, contextVars, workflowVars);
+                    }
+                    currentInput = startInputOutcome.EffectiveInput;
+
                     // Start nodes are pass-through: route on their first declared output port,
                     // or "Completed" by default if the author left it blank.
                     var startPort = currentNode.OutputPorts.FirstOrDefault() ?? "Completed";
@@ -167,6 +175,15 @@ public sealed class DryRunExecutor
                             $"Agent node {currentNode.Id} has no AgentKey.",
                             contextVars, workflowVars);
                     }
+
+                    var agentInputOutcome = RunInputScriptIfPresent(
+                        workflow, currentNode, currentInput, contextVars, workflowVars,
+                        reviewRound, maxRounds, depth, state, cancellationToken);
+                    if (agentInputOutcome.FailureReason is not null)
+                    {
+                        return DryRunWalkResult.Failed(agentInputOutcome.FailureReason, contextVars, workflowVars);
+                    }
+                    currentInput = agentInputOutcome.EffectiveInput;
 
                     if (!state.TryDequeueMock(currentNode.AgentKey!, out var mock))
                     {
@@ -224,8 +241,27 @@ public sealed class DryRunExecutor
                     lastEffectivePort = effectivePort;
                     var effectiveOutput = output;
 
+                    // Author-attached output script (Agent only): mirrors saga semantics — the
+                    // script sees the agent's `output` (text + decision metadata) and may call
+                    // setWorkflow / setContext / setNodePath / setOutput. setNodePath wins over
+                    // mock.Decision; setOutput wins over the artifact when set.
+                    if (!string.IsNullOrWhiteSpace(currentNode.OutputScript))
+                    {
+                        var outputScriptOutcome = RunAgentOutputScript(
+                            workflow, currentNode, output, mock.Decision, mock.Payload,
+                            contextVars, workflowVars, reviewRound, maxRounds, depth, state, cancellationToken);
+                        if (outputScriptOutcome.FailureReason is not null)
+                        {
+                            return DryRunWalkResult.Failed(outputScriptOutcome.FailureReason, contextVars, workflowVars);
+                        }
+                        effectivePort = outputScriptOutcome.Port;
+                        effectiveOutput = outputScriptOutcome.Output;
+                        lastEffectivePort = effectivePort;
+                    }
+
                     // P5: if the port has a configured replacement, swap the artifact for the
-                    // named workflow variable's contents.
+                    // named workflow variable's contents. Runs AFTER the output script so the
+                    // script-managed variable updates are visible.
                     if (currentNode.OutputPortReplacements is not null
                         && currentNode.OutputPortReplacements.TryGetValue(effectivePort, out var replacementVarName)
                         && workflowVars.TryGetValue(replacementVarName, out var replacementValue))
@@ -347,6 +383,15 @@ public sealed class DryRunExecutor
 
                 case WorkflowNodeKind.Hitl:
                 {
+                    var hitlInputOutcome = RunInputScriptIfPresent(
+                        workflow, currentNode, currentInput, contextVars, workflowVars,
+                        reviewRound, maxRounds, depth, state, cancellationToken);
+                    if (hitlInputOutcome.FailureReason is not null)
+                    {
+                        return DryRunWalkResult.Failed(hitlInputOutcome.FailureReason, contextVars, workflowVars);
+                    }
+                    currentInput = hitlInputOutcome.EffectiveInput;
+
                     state.RecordEvent(new DryRunEvent(
                         Ordinal: state.NextOrdinal(),
                         Kind: DryRunEventKind.HitlSuspended,
@@ -604,6 +649,43 @@ public sealed class DryRunExecutor
 
             var port = roundResult.TerminalPort ?? "Completed";
 
+            // P3: when the round terminated on the configured loopDecision port AND the parent
+            // ReviewLoop has rejection-history enabled, append this round's artifact to the
+            // framework-managed __loop.rejectionHistory accumulator before deciding iterate vs.
+            // exhaust. Mirrors the saga's AccumulateRejectionHistoryAsync ordering — both the
+            // round-that-iterates and the final exhausted round contribute to the history.
+            if (string.Equals(port, loopDecision, StringComparison.Ordinal)
+                && loopNode.RejectionHistory is { Enabled: true } rejectionConfig)
+            {
+                roundWorkflow.TryGetValue(RejectionHistoryAccumulator.WorkflowVariableKey, out var existingElement);
+                var existingValue = existingElement.ValueKind == JsonValueKind.String
+                    ? existingElement.GetString()
+                    : existingElement.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+                        ? null
+                        : existingElement.GetRawText();
+                var artifactBody = roundResult.FinalArtifact ?? string.Empty;
+                var updated = RejectionHistoryAccumulator.Append(existingValue, round, artifactBody, rejectionConfig);
+                roundWorkflow[RejectionHistoryAccumulator.WorkflowVariableKey] =
+                    JsonSerializer.SerializeToElement(updated);
+                state.RecordEvent(new DryRunEvent(
+                    Ordinal: state.NextOrdinal(),
+                    Kind: DryRunEventKind.BuiltinApplied,
+                    NodeId: loopNode.Id,
+                    NodeKind: loopNode.Kind.ToString(),
+                    AgentKey: null,
+                    PortName: port,
+                    Message: $"P3 rejection-history: appended round {round} ({artifactBody.Length} chars; total {updated.Length} chars).",
+                    InputPreview: null,
+                    OutputPreview: null,
+                    ReviewRound: round,
+                    MaxRounds: maxRounds,
+                    SubflowDepth: depth,
+                    SubflowKey: subflow.Key,
+                    SubflowVersion: subflow.Version,
+                    Logs: null,
+                    DecisionPayload: null));
+            }
+
             // If the round terminated on the configured loop port AND we still have rounds, loop.
             if (string.Equals(port, loopDecision, StringComparison.Ordinal))
             {
@@ -735,6 +817,245 @@ public sealed class DryRunExecutor
             return JsonSerializer.SerializeToElement(input);
         }
     }
+
+    /// <summary>
+    /// Saga-parity input-script invocation for Start/Agent/Hitl nodes. Runs the node's
+    /// <c>InputScript</c> if present, applies any setWorkflow / setContext mutations to the
+    /// passed-in dictionaries, and returns the (possibly script-overridden) input artifact.
+    /// </summary>
+    private InputScriptOutcome RunInputScriptIfPresent(
+        Workflow workflow,
+        WorkflowNode node,
+        string? input,
+        Dictionary<string, JsonElement> contextVars,
+        Dictionary<string, JsonElement> workflowVars,
+        int? reviewRound,
+        int? maxRounds,
+        int depth,
+        DryRunState state,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(node.InputScript))
+        {
+            return new InputScriptOutcome(input, null);
+        }
+
+        var inputJson = ParseArtifactAsJsonElement(input);
+        var eval = logicScriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: node.Id,
+            script: node.InputScript!,
+            declaredPorts: node.OutputPorts,
+            input: inputJson,
+            context: contextVars,
+            cancellationToken: cancellationToken,
+            workflow: workflowVars,
+            reviewRound: reviewRound,
+            reviewMaxRounds: maxRounds,
+            allowOutputOverride: false,
+            allowInputOverride: true,
+            requireSetNodePath: false);
+
+        state.RecordEvent(new DryRunEvent(
+            Ordinal: state.NextOrdinal(),
+            Kind: DryRunEventKind.LogicEvaluated,
+            NodeId: node.Id,
+            NodeKind: node.Kind.ToString(),
+            AgentKey: node.AgentKey,
+            PortName: null,
+            Message: eval.Failure is null
+                ? $"Input script ran ({eval.LogEntries.Count} log entr{(eval.LogEntries.Count == 1 ? "y" : "ies")})."
+                : $"Input script failed ({eval.Failure}): {eval.FailureMessage}",
+            InputPreview: Preview(input),
+            OutputPreview: eval.InputOverride is null ? null : Preview(eval.InputOverride),
+            ReviewRound: reviewRound,
+            MaxRounds: maxRounds,
+            SubflowDepth: depth,
+            SubflowKey: null,
+            SubflowVersion: null,
+            Logs: eval.LogEntries,
+            DecisionPayload: null));
+
+        if (eval.Failure is not null)
+        {
+            return new InputScriptOutcome(
+                null,
+                $"Input script for node {node.Id} failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        foreach (var (k, v) in eval.ContextUpdates)
+        {
+            contextVars[k] = v;
+        }
+        foreach (var (k, v) in eval.WorkflowUpdates)
+        {
+            workflowVars[k] = v;
+        }
+
+        var effective = eval.InputOverride ?? input;
+        return new InputScriptOutcome(effective, null);
+    }
+
+    /// <summary>
+    /// Saga-parity output-script invocation for Agent nodes. The script sees the agent's
+    /// message body wrapped as <c>output</c> (with decision metadata injected), can call
+    /// setWorkflow / setContext to mutate the shared bag, setNodePath to override the routing
+    /// port, and setOutput to override the artifact text. Mirrors
+    /// <see cref="WorkflowSagaStateMachine.ResolveSourcePortAsync"/>'s output-script branch.
+    /// </summary>
+    private OutputScriptOutcome RunAgentOutputScript(
+        Workflow workflow,
+        WorkflowNode node,
+        string output,
+        string mockDecision,
+        JsonNode? mockPayload,
+        Dictionary<string, JsonElement> contextVars,
+        Dictionary<string, JsonElement> workflowVars,
+        int? reviewRound,
+        int? maxRounds,
+        int depth,
+        DryRunState state,
+        CancellationToken cancellationToken)
+    {
+        var artifactJson = ParseArtifactAsJsonElement(output);
+        var payloadElement = mockPayload is null
+            ? (JsonElement?)null
+            : JsonSerializer.SerializeToElement(mockPayload);
+        var scriptInput = ComposeAgentScriptInput(artifactJson, mockDecision, payloadElement);
+
+        var eval = logicScriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: node.Id,
+            script: node.OutputScript!,
+            declaredPorts: node.OutputPorts,
+            input: scriptInput,
+            context: contextVars,
+            cancellationToken: cancellationToken,
+            workflow: workflowVars,
+            reviewRound: reviewRound,
+            reviewMaxRounds: maxRounds,
+            allowOutputOverride: true,
+            inputVariableName: "output",
+            requireSetNodePath: false);
+
+        state.RecordEvent(new DryRunEvent(
+            Ordinal: state.NextOrdinal(),
+            Kind: DryRunEventKind.LogicEvaluated,
+            NodeId: node.Id,
+            NodeKind: node.Kind.ToString(),
+            AgentKey: node.AgentKey,
+            PortName: eval.OutputPortName,
+            Message: eval.Failure is null
+                ? $"Output script ran (port='{eval.OutputPortName ?? mockDecision}', override={(eval.OutputOverride is null ? "no" : $"yes, {eval.OutputOverride.Length} chars")})."
+                : $"Output script failed ({eval.Failure}): {eval.FailureMessage}",
+            InputPreview: Preview(output),
+            OutputPreview: Preview(eval.OutputOverride),
+            ReviewRound: reviewRound,
+            MaxRounds: maxRounds,
+            SubflowDepth: depth,
+            SubflowKey: null,
+            SubflowVersion: null,
+            Logs: eval.LogEntries,
+            DecisionPayload: null));
+
+        if (eval.Failure is not null)
+        {
+            return new OutputScriptOutcome(
+                mockDecision,
+                output,
+                $"Output script for node {node.Id} failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        foreach (var (k, v) in eval.ContextUpdates)
+        {
+            contextVars[k] = v;
+        }
+        foreach (var (k, v) in eval.WorkflowUpdates)
+        {
+            workflowVars[k] = v;
+        }
+
+        var resolvedPort = string.IsNullOrWhiteSpace(eval.OutputPortName) ? mockDecision : eval.OutputPortName!;
+        var resolvedOutput = eval.OutputOverride ?? output;
+        return new OutputScriptOutcome(resolvedPort, resolvedOutput, null);
+    }
+
+    /// <summary>
+    /// Wrap an artifact text as a <see cref="JsonElement"/> matching saga semantics: parse as
+    /// JSON if valid, else wrap as <c>{ "text": "…" }</c>. Plain-text artifacts thus expose
+    /// <c>input.text</c> / <c>output.text</c> to scripts byte-for-byte the way the saga does.
+    /// </summary>
+    private static JsonElement ParseArtifactAsJsonElement(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return JsonSerializer.SerializeToElement(new { text });
+        }
+    }
+
+    /// <summary>
+    /// Mirror of <c>WorkflowSagaStateMachine.ComposeAgentScriptInput</c>: builds the
+    /// <c>output</c> object the agent output script sees, injecting decision/decisionKind/
+    /// outputPortName/decisionPayload alongside the artifact's own fields.
+    /// </summary>
+    private static JsonElement ComposeAgentScriptInput(
+        JsonElement artifactJson,
+        string decisionPortName,
+        JsonElement? decisionPayload)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            if (artifactJson.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in artifactJson.EnumerateObject())
+                {
+                    if (property.Name is "decision" or "decisionKind" or "outputPortName" or "decisionPayload")
+                    {
+                        continue;
+                    }
+                    property.WriteTo(writer);
+                }
+            }
+            else
+            {
+                writer.WritePropertyName("value");
+                artifactJson.WriteTo(writer);
+            }
+
+            writer.WriteString("decision", decisionPortName);
+            writer.WriteString("decisionKind", decisionPortName);
+            writer.WriteString("outputPortName", decisionPortName);
+            writer.WritePropertyName("decisionPayload");
+            if (decisionPayload is { } payload)
+            {
+                payload.WriteTo(writer);
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
+            writer.WriteEndObject();
+        }
+        return JsonDocument.Parse(buffer.ToArray()).RootElement.Clone();
+    }
+
+    private readonly record struct InputScriptOutcome(string? EffectiveInput, string? FailureReason);
+
+    private readonly record struct OutputScriptOutcome(string Port, string Output, string? FailureReason);
 
     private static string? Preview(string? text)
     {

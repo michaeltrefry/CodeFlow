@@ -213,6 +213,248 @@ public sealed class DryRunExecutorTests
         result.FailureReason.Should().Contain("reviewer");
     }
 
+    /// <summary>
+    /// V2 input scripts run on Start nodes — they can seed workflow variables and override the
+    /// input artifact via setInput. Mirrors the saga's TryEvaluateInputScriptAsync.
+    /// </summary>
+    [Fact]
+    public async Task InputScript_OnStart_SeedsWorkflowVarsAndOverridesInput()
+    {
+        var startId = Guid.Parse("11ee1111-1111-1111-1111-1111111111ee");
+        var agentId = Guid.Parse("22ee2222-2222-2222-2222-2222222222ee");
+        var workflow = new Workflow(
+            Key: "input-script-start",
+            Version: 1,
+            Name: "Input script on Start",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0,
+                    InputScript: "setWorkflow('seeded', 'yes'); setInput('overridden');"),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "echo", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(workflow);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["echo"] = new[] { new DryRunMockResponse("Done", "agent saw the input", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("input-script-start", null, "original input", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.WorkflowVariables.Should().ContainKey("seeded");
+        result.WorkflowVariables["seeded"].GetString().Should().Be("yes");
+        // The script's setInput overrides the artifact passed downstream — the agent receives
+        // 'overridden' rather than 'original input'.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == agentId && e.InputPreview == "overridden");
+    }
+
+    /// <summary>
+    /// V2 input scripts run on Agent nodes BEFORE the mock is dequeued. Variables seeded by the
+    /// input script are visible to anything downstream — including the same node's output script.
+    /// </summary>
+    [Fact]
+    public async Task InputScript_OnAgent_RunsBeforeMockConsumed()
+    {
+        var startId = Guid.Parse("33ee3333-3333-3333-3333-3333333333ee");
+        var agentId = Guid.Parse("44ee4444-4444-4444-4444-4444444444ee");
+        var workflow = new Workflow(
+            Key: "input-script-agent",
+            Version: 1,
+            Name: "Input script on Agent",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 100, LayoutY: 0,
+                    InputScript: "setWorkflow('preMock', 'set-by-input-script');"),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(workflow);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["agent"] = new[] { new DryRunMockResponse("Done", "agent done", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("input-script-agent", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.WorkflowVariables.Should().ContainKey("preMock");
+        // The input-script LogicEvaluated event must precede the AgentMockApplied event for the
+        // same node.
+        var inputScriptOrdinal = result.Events
+            .First(e => e.Kind == DryRunEventKind.LogicEvaluated && e.NodeId == agentId)
+            .Ordinal;
+        var mockAppliedOrdinal = result.Events
+            .First(e => e.Kind == DryRunEventKind.AgentMockApplied && e.NodeId == agentId)
+            .Ordinal;
+        inputScriptOrdinal.Should().BeLessThan(mockAppliedOrdinal);
+    }
+
+    /// <summary>
+    /// V2 output scripts on Agent nodes can override the routing port via setNodePath and the
+    /// artifact text via setOutput, with setWorkflow side-effects applied. Mirrors the saga's
+    /// ResolveSourcePortAsync output-script branch.
+    /// </summary>
+    [Fact]
+    public async Task OutputScript_OnAgent_OverridesPortAndArtifact()
+    {
+        var startId = Guid.Parse("55ee5555-5555-5555-5555-5555555555ee");
+        var agentId = Guid.Parse("66ee6666-6666-6666-6666-6666666666ee");
+        var leftId = Guid.Parse("77ee7777-7777-7777-7777-7777777777ee");
+        var rightId = Guid.Parse("88ee8888-8888-8888-8888-8888888888ee");
+
+        const string outputScript = """
+            setWorkflow('seenDecision', output.decision);
+            // Force routing to Right regardless of the agent's decision.
+            setNodePath('Right');
+            setOutput('artifact-from-script');
+            """;
+
+        var workflow = new Workflow(
+            Key: "output-script-agent",
+            Version: 1,
+            Name: "Output script on Agent",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: startId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: agentId, Kind: WorkflowNodeKind.Agent, AgentKey: "router", AgentVersion: 1,
+                    OutputScript: outputScript, OutputPorts: new[] { "Left", "Right" }, LayoutX: 100, LayoutY: 0),
+                new WorkflowNode(
+                    Id: leftId, Kind: WorkflowNodeKind.Agent, AgentKey: "left-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "LeftDone" }, LayoutX: 200, LayoutY: 0),
+                new WorkflowNode(
+                    Id: rightId, Kind: WorkflowNodeKind.Agent, AgentKey: "right-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "RightDone" }, LayoutX: 200, LayoutY: 100),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Continue", agentId, "in", false, 0),
+                new WorkflowEdge(agentId, "Left", leftId, "in", false, 0),
+                new WorkflowEdge(agentId, "Right", rightId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(workflow);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            // Agent says "Left" but the script overrides to "Right".
+            ["router"] = new[] { new DryRunMockResponse("Left", "agent body", null) },
+            ["right-agent"] = new[] { new DryRunMockResponse("RightDone", "right received it", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("output-script-agent", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.TerminalPort.Should().Be("RightDone");
+        result.WorkflowVariables.Should().ContainKey("seenDecision");
+        result.WorkflowVariables["seenDecision"].GetString().Should().Be("Left",
+            because: "the script reads output.decision (the mock's port) before overriding.");
+        // The right-agent must have received the script-overridden artifact, not the agent's
+        // original 'agent body'.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == rightId && e.InputPreview == "artifact-from-script");
+    }
+
+    /// <summary>
+    /// V2 P3 rejection-history accumulation: when the parent ReviewLoop has rejectionHistory
+    /// enabled, each loopDecision-port round writes to the framework-managed
+    /// __loop.rejectionHistory variable in the workflow bag.
+    /// </summary>
+    [Fact]
+    public async Task ReviewLoop_RejectionHistory_AccumulatesAcrossRounds()
+    {
+        var (outer, inner) = BuildReviewLoopPair(maxRounds: 4);
+        var loopNode = outer.Nodes.Single(n => n.Id == ReviewLoopId);
+        var loopWithHistory = loopNode with
+        {
+            RejectionHistory = new RejectionHistoryConfig(
+                Enabled: true,
+                MaxBytes: 32_768,
+                Format: RejectionHistoryFormat.Markdown),
+        };
+        var outerWithHistory = outer with
+        {
+            Nodes = outer.Nodes.Select(n => n.Id == ReviewLoopId ? loopWithHistory : n).ToArray(),
+        };
+
+        var repo = new MultiWorkflowFakeRepository(outerWithHistory, inner);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["producer"] = new[]
+            {
+                new DryRunMockResponse("Completed", "draft v1", null),
+                new DryRunMockResponse("Completed", "draft v2", null),
+                new DryRunMockResponse("Completed", "draft v3", null),
+            },
+            ["reviewer"] = new[]
+            {
+                new DryRunMockResponse("Rejected", "round 1 findings", null),
+                new DryRunMockResponse("Rejected", "round 2 findings", null),
+                new DryRunMockResponse("Approved", "looks good now", null),
+            },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("outer", null, "PRD", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.TerminalPort.Should().Be("Approved");
+
+        result.WorkflowVariables.Should().ContainKey(RejectionHistoryAccumulator.WorkflowVariableKey);
+        var historyText = result.WorkflowVariables[RejectionHistoryAccumulator.WorkflowVariableKey].GetString();
+        historyText.Should().Contain("## Round 1\nround 1 findings");
+        historyText.Should().Contain("## Round 2\nround 2 findings");
+        historyText.Should().NotContain("looks good now",
+            because: "the Approved round does not match loopDecision='Rejected' so it is not appended.");
+
+        result.Events.Where(e => e.Kind == DryRunEventKind.BuiltinApplied
+                && (e.Message?.StartsWith("P3 rejection-history") ?? false))
+            .Should().HaveCount(2);
+    }
+
     // ---------- workflow builders ----------
 
     private static (Workflow Outer, Workflow Inner) BuildReviewLoopPair(int maxRounds)
