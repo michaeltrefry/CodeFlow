@@ -2,7 +2,14 @@ import { Routes } from '@angular/router';
 import { authenticatedGuard } from './auth/authenticated.guard';
 
 export const routes: Routes = [
-  { path: '', pathMatch: 'full', redirectTo: '/traces' },
+  // HAA-6: homepage replaces the old "land on /traces" default. Traces stays first-class via
+  // its own route + nav entry below.
+  {
+    path: '',
+    pathMatch: 'full',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/home/home.component').then(m => m.HomeComponent),
+  },
   {
     path: 'agents',
     canActivate: [authenticatedGuard],
@@ -137,5 +144,5 @@ export const routes: Routes = [
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/assistant-preview/assistant-preview.component').then(m => m.AssistantPreviewComponent)
   },
-  { path: '**', redirectTo: '/traces' }
+  { path: '**', redirectTo: '/' }
 ];
