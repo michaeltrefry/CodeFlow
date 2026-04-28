@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace CodeFlow.Runtime.Tests;
@@ -1207,6 +1208,71 @@ public sealed class InvocationLoopTests
         capturedRequests.Select(r => r.InvocationId).Should().Equal(observer.StartedInvocationIds);
     }
 
+    [Fact]
+    public async Task RunAsync_PropagatesProviderModelAndRawUsageToObserverPerRound()
+    {
+        // Slice 2 of the Token Usage Tracking epic. The observer surface must carry
+        // (provider, model, rawUsage) on every OnModelCallCompletedAsync call so the
+        // orchestration-side capture observer has every field it needs to persist a
+        // TokenUsageRecord without re-querying anything else.
+        using var firstUsageDoc = JsonDocument.Parse("""{"input_tokens":11,"output_tokens":3}""");
+        using var secondUsageDoc = JsonDocument.Parse("""{"input_tokens":5,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1}}""");
+        var firstRawUsage = firstUsageDoc.RootElement.Clone();
+        var secondRawUsage = secondUsageDoc.RootElement.Clone();
+
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "round-one content",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_set_ctx", InvocationLoop.SetContextToolName,
+                            new JsonObject { ["key"] = "k", ["value"] = JsonValue.Create(1) })
+                    ]),
+                InvocationStopReason.ToolCalls,
+                new TokenUsage(11, 3, 14),
+                firstRawUsage),
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "round-two content",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_submit", InvocationLoop.SubmitToolName,
+                            new JsonObject { ["decision"] = "Completed" })
+                    ]),
+                InvocationStopReason.ToolCalls,
+                new TokenUsage(5, 2, 7),
+                secondRawUsage)
+        ]);
+        var observer = new RecordingInvocationObserver();
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        await loop.RunAsync(
+            new InvocationLoopRequest(
+                [new ChatMessage(ChatMessageRole.User, "Run.")],
+                "gpt-5",
+                DeclaredOutputs: [new AgentOutputDeclaration("Completed", null, null)],
+                Provider: "openai"),
+            observer);
+
+        observer.CompletedProviders.Should().Equal("openai", "openai");
+        observer.CompletedModels.Should().Equal("gpt-5", "gpt-5");
+
+        // Each round's raw usage must surface to the observer with the provider's payload intact.
+        // The capture observer in CodeFlow.Orchestration relies on this round-trip being
+        // verbatim — flattening or summing across rounds would lose per-call attribution.
+        observer.CompletedRawUsages.Should().HaveCount(2);
+        observer.CompletedRawUsages[0].Should().NotBeNull();
+        observer.CompletedRawUsages[0]!.Value.GetProperty("input_tokens").GetInt32().Should().Be(11);
+        observer.CompletedRawUsages[0]!.Value.GetProperty("output_tokens").GetInt32().Should().Be(3);
+        observer.CompletedRawUsages[1].Should().NotBeNull();
+        observer.CompletedRawUsages[1]!.Value.GetProperty("output_tokens_details")
+            .GetProperty("reasoning_tokens").GetInt32().Should().Be(1);
+    }
+
     private sealed class RecordingInvocationObserver : IInvocationObserver
     {
         public List<Guid> StartedInvocationIds { get; } = new();
@@ -1218,15 +1284,25 @@ public sealed class InvocationLoopTests
             return Task.CompletedTask;
         }
 
+        public List<string> CompletedProviders { get; } = new();
+        public List<string> CompletedModels { get; } = new();
+        public List<JsonElement?> CompletedRawUsages { get; } = new();
+
         public Task OnModelCallCompletedAsync(
             Guid invocationId,
             int roundNumber,
             ChatMessage responseMessage,
             TokenUsage? callTokenUsage,
             TokenUsage? cumulativeTokenUsage,
+            string provider,
+            string model,
+            JsonElement? rawUsage,
             CancellationToken cancellationToken)
         {
             CompletedInvocationIds.Add(invocationId);
+            CompletedProviders.Add(provider);
+            CompletedModels.Add(model);
+            CompletedRawUsages.Add(rawUsage);
             return Task.CompletedTask;
         }
 

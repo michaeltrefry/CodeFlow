@@ -1,4 +1,5 @@
 using CodeFlow.Contracts;
+using CodeFlow.Orchestration.TokenTracking;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Observability;
@@ -41,6 +42,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private readonly IRoleResolutionService roleResolution;
     private readonly CodeFlowDbContext dbContext;
     private readonly IPromptPartialRepository promptPartialRepository;
+    private readonly ITokenUsageRecordRepository? tokenUsageRecords;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
@@ -48,7 +50,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         IAgentInvoker agentInvoker,
         IRoleResolutionService roleResolution,
         CodeFlowDbContext dbContext,
-        IPromptPartialRepository promptPartialRepository)
+        IPromptPartialRepository promptPartialRepository,
+        ITokenUsageRecordRepository? tokenUsageRecords = null)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
@@ -56,6 +59,9 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         this.roleResolution = roleResolution ?? throw new ArgumentNullException(nameof(roleResolution));
         this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         this.promptPartialRepository = promptPartialRepository ?? throw new ArgumentNullException(nameof(promptPartialRepository));
+        // Optional so existing test fixtures that construct the consumer directly without
+        // building a full DI graph keep working. Production wires it through HostExtensions.
+        this.tokenUsageRecords = tokenUsageRecords;
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -142,10 +148,16 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
 
+            // Pre-resolve scope chain ONCE for this consumer call so the per-round capture
+            // observer doesn't re-query the saga table on every LLM round-trip. Subflow depth is
+            // capped at 3 → at most 3 lookups for nested traces, one for top-level.
+            var captureObserver = await BuildTokenUsageCaptureObserverAsync(message, context.CancellationToken);
+
             var invocationResult = await agentInvoker.InvokeAsync(
                 invocationConfig,
                 input,
                 resolvedTools,
+                captureObserver,
                 context.CancellationToken,
                 BuildToolExecutionContext(message));
 
@@ -182,6 +194,23 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 $"{message.AgentKey}-error.txt",
                 DateTimeOffset.UtcNow - startedAt);
         }
+    }
+
+    private async Task<IInvocationObserver?> BuildTokenUsageCaptureObserverAsync(
+        AgentInvokeRequested message,
+        CancellationToken cancellationToken)
+    {
+        if (tokenUsageRecords is null)
+        {
+            return null;
+        }
+
+        var scope = await SagaScopeChainResolver.ResolveAsync(dbContext, message.TraceId, cancellationToken);
+        return new TokenUsageCaptureObserver(
+            tokenUsageRecords,
+            rootTraceId: scope.RootTraceId,
+            nodeId: message.NodeId,
+            scopeChain: scope.ScopeChain);
     }
 
     private async Task<Uri?> TryWriteHttpDiagnosticsArtifactAsync(
