@@ -47,6 +47,10 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<TokenUsageRecordEntity> TokenUsageRecords => Set<TokenUsageRecordEntity>();
 
+    public DbSet<AssistantConversationEntity> AssistantConversations => Set<AssistantConversationEntity>();
+
+    public DbSet<AssistantMessageEntity> AssistantMessages => Set<AssistantMessageEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

@@ -1,3 +1,5 @@
+using Anthropic;
+using CodeFlow.Api.Assistant;
 using CodeFlow.Api.CascadeBump;
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
@@ -6,6 +8,7 @@ using CodeFlow.Api.Validation.Pipeline.Rules;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Api.WorkflowTemplates;
 using CodeFlow.Host;
+using CodeFlow.Persistence;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http.Json;
@@ -85,6 +88,17 @@ public static class ApiServiceCollectionExtensions
         // planner is also resolvable directly for the plan endpoint.
         services.AddScoped<CascadeBumpPlanner>();
         services.AddScoped<CascadeBumpExecutor>();
+
+        // HAA-1: Homepage AI Assistant backend. Anthropic SDK client is a singleton with no
+        // baked-in key — per-call WithOptions() override pulls the live key from
+        // ILlmProviderSettingsRepository so admin rotations take effect immediately. OpenAI/LMStudio
+        // ChatClient is instantiated per call inside CodeFlowAssistant for the same reason.
+        services.Configure<AssistantOptions>(configuration.GetSection(AssistantOptions.SectionName));
+        services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
+        services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
+        services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
+        services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
+        services.AddScoped<AssistantChatService>();
 
         return services;
     }

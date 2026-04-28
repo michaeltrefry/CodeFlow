@@ -25,6 +25,7 @@ public static class CodeFlowEndpoints
         routes.MapCascadeBumpEndpoints();
         routes.MapWorkflowDataflowEndpoints();
         routes.MapWorkflowFixturesEndpoints();
+        routes.MapAssistantEndpoints();
 
         return routes;
     }
