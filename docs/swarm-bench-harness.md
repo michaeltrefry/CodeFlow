@@ -70,7 +70,7 @@ Two requests in the v1 bench. Both are **synthesis-shaped** — the swarm thesis
 
 ### Runs per variant per request
 
-**N = 3 runs per (variant × request)** = 18 traces total for the P1 bench (V1 + V2 only) and 27 traces for the P2 head-to-head (V1 + V2 + V3). N=3 is enough to observe variance without burning budget; bump to 5 if variance dominates the variant effect.
+**N = 3 runs per (variant × request)** = **12 traces total** for the P1 bench (V1 + V2 × A + B × 3 runs) and **18 traces** for the P2 head-to-head (V1 + V2 + V3 × A + B × 3 runs). N=3 is enough to observe variance without burning budget; bump to 5 if variance dominates the variant effect.
 
 ## Quality rubric
 
