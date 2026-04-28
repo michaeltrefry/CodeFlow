@@ -80,11 +80,13 @@ jobs:
           set -eu
           owner_lc="$(echo "${IMAGE_OWNER}" | tr '[:upper:]' '[:lower:]')"
           short_sha="${GITHUB_SHA:0:7}"
-          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=sha-${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "api_image=${REGISTRY}/${owner_lc}/codeflow-api:sha-${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "worker_image=${REGISTRY}/${owner_lc}/codeflow-worker:sha-${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "ui_image=${REGISTRY}/${owner_lc}/codeflow-ui:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "owner_lc=${owner_lc}"
+            echo "sha_tag=sha-${short_sha}"
+            echo "api_image=${REGISTRY}/${owner_lc}/codeflow-api:sha-${short_sha}"
+            echo "worker_image=${REGISTRY}/${owner_lc}/codeflow-worker:sha-${short_sha}"
+            echo "ui_image=${REGISTRY}/${owner_lc}/codeflow-ui:sha-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
@@ -339,8 +341,13 @@ jobs:
           LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
           LINODE_SSH_PORT: ${{ vars.LINODE_SSH_PORT || secrets.LINODE_SSH_PORT || '22' }}
           DEPLOY_DIR: ${{ vars.CODEFLOW_DEPLOY_DIR || '/opt/codeflow' }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
+          printf '%s' "$GHCR_TOKEN" | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
+              "${LINODE_USER}@${LINODE_HOST}" \
+              "docker login ghcr.io -u '${GHCR_USERNAME}' --password-stdin"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
               "set -eu; cd '${DEPLOY_DIR}'; \
