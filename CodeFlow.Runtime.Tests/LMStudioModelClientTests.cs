@@ -90,6 +90,117 @@ public sealed class LMStudioModelClientTests
     }
 
     [Fact]
+    public async Task InvokeAsync_ShouldExposeRawUsageVerbatimFromLmStudioResponse()
+    {
+        // Slice 4 of the Token Usage Tracking epic. LMStudio rides on
+        // OpenAiCompatibleResponsesModelClientBase, so it already inherits the slice 2
+        // CloneRawUsage path — but local providers report a slightly different `usage` shape
+        // than OpenAI (no `output_tokens_details.reasoning_tokens`, no `cache_*_tokens`,
+        // and varying total/sum reporting depending on the runtime). This test pins LMStudio's
+        // actual fields against a recorded sample so the capture pipeline produces records with
+        // the local-provider shape today, and any future LMStudio surface change is caught
+        // explicitly.
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        { "type": "output_text", "text": "ok" }
+                      ]
+                    }
+                  ],
+                  "usage": {
+                    "input_tokens": 42,
+                    "output_tokens": 9,
+                    "total_tokens": 51,
+                    "prompt_tokens_details": { "cached_tokens": 0 },
+                    "lmstudio_runtime": "llama.cpp"
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new LMStudioModelClient(
+            httpClient,
+            new LMStudioModelClientOptions
+            {
+                ResponsesEndpoint = new Uri("http://localhost:1234/v1/responses"),
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "qwen2.5-7b-instruct"));
+
+        response.TokenUsage.Should().BeEquivalentTo(new TokenUsage(42, 9, 51));
+
+        response.RawUsage.Should().NotBeNull();
+        var usage = response.RawUsage!.Value;
+        usage.GetProperty("input_tokens").GetInt32().Should().Be(42);
+        usage.GetProperty("output_tokens").GetInt32().Should().Be(9);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(51);
+        usage.GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(0);
+        usage.GetProperty("lmstudio_runtime").GetString().Should().Be("llama.cpp");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WhenLmStudioResponseHasNoUsage_RawUsageIsNull()
+    {
+        // Some local-runtime configurations omit `usage` entirely. The capture observer's
+        // `rawUsage != null` gate must skip cleanly for these calls rather than persisting an
+        // empty record.
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        { "type": "output_text", "text": "ok" }
+                      ]
+                    }
+                  ]
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new LMStudioModelClient(
+            httpClient,
+            new LMStudioModelClientOptions
+            {
+                ResponsesEndpoint = new Uri("http://localhost:1234/v1/responses"),
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "qwen2.5-7b-instruct"));
+
+        response.TokenUsage.Should().BeNull();
+        response.RawUsage.Should().BeNull();
+    }
+
+    [Fact]
     public void ModelClientRegistry_ShouldResolveLmStudioProviderSeparatelyFromOpenAi()
     {
         using var openAiHttpClient = new HttpClient(new StubHttpMessageHandler([]));
