@@ -123,6 +123,10 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IAssistantTool, GetTraceTokenUsageTool>();
         services.AddScoped<IAssistantTool, GetNodeIoTool>();
 
+        // HAA-10: confirmation-gated workflow package save. The tool itself is read-only
+        // (preview); the UI completes the mutation by posting to the existing apply endpoint.
+        services.AddScoped<IAssistantTool, SaveWorkflowPackageTool>();
+
         services.AddScoped<AssistantToolDispatcher>();
 
         return services;

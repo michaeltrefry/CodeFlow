@@ -103,8 +103,8 @@ public sealed class AssistantSystemPromptTests
             because: "HAA-4 + HAA-5 wired tools; the prompt must claim trace-introspection capability");
         prompt.Should().Contain("Draft a complete workflow package",
             because: "HAA-9 made drafting a real capability");
-        prompt.Should().Contain("HAA-10",
-            because: "the prompt should still call out save/import as the next gap");
+        prompt.Should().Contain("save_workflow_package",
+            because: "HAA-10 wired the save tool; the prompt must teach the model to invoke it");
         prompt.Should().Contain("HAA-11",
             because: "the prompt should still call out workflow-run as future");
         prompt.Should().Contain("HAA-12",

@@ -6,9 +6,14 @@ import { AssistantApi, AssistantMessage, AssistantScope } from '../../core/assis
 import { AssistantStreamEvent, streamAssistantTurn } from '../../core/assistant-stream';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
+import { WorkflowsApi } from '../../core/workflows.api';
+import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
+
+/** HAA-10: name of the assistant tool whose preview-ok result triggers a Save confirmation chip. */
+const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
 
 interface PendingAssistantTurn {
   /** The assistant message-id assigned by the server once it persists; null while streaming. */
@@ -60,7 +65,11 @@ type ThreadEntry =
                 <cf-chat-message [message]="entry" />
               }
               @case ('tool') {
-                <cf-chat-tool-call [view]="entry" />
+                <cf-chat-tool-call
+                  [view]="entry"
+                  (confirmConfirmation)="onConfirmToolCall($event)"
+                  (cancelConfirmation)="onCancelToolCall($event)"
+                />
               }
             }
           }
@@ -171,6 +180,16 @@ type ThreadEntry =
 export class ChatPanelComponent {
   private readonly api = inject(AssistantApi);
   private readonly auth = inject(AuthService);
+  private readonly workflowsApi = inject(WorkflowsApi);
+
+  /**
+   * HAA-10: per-tool-call cache of the structured `package` argument the LLM passed to
+   * `save_workflow_package`. The chat-panel needs the FULL package to POST to
+   * `/api/workflows/package/apply` on confirm — but `ChatToolCallView.argsPreview` only carries
+   * a stringified preview. Stashing keyed by tool-call id keeps the structured payload alongside
+   * the visible card without bloating the view model.
+   */
+  private readonly pendingSaves = new Map<string, unknown>();
 
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
@@ -309,6 +328,56 @@ export class ChatPanelComponent {
     this.pending.set(null);
     this.optimisticUser.set(null);
     this.toolCalls.set([]);
+    this.pendingSaves.clear();
+  }
+
+  /**
+   * HAA-10: handles the user clicking 'Save' on a save_workflow_package confirmation chip.
+   * POSTs the cached package to the existing /api/workflows/package/apply endpoint (which
+   * requires WorkflowsWrite under the logged-in user) and reflects the outcome on the chip.
+   */
+  protected onConfirmToolCall(toolCallId: string): void {
+    const pkg = this.pendingSaves.get(toolCallId);
+    if (!pkg) {
+      this.updateConfirmation(toolCallId, c => ({ ...c, state: 'error', errorMessage: 'Package payload missing — re-open the chat thread or ask the assistant to re-emit it.' }));
+      return;
+    }
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.workflowsApi.applyPackageImport(pkg).subscribe({
+      next: result => {
+        this.pendingSaves.delete(toolCallId);
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'success',
+          applied: { key: result.entryPoint.key, version: result.entryPoint.version },
+        }));
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: formatError(err),
+        }));
+      },
+    });
+  }
+
+  /** HAA-10: dismiss the chip locally; no server call. The package payload is dropped from cache. */
+  protected onCancelToolCall(toolCallId: string): void {
+    this.pendingSaves.delete(toolCallId);
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'cancelled' }));
+  }
+
+  private updateConfirmation(
+    toolCallId: string,
+    next: (current: NonNullable<ChatToolCallView['confirmation']>) => NonNullable<ChatToolCallView['confirmation']>,
+  ): void {
+    this.toolCalls.update(list => list.map(card => {
+      if (card.id !== toolCallId || !card.confirmation) {
+        return card;
+      }
+      return { ...card, confirmation: next(card.confirmation) };
+    }));
   }
 
   private handleStreamEvent(evt: AssistantStreamEvent): void {
@@ -338,6 +407,14 @@ export class ChatPanelComponent {
       case 'tool-call': {
         // New tool card in pending state. argsPreview is a single-line stringification — the user
         // can expand the card to see the full payload when the server fills in the result.
+        // HAA-10: stash the structured `package` arg for save_workflow_package so we can POST it
+        // to /api/workflows/package/apply when the user confirms via the chip.
+        if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL && evt.arguments && typeof evt.arguments === 'object') {
+          const pkg = (evt.arguments as Record<string, unknown>)['package'];
+          if (pkg) {
+            this.pendingSaves.set(evt.id, pkg);
+          }
+        }
         this.toolCalls.update(list => [...list, {
           id: evt.id,
           name: evt.name,
@@ -350,6 +427,9 @@ export class ChatPanelComponent {
       case 'tool-result': {
         // Pair with the matching tool-call by id and flip its status. If we get a result without
         // a prior call (shouldn't happen, but server bugs are server bugs), drop it on the floor.
+        const confirmation = evt.name === SAVE_WORKFLOW_PACKAGE_TOOL && !evt.isError
+          ? buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id))
+          : undefined;
         this.toolCalls.update(list => list.map(card =>
           card.id === evt.id
             ? {
@@ -357,6 +437,7 @@ export class ChatPanelComponent {
                 status: evt.isError ? 'error' : 'success',
                 resultPreview: evt.isError ? undefined : truncatePreview(evt.result),
                 errorMessage: evt.isError ? truncatePreview(evt.result) : undefined,
+                confirmation,
               }
             : card,
         ));
@@ -413,6 +494,46 @@ export class ChatPanelComponent {
       }
     });
   }
+}
+
+/**
+ * HAA-10: when the assistant's `save_workflow_package` tool returns a `preview_ok` verdict, the
+ * chat-panel attaches a confirmation chip to the tool card so the user can authorize the save.
+ * The cached package payload is held separately on the panel; this helper just produces the
+ * view-model the chip renders.
+ */
+function buildSaveConfirmationView(
+  resultJson: string,
+  pkg: unknown,
+): ChatToolCallView['confirmation'] | undefined {
+  let parsed: { status?: unknown; entryPoint?: { key?: unknown; version?: unknown } } | null = null;
+  try {
+    parsed = JSON.parse(resultJson);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || parsed.status !== 'preview_ok' || !pkg) {
+    return undefined;
+  }
+
+  const summary = summarizeWorkflowPackage(pkg);
+  const entryKey =
+    typeof parsed.entryPoint?.key === 'string' ? parsed.entryPoint.key : summary?.entryPointKey ?? '';
+  const entryVersion =
+    typeof parsed.entryPoint?.version === 'number' ? parsed.entryPoint.version : summary?.entryPointVersion ?? 0;
+
+  const label = entryKey
+    ? `Save ${summary?.workflowName ?? entryKey} (${entryKey} v${entryVersion}) to the library?`
+    : 'Save this workflow package to the library?';
+
+  return {
+    kind: 'save_workflow_package',
+    prompt: label,
+    confirmLabel: 'Save',
+    cancelLabel: 'Cancel',
+    state: 'idle',
+  };
 }
 
 function stringifyArgs(args: unknown): string {

@@ -1,6 +1,31 @@
-import { ChangeDetectionStrategy, Component, booleanAttribute, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, EventEmitter, Output, booleanAttribute, input, signal } from '@angular/core';
+import { ChatConfirmationChipComponent, ChatConfirmationView } from './chat-confirmation-chip.component';
 
 export type ChatToolCallStatus = 'pending' | 'success' | 'error';
+
+/**
+ * HAA-10: confirmation state attached to a tool call when the tool's verdict requires the user
+ * to authorize a follow-on mutating action. Rendered as an inline {@link ChatConfirmationChipComponent}
+ * inside the tool-call body. The chat-panel owns the API call when the user confirms; this
+ * component just surfaces the chip and emits confirm/cancel events.
+ */
+export interface ChatToolCallConfirmation {
+  /** Discriminator so future tools (HAA-11 run, HAA-13 replay) can plug in their own renderers. */
+  kind: 'save_workflow_package';
+  prompt: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /**
+   * 'idle' = chip presented to user; 'applying' = confirm clicked, awaiting API; 'success' /
+   * 'error' = terminal. The chip itself just disables on `applying`/`success`/`error`; the
+   * banner below the chip surfaces the resolution.
+   */
+  state: 'idle' | 'applying' | 'success' | 'error' | 'cancelled';
+  /** When state === 'success', the resulting workflow library entry. */
+  applied?: { key: string; version: number };
+  /** When state === 'error', a human-readable error message. */
+  errorMessage?: string;
+}
 
 export interface ChatToolCallView {
   id: string;
@@ -9,6 +34,7 @@ export interface ChatToolCallView {
   argsPreview?: string;
   resultPreview?: string;
   errorMessage?: string;
+  confirmation?: ChatToolCallConfirmation;
 }
 
 /**
@@ -20,8 +46,9 @@ export interface ChatToolCallView {
   selector: 'cf-chat-tool-call',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [ChatConfirmationChipComponent],
   template: `
-    <details class="tool-call" [attr.data-status]="view().status" [open]="defaultOpen()">
+    <details class="tool-call" [attr.data-status]="view().status" [open]="isOpenByDefault()">
       <summary class="tool-call-head">
         <span class="tool-call-status" [attr.data-status]="view().status" aria-hidden="true"></span>
         <span class="tool-call-name">{{ view().name }}</span>
@@ -43,6 +70,33 @@ export interface ChatToolCallView {
           <section class="tool-call-section">
             <h4>Result</h4>
             <pre>{{ view().resultPreview }}</pre>
+          </section>
+        }
+        @if (view().confirmation; as confirmation) {
+          <section class="tool-call-section" data-testid="tool-confirmation">
+            <cf-chat-confirmation-chip
+              [view]="chipView()"
+              [disabled]="confirmation.state === 'applying'"
+              (confirm)="onConfirm()"
+              (cancel)="onCancel()"
+            />
+            @if (confirmation.state === 'applying') {
+              <p class="tool-confirmation-status">Saving…</p>
+            }
+            @if (confirmation.state === 'success' && confirmation.applied) {
+              <p class="tool-confirmation-status tool-confirmation-success">
+                Saved as
+                <a [href]="'/workflows/' + confirmation.applied.key + '/' + confirmation.applied.version">
+                  {{ confirmation.applied.key }} v{{ confirmation.applied.version }}
+                </a>.
+              </p>
+            }
+            @if (confirmation.state === 'error' && confirmation.errorMessage) {
+              <p class="tool-confirmation-status tool-confirmation-error">{{ confirmation.errorMessage }}</p>
+            }
+            @if (confirmation.state === 'cancelled') {
+              <p class="tool-confirmation-status">Cancelled.</p>
+            }
           </section>
         }
       </div>
@@ -110,6 +164,13 @@ export interface ChatToolCallView {
     .tool-call-error {
       color: var(--sem-red, #f85149);
     }
+    .tool-confirmation-status {
+      margin: 6px 0 0 0;
+      font-size: 11px;
+      color: var(--text-muted, #9aa3b2);
+    }
+    .tool-confirmation-success { color: var(--sem-green, #3FB950); }
+    .tool-confirmation-error   { color: var(--sem-red, #f85149); }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
   `],
 })
@@ -117,12 +178,45 @@ export class ChatToolCallComponent {
   readonly view = input.required<ChatToolCallView>();
   readonly defaultOpen = input(false, { transform: booleanAttribute });
 
+  /** Emitted when the user clicks the confirmation chip's primary action. */
+  @Output() readonly confirmConfirmation = new EventEmitter<string>();
+  /** Emitted when the user clicks the confirmation chip's cancel action. */
+  @Output() readonly cancelConfirmation = new EventEmitter<string>();
+
   protected statusLabel(): string {
     switch (this.view().status) {
       case 'pending': return 'Running';
       case 'success': return 'Success';
       case 'error':   return 'Error';
     }
+  }
+
+  /**
+   * Auto-expand when there's a confirmation chip so the user sees it without clicking the
+   * collapsed disclosure. Otherwise honor the host's `defaultOpen` input.
+   */
+  protected isOpenByDefault(): boolean {
+    return this.defaultOpen() || !!this.view().confirmation;
+  }
+
+  protected chipView(): ChatConfirmationView {
+    const conf = this.view().confirmation!;
+    return {
+      id: this.view().id,
+      prompt: conf.prompt,
+      confirmLabel: conf.confirmLabel,
+      cancelLabel: conf.cancelLabel,
+      destructive: true,
+      resolved: conf.state !== 'idle',
+    };
+  }
+
+  protected onConfirm(): void {
+    this.confirmConfirmation.emit(this.view().id);
+  }
+
+  protected onCancel(): void {
+    this.cancelConfirmation.emit(this.view().id);
   }
 
   // Keep a no-op signal reference so future expansion (loading-state animations, copy-result
