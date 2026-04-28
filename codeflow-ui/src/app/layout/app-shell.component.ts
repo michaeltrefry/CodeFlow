@@ -8,6 +8,7 @@ import { LayoutService } from '../core/layout.service';
 import { IconComponent, IconName } from '../ui/icon.component';
 import { ChipComponent } from '../ui/chip.component';
 import { TweaksPanelComponent } from './tweaks-panel.component';
+import { AssistantSidebarComponent } from './assistant-sidebar.component';
 
 interface NavItem {
   id: string;
@@ -70,7 +71,7 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
 @Component({
   selector: 'cf-app-shell',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, IconComponent, ChipComponent, TweaksPanelComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, IconComponent, ChipComponent, TweaksPanelComponent, AssistantSidebarComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="shell" [attr.data-nav]="theme.navCollapsed() ? 'collapsed' : 'expanded'">
@@ -149,7 +150,12 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
           </button>
         </div>
 
-        <router-outlet />
+        <div class="workspace-body">
+          <div class="workspace-content">
+            <router-outlet />
+          </div>
+          <cf-assistant-sidebar />
+        </div>
       </div>
     </div>
 

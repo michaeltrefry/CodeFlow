@@ -12,6 +12,7 @@ interface TweakState {
   accent: AccentName;
   font: FontName;
   navCollapsed: boolean;
+  assistantSidebarCollapsed: boolean;
 }
 
 const DEFAULTS: TweakState = {
@@ -19,6 +20,9 @@ const DEFAULTS: TweakState = {
   accent: 'indigo',
   font: 'plex',
   navCollapsed: false,
+  // Default open: HAA-7 wants the assistant discoverable on first visit. The user's collapse
+  // choice persists thereafter via localStorage.
+  assistantSidebarCollapsed: false,
 };
 
 const THEMES: ReadonlyArray<ThemeMode> = ['dark', 'light'];
@@ -33,12 +37,14 @@ export class ThemeService {
   readonly accent = signal<AccentName>(DEFAULTS.accent);
   readonly font = signal<FontName>(DEFAULTS.font);
   readonly navCollapsed = signal<boolean>(DEFAULTS.navCollapsed);
+  readonly assistantSidebarCollapsed = signal<boolean>(DEFAULTS.assistantSidebarCollapsed);
 
   readonly snapshot = computed<TweakState>(() => ({
     theme: this.theme(),
     accent: this.accent(),
     font: this.font(),
     navCollapsed: this.navCollapsed(),
+    assistantSidebarCollapsed: this.assistantSidebarCollapsed(),
   }));
 
   constructor() {
@@ -67,6 +73,8 @@ export class ThemeService {
   setFont(font: FontName): void { this.font.set(font); }
   toggleNav(): void { this.navCollapsed.update(v => !v); }
   setNavCollapsed(collapsed: boolean): void { this.navCollapsed.set(collapsed); }
+  toggleAssistantSidebar(): void { this.assistantSidebarCollapsed.update(v => !v); }
+  setAssistantSidebarCollapsed(collapsed: boolean): void { this.assistantSidebarCollapsed.set(collapsed); }
 
   private hydrate(): void {
     const raw = (() => {
@@ -80,6 +88,7 @@ export class ThemeService {
       if (parsed.accent && ACCENTS.includes(parsed.accent)) this.accent.set(parsed.accent);
       if (parsed.font && FONTS.includes(parsed.font)) this.font.set(parsed.font);
       if (typeof parsed.navCollapsed === 'boolean') this.navCollapsed.set(parsed.navCollapsed);
+      if (typeof parsed.assistantSidebarCollapsed === 'boolean') this.assistantSidebarCollapsed.set(parsed.assistantSidebarCollapsed);
     } catch {
       // Ignore corrupt storage; fall through to defaults.
     }
