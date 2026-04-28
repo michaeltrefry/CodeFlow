@@ -132,6 +132,11 @@ public static class ApiServiceCollectionExtensions
         // when the user clicks the chip.
         services.AddScoped<IAssistantTool, RunWorkflowTool>();
 
+        // HAA-12: focused diagnosis tool. Composes the data the existing trace tools already
+        // expose (saga + decisions + logic evals + token usage) into a single structured verdict
+        // with anomaly heuristics applied server-side. Read-only; no chip.
+        services.AddScoped<IAssistantTool, DiagnoseTraceTool>();
+
         services.AddScoped<AssistantToolDispatcher>();
 
         return services;
