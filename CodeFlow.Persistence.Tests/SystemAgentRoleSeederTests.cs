@@ -100,11 +100,11 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SeedAsync_CatalogGainsNewToolGrant_NextStartupAddsIt()
+    public async Task SeedAsync_OperatorRemovedGrant_IsNotReAdded()
     {
-        // Simulate catalog drift: the seeder runs once, an operator deletes one of the seeded
-        // grants (forcing a row to look "stale"), and the next startup re-syncs the missing
-        // grant back into place.
+        // Insert-only contract: once a system role exists, the operator owns it. If they
+        // delete a seeded grant, the next startup must leave their edit alone rather than
+        // re-syncing from the catalog.
         await using var ctx = CreateDbContext();
 
         await SystemAgentRoleSeeder.SeedAsync(ctx);
@@ -124,7 +124,8 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Where(g => g.RoleId == role.Id)
             .Select(g => g.ToolIdentifier)
             .ToListAsync();
-        grantsAfter.Should().Contain("echo");
+        grantsAfter.Should().NotContain("echo");
+        grantsAfter.Should().BeEquivalentTo("read_file", "apply_patch", "run_command", "now");
     }
 
     [Fact]
