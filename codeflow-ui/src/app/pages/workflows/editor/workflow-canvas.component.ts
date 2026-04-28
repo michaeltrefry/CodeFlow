@@ -16,6 +16,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
+import { PageContextService } from '../../../core/page-context.service';
 import { ClassicPreset, NodeEditor } from 'rete';
 import { AreaExtensions, AreaPlugin } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
@@ -1426,6 +1427,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly injector = inject(Injector);
+  private readonly pageContext = inject(PageContextService);
 
   @ViewChild('canvasHost', { static: true }) canvasHost!: ElementRef<HTMLDivElement>;
 
@@ -1952,6 +1954,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (key) {
       this.hasExistingKey.set(true);
       this.workflowKey.set(key);
+      // Brand-new workflows (/workflows/new) have no key yet; the route fallback gives them
+      // a homepage-scoped sidebar conversation. Existing workflows get an entity-scoped one
+      // keyed by the workflow's URL key (matches backend `(userId, scopeKey)` continuity).
+      this.pageContext.set({ kind: 'workflow-editor', workflowId: key });
       this.api.getLatest(key).subscribe({
         next: async detail => {
           this.workflowName.set(detail.name);
@@ -1983,6 +1989,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.connectionElements.clear();
     this.cancelTransformPreview();
     this.area?.destroy();
+    this.pageContext.clear();
   }
 
   @HostListener('document:keydown', ['$event'])

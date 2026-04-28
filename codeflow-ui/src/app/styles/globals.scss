@@ -179,6 +179,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- workspace ---------- */
 .workspace { min-width: 0; display: flex; flex-direction: column; }
+.workspace-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+.workspace-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 .topbar {
   position: sticky; top: 0; z-index: 10;
@@ -243,9 +256,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .page { padding: 24px 28px 40px; display: flex; flex-direction: column; gap: 18px; flex: 1; min-width: 0; }
-/* Fallback: any page-level component rendered via router-outlet gets the same padding if it
-   didn't opt into a .page wrapper. Pages that DO wrap set padding themselves. */
-.workspace > :not(.topbar):not(.page):not(router-outlet) {
+/* Fallback: any page-level component rendered via router-outlet (now inside .workspace-content)
+   gets the same padding if it didn't opt into a .page wrapper. Pages that DO wrap set padding
+   themselves. The :not chain skips the topbar (workspace child), the router-outlet element
+   itself, and the assistant sidebar (which is a sibling of .workspace-content, not its child). */
+.workspace-content > :not(.page):not(router-outlet) {
   display: block;
   padding: 24px 28px 40px;
 }

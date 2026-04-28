@@ -8,6 +8,7 @@ import {
   inject,
   input,
   signal,
+  OnDestroy,
   OnInit
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -15,6 +16,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { LlmProvidersApi } from '../../core/llm-providers.api';
+import { PageContextService } from '../../core/page-context.service';
 import {
   AgentConfig,
   AgentOutputDeclaration,
@@ -627,10 +629,11 @@ type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
     .preset-card .field-label.small { font-size: var(--fs-sm); }
   `]
 })
-export class AgentEditorComponent implements OnInit {
+export class AgentEditorComponent implements OnInit, OnDestroy {
   private readonly agentsApi = inject(AgentsApi);
   private readonly llmProvidersApi = inject(LlmProvidersApi);
   private readonly router = inject(Router);
+  private readonly pageContext = inject(PageContextService);
 
   readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
   readonly embedded = input(false, { transform: booleanAttribute });
@@ -735,6 +738,21 @@ export class AgentEditorComponent implements OnInit {
   });
 
   constructor() {
+    // PageContext registration. The agent editor is reused across /agents/:key/edit param
+    // changes (withComponentInputBinding keeps the same instance and updates `existingKey`),
+    // so ngOnInit only fires once. The effect tracks the input signal and re-registers on
+    // every change. Skipped in embedded mode — that path is the in-place editor inside the
+    // workflow canvas, and the workflow page owns the PageContext.
+    effect(() => {
+      if (this.embedded()) return;
+      const key = this.existingKey();
+      if (key) {
+        this.pageContext.set({ kind: 'agent-editor', agentId: key });
+      } else {
+        this.pageContext.clear();
+      }
+    });
+
     effect(() => {
       const outputRows = this.outputs();
       const fallbackRows = this.fallbackTemplates();
@@ -921,6 +939,8 @@ export class AgentEditorComponent implements OnInit {
       if (providedConfig) {
         this.hydrateFromConfig(providedConfig, providedType ?? 'agent');
       }
+      // Embedded mode reuses this component inside the workflow canvas's in-place edit modal.
+      // The outer page already owns the PageContext (workflow-editor), so don't override it.
       return;
     }
 
@@ -934,6 +954,12 @@ export class AgentEditorComponent implements OnInit {
           this.hydrateFromConfig(config, resolvedType);
         }
       });
+    }
+  }
+
+  ngOnDestroy(): void {
+    if (!this.embedded()) {
+      this.pageContext.clear();
     }
   }
 

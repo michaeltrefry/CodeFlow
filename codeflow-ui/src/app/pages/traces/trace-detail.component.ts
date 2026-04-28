@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, input, signal, viewChild } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, effect, inject, input, signal, viewChild } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription, interval, retry, timer } from 'rxjs';
@@ -14,6 +14,7 @@ import {
 } from '../../core/models';
 import { streamTrace } from '../../core/trace-stream';
 import { AuthService } from '../../auth/auth.service';
+import { PageContextService } from '../../core/page-context.service';
 import { HitlReviewComponent } from '../hitl/hitl-review.component';
 import { WorkflowReadonlyCanvasComponent } from '../workflows/editor/workflow-readonly-canvas.component';
 import { PageHeaderComponent } from '../../ui/page-header.component';
@@ -316,6 +317,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private readonly workflowsApi = inject(WorkflowsApi);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly pageContext = inject(PageContextService);
 
   readonly id = input.required<string>();
   readonly detail = signal<TraceDetail | null>(null);
@@ -666,6 +668,16 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     this.downloadArtifact(uri);
   }
 
+  constructor() {
+    // Re-register on every `id()` change. With `withComponentInputBinding()` the route param
+    // updates the signal in place when the user navigates from /traces/A to /traces/B without a
+    // remount, and ngOnInit does NOT fire again — so this effect is the only correct hook for
+    // keeping the assistant sidebar's PageContext in sync with the current trace.
+    effect(() => {
+      this.pageContext.set({ kind: 'trace', traceId: this.id() });
+    });
+  }
+
   ngOnInit(): void {
     this.reload();
 
@@ -684,6 +696,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.streamSub?.unsubscribe();
     this.pollSub?.unsubscribe();
+    this.pageContext.clear();
   }
 
   reload(): void {
