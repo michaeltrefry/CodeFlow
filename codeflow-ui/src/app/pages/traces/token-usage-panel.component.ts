@@ -196,12 +196,17 @@ export class TokenUsagePanelComponent {
   private currentTraceId: string | null = null;
 
   /** Raw record list — single source of truth for both historical baseline and
-   *  live SSE-merged updates. The aggregated view is a `computed` over this. */
-  protected readonly records = signal<TokenUsageRecordDto[]>([]);
+   *  live SSE-merged updates. The aggregated view is a `computed` over this. Public
+   *  so slices 7 (canvas overlays) and 8 (timeline overlays) can read the same
+   *  records without re-fetching. */
+  readonly records = signal<TokenUsageRecordDto[]>([]);
   protected readonly loading = signal(false);
   protected readonly loadError = signal<string | null>(null);
 
-  protected readonly aggregated = computed<TraceTokenUsageDto>(() =>
+  /** Aggregated rollup signal. Public so consuming overlays in the trace detail
+   *  page can read per-node / per-scope rollups without duplicating the
+   *  aggregator wiring. */
+  readonly aggregated = computed<TraceTokenUsageDto>(() =>
     aggregateTokenUsage(this.currentTraceId ?? '', this.records()),
   );
 

@@ -4,6 +4,27 @@ import { WorkflowNodeKind, WorkflowTransformOutputType } from '../../../core/mod
 
 export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
 
+/**
+ * Compact per-node token overlay shape (Token Usage Tracking [Slice 7]). Carries
+ * just the numbers the node-head badge needs — full breakdowns live in the
+ * trace-inspector panel + timeline, not on the graph node.
+ */
+export interface WorkflowNodeTokenOverlay {
+  /** Number of LLM calls captured for this node (direct or rolled up from a
+   *  child saga the Subflow/ReviewLoop/Swarm spawned). */
+  callCount: number;
+  /** Sum of `input_tokens` (or `prompt_tokens` if that's what the provider
+   *  reports) across every captured call attributed to this node. */
+  inputTokens: number;
+  /** Sum of `output_tokens` (or `completion_tokens`) across the same. */
+  outputTokens: number;
+  /** When true, the totals come from descendant child sagas (Subflow /
+   *  ReviewLoop / Swarm) rather than this node directly issuing LLM calls. The
+   *  badge styling differs slightly so authors can tell the two apart at a
+   *  glance. */
+  rolledUp: boolean;
+}
+
 /** The implicit error-sink port present on every node. Authors never declare it; the editor
  *  always exposes it as a wirable handle so a recovery edge can be attached. Excluded from
  *  serialized `outputPorts` (the API rejects "Failed" in declarations as of the port-model
@@ -26,6 +47,16 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   template: string | null = null;
   outputType: WorkflowTransformOutputType = 'string';
   traceState: WorkflowNodeTraceState = null;
+  /**
+   * Token Usage Tracking [Slice 7]: optional per-node overlay populated by the
+   * trace-detail page when this canvas is rendering an executed trace. When non-null,
+   * the node component renders a compact badge in the head showing input/output
+   * tokens consumed by this node (or — for Subflow / ReviewLoop / Swarm nodes —
+   * rolled up from the descendant child saga that ran inside it). Always null in
+   * the editor surface; only the readonly canvas hydrates this from
+   * `[tokenUsageByNodeId]`.
+   */
+  tokenUsageOverlay: WorkflowNodeTokenOverlay | null = null;
 
   // VZ5: tracks whether the implicit Failed port is wired and whether the canvas-level
   // "Show implicit Failed ports" toggle is on. Both are populated by the canvas after node

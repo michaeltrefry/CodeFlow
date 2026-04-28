@@ -47,6 +47,34 @@ export interface TraceTimelineEvent {
   expandedExtras?: TraceTimelineExtraLink[];
   /** When false, the row's expand affordance is hidden even if there's content to expand. */
   expandable?: boolean;
+  /**
+   * Token Usage Tracking [Slice 8]: per-row token-usage summary. The trace detail
+   * page populates this by claiming records from the slice 6 aggregator that
+   * belong to this row's node + invocation window. When present, the timeline
+   * renders an inline badge in the title and a full breakdown in the expanded
+   * section. Rows without an associated LLM call leave this null.
+   */
+  tokenUsage?: TraceTimelineTokenUsage | null;
+}
+
+/**
+ * Compact representation of token usage matched to a single timeline row. Mirrors
+ * the slice-5 `TokenUsageRollup` server contract but only carries the numbers the
+ * timeline needs to render — `totals` is the same flattened-dotted-path format the
+ * rest of the token-tracking surfaces use.
+ */
+export interface TraceTimelineTokenUsage {
+  /** How many LLM calls fed into this row's totals (>=1 when present). */
+  callCount: number;
+  /** Flattened sum of every numeric leaf, keyed by dotted JSON path. */
+  totals: Record<string, number>;
+  /** Per-(provider, model) breakdown — populated when more than one combo
+   *  contributed to this row's window. Empty when there's only one combo. */
+  byProviderModel: Array<{
+    provider: string;
+    model: string;
+    totals: Record<string, number>;
+  }>;
 }
 
 export interface TraceTimelineBadge {

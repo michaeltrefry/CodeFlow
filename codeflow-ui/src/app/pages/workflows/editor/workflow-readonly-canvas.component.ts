@@ -19,6 +19,7 @@ import { WorkflowDetail } from '../../../core/models';
 import {
   WorkflowAreaExtra,
   WorkflowEditorNode,
+  WorkflowNodeTokenOverlay,
   WorkflowSchemes
 } from './workflow-node-schemes';
 import { loadIntoEditor, workflowDetailToModel } from './workflow-serialization';
@@ -61,6 +62,16 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   readonly workflow = input<WorkflowDetail | null>(null);
   /** When non-null, highlights the listed node ids and dims every other node. */
   readonly highlightedNodeIds = input<string[] | null>(null);
+  /**
+   * Token Usage Tracking [Slice 7]: per-node token-usage overlays. The trace
+   * detail page builds this map by combining slice 5's per-node rollups with the
+   * descendant-saga rollups that belong to Subflow / ReviewLoop / Swarm nodes
+   * (those nodes don't issue LLM calls themselves — they spawn child sagas, and
+   * the rolled-up total comes from descendants). When non-null, each editor
+   * node's `tokenUsageOverlay` is hydrated from this map so the node template
+   * renders the in-graph badge.
+   */
+  readonly tokenUsageByNodeId = input<Map<string, WorkflowNodeTokenOverlay> | null>(null);
 
   private editor?: NodeEditor<WorkflowSchemes>;
   private area?: AreaPlugin<WorkflowSchemes, WorkflowAreaExtra>;
@@ -79,7 +90,9 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     if (changes['workflow']) {
       await this.loadCurrent();
       this.applyHighlight();
-    } else if (changes['highlightedNodeIds']) {
+    } else if (changes['highlightedNodeIds'] || changes['tokenUsageByNodeId']) {
+      // Highlight + token-usage overlays both ride the same per-node update path,
+      // so a change to either re-applies both in one pass.
       this.applyHighlight();
     }
   }
@@ -179,6 +192,7 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     if (!this.editor || !this.area) return;
     const ids = this.highlightedNodeIds();
     const highlighted = ids ? new Set(ids) : null;
+    const tokenOverlay = this.tokenUsageByNodeId();
 
     for (const node of this.editor.getNodes()) {
       const editorNode = node as WorkflowEditorNode;
@@ -189,6 +203,10 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       } else {
         editorNode.traceState = 'dimmed';
       }
+      // Token-usage overlay: read by node id from the map. Null map clears every
+      // node's overlay; missing-id leaves the node without a badge (e.g., Logic /
+      // Transform nodes that never issue LLM calls and have no descendant saga).
+      editorNode.tokenUsageOverlay = tokenOverlay?.get(editorNode.nodeId) ?? null;
       void this.area.update('node', editorNode.id);
     }
   }
