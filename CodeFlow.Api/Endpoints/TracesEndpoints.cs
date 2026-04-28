@@ -162,7 +162,10 @@ public static class TracesEndpoints
                     NodeId: entity.NodeId,
                     OutputPortName: entity.OutputPortName,
                     InputRef: entity.InputRef,
-                    OutputRef: entity.OutputRef))
+                    OutputRef: entity.OutputRef,
+                    NodeEnteredAtUtc: entity.NodeEnteredAtUtc.HasValue
+                        ? DateTime.SpecifyKind(entity.NodeEnteredAtUtc.Value, DateTimeKind.Utc)
+                        : null))
                 .ToArray(),
             LogicEvaluations: logicEvaluations
                 .Select(entity => new TraceLogicEvaluationDto(

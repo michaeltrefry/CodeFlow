@@ -37,6 +37,11 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("current_round_id")
             .IsRequired();
 
+        builder.Property(saga => saga.CurrentRoundEnteredAtUtc)
+            .HasColumnName("current_round_entered_at")
+            .HasColumnType("datetime(6)")
+            .IsRequired();
+
         builder.Property(saga => saga.RoundCount)
             .HasColumnName("round_count")
             .IsRequired();

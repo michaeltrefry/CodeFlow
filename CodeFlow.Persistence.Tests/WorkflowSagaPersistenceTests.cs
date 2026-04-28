@@ -197,4 +197,91 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             topLevel.WorkflowInputsJson.Should().BeNull();
         }
     }
+
+    [Fact]
+    public async Task Saga_ShouldRoundTripCurrentRoundEnteredAtAndDecisionNodeEnteredAt()
+    {
+        // sc-80: per-node round-start timestamp lands on the saga state and threads onto each
+        // appended decision. Validates the migration's two new columns
+        // (workflow_sagas.current_round_entered_at, workflow_saga_decisions.node_entered_at)
+        // round-trip cleanly, and that an appended decision with no NodeEnteredAtUtc still
+        // persists as NULL so legacy rows continue to render.
+        var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
+        CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
+
+        await using (var migrationContext = new CodeFlowDbContext(options.Options))
+        {
+            await migrationContext.Database.MigrateAsync();
+        }
+
+        var correlationId = Guid.NewGuid();
+        var traceId = Guid.NewGuid();
+        var roundOne = Guid.NewGuid();
+        var roundTwo = Guid.NewGuid();
+        var enteredRoundOne = new DateTime(2026, 4, 28, 10, 0, 0, DateTimeKind.Utc);
+        var recordedRoundOne = enteredRoundOne.AddSeconds(15);
+        var enteredRoundTwo = recordedRoundOne.AddMilliseconds(50);
+        var recordedRoundTwo = enteredRoundTwo.AddSeconds(8);
+
+        await using (var writeContext = new CodeFlowDbContext(options.Options))
+        {
+            var saga = new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Running",
+                CurrentAgentKey = "second",
+                CurrentRoundId = roundTwo,
+                CurrentRoundEnteredAtUtc = enteredRoundTwo,
+                RoundCount = 1,
+                WorkflowKey = "swarm-bench-sequential",
+                WorkflowVersion = 1,
+                CreatedAtUtc = enteredRoundOne,
+                UpdatedAtUtc = recordedRoundTwo
+            };
+
+            // First decision: explicit NodeEnteredAtUtc threaded onto the record.
+            saga.AppendDecision(new DecisionRecord(
+                AgentKey: "first",
+                AgentVersion: 1,
+                Decision: "Out",
+                DecisionPayload: null,
+                RoundId: roundOne,
+                RecordedAtUtc: recordedRoundOne,
+                NodeEnteredAtUtc: enteredRoundOne));
+
+            // Second decision: NodeEnteredAtUtc omitted — must persist as NULL so the schema
+            // gracefully accommodates pre-migration / synthesised decisions that don't carry
+            // a round-entry timestamp.
+            saga.AppendDecision(new DecisionRecord(
+                AgentKey: "second",
+                AgentVersion: 1,
+                Decision: "Out",
+                DecisionPayload: null,
+                RoundId: roundTwo,
+                RecordedAtUtc: recordedRoundTwo));
+
+            writeContext.WorkflowSagas.Add(saga);
+            await writeContext.SaveChangesAsync();
+        }
+
+        await using (var readContext = new CodeFlowDbContext(options.Options))
+        {
+            var loaded = await readContext.WorkflowSagas
+                .AsNoTracking()
+                .Include(s => s.Decisions)
+                .SingleAsync(s => s.CorrelationId == correlationId);
+
+            loaded.CurrentRoundEnteredAtUtc.Should().BeCloseTo(enteredRoundTwo, TimeSpan.FromMilliseconds(1));
+
+            var history = loaded.GetDecisionHistory();
+            history.Should().HaveCount(2);
+
+            history[0].NodeEnteredAtUtc.Should().NotBeNull();
+            history[0].NodeEnteredAtUtc!.Value.Should().BeCloseTo(enteredRoundOne, TimeSpan.FromMilliseconds(1));
+            history[0].RecordedAtUtc.Should().BeAfter(history[0].NodeEnteredAtUtc!.Value);
+
+            history[1].NodeEnteredAtUtc.Should().BeNull();
+        }
+    }
 }

@@ -66,6 +66,10 @@ public sealed class WorkflowSagaDecisionEntityConfiguration : IEntityTypeConfigu
             .HasColumnName("output_ref")
             .HasMaxLength(1024);
 
+        builder.Property(d => d.NodeEnteredAtUtc)
+            .HasColumnName("node_entered_at")
+            .HasColumnType("datetime(6)");
+
         builder.HasIndex(d => new { d.TraceId, d.Ordinal });
     }
 }

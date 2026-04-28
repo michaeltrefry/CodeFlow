@@ -18,6 +18,17 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
 
     public Guid CurrentRoundId { get; set; }
 
+    /// <summary>
+    /// UTC timestamp captured when the current node round began — i.e. when the saga decided to
+    /// dispatch to the active node, before publishing the invoke message. Set every time
+    /// <see cref="CurrentRoundId"/> is assigned. Threaded onto each <c>DecisionRecord</c> as
+    /// <c>NodeEnteredAtUtc</c> so the per-decision row carries an explicit start timestamp;
+    /// per-node duration is then <c>RecordedAtUtc - NodeEnteredAtUtc</c>. Initialised lazily —
+    /// rows persisted before the migration carry <see cref="DateTime.MinValue"/>; the runtime
+    /// overwrites the value at the next round transition.
+    /// </summary>
+    public DateTime CurrentRoundEnteredAtUtc { get; set; }
+
     public int RoundCount { get; set; }
 
     public string AgentVersionsJson { get; set; } = "{}";
@@ -226,7 +237,8 @@ internal static class DecisionEntityMapping
             NodeId = record.NodeId,
             OutputPortName = record.OutputPortName,
             InputRef = record.InputRef,
-            OutputRef = record.OutputRef
+            OutputRef = record.OutputRef,
+            NodeEnteredAtUtc = record.NodeEnteredAtUtc
         };
     }
 
@@ -249,7 +261,8 @@ internal static class DecisionEntityMapping
             NodeId: entity.NodeId,
             OutputPortName: entity.OutputPortName,
             InputRef: entity.InputRef,
-            OutputRef: entity.OutputRef);
+            OutputRef: entity.OutputRef,
+            NodeEnteredAtUtc: entity.NodeEnteredAtUtc);
     }
 }
 
