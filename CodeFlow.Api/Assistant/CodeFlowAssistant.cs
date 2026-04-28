@@ -19,6 +19,7 @@ public interface ICodeFlowAssistant
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         ToolAccessPolicy? toolPolicy = null,
+        AssistantPageContext? pageContext = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -49,6 +50,7 @@ public sealed class CodeFlowAssistant(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         ToolAccessPolicy? toolPolicy = null,
+        AssistantPageContext? pageContext = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
@@ -56,6 +58,16 @@ public sealed class CodeFlowAssistant(
 
         var config = await settingsResolver.ResolveAsync(cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
+        // HAA-8: prepend a structured page-context block so the model can resolve "this trace",
+        // "this node", etc. without the user pasting IDs. The block is per-turn (it changes as
+        // the user navigates) and the most recent value wins.
+        var contextBlock = AssistantPageContextFormatter.FormatAsSystemMessage(pageContext);
+        if (!string.IsNullOrEmpty(contextBlock))
+        {
+            systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                ? contextBlock
+                : contextBlock + "\n\n" + systemPrompt;
+        }
         var allowedTools = FilterTools(toolDispatcher.Tools, toolPolicy);
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch

@@ -4,6 +4,8 @@ import { Subscription } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
 import { AssistantApi, AssistantMessage, AssistantScope } from '../../core/assistant.api';
 import { AssistantStreamEvent, streamAssistantTurn } from '../../core/assistant-stream';
+import { PageContext, pageContextToDto } from '../../core/page-context';
+import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
@@ -68,6 +70,19 @@ type ThreadEntry =
         }
       </div>
 
+      @if (chips().length > 0) {
+        <div class="chat-panel-chips" data-testid="suggestion-chips">
+          @for (c of chips(); track c.label) {
+            <button
+              type="button"
+              class="chat-chip"
+              [disabled]="streaming() || !conversationId() || !!loadFailed()"
+              (click)="sendMessage(c.prompt)"
+            >{{ c.label }}</button>
+          }
+        </div>
+      }
+
       <cf-chat-composer
         [busy]="streaming()"
         [disabled]="!conversationId() || !!loadFailed()"
@@ -125,6 +140,32 @@ type ThreadEntry =
     .chat-panel-error {
       color: var(--sem-red, #f85149);
     }
+    .chat-panel-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 12px 4px;
+      border-top: 1px solid var(--border, rgba(255,255,255,0.06));
+    }
+    .chat-chip {
+      appearance: none;
+      background: var(--surface, #131519);
+      border: 1px solid var(--border, rgba(255,255,255,0.08));
+      color: var(--text, #E7E9EE);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background var(--transition, 150ms ease), border-color var(--transition, 150ms ease);
+    }
+    .chat-chip:hover:not(:disabled) {
+      background: var(--surface-2, rgba(255,255,255,0.04));
+      border-color: var(--border-2, rgba(255,255,255,0.16));
+    }
+    .chat-chip:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   `],
 })
 export class ChatPanelComponent {
@@ -133,6 +174,15 @@ export class ChatPanelComponent {
 
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
+
+  /**
+   * HAA-8: optional page context. When supplied, the panel renders config-driven suggestion
+   * chips above the composer and forwards the context with each turn so the backend can inject
+   * a `<current-page-context>` system-message snippet for implicit "this trace" / "this node"
+   * resolution. Mounts that don't pass this (the home page's main-pane chat) get neither chips
+   * nor injection.
+   */
+  readonly pageContext = input<PageContext | null>(null);
 
   @ViewChild('threadEl') private threadRef?: ElementRef<HTMLDivElement>;
 
@@ -197,6 +247,11 @@ export class ChatPanelComponent {
     return id ? id.slice(0, 8) : '';
   });
 
+  protected readonly chips = computed(() => {
+    const ctx = this.pageContext();
+    return ctx ? suggestionChipsFor(ctx) : [];
+  });
+
   constructor() {
     // Resolve the conversation whenever the scope input changes. effect() runs once on mount
     // and again on each scope rebind.
@@ -226,7 +281,9 @@ export class ChatPanelComponent {
     this.pending.set({ serverId: null, content: '', provider: null, model: null });
     this.streaming.set(true);
 
-    this.streamSub = streamAssistantTurn(conversationId, content, this.auth).subscribe({
+    const ctx = this.pageContext();
+    const dto = ctx ? pageContextToDto(ctx, window.location.pathname) : undefined;
+    this.streamSub = streamAssistantTurn(conversationId, content, this.auth, dto).subscribe({
       next: evt => this.handleStreamEvent(evt),
       error: err => {
         this.streaming.set(false);

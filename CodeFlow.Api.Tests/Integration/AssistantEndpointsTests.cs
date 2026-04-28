@@ -177,6 +177,84 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task PostMessage_WithPageContext_FlowsPageContextToAssistant()
+    {
+        // HAA-8: clients send a per-turn PageContext snapshot describing what the user is
+        // currently looking at. The chat pipeline must hand it down to ICodeFlowAssistant so the
+        // model can see a structured context block alongside the system prompt.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ok"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "page-context-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new
+            {
+                content = "why did this fail?",
+                pageContext = new
+                {
+                    kind = "trace",
+                    route = "/traces/abc",
+                    entityType = "trace",
+                    entityId = "abc",
+                    selectedNodeId = "node-7"
+                }
+            })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        await streamResponse.Content.ReadAsStringAsync();
+
+        AssistantStub.LastPageContext.Should().NotBeNull();
+        AssistantStub.LastPageContext!.Kind.Should().Be("trace");
+        AssistantStub.LastPageContext.EntityId.Should().Be("abc");
+        AssistantStub.LastPageContext.SelectedNodeId.Should().Be("node-7");
+
+        var formatted = AssistantPageContextFormatter.FormatAsSystemMessage(AssistantStub.LastPageContext);
+        formatted.Should().NotBeNull();
+        formatted.Should().Contain("Kind: trace")
+            .And.Contain("Entity: trace=abc")
+            .And.Contain("Selected node: node-7");
+    }
+
+    [Fact]
+    public async Task PostMessage_WithoutPageContext_NullsOutAtAssistant()
+    {
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ok"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "no-context-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "hi" })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        await streamResponse.Content.ReadAsStringAsync();
+
+        AssistantStub.LastPageContext.Should().BeNull(
+            because: "omitting pageContext on the request must reach the assistant as null, not an empty record");
+    }
+
+    [Fact]
     public async Task PostMessage_AuthenticatedUser_PassesNullPolicyToAssistant()
     {
         // HAA-6: authenticated callers run with full tool access. The chat service should pass
@@ -322,6 +400,7 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         {
             reply = Array.Empty<AssistantStreamItem>();
             LastToolPolicy = null;
+            LastPageContext = null;
         }
 
         public void SetReply(IReadOnlyList<AssistantStreamItem> items) => reply = items;
@@ -332,13 +411,21 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         /// </summary>
         public CodeFlow.Runtime.ToolAccessPolicy? LastToolPolicy { get; private set; }
 
+        /// <summary>
+        /// Captures the page context passed on the most recent <see cref="AskAsync"/> call so
+        /// HAA-8 tests can assert the client-supplied context flowed end-to-end.
+        /// </summary>
+        public AssistantPageContext? LastPageContext { get; private set; }
+
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
             CodeFlow.Runtime.ToolAccessPolicy? toolPolicy = null,
+            AssistantPageContext? pageContext = null,
             CancellationToken cancellationToken = default)
         {
             LastToolPolicy = toolPolicy;
+            LastPageContext = pageContext;
             foreach (var item in reply)
             {
                 yield return item;
