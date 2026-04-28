@@ -352,6 +352,102 @@ public sealed class OpenAIModelClientTests
         exception.Which.Message.Should().Contain("(truncated ");
     }
 
+    [Fact]
+    public async Task InvokeAsync_ShouldExposeRawUsageVerbatimIncludingReasoningAndUnknownFields()
+    {
+        // Slice 2 of the Token Usage Tracking epic. The model client must clone the provider's
+        // `usage` object verbatim so the orchestration-side capture observer can persist every
+        // field a provider reports — reasoning_tokens nested under output_tokens_details, cache
+        // fields, and any future field name we don't know about today. Dropping unknowns would
+        // permanently lose data the schema-flat `TokenUsage` already discards.
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        { "type": "output_text", "text": "ok" }
+                      ]
+                    }
+                  ],
+                  "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                    "input_tokens_details": { "cached_tokens": 25 },
+                    "output_tokens_details": { "reasoning_tokens": 12 },
+                    "some_future_field": "future_value"
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(httpClient, new OpenAIModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "gpt-5"));
+
+        // Flat TokenUsage stays as the existing 3-int shape — that's the live-UI surface.
+        response.TokenUsage.Should().BeEquivalentTo(new TokenUsage(100, 50, 150));
+
+        // RawUsage is the *new* surface and the only one that retains the full provider payload.
+        response.RawUsage.Should().NotBeNull();
+        var usage = response.RawUsage!.Value;
+        usage.GetProperty("input_tokens").GetInt32().Should().Be(100);
+        usage.GetProperty("output_tokens").GetInt32().Should().Be(50);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(150);
+        usage.GetProperty("input_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(25);
+        usage.GetProperty("output_tokens_details").GetProperty("reasoning_tokens").GetInt32().Should().Be(12);
+        usage.GetProperty("some_future_field").GetString().Should().Be("future_value");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WhenResponseHasNoUsageObject_RawUsageIsNull()
+    {
+        // Edge case: a provider that doesn't surface `usage` at all (or a fixture that omits it).
+        // The capture observer treats `RawUsage = null` as "skip", so model clients must
+        // distinguish "no usage object" from "empty usage object" cleanly. Returning null here
+        // (rather than an empty cloned object) keeps the gate honest.
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    { "type": "message", "role": "assistant",
+                      "content": [{ "type": "output_text", "text": "ok" }] }
+                  ]
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAIModelClient(httpClient, new OpenAIModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "gpt-5"));
+
+        response.TokenUsage.Should().BeNull();
+        response.RawUsage.Should().BeNull();
+    }
+
     private static StringContent JsonContent(string json)
     {
         return new StringContent(json, Encoding.UTF8, "application/json");

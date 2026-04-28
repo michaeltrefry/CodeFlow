@@ -303,7 +303,24 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
         return new InvocationResponse(
             assistantMessage,
             stopReason,
-            ParseTokenUsage(root));
+            ParseTokenUsage(root),
+            CloneRawUsage(root));
+    }
+
+    /// <summary>
+    /// Clone the provider's <c>usage</c> object verbatim so the token-usage capture observer can
+    /// persist every reported field — including ones the schema-flat <see cref="TokenUsage"/>
+    /// drops (cache_creation_input_tokens, cache_read_input_tokens, output_tokens_details with
+    /// reasoning_tokens, etc.) and any future fields. Returns null when the response has no
+    /// usage object at all (capture is skipped).
+    /// </summary>
+    private static JsonElement? CloneRawUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        return usageElement.Clone();
     }
 
     private static void AppendMessageText(JsonElement messageItem, List<string> textParts)

@@ -271,6 +271,9 @@ public sealed class InvocationLoop
                     response.Message,
                     response.TokenUsage,
                     aggregateTokenUsage,
+                    request.Provider,
+                    request.Model,
+                    response.RawUsage,
                     cancellationToken);
             }
 

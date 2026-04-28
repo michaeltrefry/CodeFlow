@@ -77,7 +77,8 @@ public sealed class Agent : IAgentInvoker
                 configuration.MaxTokens,
                 configuration.Temperature,
                 toolExecutionContext,
-                configuration.DeclaredOutputs),
+                configuration.DeclaredOutputs,
+                configuration.Provider),
             observer,
             cancellationToken);
 

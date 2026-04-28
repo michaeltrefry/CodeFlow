@@ -235,6 +235,9 @@ public static class AgentTestEndpoints
             ChatMessage responseMessage,
             TokenUsage? callTokenUsage,
             TokenUsage? cumulativeTokenUsage,
+            string provider,
+            string model,
+            JsonElement? rawUsage,
             CancellationToken cancellationToken)
         {
             return WriteEventAsync(
@@ -244,10 +247,13 @@ public static class AgentTestEndpoints
                 {
                     invocationId,
                     roundNumber,
+                    provider,
+                    model,
                     assistantText = responseMessage.Content,
                     toolCallCount = responseMessage.ToolCalls?.Count ?? 0,
                     callTokenUsage = MapUsage(callTokenUsage),
                     cumulativeTokenUsage = MapUsage(cumulativeTokenUsage),
+                    rawUsage = rawUsage is { } element ? JsonSerializer.SerializeToNode(element) : null,
                     timestampUtc = DateTimeOffset.UtcNow
                 },
                 cancellationToken);
