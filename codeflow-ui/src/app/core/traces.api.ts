@@ -11,7 +11,8 @@ import {
   ReplayRequest,
   ReplayResponse,
   TraceDetail,
-  TraceSummary
+  TraceSummary,
+  TraceTokenUsageDto
 } from './models';
 
 @Injectable({ providedIn: 'root' })
@@ -67,5 +68,14 @@ export class TracesApi {
 
   replay(traceId: string, request: ReplayRequest): Observable<ReplayResponse> {
     return this.http.post<ReplayResponse>(`/api/traces/${traceId}/replay`, request);
+  }
+
+  /** Token Usage Tracking [Slice 5/6]: per-trace rollup at every level
+   *  (per-call, per-invocation, per-node, per-scope, per-trace) with
+   *  provider+model breakdowns. The inspector calls this once on open
+   *  and then merges incoming `TokenUsageRecorded` SSE events into the
+   *  rollups in-memory. */
+  getTokenUsage(traceId: string): Observable<TraceTokenUsageDto> {
+    return this.http.get<TraceTokenUsageDto>(`/api/traces/${traceId}/token-usage`);
   }
 }

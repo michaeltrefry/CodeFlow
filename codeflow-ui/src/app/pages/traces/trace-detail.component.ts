@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, input, signal, viewChild } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription, interval, retry, timer } from 'rxjs';
@@ -24,6 +24,7 @@ import { CardComponent } from '../../ui/card.component';
 import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
 import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
 import { TraceReplayPanelComponent } from './trace-replay-panel.component';
+import { TokenUsagePanelComponent } from './token-usage-panel.component';
 import { Observable } from 'rxjs';
 
 interface TimelineEntry {
@@ -86,6 +87,7 @@ interface ReviewLoopGroup {
     CardComponent,
     TraceTimelineComponent,
     TraceReplayPanelComponent,
+    TokenUsagePanelComponent,
   ],
   template: `
     <div class="page">
@@ -241,6 +243,11 @@ interface ReviewLoopGroup {
             }
           </cf-card>
         }
+
+        <cf-token-usage-panel
+          [traceId]="d.traceId"
+          [nodeLabel]="nodeLabelResolver"
+          [scopeLabel]="scopeLabelResolver"></cf-token-usage-panel>
 
         <cf-card title="Execution timeline" flush>
           <ng-template #cardRight><cf-chip mono>{{ timeline().length }} hops</cf-chip></ng-template>
@@ -452,6 +459,25 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
   private streamSub?: Subscription;
   private pollSub?: Subscription;
+
+  /** Token Usage panel reference for live SSE-event forwarding. The signal-form
+   *  `viewChild` resolves once the `@if (detail()` template branch renders. */
+  private readonly tokenUsagePanel = viewChild(TokenUsagePanelComponent);
+
+  /** Resolver bound on the panel: turn a node id into a workflow node label.
+   *  Stable arrow-fn reference so the input doesn't churn across change detections. */
+  protected readonly nodeLabelResolver = (nodeId: string): string => this.labelForNode(nodeId);
+
+  /** Resolver for scope ids — these are descendant saga TraceIds (subflow / ReviewLoop
+   *  child sagas). The descendant details map is the authoritative source for
+   *  `workflowKey` per scope; fall back to a short hex prefix when not yet loaded. */
+  protected readonly scopeLabelResolver = (scopeId: string): string => {
+    const childDetail = this.descendantDetails().get(scopeId);
+    if (childDetail?.workflowKey) {
+      return `${childDetail.workflowKey} (${scopeId.substring(0, 8)})`;
+    }
+    return scopeId.length > 8 ? scopeId.substring(0, 8) : scopeId;
+  };
   private loadedWorkflowKey: string | null = null;
   private loadedWorkflowVersion: number | null = null;
 
@@ -782,6 +808,16 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   private appendEvent(evt: TraceStreamEvent): void {
+    // Token Usage Tracking [Slice 6]: TokenUsageRecorded events are not timeline
+    // rows — they go to the token-usage panel for incremental rollup updates.
+    if (evt.kind === 'TokenUsageRecorded') {
+      const payload = evt.tokenUsage;
+      if (payload) {
+        this.tokenUsagePanel()?.appendStreamEvent(payload, evt.timestampUtc);
+      }
+      return;
+    }
+
     const entry: TimelineEntry = {
       id: `${evt.roundId}-${evt.agentKey}-${evt.kind}-${evt.timestampUtc}`,
       kind: evt.kind,

@@ -91,7 +91,7 @@ function parseSseFrame(raw: string): TraceStreamEvent | null {
     }
   }
 
-  if (eventName !== 'requested' && eventName !== 'completed') {
+  if (eventName !== 'requested' && eventName !== 'completed' && eventName !== 'tokenusagerecorded') {
     return null;
   }
   if (dataLines.length === 0) {

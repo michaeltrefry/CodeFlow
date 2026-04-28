@@ -500,12 +500,12 @@ export interface HitlDecisionRequest {
   fieldValues?: Record<string, unknown>;
 }
 
-export type TraceStreamEventKind = 'requested' | 'completed';
+export type TraceStreamEventKind = 'requested' | 'completed' | 'tokenusagerecorded';
 
 export interface TraceStreamEvent {
   traceId: string;
   roundId: string;
-  kind: 'Requested' | 'Completed';
+  kind: 'Requested' | 'Completed' | 'TokenUsageRecorded';
   agentKey: string;
   agentVersion: number;
   outputRef?: string | null;
@@ -513,6 +513,83 @@ export interface TraceStreamEvent {
   decision?: DecisionPortName | null;
   decisionPayload?: unknown;
   timestampUtc: string;
+  /** Populated only when `kind === 'TokenUsageRecorded'`. Carries the persisted
+   *  TokenUsageRecord — added by Token Usage Tracking slice 5. */
+  tokenUsage?: TokenUsageEventPayload | null;
+}
+
+// ---------- Token Usage Tracking (epic 7ac46356) ----------
+
+/** SSE-event payload mirroring `CodeFlow.Api/TraceEvents/TraceEvent.cs`'s
+ *  `TokenUsageEventPayload`. The trace inspector merges these into the per-trace
+ *  rollup signal so live overlays update incrementally during execution. */
+export interface TokenUsageEventPayload {
+  recordId: string;
+  nodeId: string;
+  invocationId: string;
+  scopeChain: string[];
+  provider: string;
+  model: string;
+  /** Provider-reported usage object verbatim (`input_tokens`, `output_tokens`,
+   *  cache fields, reasoning fields, etc.). Schema-less by design. */
+  usage: Record<string, unknown>;
+}
+
+/** Response shape of `GET /api/traces/{id}/token-usage`. All rollups are
+ *  computed on-read from the raw `TokenUsageRecord` rows — see
+ *  `CodeFlow.Api/TokenTracking/TokenUsageAggregator.cs`. */
+export interface TraceTokenUsageDto {
+  traceId: string;
+  total: TokenUsageRollup;
+  records: TokenUsageRecordDto[];
+  byInvocation: TokenUsageInvocationRollup[];
+  byNode: TokenUsageNodeRollup[];
+  byScope: TokenUsageScopeRollup[];
+}
+
+export interface TokenUsageRecordDto {
+  recordId: string;
+  nodeId: string;
+  invocationId: string;
+  scopeChain: string[];
+  provider: string;
+  model: string;
+  recordedAtUtc: string;
+  usage: Record<string, unknown>;
+  /** This single record's flattened totals (numeric leaves keyed by dotted JSON path). */
+  totals: Record<string, number>;
+}
+
+export interface TokenUsageRollup {
+  callCount: number;
+  /** Flattened sum of every numeric leaf across the rollup's records, keyed by
+   *  dotted JSON path (e.g. `output_tokens_details.reasoning_tokens`). */
+  totals: Record<string, number>;
+  /** Per-(provider, model) breakdown. Always populated, even when the rollup
+   *  spans only one combo, so the UI doesn't have to special-case. */
+  byProviderModel: TokenUsageProviderModelTotals[];
+}
+
+export interface TokenUsageProviderModelTotals {
+  provider: string;
+  model: string;
+  totals: Record<string, number>;
+}
+
+export interface TokenUsageInvocationRollup {
+  nodeId: string;
+  invocationId: string;
+  rollup: TokenUsageRollup;
+}
+
+export interface TokenUsageNodeRollup {
+  nodeId: string;
+  rollup: TokenUsageRollup;
+}
+
+export interface TokenUsageScopeRollup {
+  scopeId: string;
+  rollup: TokenUsageRollup;
 }
 
 // ---------- Replay-with-edit (T2) ----------
