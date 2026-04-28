@@ -1,5 +1,6 @@
 using Anthropic;
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.CascadeBump;
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
@@ -100,6 +101,20 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IAssistantSystemPromptProvider, DefaultAssistantSystemPromptProvider>();
         services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
         services.AddScoped<AssistantChatService>();
+
+        // HAA-4: Assistant tool registry. Each tool is scoped because most pull a per-request
+        // DbContext / repository. The dispatcher is also scoped so it sees the request's tool
+        // instances. Adding a new tool is a single AddScoped<IAssistantTool, ...>() line below.
+        services.AddScoped<IAssistantTool, ListWorkflowsTool>();
+        services.AddScoped<IAssistantTool, GetWorkflowTool>();
+        services.AddScoped<IAssistantTool, ListWorkflowVersionsTool>();
+        services.AddScoped<IAssistantTool, ListAgentsTool>();
+        services.AddScoped<IAssistantTool, GetAgentTool>();
+        services.AddScoped<IAssistantTool, ListAgentVersionsTool>();
+        services.AddScoped<IAssistantTool, FindWorkflowsUsingAgentTool>();
+        services.AddScoped<IAssistantTool, SearchPromptsTool>();
+        services.AddScoped<IAssistantTool, ListAgentRolesTool>();
+        services.AddScoped<AssistantToolDispatcher>();
 
         return services;
     }

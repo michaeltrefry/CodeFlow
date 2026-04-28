@@ -145,6 +145,19 @@ public static class AssistantEndpoints
                 usage = u.Record.Usage
             }, JsonOptions)),
             AssistantMessagePersisted m => ("assistant-message-persisted", JsonSerializer.Serialize(MapMessage(m.Message), JsonOptions)),
+            ToolCallStarted tcs => ("tool-call", JsonSerializer.Serialize(new
+            {
+                id = tcs.Id,
+                name = tcs.Name,
+                arguments = tcs.Arguments
+            }, JsonOptions)),
+            ToolCallCompleted tcc => ("tool-result", JsonSerializer.Serialize(new
+            {
+                id = tcc.Id,
+                name = tcc.Name,
+                result = tcc.ResultJson,
+                isError = tcc.IsError
+            }, JsonOptions)),
             TurnFailed f => ("error", JsonSerializer.Serialize(new { message = f.Message }, JsonOptions)),
             _ => ("unknown", "{}")
         };

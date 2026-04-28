@@ -176,6 +176,74 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task PostMessage_ToolLoop_StreamsToolCallAndResultEvents()
+    {
+        AssistantStub.Reset();
+        var args = JsonSerializer.SerializeToElement(new { key = "alpha" });
+        AssistantStub.SetReply(
+            new[]
+            {
+                (AssistantStreamItem)new AssistantTextDelta("Looking it up. "),
+                new AssistantToolCallStarted("call_1", "get_workflow", args),
+                new AssistantToolCallCompleted("call_1", "get_workflow", "{\"key\":\"alpha\",\"version\":1}", IsError: false),
+                new AssistantTextDelta("Found alpha v1."),
+                new AssistantTokenUsage(
+                    Provider: "anthropic",
+                    Model: "claude-sonnet-4",
+                    Usage: JsonSerializer.SerializeToElement(new { input_tokens = 50, output_tokens = 12 })),
+                new AssistantTurnDone("anthropic", "claude-sonnet-4")
+            });
+
+        using var client = CreateClientWithStub();
+        // Use a unique entity-scoped conversation so we don't share state with the homepage
+        // conversation other tests in this fixture create.
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "tool-loop-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "Show me alpha." })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        streamResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await streamResponse.Content.ReadAsStringAsync();
+        var events = ParseSse(body);
+        events.Select(e => e.Event).Should().BeEquivalentTo(new[]
+        {
+            "user-message-persisted",
+            "text-delta",
+            "tool-call",
+            "tool-result",
+            "text-delta",
+            "token-usage",
+            "assistant-message-persisted",
+            "done"
+        }, opts => opts.WithStrictOrdering());
+
+        var toolCall = events.Single(e => e.Event == "tool-call");
+        var toolCallPayload = JsonSerializer.Deserialize<JsonElement>(toolCall.Data);
+        toolCallPayload.GetProperty("id").GetString().Should().Be("call_1");
+        toolCallPayload.GetProperty("name").GetString().Should().Be("get_workflow");
+        toolCallPayload.GetProperty("arguments").GetProperty("key").GetString().Should().Be("alpha");
+
+        var toolResult = events.Single(e => e.Event == "tool-result");
+        var toolResultPayload = JsonSerializer.Deserialize<JsonElement>(toolResult.Data);
+        toolResultPayload.GetProperty("id").GetString().Should().Be("call_1");
+        toolResultPayload.GetProperty("isError").GetBoolean().Should().BeFalse();
+        toolResultPayload.GetProperty("result").GetString().Should().Contain("alpha");
+
+        // Final assistant message persists only the text content (tool call/result events are
+        // transient; only AssistantTextDelta items contribute to contentBuffer).
+        var persisted = events.Single(e => e.Event == "assistant-message-persisted");
+        var persistedPayload = JsonSerializer.Deserialize<JsonElement>(persisted.Data);
+        persistedPayload.GetProperty("content").GetString().Should().Be("Looking it up. Found alpha v1.");
+    }
+
     private static List<SseFrame> ParseSse(string body)
     {
         var frames = new List<SseFrame>();
