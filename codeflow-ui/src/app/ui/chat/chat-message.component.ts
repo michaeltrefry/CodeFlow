@@ -111,6 +111,36 @@ export interface ChatMessageView {
     .chat-msg-body--markdown a {
       color: var(--accent, #6ea8fe);
     }
+    /* HAA-9: assistant-emitted workflow package preview. Summary line on top, JSON in a
+       collapsed <details>. Uses the standard chat code-block treatment for the JSON. */
+    .chat-msg-body--markdown .cf-workflow-package {
+      border: 1px solid var(--border, rgba(255,255,255,0.10));
+      border-radius: var(--radius-sm, 6px);
+      background: color-mix(in oklab, var(--accent, #5765ff) 6%, transparent);
+      padding: 8px 10px;
+      margin: 0 0 10px 0;
+    }
+    .chat-msg-body--markdown .cf-workflow-package-summary {
+      font-size: var(--fs-sm, 12px);
+      color: var(--text, #E7E9EE);
+      margin-bottom: 6px;
+    }
+    .chat-msg-body--markdown .cf-workflow-package-summary code {
+      background: color-mix(in oklab, var(--text, #E7E9EE) 10%, transparent);
+    }
+    .chat-msg-body--markdown .cf-workflow-package-detail summary {
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text-muted, #9aa3b2);
+      padding: 2px 0;
+      user-select: none;
+    }
+    .chat-msg-body--markdown .cf-workflow-package-detail summary:hover {
+      color: var(--text, #E7E9EE);
+    }
+    .chat-msg-body--markdown .cf-workflow-package-detail pre {
+      margin: 6px 0 0 0;
+    }
   `],
 })
 export class ChatMessageComponent {
