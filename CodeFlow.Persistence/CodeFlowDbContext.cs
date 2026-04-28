@@ -45,6 +45,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<WorkflowFixtureEntity> WorkflowFixtures => Set<WorkflowFixtureEntity>();
 
+    public DbSet<TokenUsageRecordEntity> TokenUsageRecords => Set<TokenUsageRecordEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

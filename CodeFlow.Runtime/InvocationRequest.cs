@@ -5,4 +5,5 @@ public sealed record InvocationRequest(
     IReadOnlyList<ToolSchema>? Tools,
     string Model,
     int? MaxTokens = null,
-    double? Temperature = null);
+    double? Temperature = null,
+    Guid InvocationId = default);

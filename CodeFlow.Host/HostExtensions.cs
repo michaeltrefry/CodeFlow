@@ -107,6 +107,7 @@ public static class HostExtensions
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
         services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
         services.AddScoped<ILlmProviderSettingsRepository, LlmProviderSettingsRepository>();
+        services.AddScoped<ITokenUsageRecordRepository, TokenUsageRecordRepository>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);

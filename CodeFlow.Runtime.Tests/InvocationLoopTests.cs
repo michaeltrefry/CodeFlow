@@ -1140,6 +1140,101 @@ public sealed class InvocationLoopTests
         modelClient.InvocationCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task RunAsync_MintsStableInvocationIdPerRound_AndPropagatesToObserverAndRequest()
+    {
+        // Slice 1 of the Token Usage Tracking epic. The loop must mint a fresh Guid for every
+        // LLM round-trip and surface it via both the IInvocationObserver hooks AND the
+        // InvocationRequest passed to the model client. Slices 2-4 will lean on this Guid as
+        // the FK from a TokenUsageRecord back to the call that produced it.
+        var capturedRequests = new List<InvocationRequest>();
+        var modelClient = new ScriptedModelClient(
+        [
+            request =>
+            {
+                capturedRequests.Add(request);
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "First round content.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_set_ctx", InvocationLoop.SetContextToolName,
+                                new JsonObject { ["key"] = "k", ["value"] = JsonValue.Create(1) })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            },
+            request =>
+            {
+                capturedRequests.Add(request);
+                return new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Final round content.",
+                        ToolCalls:
+                        [
+                            new ToolCall("call_submit", InvocationLoop.SubmitToolName,
+                                new JsonObject { ["decision"] = "Completed" })
+                        ]),
+                    InvocationStopReason.ToolCalls);
+            }
+        ]);
+        var observer = new RecordingInvocationObserver();
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(
+            new InvocationLoopRequest(
+                [new ChatMessage(ChatMessageRole.User, "Run two rounds.")],
+                "gpt-5",
+                DeclaredOutputs: [new AgentOutputDeclaration("Completed", null, null)]),
+            observer);
+
+        result.Decision.PortName.Should().Be("Completed");
+
+        // Two rounds → two distinct, non-empty Guids surface from both surfaces.
+        observer.StartedInvocationIds.Should().HaveCount(2);
+        observer.CompletedInvocationIds.Should().HaveCount(2);
+        observer.StartedInvocationIds.Should().NotContain(Guid.Empty);
+        observer.StartedInvocationIds.Distinct().Should().HaveCount(2,
+            "each round must mint a fresh InvocationId; reusing an id across rounds would collapse two TokenUsageRecords into one and break per-round attribution");
+
+        // Started/Completed pair on the same round must share an id (i.e. both events came
+        // from the same minted Guid in the loop).
+        observer.StartedInvocationIds.Should().Equal(observer.CompletedInvocationIds);
+
+        // The Guids reach the model client too (slice 2-4 capture pivots on this).
+        capturedRequests.Should().HaveCount(2);
+        capturedRequests.Select(r => r.InvocationId).Should().Equal(observer.StartedInvocationIds);
+    }
+
+    private sealed class RecordingInvocationObserver : IInvocationObserver
+    {
+        public List<Guid> StartedInvocationIds { get; } = new();
+        public List<Guid> CompletedInvocationIds { get; } = new();
+
+        public Task OnModelCallStartedAsync(Guid invocationId, int roundNumber, CancellationToken cancellationToken)
+        {
+            StartedInvocationIds.Add(invocationId);
+            return Task.CompletedTask;
+        }
+
+        public Task OnModelCallCompletedAsync(
+            Guid invocationId,
+            int roundNumber,
+            ChatMessage responseMessage,
+            TokenUsage? callTokenUsage,
+            TokenUsage? cumulativeTokenUsage,
+            CancellationToken cancellationToken)
+        {
+            CompletedInvocationIds.Add(invocationId);
+            return Task.CompletedTask;
+        }
+
+        public Task OnToolCallStartedAsync(ToolCall call, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task OnToolCallCompletedAsync(ToolCall call, ToolResult result, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     private sealed class ScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient
     {
         private int nextStepIndex;

@@ -215,13 +215,14 @@ public static class AgentTestEndpoints
             this.httpContext = httpContext ?? throw new ArgumentNullException(nameof(httpContext));
         }
 
-        public Task OnModelCallStartedAsync(int roundNumber, CancellationToken cancellationToken)
+        public Task OnModelCallStartedAsync(Guid invocationId, int roundNumber, CancellationToken cancellationToken)
         {
             return WriteEventAsync(
                 httpContext,
                 "model-call-started",
                 new
                 {
+                    invocationId,
                     roundNumber,
                     timestampUtc = DateTimeOffset.UtcNow
                 },
@@ -229,6 +230,7 @@ public static class AgentTestEndpoints
         }
 
         public Task OnModelCallCompletedAsync(
+            Guid invocationId,
             int roundNumber,
             ChatMessage responseMessage,
             TokenUsage? callTokenUsage,
@@ -240,6 +242,7 @@ public static class AgentTestEndpoints
                 "model-call-completed",
                 new
                 {
+                    invocationId,
                     roundNumber,
                     assistantText = responseMessage.Content,
                     toolCallCount = responseMessage.ToolCalls?.Count ?? 0,
