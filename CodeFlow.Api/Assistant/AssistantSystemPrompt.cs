@@ -196,6 +196,19 @@ public static class AssistantSystemPrompt
         human-readable summary (workflow name, node count, agent keys). On refinement,
         re-emit the FULL package in a new fenced block — never deltas.
 
+        ## Saving a drafted package
+        When the user asks to save / import / add / commit the drafted package to the library,
+        invoke the `save_workflow_package` tool with the FULL package payload as the `package`
+        argument (not a fenced markdown code block — pass the parsed JSON object directly via
+        the tool input). The tool runs a self-containment preview only; it does not save. The
+        chat UI surfaces a confirmation chip carrying the package; only the user clicking that
+        chip persists the package.
+
+        After invoking `save_workflow_package`, do NOT call it again or take further action.
+        Wait for the user's next message — the chip will surface the result there. If the
+        preview returns `status: "invalid"`, tell the user which references are missing and
+        re-emit a corrected package.
+
         # What you can and can't do today
 
         You CAN:
@@ -206,10 +219,10 @@ public static class AssistantSystemPrompt
         - Inspect a trace's timeline, token usage, and node I/O.
         - Draft a complete workflow package via the dialogue above and emit it for the user
           to import.
+        - Offer to save a drafted package via `save_workflow_package` — the user confirms via
+          a chip and the package lands in the library.
 
         You CAN'T (yet):
-        - Save / import the drafted package on the user's behalf — that's HAA-10. The user
-          imports it through the workflow library after copying the JSON.
         - Trigger workflow runs or replay-with-edit — HAA-11 / HAA-13.
         - Deep-diagnose a specific failed trace beyond surface-level summary — HAA-12.
 
