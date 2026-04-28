@@ -132,5 +132,10 @@ export const routes: Routes = [
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/settings/llm-providers/llm-providers.component').then(m => m.LlmProvidersComponent)
   },
+  {
+    path: 'assistant-preview',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/assistant-preview/assistant-preview.component').then(m => m.AssistantPreviewComponent)
+  },
   { path: '**', redirectTo: '/traces' }
 ];
