@@ -222,9 +222,14 @@ public sealed class InvocationLoop
             }
 
             roundNumber++;
+            // One Guid per LLM round-trip. Stable correlator for token-usage records and any
+            // downstream observability that needs to attribute a captured event to a specific
+            // call. Provider-native ids (Anthropic `id`, OpenAI response id) aren't surfaced by
+            // our model clients, so we mint our own to stay provider-agnostic.
+            var invocationId = Guid.NewGuid();
             if (observer is not null)
             {
-                await observer.OnModelCallStartedAsync(roundNumber, cancellationToken);
+                await observer.OnModelCallStartedAsync(invocationId, roundNumber, cancellationToken);
             }
 
             // Hard precondition: every prior assistant `function_call` in the transcript must
@@ -240,7 +245,8 @@ public sealed class InvocationLoop
                     toolCatalog,
                     request.Model,
                     request.MaxTokens,
-                    request.Temperature),
+                    request.Temperature,
+                    invocationId),
                 cancellationToken);
 
             aggregateTokenUsage = SumTokenUsage(aggregateTokenUsage, response.TokenUsage);
@@ -260,6 +266,7 @@ public sealed class InvocationLoop
             if (observer is not null)
             {
                 await observer.OnModelCallCompletedAsync(
+                    invocationId,
                     roundNumber,
                     response.Message,
                     response.TokenUsage,

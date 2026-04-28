@@ -2,9 +2,10 @@ namespace CodeFlow.Runtime;
 
 public interface IInvocationObserver
 {
-    Task OnModelCallStartedAsync(int roundNumber, CancellationToken cancellationToken);
+    Task OnModelCallStartedAsync(Guid invocationId, int roundNumber, CancellationToken cancellationToken);
 
     Task OnModelCallCompletedAsync(
+        Guid invocationId,
         int roundNumber,
         ChatMessage responseMessage,
         TokenUsage? callTokenUsage,
