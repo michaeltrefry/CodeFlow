@@ -8,9 +8,9 @@ namespace CodeFlow.Persistence;
 /// Seeder semantics live in <see cref="SystemAgentRoleSeeder"/>:
 /// <list type="bullet">
 ///   <item><description>New install: insert role + grants.</description></item>
-///   <item><description>Existing system-managed role: re-sync grants so platform updates flow.</description></item>
-///   <item><description>Existing user role at the same key: skip (collision strategy — operators
-///   keep their custom role; the system variant is not seeded).</description></item>
+///   <item><description>Existing role at the same key (system-managed or operator-created):
+///   skip — once a row exists the operator owns it, including any subsequent edits to its
+///   grants. Catalog changes here only affect fresh installs.</description></item>
 /// </list>
 /// </summary>
 public static class SystemAgentRoles
