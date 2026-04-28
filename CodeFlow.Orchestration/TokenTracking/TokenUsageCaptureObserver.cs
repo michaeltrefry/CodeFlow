@@ -1,6 +1,8 @@
 using System.Text.Json;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
+using MassTransit;
+using TokenUsageRecorded = CodeFlow.Contracts.TokenUsageRecorded;
 
 namespace CodeFlow.Orchestration.TokenTracking;
 
@@ -27,6 +29,7 @@ namespace CodeFlow.Orchestration.TokenTracking;
 public sealed class TokenUsageCaptureObserver : IInvocationObserver
 {
     private readonly ITokenUsageRecordRepository repository;
+    private readonly IPublishEndpoint? publishEndpoint;
     private readonly Guid rootTraceId;
     private readonly Guid nodeId;
     private readonly IReadOnlyList<Guid> scopeChain;
@@ -37,9 +40,14 @@ public sealed class TokenUsageCaptureObserver : IInvocationObserver
         Guid rootTraceId,
         Guid nodeId,
         IReadOnlyList<Guid> scopeChain,
+        IPublishEndpoint? publishEndpoint = null,
         Func<DateTime>? nowProvider = null)
     {
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        // Optional so unit tests that don't spin up a MassTransit harness keep working. Production
+        // wires the inbound `ConsumeContext` (which itself implements IPublishEndpoint), so every
+        // captured record fans out as a `TokenUsageRecorded` event for the realtime SSE channel.
+        this.publishEndpoint = publishEndpoint;
         this.rootTraceId = rootTraceId;
         this.nodeId = nodeId;
         this.scopeChain = scopeChain ?? Array.Empty<Guid>();
@@ -77,6 +85,25 @@ public sealed class TokenUsageCaptureObserver : IInvocationObserver
             Usage: usage);
 
         await repository.AddAsync(record, cancellationToken);
+
+        if (publishEndpoint is not null)
+        {
+            // Publish AFTER the row is persisted so any consumer reading from the DB on receipt
+            // sees the same record. Slice 5: the API-side TraceTokenUsageRecordedObserver picks
+            // this up and fans it out onto the SSE channel for the trace inspector.
+            await publishEndpoint.Publish(
+                new TokenUsageRecorded(
+                    TraceId: record.TraceId,
+                    RecordId: record.Id,
+                    NodeId: record.NodeId,
+                    InvocationId: record.InvocationId,
+                    ScopeChain: record.ScopeChain,
+                    Provider: record.Provider,
+                    Model: record.Model,
+                    RecordedAtUtc: record.RecordedAtUtc,
+                    Usage: record.Usage),
+                cancellationToken);
+        }
     }
 
     public Task OnToolCallStartedAsync(ToolCall call, CancellationToken cancellationToken)

@@ -151,7 +151,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             // Pre-resolve scope chain ONCE for this consumer call so the per-round capture
             // observer doesn't re-query the saga table on every LLM round-trip. Subflow depth is
             // capped at 3 → at most 3 lookups for nested traces, one for top-level.
-            var captureObserver = await BuildTokenUsageCaptureObserverAsync(message, context.CancellationToken);
+            var captureObserver = await BuildTokenUsageCaptureObserverAsync(context, message, context.CancellationToken);
 
             var invocationResult = await agentInvoker.InvokeAsync(
                 invocationConfig,
@@ -197,6 +197,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     private async Task<IInvocationObserver?> BuildTokenUsageCaptureObserverAsync(
+        ConsumeContext<AgentInvokeRequested> context,
         AgentInvokeRequested message,
         CancellationToken cancellationToken)
     {
@@ -210,7 +211,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             tokenUsageRecords,
             rootTraceId: scope.RootTraceId,
             nodeId: message.NodeId,
-            scopeChain: scope.ScopeChain);
+            scopeChain: scope.ScopeChain,
+            // ConsumeContext implements IPublishEndpoint, so handing it through gives us
+            // correlated TokenUsageRecorded publishes onto the existing fabric — no separate
+            // IBus / IPublishEndpoint needs to be injected.
+            publishEndpoint: context);
     }
 
     private async Task<Uri?> TryWriteHttpDiagnosticsArtifactAsync(

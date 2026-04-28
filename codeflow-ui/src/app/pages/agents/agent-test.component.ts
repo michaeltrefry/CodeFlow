@@ -446,7 +446,6 @@ export class AgentTestComponent implements OnInit, OnDestroy {
     this.clear();
     this.running.set(true);
 
-    const token = this.auth.getAccessToken();
     this.streamSub = streamAgentTest(
       {
         agentKey: this.key(),
@@ -454,7 +453,7 @@ export class AgentTestComponent implements OnInit, OnDestroy {
         input: this.input(),
         variables: this.buildVariablesPayload()
       },
-      token
+      this.auth.getValidAccessToken()
     ).subscribe({
       next: evt => this.handleEvent(evt),
       error: err => {

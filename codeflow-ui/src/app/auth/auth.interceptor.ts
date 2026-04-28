@@ -1,41 +1,49 @@
 import { HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
+import { from, switchMap } from 'rxjs';
 import { AuthService } from './auth.service';
 
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const auth = inject(AuthService);
-  const token = auth.getAccessToken();
 
-  if (!token) {
+  // Only attach the bearer to CodeFlow API requests; otherwise OAuth/token endpoint calls or
+  // future external HttpClient calls could either deadlock refresh or leak the access token.
+  if (!isApiRequest(req.url)) {
     return next(req);
   }
 
-  // Only attach the bearer to same-origin requests; otherwise any future HttpClient call to an
-  // external service would leak the access token off-origin.
-  if (!isSameOrigin(req.url)) {
-    return next(req);
-  }
+  return from(auth.getValidAccessToken()).pipe(
+    switchMap(token => {
+      if (!token) {
+        return next(req);
+      }
 
-  return next(req.clone({
-    setHeaders: {
-      Authorization: `Bearer ${token}`
-    }
-  }));
+      return next(req.clone({
+        setHeaders: {
+          Authorization: `Bearer ${token}`
+        }
+      }));
+    })
+  );
 };
 
-function isSameOrigin(url: string): boolean {
+function isApiRequest(url: string): boolean {
   if (!url) {
-    return true;
+    return false;
   }
   // Relative URLs resolve against the current origin.
-  if (url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) {
+  if (url === '/api' || url.startsWith('/api/')) {
     return true;
   }
   try {
-    const origin = typeof window !== 'undefined' && window.location
+    const base = typeof window !== 'undefined' && window.location
       ? window.location.origin
-      : '';
-    return origin.length > 0 && url.startsWith(origin + '/');
+      : 'http://localhost';
+    const parsed = new URL(url, base);
+    const currentOrigin = typeof window !== 'undefined' && window.location
+      ? window.location.origin
+      : parsed.origin;
+    return parsed.origin === currentOrigin && (parsed.pathname === '/api' || parsed.pathname.startsWith('/api/'));
   } catch {
     return false;
   }

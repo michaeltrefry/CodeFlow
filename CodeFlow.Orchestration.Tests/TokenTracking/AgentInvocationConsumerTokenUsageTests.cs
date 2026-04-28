@@ -105,6 +105,26 @@ public sealed class AgentInvocationConsumerTokenUsageTests
             second.Usage.GetProperty("input_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(3);
             second.InvocationId.Should().NotBe(first.InvocationId,
                 "each LLM round-trip mints a fresh InvocationId so the records can be distinguished");
+
+            // Slice 5 acceptance: writing a record produces exactly one realtime event with the
+            // expected payload. The orchestration-side observer publishes a TokenUsageRecorded
+            // contract; the API-side TraceTokenUsageRecordedObserver picks it up and feeds the
+            // SSE broker. Here we verify the publish landed twice (once per round) with the
+            // record-level fields that the SSE channel needs.
+            (await harness.Published.Any<TokenUsageRecorded>()).Should().BeTrue();
+            var publishedTokenEvents = await harness.Published.SelectAsync<TokenUsageRecorded>().ToListAsync();
+            publishedTokenEvents.Should().HaveCount(2);
+
+            var publishedFirst = publishedTokenEvents
+                .Single(p => p.MessageObject is TokenUsageRecorded msg && msg.RecordId == first.Id)
+                .Context.Message;
+            publishedFirst.TraceId.Should().Be(traceId);
+            publishedFirst.NodeId.Should().Be(nodeId);
+            publishedFirst.InvocationId.Should().Be(first.InvocationId);
+            publishedFirst.ScopeChain.Should().BeEmpty();
+            publishedFirst.Provider.Should().Be("openai");
+            publishedFirst.Model.Should().Be("gpt-5");
+            publishedFirst.Usage.GetProperty("output_tokens_details").GetProperty("reasoning_tokens").GetInt32().Should().Be(2);
         }
         finally
         {
