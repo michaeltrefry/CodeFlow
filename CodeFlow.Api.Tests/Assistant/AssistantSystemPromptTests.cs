@@ -92,13 +92,47 @@ public sealed class AssistantSystemPromptTests
     }
 
     [Fact]
-    public void DefaultPrompt_StatesHaa3Limitations()
+    public void DefaultPrompt_DescribesCurrentCapabilitiesAndGaps()
     {
+        // The prompt's "what you can / can't do" stanza is the assistant's self-awareness about
+        // shipped vs unshipped slices. As features land it must be kept current — these checks
+        // pin the current state so a future PR that lands HAA-10 etc. updates this test
+        // intentionally, not by accident.
         var prompt = AssistantSystemPrompt.Default;
-        prompt.Should().Contain("HAA-3",
-            because: "the prompt should be self-aware about what slice it ships with");
-        prompt.Should().Contain("no live introspection",
-            because: "the assistant must explicitly tell users it can't query DB / run workflows yet");
+        prompt.Should().Contain("Inspect a trace's timeline",
+            because: "HAA-4 + HAA-5 wired tools; the prompt must claim trace-introspection capability");
+        prompt.Should().Contain("Draft a complete workflow package",
+            because: "HAA-9 made drafting a real capability");
+        prompt.Should().Contain("HAA-10",
+            because: "the prompt should still call out save/import as the next gap");
+        prompt.Should().Contain("HAA-11",
+            because: "the prompt should still call out workflow-run as future");
+        prompt.Should().Contain("HAA-12",
+            because: "the prompt should still call out deep trace diagnosis as future");
+    }
+
+    [Theory]
+    [InlineData("schemaVersion")]
+    [InlineData("codeflow.workflow-package.v1")]
+    [InlineData("entryPoint")]
+    [InlineData("agentRoleAssignments")]
+    [InlineData("Self-containment")]
+    [InlineData("cf-workflow-package")]
+    public void DefaultPrompt_DescribesPackageEmissionContract(string token)
+    {
+        // HAA-9 emission contract: the assistant must know the package schema's top-level
+        // shape, the self-containment rule, and the fence language hint the chat UI looks for.
+        AssistantSystemPrompt.Default.Should().Contain(token,
+            because: $"HAA-9 emission contract requires the prompt to mention '{token}'");
+    }
+
+    [Fact]
+    public void DefaultPrompt_DescribesRefinementBehavior()
+    {
+        // Acceptance criterion: refining mid-conversation produces a coherent updated package
+        // without losing earlier decisions, and re-emits the FULL package, never deltas.
+        AssistantSystemPrompt.Default.Should().Contain("never deltas",
+            because: "the prompt must explicitly forbid emitting partial / diff packages on refinement");
     }
 
     [Fact]
