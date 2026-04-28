@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-28T14:00:00Z",
+    "migrationNotes": "sc-82 — Variant V1 of the swarm-bench harness (Epic 38: Self-Organizing Agents). Apples-to-apples comparison floor for V2 (sc-40 hand-authored Sequential subflow) and V3 (sc-43 Swarm node). One workflow `swarm-bench-baseline` v1 with two nodes: a Start that seeds workflow.mission from input via inputScript, and a single Agent that produces the answer and submits on a terminal port `Answered` (unwired so the agent's output becomes the workflow's terminal artifact). Authored at the library default (openai/gpt-5.4) to match V2; the bench harness in sc-41 pins all variants to one model — flip by editing the two agents (`swarm-bench-baseline-init`, `swarm-bench-baseline-agent`) and bumping versions before each run. The baseline-agent prompt is intentionally generalist — no role talk, no abstention protocol, no panel context — so any V2/V3 lift over V1 reflects emergent multi-perspective contribution rather than prompt sophistication."
+  },
+  "entryPoint": {
+    "key": "swarm-bench-baseline",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "swarm-bench-baseline",
+      "version": 1,
+      "name": "Swarm Bench — Baseline (V1)",
+      "maxRoundsPerRound": 5,
+      "category": "Workflow",
+      "tags": ["swarm", "baseline", "bench", "swarm-bench"],
+      "createdAtUtc": "2026-04-28T14:00:00Z",
+      "workflowVarsReads": ["mission"],
+      "workflowVarsWrites": ["mission"],
+      "nodes": [
+        {
+          "id": "5a90ba51-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "swarm-bench-baseline-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "setWorkflow('mission', input.text);"
+        },
+        {
+          "id": "5a90ba51-0001-0001-0001-000000000002",
+          "kind": "Agent",
+          "agentKey": "swarm-bench-baseline-agent",
+          "agentVersion": 1,
+          "outputPorts": ["Answered"],
+          "layoutX": 350,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "5a90ba51-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "5a90ba51-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Mission",
+          "kind": "Text",
+          "required": true,
+          "description": "The mission text the agent should produce an answer for. Use the same input text as the V2 / V3 variants in the bench so the comparison is apples-to-apples.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "swarm-bench-baseline-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Bench Baseline Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the swarm-bench baseline workflow. The mission has already been seeded into workflow state by an input script.\n\nYour only job: write the single word `Initialized.` as your message content, then submit on port `Continue`.",
+        "promptTemplate": "Mission has been seeded into the workflow bag as `workflow.mission`. Acknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands off to the answering agent. The mission is already in the workflow bag; this agent does no setup of its own."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T14:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands off to the answering agent."
+        }
+      ]
+    },
+    {
+      "key": "swarm-bench-baseline-agent",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Bench Baseline Agent",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are an LLM tasked with producing the best single-shot answer to a mission. There is no panel and no protocol — just you and the mission. Aim for a complete, well-structured answer in the right size for what's asked.\n\nSubmit on port `Answered`. Write your full answer as the assistant message content before calling submit.",
+        "promptTemplate": "## Mission\n\n{{ workflow.mission }}\n\nProduce your best answer. Submit on `Answered`.",
+        "maxTokens": 6000,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Answered",
+            "description": "The agent's answer to the mission. Unwired in the workflow — the agent's message body is the workflow's terminal artifact."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T14:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Answered",
+          "description": "Single-shot answer to the mission. Terminal artifact of the V1 baseline workflow."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "swarm-bench-baseline-init", "roleKeys": [] },
+    { "agentKey": "swarm-bench-baseline-agent", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

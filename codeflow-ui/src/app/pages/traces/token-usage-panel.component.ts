@@ -159,16 +159,16 @@ import { aggregateTokenUsage, recordDtoFromStreamEvent } from './token-usage-agg
   `,
   styles: [`
     .empty-state { padding: 16px; }
-    .section + .section { border-top: 1px solid var(--cf-border, #e5e7eb); }
+    .section + .section { border-top: 1px solid var(--border); }
     .section-head { padding: 10px 16px 6px; display: flex; align-items: baseline; gap: 12px; }
-    .section-head h4 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--cf-muted, #6b7280); }
+    .section-head h4 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
     .section-body { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 10px; }
-    .rollup-row { padding: 10px 12px; border: 1px solid var(--cf-border, #e5e7eb); border-radius: 6px; background: var(--cf-surface-1, #fafafa); }
+    .rollup-row { padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
     .rollup-row-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
     .totals-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 16px; }
     .totals-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
     .totals-list.nested { margin-top: 4px; }
-    .combo-breakdown { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--cf-border, #e5e7eb); display: flex; flex-direction: column; gap: 8px; }
+    .combo-breakdown { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 8px; }
     .combo-head { margin-bottom: 4px; }
   `],
 })
