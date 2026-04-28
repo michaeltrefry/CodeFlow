@@ -39,6 +39,11 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       // Transform exposes a single synthesized "Out" port (validator allows [] or ['Out']).
       // Declare it explicitly so the canvas renders the wirable handle.
       return ['Out'];
+    case 'Swarm':
+      // Swarm's terminal port is the synthesizer agent's declared output. Default to
+      // "Synthesized" — matches the convention used by the hand-authored library entries
+      // that pre-date the runtime; authors override via the agent picker.
+      return ['Synthesized'];
   }
 }
 
@@ -123,7 +128,7 @@ export async function loadIntoEditor(
   return idToNode;
 }
 
-export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds' | 'outputType'>): string {
+export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds' | 'outputType' | 'swarmProtocol' | 'swarmN'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
@@ -140,6 +145,11 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
       return `ReviewLoop ${rounds} — ${key}`;
     }
     case 'Transform': return `Transform → ${node.outputType ?? 'string'}`;
+    case 'Swarm': {
+      const protocol = node.swarmProtocol ?? '?';
+      const n = node.swarmN ?? '?';
+      return `Swarm ${protocol} ×${n}`;
+    }
   }
 }
 

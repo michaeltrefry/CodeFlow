@@ -45,4 +45,22 @@ public sealed class WorkflowNodeEntity
     public string? Template { get; set; }
 
     public string OutputType { get; set; } = "string";
+
+    public string? SwarmProtocol { get; set; }
+
+    public int? SwarmN { get; set; }
+
+    public string? ContributorAgentKey { get; set; }
+
+    public int? ContributorAgentVersion { get; set; }
+
+    public string? SynthesizerAgentKey { get; set; }
+
+    public int? SynthesizerAgentVersion { get; set; }
+
+    public string? CoordinatorAgentKey { get; set; }
+
+    public int? CoordinatorAgentVersion { get; set; }
+
+    public int? SwarmTokenBudget { get; set; }
 }

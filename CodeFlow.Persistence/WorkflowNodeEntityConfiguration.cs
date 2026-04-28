@@ -98,6 +98,37 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasDefaultValue("string")
             .IsRequired();
 
+        builder.Property(node => node.SwarmProtocol)
+            .HasColumnName("swarm_protocol")
+            .HasMaxLength(32);
+
+        builder.Property(node => node.SwarmN)
+            .HasColumnName("swarm_n");
+
+        builder.Property(node => node.ContributorAgentKey)
+            .HasColumnName("contributor_agent_key")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.ContributorAgentVersion)
+            .HasColumnName("contributor_agent_version");
+
+        builder.Property(node => node.SynthesizerAgentKey)
+            .HasColumnName("synthesizer_agent_key")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.SynthesizerAgentVersion)
+            .HasColumnName("synthesizer_agent_version");
+
+        builder.Property(node => node.CoordinatorAgentKey)
+            .HasColumnName("coordinator_agent_key")
+            .HasMaxLength(128);
+
+        builder.Property(node => node.CoordinatorAgentVersion)
+            .HasColumnName("coordinator_agent_version");
+
+        builder.Property(node => node.SwarmTokenBudget)
+            .HasColumnName("swarm_token_budget");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

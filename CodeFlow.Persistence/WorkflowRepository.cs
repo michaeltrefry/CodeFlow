@@ -169,6 +169,15 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                         Template = node.Template,
                         OutputType = NormalizeOutputType(node.OutputType),
+                        SwarmProtocol = NormalizeOptionalString(node.SwarmProtocol),
+                        SwarmN = node.SwarmN,
+                        ContributorAgentKey = NormalizeOptionalString(node.ContributorAgentKey),
+                        ContributorAgentVersion = node.ContributorAgentVersion,
+                        SynthesizerAgentKey = NormalizeOptionalString(node.SynthesizerAgentKey),
+                        SynthesizerAgentVersion = node.SynthesizerAgentVersion,
+                        CoordinatorAgentKey = NormalizeOptionalString(node.CoordinatorAgentKey),
+                        CoordinatorAgentVersion = node.CoordinatorAgentVersion,
+                        SwarmTokenBudget = node.SwarmTokenBudget,
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -298,7 +307,16 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.MirrorOutputToWorkflowVar,
             WorkflowJson.DeserializePortReplacements(entity.OutputPortReplacementsJson),
             entity.Template,
-            NormalizeOutputType(entity.OutputType));
+            NormalizeOutputType(entity.OutputType),
+            entity.SwarmProtocol,
+            entity.SwarmN,
+            entity.ContributorAgentKey,
+            entity.ContributorAgentVersion,
+            entity.SynthesizerAgentKey,
+            entity.SynthesizerAgentVersion,
+            entity.CoordinatorAgentKey,
+            entity.CoordinatorAgentVersion,
+            entity.SwarmTokenBudget);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

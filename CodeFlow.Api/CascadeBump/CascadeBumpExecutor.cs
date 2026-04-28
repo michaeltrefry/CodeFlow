@@ -121,6 +121,33 @@ public sealed class CascadeBumpExecutor(
             subflowVersion = newSubflowVersion;
         }
 
+        var contributorVersion = node.ContributorAgentVersion;
+        if (!string.IsNullOrWhiteSpace(node.ContributorAgentKey)
+            && contributorVersion is int currentContributorVersion
+            && rewrittenAgents.TryGetValue(node.ContributorAgentKey, out var newContributorVersion)
+            && newContributorVersion != currentContributorVersion)
+        {
+            contributorVersion = newContributorVersion;
+        }
+
+        var synthesizerVersion = node.SynthesizerAgentVersion;
+        if (!string.IsNullOrWhiteSpace(node.SynthesizerAgentKey)
+            && synthesizerVersion is int currentSynthesizerVersion
+            && rewrittenAgents.TryGetValue(node.SynthesizerAgentKey, out var newSynthesizerVersion)
+            && newSynthesizerVersion != currentSynthesizerVersion)
+        {
+            synthesizerVersion = newSynthesizerVersion;
+        }
+
+        var coordinatorVersion = node.CoordinatorAgentVersion;
+        if (!string.IsNullOrWhiteSpace(node.CoordinatorAgentKey)
+            && coordinatorVersion is int currentCoordinatorVersion
+            && rewrittenAgents.TryGetValue(node.CoordinatorAgentKey, out var newCoordinatorVersion)
+            && newCoordinatorVersion != currentCoordinatorVersion)
+        {
+            coordinatorVersion = newCoordinatorVersion;
+        }
+
         return new WorkflowNodeDraft(
             Id: node.Id,
             Kind: node.Kind,
@@ -138,6 +165,17 @@ public sealed class CascadeBumpExecutor(
             OptOutLastRoundReminder: node.OptOutLastRoundReminder,
             RejectionHistory: node.RejectionHistory,
             MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
-            OutputPortReplacements: node.OutputPortReplacements);
+            OutputPortReplacements: node.OutputPortReplacements,
+            Template: node.Template,
+            OutputType: node.OutputType,
+            SwarmProtocol: node.SwarmProtocol,
+            SwarmN: node.SwarmN,
+            ContributorAgentKey: node.ContributorAgentKey,
+            ContributorAgentVersion: contributorVersion,
+            SynthesizerAgentKey: node.SynthesizerAgentKey,
+            SynthesizerAgentVersion: synthesizerVersion,
+            CoordinatorAgentKey: node.CoordinatorAgentKey,
+            CoordinatorAgentVersion: coordinatorVersion,
+            SwarmTokenBudget: node.SwarmTokenBudget);
     }
 }

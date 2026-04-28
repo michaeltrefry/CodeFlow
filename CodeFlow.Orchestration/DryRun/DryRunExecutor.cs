@@ -13,7 +13,12 @@ namespace CodeFlow.Orchestration.DryRun;
 ///
 /// Scope notes (v4):
 /// <list type="bullet">
-///   <item><description>Supports node kinds Start, Agent, Logic, Hitl, Subflow, ReviewLoop.</description></item>
+///   <item><description>Supports node kinds Start, Agent, Logic, Hitl, Subflow, ReviewLoop, Transform.</description></item>
+///   <item><description><b>Swarm nodes are non-replayable</b> (sc-43). Encountering one fails the
+///     walk with a clear message — replay-with-edit can't substitute prior contributor /
+///     synthesizer outputs the way it does for Agent/Hitl, and the dry-run executor doesn't
+///     invoke live LLMs to re-run the swarm fresh. Authors who need to vary upstream input to a
+///     swarm should branch the workflow at the swarm's input port.</description></item>
 ///   <item><description>Reuses <see cref="LogicNodeScriptHost"/> for Logic-node script execution
 ///     AND for author-attached input scripts (Start/Agent/Hitl) and output scripts (Agent), so
 ///     script semantics match the saga byte-for-byte.</description></item>
@@ -836,6 +841,34 @@ public sealed class DryRunExecutor
                     currentInput = transformFinal;
                     break;
                 }
+
+                case WorkflowNodeKind.Swarm:
+                    // sc-43: Swarm nodes are non-replayable. The saga executes them by dispatching
+                    // N+1 (or N+2) agent calls in sequence, each emerging from the same Swarm node
+                    // ID; replay-with-edit can't substitute prior outputs and the dry-run executor
+                    // doesn't invoke live LLMs to re-run them. Fail the walk with a clear message —
+                    // authors can branch upstream of the swarm if they need to vary inputs.
+                    state.RecordEvent(new DryRunEvent(
+                        Ordinal: state.NextOrdinal(),
+                        Kind: DryRunEventKind.Diagnostic,
+                        NodeId: currentNode.Id,
+                        NodeKind: currentNode.Kind.ToString(),
+                        AgentKey: null,
+                        PortName: null,
+                        Message: "Swarm nodes are non-replayable; dry-run / replay-with-edit cannot simulate them.",
+                        InputPreview: Preview(currentInput),
+                        OutputPreview: null,
+                        ReviewRound: reviewRound,
+                        MaxRounds: maxRounds,
+                        SubflowDepth: depth,
+                        SubflowKey: null,
+                        SubflowVersion: null,
+                        Logs: null,
+                        DecisionPayload: null));
+                    return DryRunWalkResult.Failed(
+                        $"Swarm node {currentNode.Id} cannot be dry-run (non-replayable). "
+                        + "Replay re-runs swarm bodies fresh; this dry-run path doesn't invoke live LLMs.",
+                        contextVars, workflowVars);
 
                 default:
                     return DryRunWalkResult.Failed(

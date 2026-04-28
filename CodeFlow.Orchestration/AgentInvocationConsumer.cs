@@ -123,6 +123,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                         message.ReviewRound,
                         message.ReviewMaxRounds,
                         message.WorkflowContext),
+                    AgentPromptScopeBuilder.BuildSwarmVariables(message.SwarmContext),
                     AgentPromptScopeBuilder.BuildInputVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs

@@ -314,11 +314,13 @@ export interface LlmProviderModelOption {
   model: string;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
 export type WorkflowTransformOutputType = 'string' | 'json';
+
+export type WorkflowSwarmProtocol = 'Sequential' | 'Coordinator';
 
 export interface WorkflowNode {
   id: string;
@@ -337,6 +339,16 @@ export interface WorkflowNode {
   // Transform nodes only: the Scriban template body and how its rendered output is interpreted.
   template?: string | null;
   outputType?: WorkflowTransformOutputType;
+  // Swarm nodes only (sc-43). Sequential ships in v1; Coordinator dispatch lands in sc-46.
+  swarmProtocol?: WorkflowSwarmProtocol | null;
+  swarmN?: number | null;
+  contributorAgentKey?: string | null;
+  contributorAgentVersion?: number | null;
+  synthesizerAgentKey?: string | null;
+  synthesizerAgentVersion?: number | null;
+  coordinatorAgentKey?: string | null;
+  coordinatorAgentVersion?: number | null;
+  swarmTokenBudget?: number | null;
 }
 
 export interface WorkflowEdge {

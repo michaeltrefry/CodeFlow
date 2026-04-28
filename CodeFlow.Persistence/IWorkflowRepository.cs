@@ -63,7 +63,16 @@ public sealed record WorkflowNodeDraft(
     string? MirrorOutputToWorkflowVar = null,
     IReadOnlyDictionary<string, string>? OutputPortReplacements = null,
     string? Template = null,
-    string OutputType = "string");
+    string OutputType = "string",
+    string? SwarmProtocol = null,
+    int? SwarmN = null,
+    string? ContributorAgentKey = null,
+    int? ContributorAgentVersion = null,
+    string? SynthesizerAgentKey = null,
+    int? SynthesizerAgentVersion = null,
+    string? CoordinatorAgentKey = null,
+    int? CoordinatorAgentVersion = null,
+    int? SwarmTokenBudget = null);
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,

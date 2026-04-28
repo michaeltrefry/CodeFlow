@@ -12,7 +12,7 @@ using System.Text.Json;
 
 namespace CodeFlow.Orchestration;
 
-public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowSagaStateEntity>
+public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowSagaStateEntity>
 {
     public const string PendingTransitionCompleted = "Completed";
     public const string PendingTransitionFailed = "Failed";
@@ -745,6 +745,48 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             saga.WorkflowKey,
             saga.WorkflowVersion,
             context.CancellationToken);
+
+        // sc-43: when the saga is inside a Swarm node and the completion is from a contributor
+        // that succeeded (output port != Failed), append the contribution, dispatch the next
+        // contributor or the synthesizer, and return — the swarm-internal flow handles its own
+        // decision-row writes and dispatch. The synthesizer's completion (and contributor-Failed
+        // completions) fall through to the normal port-routing flow below: the saga state gets
+        // cleared so the swarm node looks like any other agent-bearing node from there on.
+        if (saga.CurrentSwarmNodeId is Guid swarmNodeId
+            && swarmNodeId == message.FromNodeId)
+        {
+            var swarmNode = workflow.FindNode(swarmNodeId);
+            var isContributor = swarmNode is { Kind: WorkflowNodeKind.Swarm }
+                && IsSwarmContributorCompletion(swarmNode, message);
+            var isFailedPort = string.Equals(message.OutputPortName, ImplicitFailedPort, StringComparison.Ordinal);
+
+            if (isContributor && !isFailedPort)
+            {
+                var swarmFailureReason = await HandleSwarmContributorCompletionAsync(
+                    context,
+                    agentConfigRepo,
+                    artifactStore,
+                    saga,
+                    workflow,
+                    swarmNode!,
+                    message);
+
+                if (swarmFailureReason is not null)
+                {
+                    saga.PendingTransition = PendingTransitionFailed;
+                    saga.FailureReason = swarmFailureReason;
+                    saga.UpdatedAtUtc = DateTime.UtcNow;
+                }
+
+                return;
+            }
+
+            // Synthesizer completion or contributor-Failed completion: clear swarm state so the
+            // normal flow below routes the swarm node's outgoing edges based on the message's
+            // port name. For synthesizers that's the synthesized port; for failed contributors
+            // it's the Failed port the swarm node terminates on.
+            ClearSwarmState(saga);
+        }
 
         var portResolution = await ResolveSourcePortAsync(
             context,
@@ -2194,6 +2236,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
                         ?? throw new InvalidOperationException(
                             $"ReviewLoop node {node.Id} in workflow {workflow.Key} v{workflow.Version} has no ReviewMaxRounds configured."),
                     loopDecision: ResolveLoopDecision(node)),
+            WorkflowNodeKind.Swarm =>
+                PublishSwarmEntryAsync(context, agentConfigRepo, artifactStore, saga, workflow, node, inputRef, roundId),
             WorkflowNodeKind.Logic =>
                 throw new InvalidOperationException(
                     "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),

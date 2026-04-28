@@ -29,6 +29,20 @@ public static class WorkflowValidator
     /// <summary>Synthesized output port emitted by a Transform node on successful render.</summary>
     internal const string TransformOutputPort = "Out";
 
+    /// <summary>Inclusive lower bound for a Swarm node's <c>n</c> (contributor count cap).</summary>
+    public const int MinSwarmN = 1;
+    /// <summary>Inclusive upper bound for a Swarm node's <c>n</c>. Conservative for v1 — the
+    /// source paper sweeps to N=64 but our trace-inspector UI hasn't been pressure-tested at that
+    /// fan-out. Bumping is a config-only change later. See docs/swarm-node.md §"Validator rules".</summary>
+    public const int MaxSwarmN = 16;
+
+    /// <summary>Allowed protocol values on a Swarm node. Sequential implements in sc-43;
+    /// Coordinator dispatch lands in sc-46 but the validator accepts both as soon as the runtime
+    /// can save them. Authors can stage a Coordinator workflow and have it stand idle until sc-46
+    /// ships; the dispatch path will refuse it explicitly until then.</summary>
+    internal const string SwarmProtocolSequential = "Sequential";
+    internal const string SwarmProtocolCoordinator = "Coordinator";
+
     public static async Task<ValidationResult> ValidateAsync(
         string key,
         string? name,
@@ -181,6 +195,14 @@ public static class WorkflowValidator
                     }
                     break;
 
+                case WorkflowNodeKind.Swarm:
+                    var swarmValidation = ValidateSwarmNode(node);
+                    if (!swarmValidation.IsValid)
+                    {
+                        return swarmValidation;
+                    }
+                    break;
+
                 case WorkflowNodeKind.ReviewLoop:
                     if (string.IsNullOrWhiteSpace(node.SubflowKey))
                     {
@@ -281,9 +303,20 @@ public static class WorkflowValidator
             }
         }
 
+        // Collect every agent-key reference across node kinds: the canonical AgentKey on
+        // Start/Agent/Hitl, and the contributor / synthesizer / coordinator keys on Swarm nodes.
+        // The DB existence check below treats them all as the same dimension — every key the
+        // workflow points at must resolve to a saved agent.
+        var swarmAgentKeys = nodes
+            .Where(n => n.Kind == WorkflowNodeKind.Swarm)
+            .SelectMany(n => new[] { n.ContributorAgentKey, n.SynthesizerAgentKey, n.CoordinatorAgentKey })
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => k!.Trim());
+
         var agentKeyedNodes = nodes
             .Where(n => !string.IsNullOrWhiteSpace(n.AgentKey))
             .Select(n => n.AgentKey!.Trim())
+            .Concat(swarmAgentKeys)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -507,6 +540,111 @@ public static class WorkflowValidator
         return null;
     }
 
+    /// <summary>
+    /// Save-time validation for <see cref="WorkflowNodeKind.Swarm"/>. Mirrors the rules in
+    /// docs/swarm-node.md §"Validator rules". Agent-existence is checked alongside other agent
+    /// references in the workflow-level pass below; this method only checks the node's own
+    /// configuration shape.
+    /// </summary>
+    private static ValidationResult ValidateSwarmNode(WorkflowNodeDto node)
+    {
+        if (string.IsNullOrWhiteSpace(node.SwarmProtocol))
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must declare a protocol "
+                + $"('{SwarmProtocolSequential}' or '{SwarmProtocolCoordinator}').");
+        }
+
+        var protocol = node.SwarmProtocol.Trim();
+        var isCoordinator = string.Equals(protocol, SwarmProtocolCoordinator, StringComparison.Ordinal);
+        var isSequential = string.Equals(protocol, SwarmProtocolSequential, StringComparison.Ordinal);
+        if (!isCoordinator && !isSequential)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} has unknown protocol '{protocol}'. "
+                + $"Allowed values: '{SwarmProtocolSequential}', '{SwarmProtocolCoordinator}'.");
+        }
+
+        if (node.SwarmN is not int n)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must set n (contributor / worker count).");
+        }
+
+        if (n < MinSwarmN || n > MaxSwarmN)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} has n = {n}, which must be between {MinSwarmN} and {MaxSwarmN}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.ContributorAgentKey))
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must set ContributorAgentKey.");
+        }
+
+        if (node.ContributorAgentVersion is not int)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must pin ContributorAgentVersion. "
+                + "Latest-version resolution must happen at parent-workflow save time.");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.SynthesizerAgentKey))
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must set SynthesizerAgentKey.");
+        }
+
+        if (node.SynthesizerAgentVersion is not int)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must pin SynthesizerAgentVersion. "
+                + "Latest-version resolution must happen at parent-workflow save time.");
+        }
+
+        if (isCoordinator)
+        {
+            if (string.IsNullOrWhiteSpace(node.CoordinatorAgentKey))
+            {
+                return ValidationResult.Fail(
+                    $"Swarm node {node.Id} (Coordinator) must set CoordinatorAgentKey.");
+            }
+            if (node.CoordinatorAgentVersion is not int)
+            {
+                return ValidationResult.Fail(
+                    $"Swarm node {node.Id} (Coordinator) must pin CoordinatorAgentVersion. "
+                    + "Latest-version resolution must happen at parent-workflow save time.");
+            }
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(node.CoordinatorAgentKey)
+                || node.CoordinatorAgentVersion is int)
+            {
+                return ValidationResult.Fail(
+                    $"Swarm node {node.Id} (Sequential) must not declare a CoordinatorAgent — "
+                    + "the coordinator agent is exclusive to the Coordinator protocol.");
+            }
+        }
+
+        if (node.SwarmTokenBudget is int budget && budget <= 0)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} has SwarmTokenBudget = {budget}, which must be > 0 when set "
+                + "(or null for unbounded).");
+        }
+
+        if (node.OutputPorts is null || node.OutputPorts.Count == 0)
+        {
+            return ValidationResult.Fail(
+                $"Swarm node {node.Id} must declare at least one output port "
+                + "(typically 'Synthesized', matching the synthesizer agent's terminal port).");
+        }
+
+        return ValidationResult.Ok();
+    }
+
     private static async Task<IReadOnlyDictionary<string, IReadOnlyCollection<string>>> ResolveAgentOutputsAsync(
         IReadOnlyList<WorkflowNodeDto> nodes,
         IAgentConfigRepository agentRepository,
@@ -719,6 +857,10 @@ public static class WorkflowValidator
             case WorkflowNodeKind.Agent:
             case WorkflowNodeKind.Hitl:
             case WorkflowNodeKind.Logic:
+            case WorkflowNodeKind.Swarm:
+                // Swarm node ports are author-declared the same way Agent ports are: the
+                // synthesizer agent emits its terminal artifact on one of these ports, and the
+                // saga routes the swarm node's outgoing edges based on that name.
                 return node.OutputPorts is { Count: > 0 } declared
                     ? declared.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.Ordinal).ToArray()
                     : Array.Empty<string>();
