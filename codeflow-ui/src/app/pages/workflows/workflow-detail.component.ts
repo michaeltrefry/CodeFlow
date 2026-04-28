@@ -154,6 +154,7 @@ export class WorkflowDetailComponent implements OnInit {
       case 'Subflow': return `Subflow → ${node.subflowKey ?? '?'}`;
       case 'ReviewLoop': return `ReviewLoop ×${node.reviewMaxRounds ?? '?'} → ${node.subflowKey ?? '?'}`;
       case 'Transform': return 'Transform';
+      case 'Swarm': return `Swarm ${node.swarmProtocol ?? '?'} ×${node.swarmN ?? '?'}`;
     }
   }
 
