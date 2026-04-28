@@ -97,6 +97,7 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
+        services.AddSingleton<IAssistantSystemPromptProvider, DefaultAssistantSystemPromptProvider>();
         services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
         services.AddScoped<AssistantChatService>();
 

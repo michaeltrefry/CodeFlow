@@ -31,6 +31,7 @@ public interface ICodeFlowAssistant
 public sealed class CodeFlowAssistant(
     IAssistantSettingsResolver settingsResolver,
     ILlmProviderSettingsRepository providerSettings,
+    IAssistantSystemPromptProvider systemPromptProvider,
     IAnthropicClient anthropicClient,
     ILogger<CodeFlowAssistant> logger) : ICodeFlowAssistant
 {
@@ -43,11 +44,12 @@ public sealed class CodeFlowAssistant(
         ArgumentNullException.ThrowIfNull(history);
 
         var config = await settingsResolver.ResolveAsync(cancellationToken);
+        var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch
         {
-            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, userMessage, history, cancellationToken),
-            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, userMessage, history, cancellationToken),
+            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, cancellationToken),
+            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, cancellationToken),
             _ => throw new InvalidOperationException(
                 $"Assistant provider '{config.Provider}' is not supported. Expected one of: anthropic, openai, lmstudio.")
         };
@@ -60,6 +62,7 @@ public sealed class CodeFlowAssistant(
 
     private async IAsyncEnumerable<AssistantStreamItem> AskAnthropicAsync(
         AssistantRuntimeConfig config,
+        string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -90,12 +93,24 @@ public sealed class CodeFlowAssistant(
 
         MessageDeltaUsage? finalUsage = null;
 
-        await foreach (var ev in client.Messages.CreateStreaming(new MessageCreateParams
-        {
-            Model = config.Model,
-            MaxTokens = config.MaxTokens,
-            Messages = messages
-        }, cancellationToken))
+        // System is init-only on MessageCreateParams, so build the right shape upfront. Empty
+        // prompts skip the field entirely (the API tolerates an absent system block).
+        var createParams = string.IsNullOrWhiteSpace(systemPrompt)
+            ? new MessageCreateParams
+            {
+                Model = config.Model,
+                MaxTokens = config.MaxTokens,
+                Messages = messages
+            }
+            : new MessageCreateParams
+            {
+                Model = config.Model,
+                MaxTokens = config.MaxTokens,
+                System = systemPrompt,
+                Messages = messages
+            };
+
+        await foreach (var ev in client.Messages.CreateStreaming(createParams, cancellationToken))
         {
             if (ev.TryPickContentBlockDelta(out var cbDelta) && cbDelta.Delta.TryPickText(out var td))
             {
@@ -117,6 +132,7 @@ public sealed class CodeFlowAssistant(
 
     private async IAsyncEnumerable<AssistantStreamItem> AskOpenAiAsync(
         AssistantRuntimeConfig config,
+        string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -135,7 +151,11 @@ public sealed class CodeFlowAssistant(
 
         var chatClient = new ChatClient(config.Model, new ApiKeyCredential(apiKey), clientOptions);
 
-        var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 1);
+        var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 2);
+        if (!string.IsNullOrWhiteSpace(systemPrompt))
+        {
+            chatMessages.Add(new SystemChatMessage(systemPrompt));
+        }
         foreach (var msg in history)
         {
             ChatMessage built = msg.Role switch
