@@ -70,6 +70,70 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task HappyHandoff_ShouldStampNodeEnteredAtOnSagaAndDecisions()
+    {
+        // sc-80: every round-start (initial dispatch + each non-rotating handoff + each
+        // rotating handoff + every subflow init) must stamp saga.CurrentRoundEnteredAtUtc.
+        // That timestamp threads onto the appended DecisionRecord as NodeEnteredAtUtc, giving
+        // every decision row an explicit start time so per-node duration is
+        // RecordedAtUtc - NodeEnteredAtUtc — no chained-decision arithmetic, ready for the
+        // P3 Coordinator's parallel execution and for the Phase 1 swarm bench harness.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var workflow = BuildWorkflow(
+            key: "round-entered",
+            maxRounds: 5,
+            startAgentKey: "evaluator",
+            edges:
+            [
+                Edge("evaluator", "Completed", "reviewer", rotatesRound: false)
+            ]);
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 1 });
+        await harness.Start();
+        try
+        {
+            var beforeStart = DateTime.UtcNow;
+            await PublishStart(harness, workflow, traceId, roundId);
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            var sagaInstance = await sagaHarness.Exists(traceId, x => x.Running);
+            sagaInstance.Should().NotBeNull();
+
+            var saga = sagaHarness.Sagas.Contains(sagaInstance!.Value);
+            saga.Should().NotBeNull();
+
+            var enteredEvaluator = saga!.CurrentRoundEnteredAtUtc;
+            enteredEvaluator.Should().BeOnOrAfter(beforeStart, "round-entry timestamp set during ApplyInitialRequest");
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Completed"));
+
+            // Wait for the reviewer handoff to be published — by that point the saga has
+            // appended the completion decision and routed to the next round.
+            harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "reviewer")
+                .Should().NotBeNull();
+
+            var routedSaga = sagaHarness.Sagas.Contains(traceId);
+            routedSaga.Should().NotBeNull();
+            routedSaga!.CurrentRoundEnteredAtUtc.Should().BeOnOrAfter(enteredEvaluator,
+                "non-rotating handoff updates round-entry timestamp at routing time");
+
+            var history = routedSaga.GetDecisionHistory();
+            history.Should().ContainSingle();
+            history[0].NodeEnteredAtUtc.Should().NotBeNull(
+                "AppendDecision must thread saga.CurrentRoundEnteredAtUtc onto the decision");
+            history[0].NodeEnteredAtUtc!.Value.Should().BeCloseTo(enteredEvaluator, TimeSpan.FromMilliseconds(50),
+                "decision's NodeEnteredAtUtc reflects the round in which the agent ran, not the routing round");
+            history[0].RecordedAtUtc.Should().BeAfter(history[0].NodeEnteredAtUtc!.Value);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task InitialAgentInvokeRequested_WithWorkflowContext_ShouldSeedSagaWorkflowInputsJson()
     {
         // Top-level traces enter via AgentInvokeRequested → Initially → ApplyInitialRequest.

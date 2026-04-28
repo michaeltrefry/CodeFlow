@@ -41,7 +41,8 @@ public sealed record TraceDecisionDto(
     Guid? NodeId,
     string? OutputPortName,
     string? InputRef,
-    string? OutputRef);
+    string? OutputRef,
+    DateTime? NodeEnteredAtUtc);
 
 public sealed record TraceLogicEvaluationDto(
     Guid NodeId,

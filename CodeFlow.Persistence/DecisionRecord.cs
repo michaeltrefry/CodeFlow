@@ -12,4 +12,5 @@ public sealed record DecisionRecord(
     Guid? NodeId = null,
     string? OutputPortName = null,
     string? InputRef = null,
-    string? OutputRef = null);
+    string? OutputRef = null,
+    DateTime? NodeEnteredAtUtc = null);

@@ -220,6 +220,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentNodeId = message.NodeId;
         saga.CurrentAgentKey = message.AgentKey;
         saga.CurrentRoundId = message.RoundId;
+        saga.CurrentRoundEnteredAtUtc = nowUtc;
         saga.RoundCount = 0;
         saga.InputsJson = SerializeContextInputs(message.ContextInputs);
         if (message.WorkflowContext is not null)
@@ -282,6 +283,7 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
         saga.CurrentNodeId = startNode.Id;
         saga.CurrentAgentKey = startNode.AgentKey;
         saga.CurrentRoundId = childRoundId;
+        saga.CurrentRoundEnteredAtUtc = nowUtc;
         saga.RoundCount = 0;
         saga.InputsJson = "{}";
         saga.WorkflowInputsJson = SerializeContextInputs(message.WorkflowContext);
@@ -592,7 +594,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             NodeId: message.ParentNodeId,
             OutputPortName: effectivePortName,
             InputRef: saga.CurrentInputRef,
-            OutputRef: message.OutputRef.ToString()));
+            OutputRef: message.OutputRef.ToString(),
+            NodeEnteredAtUtc: saga.CurrentRoundEnteredAtUtc));
 
         // Mirror the agent-completion path: when the child's effective port is Failed, lift its
         // saga-level FailureReason onto the parent before edge lookup, so the unwired-Failed-port
@@ -694,11 +697,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             roundId: targetRoundId,
             retryContext: null);
 
+        var nowUtc = DateTime.UtcNow;
         saga.CurrentNodeId = targetNode.Id;
         saga.CurrentAgentKey = targetNode.AgentKey ?? string.Empty;
         saga.CurrentRoundId = targetRoundId;
+        saga.CurrentRoundEnteredAtUtc = nowUtc;
         saga.RoundCount = targetRoundCount;
-        saga.UpdatedAtUtc = DateTime.UtcNow;
+        saga.UpdatedAtUtc = nowUtc;
 
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }
@@ -794,7 +799,8 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             NodeId: message.FromNodeId,
             OutputPortName: message.OutputPortName,
             InputRef: saga.CurrentInputRef,
-            OutputRef: effectiveOutputRef?.ToString()));
+            OutputRef: effectiveOutputRef?.ToString(),
+            NodeEnteredAtUtc: saga.CurrentRoundEnteredAtUtc));
 
         // Slice 13: apply any setContext / setWorkflow writes the agent issued during its turn.
         // These are committed only when the runtime publishes a non-Failed decision (the loop
@@ -929,11 +935,13 @@ public sealed class WorkflowSagaStateMachine : MassTransitStateMachine<WorkflowS
             roundId: targetRoundId,
             retryContext: retryContext);
 
+        var nowUtc = DateTime.UtcNow;
         saga.CurrentNodeId = targetNode.Id;
         saga.CurrentAgentKey = targetNode.AgentKey ?? string.Empty;
         saga.CurrentRoundId = targetRoundId;
+        saga.CurrentRoundEnteredAtUtc = nowUtc;
         saga.RoundCount = targetRoundCount;
-        saga.UpdatedAtUtc = DateTime.UtcNow;
+        saga.UpdatedAtUtc = nowUtc;
 
         activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
     }

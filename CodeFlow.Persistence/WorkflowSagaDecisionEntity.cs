@@ -27,4 +27,6 @@ public sealed class WorkflowSagaDecisionEntity
     public string? InputRef { get; set; }
 
     public string? OutputRef { get; set; }
+
+    public DateTime? NodeEnteredAtUtc { get; set; }
 }
