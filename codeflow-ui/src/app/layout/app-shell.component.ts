@@ -25,6 +25,7 @@ interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     items: [
+      { id: 'home',      label: 'Home',       icon: 'bot',       route: '/' },
       { id: 'traces',    label: 'Traces',     icon: 'traces',    route: '/traces' },
       { id: 'workflows', label: 'Workflows',  icon: 'workflows', route: '/workflows' },
       { id: 'agents',    label: 'Agents',     icon: 'agents',    route: '/agents' },
@@ -45,6 +46,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }> = [
+  { match: (u) => u === '/' || u === '',           title: 'Home' },
   { match: (u) => u.startsWith('/traces/new'),     title: 'New trace' },
   { match: (u) => /^\/traces\//.test(u),           title: 'Trace' },
   { match: (u) => u === '/traces',                 title: 'Traces' },
