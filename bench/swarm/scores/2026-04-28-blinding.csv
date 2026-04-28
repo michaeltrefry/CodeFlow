@@ -1,0 +1,13 @@
+blinded_label,trace_id,variant,request,run_index
+A,623c8712-a8a9-475b-b860-89f5fca853e8,V2,B,1
+B,9d3af045-23a9-44e7-89ec-3720bd78c13e,V1,B,1
+C,c63611ff-f788-4815-aa85-24e25745962c,V2,A,3
+D,a29df9c3-9fee-4c06-a7d0-a245dc93dcda,V1,A,3
+E,11ea5807-5335-4b8c-b6ec-4559dc6e4c18,V2,B,2
+F,7dd1b4a4-484a-4c64-a76a-8f904ce1ab93,V1,A,1
+G,67e9d148-220f-46d7-8b83-3841045289ed,V1,B,3
+H,fc015e5e-15be-48da-9490-4ab183b634d4,V1,A,2
+I,820981ff-d518-43ed-b02d-538abdf44121,V2,B,3
+J,63aea9ba-2779-4f17-99c0-2fbce4d11430,V2,A,1
+K,92730609-81ad-4d04-8d4a-36435d967c2b,V2,A,2
+L,ebac7dbe-a324-4e99-b174-b567e5be9bf8,V1,B,2
