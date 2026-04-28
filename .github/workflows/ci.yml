@@ -15,10 +15,10 @@ jobs:
     name: Build + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
 
@@ -35,7 +35,7 @@ jobs:
         run: dotnet test CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~AuthServiceCollectionExtensionsTests"
 
       - name: Set up Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: "npm"
