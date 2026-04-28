@@ -597,6 +597,53 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             .BeEquivalentTo(new[] { "r1" });
     }
 
+    [Fact]
+    public async Task ApplyPackageImport_SwarmBenchBaselineV1_RoundTripsSingleAgentWorkflow()
+    {
+        // sc-82 — Variant V1 of the swarm-bench harness (Epic 38). Apples-to-apples comparison
+        // floor for V2 (Sequential subflow) and V3 (Swarm node). End-to-end import sanity:
+        // deserialize, resolve references, write through the importer, then query the workflow
+        // back. Two nodes, two agents, one terminal (unwired) port — the simplest variant.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("swarm-bench-baseline-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(3,
+            "package contains 1 workflow + 2 agents");
+
+        var detailJson = await client.GetStringAsync("/api/workflows/swarm-bench-baseline/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(2);
+
+        var startNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        startNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('mission'",
+            "the Start node seeds workflow.mission from the input artifact");
+        startNode.GetProperty("agentKey").GetString().Should().Be("swarm-bench-baseline-init");
+
+        var agentNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
+        agentNode.GetProperty("agentKey").GetString().Should().Be("swarm-bench-baseline-agent");
+        agentNode.GetProperty("outputPorts").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "Answered" },
+                "the answering agent has a single terminal port — unwired so the agent's message body is the workflow's terminal artifact");
+
+        // One edge from Start.Continue → Agent.in; the answering agent's Answered port is unwired
+        // and therefore terminal.
+        var edges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        edges.Should().ContainSingle();
+        edges[0].GetProperty("rotatesRound").GetBoolean().Should().BeFalse();
+    }
+
     private static string LocateLibraryPackage(string fileName)
     {
         var dir = AppContext.BaseDirectory;
