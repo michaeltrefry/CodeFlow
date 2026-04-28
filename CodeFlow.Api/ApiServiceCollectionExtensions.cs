@@ -100,6 +100,7 @@ public static class ApiServiceCollectionExtensions
         {
             x.AddConsumer<TraceInvokeRequestedObserver, TraceInvokeRequestedObserverDefinition>();
             x.AddConsumer<TraceInvocationCompletedObserver, TraceInvocationCompletedObserverDefinition>();
+            x.AddConsumer<TraceTokenUsageRecordedObserver, TraceTokenUsageRecordedObserverDefinition>();
         });
 
         return services;

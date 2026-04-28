@@ -65,6 +65,12 @@ public static class TracesEndpoints
         group.MapPost("/{id:guid}/replay", TracesReplayEndpoints.ReplayTraceAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        // Token Usage Tracking [Slice 5]: aggregation API. Returns rollups at every level
+        // (per-call, per-invocation, per-node, per-scope, per-trace) for a single trace, with
+        // provider+model breakdowns. Read-only — TracesRead.
+        group.MapGet("/{id:guid}/token-usage", TraceTokenUsageEndpoints.GetTraceTokenUsageAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         return routes;
     }
 
