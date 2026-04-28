@@ -44,6 +44,7 @@ export class AuthService {
   // route guards) all await the same load instead of triggering duplicate work or seeing
   // an instant-resolve return that misses the still-loading state.
   private loadPromise: Promise<void> | null = null;
+  private refreshPromise: Promise<string | null> | null = null;
 
   /** Awaitable: resolves once the initial bootstrap (OIDC discovery + /api/me) is complete. */
   ready(): Promise<void> {
@@ -67,6 +68,7 @@ export class AuthService {
     try {
       if (hasAuthConfigured()) {
         this.oauth.configure(buildAuthConfig());
+        this.oauth.setupAutomaticSilentRefresh({}, 'access_token');
         // Time-bound the OIDC discovery + try-login so a hung or misconfigured Keycloak
         // surfaces as a clear error and doesn't lock the app shell forever.
         await withTimeout(
@@ -111,7 +113,60 @@ export class AuthService {
   }
 
   getAccessToken(): string | null {
+    if (!this.oauth.hasValidAccessToken()) {
+      this.hasToken.set(false);
+      return null;
+    }
+
+    this.hasToken.set(true);
     return this.oauth.getAccessToken() || null;
+  }
+
+  async getValidAccessToken(): Promise<string | null> {
+    const token = this.getAccessToken();
+    if (token || !hasAuthConfigured()) {
+      return token;
+    }
+
+    if (!this.oauth.getRefreshToken()) {
+      this.markTokenUnavailable();
+      return null;
+    }
+
+    this.refreshPromise ??= this.refreshAccessToken();
+    try {
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = null;
+    }
+  }
+
+  private async refreshAccessToken(): Promise<string | null> {
+    try {
+      await this.oauth.refreshToken();
+      const refreshed = this.oauth.hasValidAccessToken()
+        ? this.oauth.getAccessToken() || null
+        : null;
+
+      this.hasToken.set(refreshed !== null);
+      if (refreshed) {
+        this.error.set(null);
+      } else {
+        this.markTokenUnavailable();
+      }
+
+      return refreshed;
+    } catch (err) {
+      this.markTokenUnavailable();
+      console.error('[auth] token refresh failed:', err);
+      return null;
+    }
+  }
+
+  private markTokenUnavailable(): void {
+    this.hasToken.set(false);
+    this.tokenAcceptedByApi.set(false);
+    this.currentUser.set(null);
   }
 
   login(): void {

@@ -19,7 +19,7 @@ export function streamTrace(
         const headers: Record<string, string> = {
           Accept: 'text/event-stream',
         };
-        const token = auth.getAccessToken();
+        const token = await auth.getValidAccessToken();
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
         }

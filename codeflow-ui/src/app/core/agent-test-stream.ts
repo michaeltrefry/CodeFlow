@@ -84,7 +84,7 @@ export interface AgentTestRequest {
 
 export function streamAgentTest(
   request: AgentTestRequest,
-  accessToken: string | null
+  accessToken: string | null | Promise<string | null>
 ): Observable<AgentTestEvent> {
   return new Observable<AgentTestEvent>(subscriber => {
     const controller = new AbortController();
@@ -95,8 +95,9 @@ export function streamAgentTest(
           'Content-Type': 'application/json',
           Accept: 'text/event-stream'
         };
-        if (accessToken) {
-          headers['Authorization'] = `Bearer ${accessToken}`;
+        const token = await Promise.resolve(accessToken);
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
         }
 
         const response = await fetch('/api/agent-test', {
