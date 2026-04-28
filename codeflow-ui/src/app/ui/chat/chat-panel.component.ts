@@ -8,12 +8,17 @@ import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
+import { TracesApi } from '../../core/traces.api';
+import { CreateTraceRequest } from '../../core/models';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
 
 /** HAA-10: name of the assistant tool whose preview-ok result triggers a Save confirmation chip. */
 const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
+
+/** HAA-11: name of the assistant tool whose preview-ok result triggers a Run confirmation chip. */
+const RUN_WORKFLOW_TOOL = 'run_workflow';
 
 interface PendingAssistantTurn {
   /** The assistant message-id assigned by the server once it persists; null while streaming. */
@@ -181,6 +186,7 @@ export class ChatPanelComponent {
   private readonly api = inject(AssistantApi);
   private readonly auth = inject(AuthService);
   private readonly workflowsApi = inject(WorkflowsApi);
+  private readonly tracesApi = inject(TracesApi);
 
   /**
    * HAA-10: per-tool-call cache of the structured `package` argument the LLM passed to
@@ -190,6 +196,13 @@ export class ChatPanelComponent {
    * the visible card without bloating the view model.
    */
   private readonly pendingSaves = new Map<string, unknown>();
+
+  /**
+   * HAA-11: per-tool-call cache of the run request the LLM proposed via `run_workflow`. Same
+   * rationale as `pendingSaves` — the structured args don't survive into the view model, so we
+   * stash them by id and POST on confirm.
+   */
+  private readonly pendingRuns = new Map<string, CreateTraceRequest>();
 
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
@@ -329,17 +342,43 @@ export class ChatPanelComponent {
     this.optimisticUser.set(null);
     this.toolCalls.set([]);
     this.pendingSaves.clear();
+    this.pendingRuns.clear();
   }
 
   /**
-   * HAA-10: handles the user clicking 'Save' on a save_workflow_package confirmation chip.
-   * POSTs the cached package to the existing /api/workflows/package/apply endpoint (which
-   * requires WorkflowsWrite under the logged-in user) and reflects the outcome on the chip.
+   * Dispatches the user's chip confirmation to the right mutation. Each kind is gated by its
+   * own auth policy on the server (WorkflowsWrite for save, TracesWrite for run); demo-mode
+   * users never reach here because the underlying tool can't be invoked in the first place.
    */
   protected onConfirmToolCall(toolCallId: string): void {
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const kind = card?.confirmation?.kind;
+    if (kind === 'save_workflow_package') {
+      this.applySaveConfirmation(toolCallId);
+    } else if (kind === 'run_workflow') {
+      this.applyRunConfirmation(toolCallId);
+    }
+  }
+
+  /** Dismiss the chip locally; no server call. Cached payloads are dropped. */
+  protected onCancelToolCall(toolCallId: string): void {
+    this.pendingSaves.delete(toolCallId);
+    this.pendingRuns.delete(toolCallId);
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'cancelled' }));
+  }
+
+  /**
+   * HAA-10: POSTs the cached package to the existing /api/workflows/package/apply endpoint
+   * (WorkflowsWrite under the logged-in user) and reflects the outcome on the chip.
+   */
+  private applySaveConfirmation(toolCallId: string): void {
     const pkg = this.pendingSaves.get(toolCallId);
     if (!pkg) {
-      this.updateConfirmation(toolCallId, c => ({ ...c, state: 'error', errorMessage: 'Package payload missing — re-open the chat thread or ask the assistant to re-emit it.' }));
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Package payload missing — re-open the chat thread or ask the assistant to re-emit it.',
+      }));
       return;
     }
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
@@ -349,7 +388,7 @@ export class ChatPanelComponent {
         this.updateConfirmation(toolCallId, c => ({
           ...c,
           state: 'success',
-          applied: { key: result.entryPoint.key, version: result.entryPoint.version },
+          applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
         }));
       },
       error: err => {
@@ -362,10 +401,38 @@ export class ChatPanelComponent {
     });
   }
 
-  /** HAA-10: dismiss the chip locally; no server call. The package payload is dropped from cache. */
-  protected onCancelToolCall(toolCallId: string): void {
-    this.pendingSaves.delete(toolCallId);
-    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'cancelled' }));
+  /**
+   * HAA-11: POSTs the cached run request to /api/traces (TracesWrite under the logged-in user)
+   * and surfaces the resulting trace id on the chip with a link into the trace inspector.
+   */
+  private applyRunConfirmation(toolCallId: string): void {
+    const req = this.pendingRuns.get(toolCallId);
+    if (!req) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Run request payload missing — ask the assistant to propose the run again.',
+      }));
+      return;
+    }
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.tracesApi.create(req).subscribe({
+      next: result => {
+        this.pendingRuns.delete(toolCallId);
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'success',
+          applied: { kind: 'trace', traceId: result.traceId },
+        }));
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: formatError(err),
+        }));
+      },
+    });
   }
 
   private updateConfirmation(
@@ -407,12 +474,19 @@ export class ChatPanelComponent {
       case 'tool-call': {
         // New tool card in pending state. argsPreview is a single-line stringification — the user
         // can expand the card to see the full payload when the server fills in the result.
-        // HAA-10: stash the structured `package` arg for save_workflow_package so we can POST it
-        // to /api/workflows/package/apply when the user confirms via the chip.
-        if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL && evt.arguments && typeof evt.arguments === 'object') {
-          const pkg = (evt.arguments as Record<string, unknown>)['package'];
-          if (pkg) {
-            this.pendingSaves.set(evt.id, pkg);
+        // HAA-10/HAA-11: stash structured args for mutating tools so we can POST them to the
+        // matching mutation endpoint when the user confirms via the chip.
+        if (evt.arguments && typeof evt.arguments === 'object') {
+          if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL) {
+            const pkg = (evt.arguments as Record<string, unknown>)['package'];
+            if (pkg) {
+              this.pendingSaves.set(evt.id, pkg);
+            }
+          } else if (evt.name === RUN_WORKFLOW_TOOL) {
+            const req = toCreateTraceRequest(evt.arguments as Record<string, unknown>);
+            if (req) {
+              this.pendingRuns.set(evt.id, req);
+            }
           }
         }
         this.toolCalls.update(list => [...list, {
@@ -427,9 +501,14 @@ export class ChatPanelComponent {
       case 'tool-result': {
         // Pair with the matching tool-call by id and flip its status. If we get a result without
         // a prior call (shouldn't happen, but server bugs are server bugs), drop it on the floor.
-        const confirmation = evt.name === SAVE_WORKFLOW_PACKAGE_TOOL && !evt.isError
-          ? buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id))
-          : undefined;
+        let confirmation: ChatToolCallView['confirmation'] | undefined;
+        if (!evt.isError) {
+          if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL) {
+            confirmation = buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id));
+          } else if (evt.name === RUN_WORKFLOW_TOOL) {
+            confirmation = buildRunConfirmationView(evt.result, this.pendingRuns.get(evt.id));
+          }
+        }
         this.toolCalls.update(list => list.map(card =>
           card.id === evt.id
             ? {
@@ -534,6 +613,73 @@ function buildSaveConfirmationView(
     cancelLabel: 'Cancel',
     state: 'idle',
   };
+}
+
+/**
+ * HAA-11: when the assistant's `run_workflow` tool returns `preview_ok`, build the chip
+ * view-model. The chip prompt names the workflow + version + supplied input keys so the user
+ * sees what they're authorizing before clicking Run. The actual trace creation happens when the
+ * user confirms (POST /api/traces); this helper just produces the chip view.
+ */
+function buildRunConfirmationView(
+  resultJson: string,
+  request: CreateTraceRequest | undefined,
+): ChatToolCallView['confirmation'] | undefined {
+  let parsed: {
+    status?: unknown;
+    workflow?: { key?: unknown; version?: unknown; name?: unknown };
+    resolvedInputs?: Record<string, unknown>;
+  } | null = null;
+  try {
+    parsed = JSON.parse(resultJson);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || parsed.status !== 'preview_ok' || !request) {
+    return undefined;
+  }
+
+  const name = typeof parsed.workflow?.name === 'string' ? parsed.workflow.name : request.workflowKey;
+  const version = typeof parsed.workflow?.version === 'number' ? parsed.workflow.version : null;
+  const inputCount = parsed.resolvedInputs ? Object.keys(parsed.resolvedInputs).length : 0;
+
+  const versionPart = version !== null ? ` v${version}` : '';
+  const inputsPart = inputCount > 0 ? ` with ${inputCount} input${inputCount === 1 ? '' : 's'}` : '';
+  const prompt = `Run ${name}${versionPart}${inputsPart}?`;
+
+  return {
+    kind: 'run_workflow',
+    prompt,
+    confirmLabel: 'Run',
+    cancelLabel: 'Cancel',
+    state: 'idle',
+  };
+}
+
+/**
+ * HAA-11: parse a `run_workflow` tool-call's structured arguments into the shape
+ * `TracesApi.create()` expects. Returns null if `workflowKey` / `input` aren't present (the
+ * tool itself would have errored on those, but we defensively skip stashing here).
+ */
+function toCreateTraceRequest(args: Record<string, unknown>): CreateTraceRequest | null {
+  const workflowKey = typeof args['workflowKey'] === 'string' ? (args['workflowKey'] as string) : '';
+  const input = typeof args['input'] === 'string' ? (args['input'] as string) : '';
+  if (!workflowKey || !input) {
+    return null;
+  }
+
+  const req: CreateTraceRequest = { workflowKey, input };
+  if (typeof args['workflowVersion'] === 'number') {
+    req.workflowVersion = args['workflowVersion'] as number;
+  }
+  if (typeof args['inputFileName'] === 'string') {
+    req.inputFileName = args['inputFileName'] as string;
+  }
+  if (args['inputs'] && typeof args['inputs'] === 'object') {
+    req.inputs = args['inputs'] as Record<string, unknown>;
+  }
+  return req;
 }
 
 function stringifyArgs(args: unknown): string {
