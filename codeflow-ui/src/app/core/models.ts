@@ -514,3 +514,92 @@ export interface TraceStreamEvent {
   decisionPayload?: unknown;
   timestampUtc: string;
 }
+
+// ---------- Replay-with-edit (T2) ----------
+
+export interface ReplayEdit {
+  agentKey: string;
+  ordinal: number;
+  decision?: string | null;
+  output?: string | null;
+  payload?: unknown;
+}
+
+export interface ReplayMockResponse {
+  decision: string;
+  output?: string | null;
+  payload?: unknown;
+}
+
+export interface ReplayRequest {
+  edits?: ReplayEdit[];
+  additionalMocks?: Record<string, ReplayMockResponse[]>;
+  workflowVersionOverride?: number | null;
+  force?: boolean;
+}
+
+export type ReplayDriftLevel = 'None' | 'Soft' | 'Hard';
+
+export interface ReplayDrift {
+  level: ReplayDriftLevel;
+  warnings: string[];
+}
+
+export interface ReplayExhaustedAgent {
+  agentKey: string;
+  recordedResponses: number;
+}
+
+export interface RecordedDecisionRef {
+  agentKey: string;
+  ordinalPerAgent: number;
+  sagaCorrelationId: string;
+  sagaOrdinal: number;
+  nodeId: string | null;
+  roundId: string;
+  originalDecision: string;
+}
+
+export interface ReplayEvent {
+  ordinal: number;
+  kind: string;
+  nodeId: string;
+  nodeKind: string;
+  agentKey?: string | null;
+  portName?: string | null;
+  message?: string | null;
+  inputPreview?: string | null;
+  outputPreview?: string | null;
+  reviewRound?: number | null;
+  maxRounds?: number | null;
+  subflowDepth?: number | null;
+  subflowKey?: string | null;
+  subflowVersion?: number | null;
+  logs?: string[] | null;
+  decisionPayload?: unknown;
+}
+
+export interface ReplayHitlPayload {
+  nodeId: string;
+  agentKey: string;
+  input?: string | null;
+  outputTemplate?: string | null;
+  decisionOutputTemplates?: Record<string, string> | null;
+  renderedFormPreview?: string | null;
+  renderError?: string | null;
+}
+
+export type ReplayState = 'Completed' | 'HitlReached' | 'Failed' | 'StepLimitExceeded' | 'DriftRefused';
+
+export interface ReplayResponse {
+  originalTraceId: string;
+  replayState: ReplayState;
+  replayTerminalPort: string | null;
+  failureReason: string | null;
+  failureCode: 'queue_exhausted' | 'drift_hard_refused' | null;
+  exhaustedAgent: ReplayExhaustedAgent | null;
+  decisions: RecordedDecisionRef[];
+  replayEvents: ReplayEvent[];
+  hitlPayload: ReplayHitlPayload | null;
+  drift: ReplayDrift;
+}

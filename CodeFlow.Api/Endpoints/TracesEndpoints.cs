@@ -59,6 +59,12 @@ public static class TracesEndpoints
         group.MapPost("/bulk-delete", BulkDeleteTracesAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesWrite);
 
+        // Replay-with-edit (T2-B): substitution-only re-run of a recorded trace via DryRunExecutor.
+        // Read-only on the original saga — the replay is ephemeral and lives only in the response —
+        // so TracesRead is sufficient.
+        group.MapPost("/{id:guid}/replay", TracesReplayEndpoints.ReplayTraceAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         return routes;
     }
 

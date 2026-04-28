@@ -8,6 +8,8 @@ import {
   CreateTraceResponse,
   HitlDecisionRequest,
   HitlTask,
+  ReplayRequest,
+  ReplayResponse,
   TraceDetail,
   TraceSummary
 } from './models';
@@ -61,5 +63,9 @@ export class TracesApi {
       observe: 'response',
       responseType: 'blob'
     });
+  }
+
+  replay(traceId: string, request: ReplayRequest): Observable<ReplayResponse> {
+    return this.http.post<ReplayResponse>(`/api/traces/${traceId}/replay`, request);
   }
 }

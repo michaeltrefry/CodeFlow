@@ -161,13 +161,25 @@ gaps, and UI complexity we just paid to avoid.
 
 T2-A unblocks T2-B and T2-D in parallel. T2-C lands after T2-B (needs the endpoint).
 
+## Saga-traversal recursion rule (T2-B implementation; T2-D coverage)
+
+The extractor walks the saga subtree in the **same order DryRunExecutor visits the workflow**:
+
+1. Iterate the parent saga's decisions in `Ordinal` order.
+2. For each decision, if its `AgentKey` is synthetic (`subflow`, `subflow:<key>`, `review-loop`,
+   `review-loop:<key>`), look up the matching child saga by `(parent.TraceId, ParentNodeId,
+   ParentRoundId) == (decision.TraceId, decision.NodeId, decision.RoundId)`, **recurse into the
+   child saga first**, then drop the synthetic from the queue.
+3. For real agent/HITL decisions, push a `DryRunMockResponse` onto the per-agent queue and assign
+   the next 1-based per-agent ordinal.
+
+This produces the depth-first dequeue order DryRunExecutor follows, which matters when the same
+agent runs in multiple subflow boundaries (e.g. two sibling Subflow nodes both invoking
+`producer`) or across multiple ReviewLoop iterations. T2-D verifies the rule on those shapes.
+
 ## Risks
 
-- **Mock-queue ordering across subflow boundaries.** The dry-run executor recursively re-enters
-  subflows; mocks are global per agent key. If the same agent runs in two different subflows the
-  responses must be queued in the right order. Mitigation: when extracting decisions, walk all
-  descendant sagas in saga-traversal order (the same order DryRunExecutor visits them), and queue
-  per-agent in that order. Covered by T2-D.
+- **Mock-queue ordering across subflow boundaries.** Addressed by the recursion rule above.
 - **Artifact store read failures on old traces.** Trace deletion is allowed for terminal traces
   and removes artifacts. A trace must not be replayable after deletion. Mitigation: 404 if the
   saga is gone; surface artifact-fetch errors clearly when an artifact has been pruned.

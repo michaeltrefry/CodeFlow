@@ -23,6 +23,7 @@ import { StateChipComponent } from '../../ui/state-chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
 import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
+import { TraceReplayPanelComponent } from './trace-replay-panel.component';
 import { Observable } from 'rxjs';
 
 interface TimelineEntry {
@@ -84,6 +85,7 @@ interface ReviewLoopGroup {
     StateChipComponent,
     CardComponent,
     TraceTimelineComponent,
+    TraceReplayPanelComponent,
   ],
   template: `
     <div class="page">
@@ -95,6 +97,9 @@ interface ReviewLoopGroup {
               {{ actionBusy() ? 'Terminating…' : 'Terminate trace' }}
             </button>
           } @else {
+            <button type="button" cf-button variant="ghost" icon="play" (click)="toggleReplayPanel()">
+              {{ replayPanelOpen() ? 'Hide replay panel' : 'Replay with edit' }}
+            </button>
             <button type="button" cf-button variant="danger" icon="trash" (click)="deleteTrace()" [disabled]="actionBusy()">
               {{ actionBusy() ? 'Deleting…' : 'Delete trace' }}
             </button>
@@ -245,6 +250,13 @@ interface ReviewLoopGroup {
             (downloadRef)="onTimelineDownload($event)"></cf-trace-timeline>
         </cf-card>
 
+        @if (replayPanelOpen()) {
+          <cf-trace-replay-panel
+            [traceId]="d.traceId"
+            [workflow]="workflow()"
+            (close)="replayPanelOpen.set(false)"></cf-trace-replay-panel>
+        }
+
         <cf-card title="Pinned agent versions">
           <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ d.pinnedAgentVersions | json }}</pre>
         </cf-card>
@@ -296,6 +308,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   readonly actionBusy = signal(false);
   readonly actionError = signal<string | null>(null);
   readonly childTraces = signal<TraceSummary[]>([]);
+  readonly replayPanelOpen = signal(false);
   /** Map of descendant traceId → details, populated recursively while a parent saga is
    *  paused inside a Subflow/ReviewLoop. Used to merge child decisions into the parent
    *  timeline so the user sees the full execution flow without drilling into each
@@ -658,6 +671,10 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
   copyId(id: string): void {
     navigator.clipboard?.writeText(id).catch(() => undefined);
+  }
+
+  toggleReplayPanel(): void {
+    this.replayPanelOpen.update(open => !open);
   }
 
   terminate(): void {
