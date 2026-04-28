@@ -57,7 +57,7 @@ import { ThemeService } from '../core/theme.service';
             <cf-icon name="panelL"></cf-icon>
           </button>
           <div class="sidebar-body">
-            <cf-chat-panel [scope]="resolvedScope" />
+            <cf-chat-panel [scope]="resolvedScope" [pageContext]="pageContext.current()" />
           </div>
         }
       </aside>

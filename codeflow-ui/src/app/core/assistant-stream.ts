@@ -1,6 +1,7 @@
 import { Observable } from 'rxjs';
 import { AuthService } from '../auth/auth.service';
 import { AssistantMessage } from './assistant.api';
+import type { PageContextDto } from './page-context';
 
 /**
  * One frame from the assistant SSE stream. Mirrors the event names emitted by
@@ -35,6 +36,7 @@ export function streamAssistantTurn(
   conversationId: string,
   content: string,
   auth: AuthService,
+  pageContext?: PageContextDto,
 ): Observable<AssistantStreamEvent> {
   return new Observable<AssistantStreamEvent>(subscriber => {
     const controller = new AbortController();
@@ -50,12 +52,17 @@ export function streamAssistantTurn(
           headers['Authorization'] = `Bearer ${token}`;
         }
 
+        const body: { content: string; pageContext?: PageContextDto } = { content };
+        if (pageContext) {
+          body.pageContext = pageContext;
+        }
+
         const response = await fetch(
           `/api/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
           {
             method: 'POST',
             headers,
-            body: JSON.stringify({ content }),
+            body: JSON.stringify(body),
             signal: controller.signal,
           },
         );

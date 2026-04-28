@@ -50,3 +50,58 @@ export function pageContextToScope(ctx: PageContext): AssistantScope | null {
       return { kind: 'homepage' };
   }
 }
+
+/**
+ * Wire shape for the per-turn page-context system-message injection (HAA-8). The server reads
+ * this and renders a <c>&lt;current-page-context&gt;</c> block alongside the system prompt so
+ * the model can resolve "this trace", "this node", etc. without explicit IDs.
+ */
+export interface PageContextDto {
+  kind: PageContext['kind'];
+  route?: string;
+  entityType?: string;
+  entityId?: string;
+  selectedNodeId?: string;
+  selectedScriptSlot?: 'input' | 'output';
+}
+
+/**
+ * Flattens a {@link PageContext} into the wire DTO. The route is supplied by the caller
+ * (typically `window.location.pathname`) so callers don't need to introduce a Router dep.
+ */
+export function pageContextToDto(ctx: PageContext, route: string): PageContextDto {
+  switch (ctx.kind) {
+    case 'home':
+      return { kind: 'home', route };
+    case 'trace':
+      return {
+        kind: 'trace',
+        route,
+        entityType: 'trace',
+        entityId: ctx.traceId,
+        selectedNodeId: ctx.selectedNodeId,
+      };
+    case 'workflow-editor':
+      return {
+        kind: 'workflow-editor',
+        route,
+        entityType: 'workflow',
+        entityId: ctx.workflowId,
+        selectedNodeId: ctx.selectedNodeId,
+        selectedScriptSlot: ctx.selectedScriptSlot,
+      };
+    case 'agent-editor':
+      return {
+        kind: 'agent-editor',
+        route,
+        entityType: 'agent',
+        entityId: ctx.agentId,
+      };
+    case 'library':
+      return { kind: 'library', route };
+    case 'traces-list':
+      return { kind: 'traces-list', route };
+    case 'other':
+      return { kind: 'other', route: ctx.route };
+  }
+}

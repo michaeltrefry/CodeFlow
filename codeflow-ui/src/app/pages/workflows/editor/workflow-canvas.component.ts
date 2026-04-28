@@ -1429,6 +1429,23 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly injector = inject(Injector);
   private readonly pageContext = inject(PageContextService);
 
+  constructor() {
+    // Keep the assistant sidebar's PageContext in sync with the workflow key + selected node.
+    // The canvas's selectedNodeId signal updates on canvas click / delete / etc; this effect
+    // re-registers each change so chip rules ("workflow-editor + selectedNodeId") stay accurate.
+    // For new workflows (no key yet) we leave registration to the route fallback (homepage scope).
+    effect(() => {
+      const key = this.workflowKey();
+      if (!key) return;
+      const selected = this.selectedNodeId();
+      this.pageContext.set({
+        kind: 'workflow-editor',
+        workflowId: key,
+        selectedNodeId: selected ?? undefined,
+      });
+    });
+  }
+
   @ViewChild('canvasHost', { static: true }) canvasHost!: ElementRef<HTMLDivElement>;
 
   private editor?: NodeEditor<WorkflowSchemes>;
@@ -1954,10 +1971,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (key) {
       this.hasExistingKey.set(true);
       this.workflowKey.set(key);
-      // Brand-new workflows (/workflows/new) have no key yet; the route fallback gives them
-      // a homepage-scoped sidebar conversation. Existing workflows get an entity-scoped one
-      // keyed by the workflow's URL key (matches backend `(userId, scopeKey)` continuity).
-      this.pageContext.set({ kind: 'workflow-editor', workflowId: key });
       this.api.getLatest(key).subscribe({
         next: async detail => {
           this.workflowName.set(detail.name);

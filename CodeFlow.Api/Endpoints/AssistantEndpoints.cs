@@ -133,7 +133,7 @@ public static class AssistantEndpoints
         await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
 
-        await foreach (var evt in chatService.SendMessageAsync(id, request.Content, cancellationToken))
+        await foreach (var evt in chatService.SendMessageAsync(id, request.Content, request.PageContext, cancellationToken))
         {
             await WriteEventAsync(httpContext, evt, cancellationToken);
         }
@@ -228,4 +228,4 @@ public sealed record ConversationScopeRequest(ScopeRequest? Scope);
 
 public sealed record ScopeRequest(string? Kind, string? EntityType, string? EntityId);
 
-public sealed record SendMessageRequest(string Content);
+public sealed record SendMessageRequest(string Content, AssistantPageContext? PageContext = null);

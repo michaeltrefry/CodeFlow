@@ -26,6 +26,7 @@ public sealed class AssistantChatService(
     public async IAsyncEnumerable<AssistantTurnEvent> SendMessageAsync(
         Guid conversationId,
         string userContent,
+        AssistantPageContext? pageContext = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userContent);
@@ -60,7 +61,7 @@ public sealed class AssistantChatService(
         // knowledge only. The conversation's UserId carries the marker (anon: prefix); the
         // resolver gives us a single source of truth.
         var toolPolicy = userResolver.IsDemoUser(conversation.UserId) ? ToolAccessPolicy.NoTools : null;
-        var enumerator = assistant.AskAsync(userContent, historyForLlm, toolPolicy, cancellationToken)
+        var enumerator = assistant.AskAsync(userContent, historyForLlm, toolPolicy, pageContext, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
         try
