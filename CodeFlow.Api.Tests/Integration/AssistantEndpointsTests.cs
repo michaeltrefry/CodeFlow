@@ -177,6 +177,40 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task PostMessage_AuthenticatedUser_PassesNullPolicyToAssistant()
+    {
+        // HAA-6: authenticated callers run with full tool access. The chat service should pass
+        // null (= AllowAll) to the assistant, NOT NoTools. Demo mode is exclusively the anon path
+        // and is exercised in CodeFlow.Api.Tests.Assistant.AssistantUserResolverTests + the
+        // AssistantChatService unit tests; here we just guard the wiring on the auth path.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ok"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        // Unique entity-scoped conversation so we don't share state with the homepage conversation
+        // other tests in this fixture create.
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "policy-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "hello" })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        await streamResponse.Content.ReadAsStringAsync();
+
+        AssistantStub.LastToolPolicy.Should().BeNull(
+            because: "authenticated callers must run with full tool access (null policy = AllowAll)");
+    }
+
+    [Fact]
     public async Task PostMessage_ToolLoop_StreamsToolCallAndResultEvents()
     {
         AssistantStub.Reset();
@@ -284,15 +318,27 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     {
         private IReadOnlyList<AssistantStreamItem> reply = Array.Empty<AssistantStreamItem>();
 
-        public void Reset() => reply = Array.Empty<AssistantStreamItem>();
+        public void Reset()
+        {
+            reply = Array.Empty<AssistantStreamItem>();
+            LastToolPolicy = null;
+        }
 
         public void SetReply(IReadOnlyList<AssistantStreamItem> items) => reply = items;
+
+        /// <summary>
+        /// Captures the policy passed to the most recent <see cref="AskAsync"/> call so demo-mode
+        /// tests can assert that anonymous homepage conversations resolve to <c>NoTools</c>.
+        /// </summary>
+        public CodeFlow.Runtime.ToolAccessPolicy? LastToolPolicy { get; private set; }
 
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
+            CodeFlow.Runtime.ToolAccessPolicy? toolPolicy = null,
             CancellationToken cancellationToken = default)
         {
+            LastToolPolicy = toolPolicy;
             foreach (var item in reply)
             {
                 yield return item;

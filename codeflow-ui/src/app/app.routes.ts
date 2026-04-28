@@ -3,11 +3,12 @@ import { authenticatedGuard } from './auth/authenticated.guard';
 
 export const routes: Routes = [
   // HAA-6: homepage replaces the old "land on /traces" default. Traces stays first-class via
-  // its own route + nav entry below.
+  // its own route + nav entry below. Intentionally NOT guarded — anonymous visitors get
+  // demo-mode chat (system-prompt-only, no tool access). The HomeComponent itself awaits
+  // auth.ready() and branches its rail copy.
   {
     path: '',
     pathMatch: 'full',
-    canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/home/home.component').then(m => m.HomeComponent),
   },
   {

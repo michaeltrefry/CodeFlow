@@ -6,6 +6,7 @@ using Anthropic;
 using Anthropic.Models.Messages;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using Microsoft.Extensions.Logging;
 using OpenAI;
 using OpenAI.Chat;
@@ -17,6 +18,7 @@ public interface ICodeFlowAssistant
     IAsyncEnumerable<AssistantStreamItem> AskAsync(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        ToolAccessPolicy? toolPolicy = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -46,6 +48,7 @@ public sealed class CodeFlowAssistant(
     public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        ToolAccessPolicy? toolPolicy = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
@@ -53,11 +56,12 @@ public sealed class CodeFlowAssistant(
 
         var config = await settingsResolver.ResolveAsync(cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
+        var allowedTools = FilterTools(toolDispatcher.Tools, toolPolicy);
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch
         {
-            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, cancellationToken),
-            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, cancellationToken),
+            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
+            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
             _ => throw new InvalidOperationException(
                 $"Assistant provider '{config.Provider}' is not supported. Expected one of: anthropic, openai, lmstudio.")
         };
@@ -68,11 +72,25 @@ public sealed class CodeFlowAssistant(
         }
     }
 
+    private static IReadOnlyCollection<IAssistantTool> FilterTools(
+        IReadOnlyCollection<IAssistantTool> tools,
+        ToolAccessPolicy? policy)
+    {
+        if (policy is null)
+        {
+            return tools;
+        }
+
+        var filtered = tools.Where(t => policy.AllowsTool(t.Name)).ToArray();
+        return filtered;
+    }
+
     private async IAsyncEnumerable<AssistantStreamItem> AskAnthropicAsync(
         AssistantRuntimeConfig config,
         string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyCollection<IAssistantTool> allowedTools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(LlmProviderKeys.Anthropic, cancellationToken)
@@ -87,8 +105,7 @@ public sealed class CodeFlowAssistant(
             BaseUrl = string.IsNullOrWhiteSpace(endpointUrl) ? opts.BaseUrl : new Uri(endpointUrl)
         });
 
-        var tools = toolDispatcher.Tools;
-        var anthropicTools = tools.Count > 0 ? AnthropicToolMapper.Map(tools) : null;
+        var anthropicTools = allowedTools.Count > 0 ? AnthropicToolMapper.Map(allowedTools) : null;
 
         var messages = new List<MessageParam>(history.Count + 1);
         foreach (var msg in history)
@@ -262,6 +279,7 @@ public sealed class CodeFlowAssistant(
         string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyCollection<IAssistantTool> allowedTools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(config.Provider, cancellationToken)
@@ -278,8 +296,7 @@ public sealed class CodeFlowAssistant(
 
         var chatClient = new ChatClient(config.Model, new ApiKeyCredential(apiKey), clientOptions);
 
-        var tools = toolDispatcher.Tools;
-        var openAiTools = tools.Count > 0 ? OpenAiToolMapper.Map(tools) : null;
+        var openAiTools = allowedTools.Count > 0 ? OpenAiToolMapper.Map(allowedTools) : null;
 
         var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 2);
         if (!string.IsNullOrWhiteSpace(systemPrompt))
@@ -288,7 +305,7 @@ public sealed class CodeFlowAssistant(
         }
         foreach (var msg in history)
         {
-            ChatMessage built = msg.Role switch
+            OpenAI.Chat.ChatMessage built = msg.Role switch
             {
                 AssistantMessageRole.System => new SystemChatMessage(msg.Content),
                 AssistantMessageRole.Assistant => new AssistantChatMessage(msg.Content),
