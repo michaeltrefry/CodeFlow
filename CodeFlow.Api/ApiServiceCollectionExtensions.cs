@@ -101,6 +101,7 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IAssistantSystemPromptProvider, DefaultAssistantSystemPromptProvider>();
         services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
         services.AddScoped<AssistantChatService>();
+        services.AddScoped<IAssistantUserResolver, AssistantUserResolver>();
 
         // HAA-4: Assistant tool registry. Each tool is scoped because most pull a per-request
         // DbContext / repository. The dispatcher is also scoped so it sees the request's tool

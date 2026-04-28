@@ -14,31 +14,26 @@ public static class AssistantEndpoints
     {
         ArgumentNullException.ThrowIfNull(routes);
 
+        // HAA-6: assistant endpoints intentionally do NOT require authorization. Authenticated
+        // callers get their claims subject id; anonymous callers on the homepage scope get a
+        // synthetic cookie-backed id (demo mode). Entity-scoped conversations still require
+        // authentication — that's enforced inside the handlers via the resolver.
         var group = routes.MapGroup("/api/assistant");
 
-        group.MapPost("/conversations", GetOrCreateConversationAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.Authenticated);
-
-        group.MapGet("/conversations/{id:guid}", GetConversationAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.Authenticated);
-
-        group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.Authenticated);
+        group.MapPost("/conversations", GetOrCreateConversationAsync);
+        group.MapGet("/conversations/{id:guid}", GetConversationAsync);
+        group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
 
         return routes;
     }
 
     private static async Task<IResult> GetOrCreateConversationAsync(
         ConversationScopeRequest request,
-        ICurrentUser currentUser,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
         CancellationToken cancellationToken)
     {
-        if (!currentUser.IsAuthenticated || string.IsNullOrWhiteSpace(currentUser.Id))
-        {
-            return Results.Unauthorized();
-        }
-
         ArgumentNullException.ThrowIfNull(request);
 
         AssistantConversationScope scope;
@@ -51,7 +46,17 @@ public static class AssistantEndpoints
             return Results.BadRequest(new { error = ex.Message });
         }
 
-        var conversation = await repository.GetOrCreateAsync(currentUser.Id, scope, cancellationToken);
+        // Demo mode is homepage-only. Entity-scoped conversations require a real user because
+        // they're advisory views over user-owned data (and even though demo mode disables tool
+        // access today, hosting an anon entity-scoped thread would just be confusing).
+        var allowAnonymous = scope.Kind == AssistantConversationScopeKind.Homepage;
+        var userId = userResolver.Resolve(httpContext, allowAnonymous);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var conversation = await repository.GetOrCreateAsync(userId, scope, cancellationToken);
         var messages = await repository.ListMessagesAsync(conversation.Id, cancellationToken);
 
         return Results.Ok(new
@@ -63,17 +68,21 @@ public static class AssistantEndpoints
 
     private static async Task<IResult> GetConversationAsync(
         Guid id,
-        ICurrentUser currentUser,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
         CancellationToken cancellationToken)
     {
-        if (!currentUser.IsAuthenticated || string.IsNullOrWhiteSpace(currentUser.Id))
+        // For reads we never want to mint a fresh anon cookie — that would lose the existing
+        // conversation. If there's no auth and no existing cookie, treat as unauthorized.
+        var conversation = await repository.GetByIdAsync(id, cancellationToken);
+        if (conversation is null)
         {
-            return Results.Unauthorized();
+            return Results.NotFound();
         }
 
-        var conversation = await repository.GetByIdAsync(id, cancellationToken);
-        if (conversation is null || !string.Equals(conversation.UserId, currentUser.Id, StringComparison.Ordinal))
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
         {
             return Results.NotFound();
         }
@@ -90,19 +99,20 @@ public static class AssistantEndpoints
         Guid id,
         SendMessageRequest request,
         HttpContext httpContext,
-        ICurrentUser currentUser,
+        IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
         AssistantChatService chatService,
         CancellationToken cancellationToken)
     {
-        if (!currentUser.IsAuthenticated || string.IsNullOrWhiteSpace(currentUser.Id))
+        var conversation = await repository.GetByIdAsync(id, cancellationToken);
+        if (conversation is null)
         {
-            httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
 
-        var conversation = await repository.GetByIdAsync(id, cancellationToken);
-        if (conversation is null || !string.Equals(conversation.UserId, currentUser.Id, StringComparison.Ordinal))
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
         {
             httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
             return;

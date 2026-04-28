@@ -1,5 +1,6 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { ChatPanelComponent } from '../../ui/chat';
+import { AuthService } from '../../auth/auth.service';
 
 /**
  * HAA-6: Homepage shell. Replaces "land on Traces" as the default landing experience.
@@ -11,6 +12,10 @@ import { ChatPanelComponent } from '../../ui/chat';
  * The chat panel mounts with <c>scope: { kind: 'homepage' }</c> so all conversations the user
  * has on the homepage land in the same persistent thread, distinct from any entity-scoped
  * sidebar conversations that ship in HAA-7.
+ *
+ * Anonymous visitors land here in demo mode: the backend mints a cookie-backed synthetic id
+ * and runs the chat with no tool access (system-prompt knowledge only). The rail copy branches
+ * to surface that and to nudge sign-in for live data access.
  */
 @Component({
   selector: 'cf-home-page',
@@ -27,18 +32,33 @@ import { ChatPanelComponent } from '../../ui/chat';
           <span class="rail-eyebrow">Assistant</span>
           <h2 class="rail-title">CodeFlow copilot</h2>
         </header>
-        <p class="rail-blurb">
-          Ask about workflows, agents, traces, or runs. The assistant has live access to your
-          library and can pull a trace's timeline or token usage on demand.
-        </p>
-        <ul class="rail-list">
-          <li><strong>Knowledge.</strong> Authoring concepts (ports, scripting, subflows, swarms, transforms, HITL) and runtime concepts (traces, replay-with-edit, token tracking).</li>
-          <li><strong>Live state.</strong> "Which workflows use agent X?" · "Failed traces yesterday for Y?" · "Token cost of trace Z?"</li>
-          <li><strong>Coming soon.</strong> Drafting workflows, running them from chat, diagnosing failures end-to-end.</li>
-        </ul>
-        <p class="rail-foot">
-          The trace inspector is still one click away in the side nav.
-        </p>
+        @if (isDemo()) {
+          <p class="rail-blurb">
+            You're previewing CodeFlow. The assistant can answer general questions about
+            authoring concepts, ports, traces, and runtime behavior, but live tools are off
+            until you sign in.
+          </p>
+          <ul class="rail-list">
+            <li><strong>What works now.</strong> Concept questions: ports, scripting, subflows, swarms, transforms, HITL, replay-with-edit, token tracking.</li>
+            <li><strong>Sign in to unlock.</strong> Querying your library and traces ("which workflows use agent X?", "failed traces yesterday?", "token cost of trace Z?").</li>
+          </ul>
+          <p class="rail-foot rail-foot-cta" data-testid="rail-demo-banner">
+            Demo mode — sign in for live data access.
+          </p>
+        } @else {
+          <p class="rail-blurb">
+            Ask about workflows, agents, traces, or runs. The assistant has live access to your
+            library and can pull a trace's timeline or token usage on demand.
+          </p>
+          <ul class="rail-list">
+            <li><strong>Knowledge.</strong> Authoring concepts (ports, scripting, subflows, swarms, transforms, HITL) and runtime concepts (traces, replay-with-edit, token tracking).</li>
+            <li><strong>Live state.</strong> "Which workflows use agent X?" · "Failed traces yesterday for Y?" · "Token cost of trace Z?"</li>
+            <li><strong>Coming soon.</strong> Drafting workflows, running them from chat, diagnosing failures end-to-end.</li>
+          </ul>
+          <p class="rail-foot">
+            The trace inspector is still one click away in the side nav.
+          </p>
+        }
       </aside>
     </main>
   `,
@@ -119,6 +139,10 @@ import { ChatPanelComponent } from '../../ui/chat';
       color: var(--text-muted, #9aa3b2);
       font-size: 11px;
     }
+    .rail-foot-cta {
+      color: var(--text, #E7E9EE);
+      font-weight: 600;
+    }
     @media (max-width: 1080px) {
       .home {
         grid-template-columns: 1fr;
@@ -129,4 +153,11 @@ import { ChatPanelComponent } from '../../ui/chat';
     }
   `],
 })
-export class HomeComponent {}
+export class HomeComponent {
+  private readonly auth = inject(AuthService);
+
+  // True iff bootstrap completed and we resolved no current user. We deliberately key off
+  // currentUser() rather than tokenAcceptedByApi(): the chat backend's cookie-driven anon
+  // identity makes "no real user resolved" the right gate for demo-mode rail copy.
+  protected readonly isDemo = computed(() => !this.auth.loading() && this.auth.currentUser() === null);
+}

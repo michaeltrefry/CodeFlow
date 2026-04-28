@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using MassTransit;
 using Microsoft.Extensions.Logging;
 using TokenUsageRecorded = CodeFlow.Contracts.TokenUsageRecorded;
@@ -19,6 +20,7 @@ public sealed class AssistantChatService(
     ICodeFlowAssistant assistant,
     ITokenUsageRecordRepository tokenUsageRepository,
     IPublishEndpoint publishEndpoint,
+    IAssistantUserResolver userResolver,
     ILogger<AssistantChatService> logger)
 {
     public async IAsyncEnumerable<AssistantTurnEvent> SendMessageAsync(
@@ -54,7 +56,11 @@ public sealed class AssistantChatService(
         var contentBuffer = new StringBuilder();
         string? finalProvider = null;
         string? finalModel = null;
-        var enumerator = assistant.AskAsync(userContent, historyForLlm, cancellationToken)
+        // HAA-6 demo mode: anonymous homepage conversations get no tool access — system-prompt
+        // knowledge only. The conversation's UserId carries the marker (anon: prefix); the
+        // resolver gives us a single source of truth.
+        var toolPolicy = userResolver.IsDemoUser(conversation.UserId) ? ToolAccessPolicy.NoTools : null;
+        var enumerator = assistant.AskAsync(userContent, historyForLlm, toolPolicy, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
         try
