@@ -15,6 +15,7 @@ import {
   TraceTimelineDotState,
   TraceTimelineEvent,
   TraceTimelineExtraLink,
+  TraceTimelineTokenUsage,
   dotStateFor,
   variantForKind,
 } from './trace-timeline.types';
@@ -80,6 +81,10 @@ interface ArtifactLoadState {
                     [dot]="badge.dot ?? false"
                     [title]="badge.title ?? ''">{{ badge.label }}</cf-chip>
                 }
+                @if (entry.tokenUsage; as tu) {
+                  <cf-chip mono variant="accent"
+                           [title]="tokenUsageHoverSummary(tu)">{{ tokenUsageInlineLabel(tu) }}</cf-chip>
+                }
                 @if (isExpandable(entry)) {
                   <span class="caret">{{ isExpanded(entry.id) ? '▾' : '▸' }}</span>
                 }
@@ -139,6 +144,38 @@ interface ArtifactLoadState {
                     <pre class="tl-payload">{{ entry.decisionPayload | json }}</pre>
                   </div>
                 }
+                @if (entry.tokenUsage; as tu) {
+                  <div class="artifact-block">
+                    <div class="artifact-h">
+                      Token usage · {{ tu.callCount }} {{ tu.callCount === 1 ? 'call' : 'calls' }}
+                    </div>
+                    <ul class="tl-token-totals">
+                      @for (pair of tokenUsageTotalsAsPairs(tu.totals); track pair.key) {
+                        <li>
+                          <span class="mono xsmall faint">{{ pair.key }}</span>
+                          <span class="mono small">{{ pair.value | number }}</span>
+                        </li>
+                      }
+                    </ul>
+                    @if (tu.byProviderModel.length > 1) {
+                      <div class="tl-token-combos">
+                        @for (combo of tu.byProviderModel; track combo.provider + combo.model) {
+                          <div class="tl-token-combo">
+                            <cf-chip mono>{{ combo.provider }} · {{ combo.model }}</cf-chip>
+                            <ul class="tl-token-totals nested">
+                              @for (pair of tokenUsageTotalsAsPairs(combo.totals); track pair.key) {
+                                <li>
+                                  <span class="mono xsmall faint">{{ pair.key }}</span>
+                                  <span class="mono xsmall">{{ pair.value | number }}</span>
+                                </li>
+                              }
+                            </ul>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+                }
               </div>
             }
           </div>
@@ -175,6 +212,25 @@ interface ArtifactLoadState {
       margin-bottom: 4px;
     }
     .artifact-link-row { margin: 0 0 6px; font-size: var(--fs-sm); }
+    .tl-token-totals {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 2px 14px;
+    }
+    .tl-token-totals li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .tl-token-totals.nested { margin-top: 4px; }
+    .tl-token-combos {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tl-token-combo > cf-chip { margin-bottom: 4px; display: inline-block; }
   `],
 })
 export class TraceTimelineComponent {
@@ -212,7 +268,39 @@ export class TraceTimelineComponent {
       || (entry.logs?.length ?? 0) > 0
       || this.hasDecisionPayload(entry)
       || (entry.expandedExtras?.length ?? 0) > 0
+      || !!entry.tokenUsage
     );
+  }
+
+  /** Slice 8 inline-badge label: compact "↑input · ↓output · Nc" form so the row
+   *  can show usage at a glance without overwhelming the title bar. Falls back to
+   *  the call count when neither input nor output tokens are reported. */
+  tokenUsageInlineLabel(tu: TraceTimelineTokenUsage): string {
+    const input = tu.totals['input_tokens'] ?? tu.totals['prompt_tokens'] ?? 0;
+    const output = tu.totals['output_tokens'] ?? tu.totals['completion_tokens'] ?? 0;
+    const callSuffix = tu.callCount > 1 ? ` · ${tu.callCount}c` : '';
+    if (input === 0 && output === 0) {
+      return `${tu.callCount} ${tu.callCount === 1 ? 'call' : 'calls'}`;
+    }
+    return `↑${formatCount(input)} · ↓${formatCount(output)}${callSuffix}`;
+  }
+
+  /** Hover/title attribute for the inline chip — full input/output and call count
+   *  in a single line so the user can see exact numbers without expanding. */
+  tokenUsageHoverSummary(tu: TraceTimelineTokenUsage): string {
+    const input = tu.totals['input_tokens'] ?? tu.totals['prompt_tokens'] ?? 0;
+    const output = tu.totals['output_tokens'] ?? tu.totals['completion_tokens'] ?? 0;
+    return `${input.toLocaleString()} input · ${output.toLocaleString()} output · ${tu.callCount} ${tu.callCount === 1 ? 'call' : 'calls'}`;
+  }
+
+  /** Stable display order for token totals — input fields first, then output,
+   *  total_tokens, cache fields, reasoning fields, then alphabetical. Mirrors the
+   *  slice 6 panel's ordering so the same field list renders consistently in
+   *  both surfaces. */
+  tokenUsageTotalsAsPairs(totals: Record<string, number>): { key: string; value: number }[] {
+    const pairs = Object.entries(totals).map(([key, value]) => ({ key, value }));
+    pairs.sort((a, b) => fieldSortKey(a.key) - fieldSortKey(b.key) || a.key.localeCompare(b.key));
+    return pairs;
   }
 
   hasInput(entry: TraceTimelineEvent): boolean {
@@ -273,6 +361,10 @@ export class TraceTimelineComponent {
     this.downloadRef.emit(extra.ref);
   }
 
+  private formatCount(value: number): string {
+    return formatCount(value);
+  }
+
   private loadArtifact(uri: string): void {
     if (!this.fetchArtifact) return;
     const existing = this.artifacts().get(uri);
@@ -304,4 +396,26 @@ export class TraceTimelineComponent {
       },
     });
   }
+}
+
+/** Compact integer formatter for inline badges. Keeps small counts exact and
+ *  prefixes at thousand boundaries so 12,345 renders as "12.3k". The expanded
+ *  block always shows full precision via the `number` pipe — this is a
+ *  display-only optimization for the at-a-glance chip. */
+function formatCount(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  const abs = Math.abs(value);
+  if (abs < 1000) return String(value);
+  if (abs < 1_000_000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
+}
+
+/** Lower = sorted earlier (mirrors token-usage-panel.component.ts). */
+function fieldSortKey(field: string): number {
+  if (field.startsWith('input_tokens') || field === 'prompt_tokens') return 0;
+  if (field.startsWith('output_tokens') || field === 'completion_tokens') return 1;
+  if (field === 'total_tokens') return 2;
+  if (field.includes('cache')) return 3;
+  if (field.includes('reasoning') || field.includes('thinking')) return 4;
+  return 5;
 }

@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, ChangeDetectorRef, Component, HostBinding, Inp
 import { CommonModule, KeyValue } from '@angular/common';
 import { RefDirective, ImpureKeyvaluePipe } from 'rete-angular-plugin/20';
 import { ClassicPreset } from 'rete';
-import { WorkflowEditorNode } from './workflow-node-schemes';
+import { WorkflowEditorNode, WorkflowNodeTokenOverlay } from './workflow-node-schemes';
 
 type NodeExtraData = { width?: number; height?: number };
 type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] | ClassicPreset.Node['outputs'])[string];
@@ -29,6 +29,13 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
               class="wf-node-script-badge"
               title="Routing script attached"
               data-testid="node-script-badge">{{ '{ }' }}</span>
+        <span *ngIf="data.tokenUsageOverlay as tu"
+              class="wf-node-token-badge"
+              [attr.data-rolled-up]="tu.rolledUp ? 'true' : null"
+              [title]="tokenOverlayHover(tu)"
+              data-testid="node-token-badge">
+          ↑{{ formatCount(tu.inputTokens) }} ↓{{ formatCount(tu.outputTokens) }}<span class="wf-node-token-calls" *ngIf="tu.callCount > 1">·{{ tu.callCount }}</span>
+        </span>
       </div>
 
       <div class="wf-node-body">
@@ -100,6 +107,32 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
     .wf-node-row.output.implicit-failed.wired .wf-port-label {
       color: var(--color-danger, #d04848);
     }
+    /* Token Usage Tracking [Slice 7] - compact per-node badge in the node head.
+       Direct per-node totals get the accent variant; rolled-up totals (from a
+       descendant child saga of a Subflow / ReviewLoop / Swarm) get a muted dashed
+       treatment so the two are distinguishable at a glance. */
+    .wf-node-token-badge {
+      margin-left: auto;
+      padding: 1px 6px;
+      border-radius: var(--radius-sm, 4px);
+      background: color-mix(in oklab, var(--accent, #4a8fdb) 18%, transparent);
+      color: var(--accent, #4a8fdb);
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs, 11px);
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .wf-node-token-badge[data-rolled-up="true"] {
+      background: color-mix(in oklab, var(--muted, #a0a0a0) 22%, transparent);
+      color: var(--muted, #a0a0a0);
+      border: 1px dashed color-mix(in oklab, var(--muted, #a0a0a0) 40%, transparent);
+      padding: 0 5px;
+    }
+    .wf-node-token-calls { opacity: 0.75; margin-left: 2px; }
   `]
 })
 export class WorkflowNodeComponent implements OnChanges {
@@ -148,5 +181,24 @@ export class WorkflowNodeComponent implements OnChanges {
     const ai = (a.value as { index?: number } | undefined)?.index ?? 0;
     const bi = (b.value as { index?: number } | undefined)?.index ?? 0;
     return ai - bi;
+  }
+
+  /** Compact integer formatter for the in-graph token badge - small counts
+   *  exact, larger counts truncated to k/M so the badge stays readable inside
+   *  a node head. Mirrors the shared timeline's formatter. */
+  formatCount(value: number): string {
+    if (!Number.isFinite(value) || value === 0) return '0';
+    const abs = Math.abs(value);
+    if (abs < 1000) return String(value);
+    if (abs < 1_000_000) return (value / 1000).toFixed(value >= 10_000 ? 0 : 1) + 'k';
+    return (value / 1_000_000).toFixed(1) + 'M';
+  }
+
+  tokenOverlayHover(tu: WorkflowNodeTokenOverlay): string {
+    const callsLabel = tu.callCount + ' ' + (tu.callCount === 1 ? 'call' : 'calls');
+    const provenance = tu.rolledUp ? 'descendant scope total' : 'direct on this node';
+    return tu.inputTokens.toLocaleString() + ' input · '
+      + tu.outputTokens.toLocaleString() + ' output · '
+      + callsLabel + ' (' + provenance + ')';
   }
 }

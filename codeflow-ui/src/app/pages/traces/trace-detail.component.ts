@@ -25,6 +25,14 @@ import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
 import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
 import { TraceReplayPanelComponent } from './trace-replay-panel.component';
 import { TokenUsagePanelComponent } from './token-usage-panel.component';
+import { WorkflowNodeTokenOverlay } from '../workflows/editor/workflow-node-schemes';
+import {
+  TokenUsageInvocationRollup,
+  TokenUsageNodeRollup,
+  TokenUsageRecordDto,
+  TokenUsageRollup,
+  TokenUsageScopeRollup,
+} from '../../core/models';
 import { Observable } from 'rxjs';
 
 interface TimelineEntry {
@@ -161,7 +169,8 @@ interface ReviewLoopGroup {
             <div class="graph-host">
               <cf-workflow-readonly-canvas
                 [workflow]="workflow()"
-                [highlightedNodeIds]="highlightedNodeIds()"></cf-workflow-readonly-canvas>
+                [highlightedNodeIds]="highlightedNodeIds()"
+                [tokenUsageByNodeId]="tokenOverlayByNodeId()"></cf-workflow-readonly-canvas>
             </div>
           </cf-card>
         }
@@ -461,8 +470,152 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private pollSub?: Subscription;
 
   /** Token Usage panel reference for live SSE-event forwarding. The signal-form
-   *  `viewChild` resolves once the `@if (detail()` template branch renders. */
+   *  `viewChild` resolves once the `@if (detail()` template branch renders.
+   *  Slices 7 + 8 also read its `records` and `aggregated` signals to build the
+   *  canvas overlay map and timeline-row token-usage payloads. */
   private readonly tokenUsagePanel = viewChild(TokenUsagePanelComponent);
+
+  /**
+   * Slice 7: per-node token-usage overlay for the readonly canvas. Combines
+   *  - direct LLM-issuing nodes (`aggregated().byNode[nodeId]`)
+   *  - Subflow / ReviewLoop / Swarm nodes that don't issue calls themselves but
+   *    spawn child sagas (sum `byScope[childSagaId]` for every direct child
+   *    whose `parentNodeId` matches the workflow node id).
+   *
+   * Returns `null` until the panel reports any records — keeps the canvas in
+   * its un-decorated state for traces that haven't issued an LLM call yet.
+   */
+  readonly tokenOverlayByNodeId = computed<Map<string, WorkflowNodeTokenOverlay> | null>(() => {
+    const panel = this.tokenUsagePanel();
+    if (!panel) return null;
+    const aggregated = panel.aggregated();
+    if (aggregated.records.length === 0) return null;
+
+    const map = new Map<string, WorkflowNodeTokenOverlay>();
+
+    // Direct per-node rollups (LLM-issuing nodes).
+    for (const nodeRollup of aggregated.byNode) {
+      map.set(nodeRollup.nodeId, this.toCanvasOverlay(nodeRollup.rollup, false));
+    }
+
+    // Subflow / ReviewLoop / Swarm: roll up the child sagas they spawned. The
+    // parent's workflow has no LLM-issuing node for these, but the descendant
+    // saga's TraceId appears as a scope id in its records' chains. We match
+    // children by parentNodeId so multi-round ReviewLoops accumulate across
+    // every round on the parent's node.
+    const childrenByParentNode = new Map<string, string[]>();
+    for (const child of this.childTraces()) {
+      if (!child.parentNodeId) continue;
+      const list = childrenByParentNode.get(child.parentNodeId) ?? [];
+      list.push(child.traceId);
+      childrenByParentNode.set(child.parentNodeId, list);
+    }
+
+    const scopeById = new Map(
+      aggregated.byScope.map(s => [s.scopeId, s] as [string, TokenUsageScopeRollup]),
+    );
+
+    for (const [parentNodeId, childTraceIds] of childrenByParentNode.entries()) {
+      // Skip if this node already has a direct rollup — direct calls take
+      // precedence over scope rollups (a node can't both directly issue and
+      // delegate; if it does, the direct count is the authoritative one).
+      if (map.has(parentNodeId)) continue;
+
+      let calls = 0;
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const childTraceId of childTraceIds) {
+        const scope = scopeById.get(childTraceId);
+        if (!scope) continue;
+        calls += scope.rollup.callCount;
+        inputTokens += scope.rollup.totals['input_tokens'] ?? scope.rollup.totals['prompt_tokens'] ?? 0;
+        outputTokens += scope.rollup.totals['output_tokens'] ?? scope.rollup.totals['completion_tokens'] ?? 0;
+      }
+      if (calls === 0) continue;
+      map.set(parentNodeId, { callCount: calls, inputTokens, outputTokens, rolledUp: true });
+    }
+
+    return map;
+  });
+
+  private toCanvasOverlay(rollup: TokenUsageRollup, rolledUp: boolean): WorkflowNodeTokenOverlay {
+    return {
+      callCount: rollup.callCount,
+      inputTokens: rollup.totals['input_tokens'] ?? rollup.totals['prompt_tokens'] ?? 0,
+      outputTokens: rollup.totals['output_tokens'] ?? rollup.totals['completion_tokens'] ?? 0,
+      rolledUp,
+    };
+  }
+
+  /**
+   * Slice 8: per-timeline-row token-usage payloads. Each completed decision row
+   * "claims" every record with the same nodeId whose `recordedAtUtc` falls
+   * after the previous claim and at-or-before this row's timestamp. Each token
+   * record matches at most one row, so a multi-round ReviewLoop's final row
+   * doesn't double-count records that earlier rounds already showed.
+   */
+  readonly tokenUsageByRowId = computed<Map<string, TokenUsageRollup>>(() => {
+    const panel = this.tokenUsagePanel();
+    const out = new Map<string, TokenUsageRollup>();
+    if (!panel) return out;
+    const records = panel.aggregated().records;
+    if (records.length === 0) return out;
+
+    // Sort timeline rows ascending by timestamp so the claim sweep is deterministic.
+    const rows = [...this.timeline()]
+      .filter(e => e.kind === 'Completed' && e.nodeId)
+      .sort((a, b) => a.timestampUtc.localeCompare(b.timestampUtc));
+
+    // Per-node high-water mark of the last claim's record timestamp (records
+    // before this are already attributed to an earlier row; later records
+    // belong to this row's window).
+    const claimedBefore = new Map<string, string>();
+
+    const sortedRecords = [...records].sort((a, b) =>
+      a.recordedAtUtc.localeCompare(b.recordedAtUtc),
+    );
+
+    for (const row of rows) {
+      const nodeId = row.nodeId!;
+      const lowerBound = claimedBefore.get(nodeId) ?? '';
+      const upperBound = row.timestampUtc;
+      const matched: TokenUsageRecordDto[] = [];
+      for (const record of sortedRecords) {
+        if (record.nodeId !== nodeId) continue;
+        if (record.recordedAtUtc <= lowerBound) continue;
+        if (record.recordedAtUtc > upperBound) continue;
+        matched.push(record);
+      }
+      if (matched.length === 0) continue;
+      claimedBefore.set(nodeId, upperBound);
+      out.set(row.id, this.summarizeRecords(matched));
+    }
+
+    return out;
+  });
+
+  private summarizeRecords(records: TokenUsageRecordDto[]): TokenUsageRollup {
+    const totals: Record<string, number> = {};
+    const combos = new Map<string, { provider: string; model: string; totals: Record<string, number> }>();
+    for (const record of records) {
+      this.addInto(totals, record.totals);
+      const comboKey = `${record.provider}::${record.model}`;
+      const combo = combos.get(comboKey) ?? { provider: record.provider, model: record.model, totals: {} };
+      this.addInto(combo.totals, record.totals);
+      combos.set(comboKey, combo);
+    }
+    return {
+      callCount: records.length,
+      totals,
+      byProviderModel: Array.from(combos.values()),
+    };
+  }
+
+  private addInto(target: Record<string, number>, source: Record<string, number>): void {
+    for (const [key, value] of Object.entries(source)) {
+      target[key] = (target[key] ?? 0) + value;
+    }
+  }
 
   /** Resolver bound on the panel: turn a node id into a workflow node label.
    *  Stable arrow-fn reference so the input doesn't churn across change detections. */
@@ -773,6 +926,11 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       expandedExtras.push({ label: 'Download HTTP diagnostics', ref: httpDiagnosticsRef });
     }
 
+    // Slice 8: hand the row's token-usage payload through if the per-row map
+    // has claimed records for this id. The map is signal-derived so it
+    // recomputes whenever new records arrive from the SSE stream.
+    const tokenUsage = this.tokenUsageByRowId().get(entry.id) ?? null;
+
     return {
       id: entry.id,
       kind: entry.kind,
@@ -783,6 +941,13 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       outputRef: entry.outputRef,
       timestampUtc: entry.timestampUtc,
       expandedExtras: expandedExtras.length > 0 ? expandedExtras : undefined,
+      tokenUsage: tokenUsage
+        ? {
+            callCount: tokenUsage.callCount,
+            totals: tokenUsage.totals,
+            byProviderModel: tokenUsage.byProviderModel,
+          }
+        : null,
     };
   }
 
