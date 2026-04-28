@@ -1,0 +1,817 @@
+blinded_label,request,output,score_coverage,score_coherence,score_specificity,score_actionability,score_perspective,rationale
+A,B,"Recommend **(c) Both**, with a clear v1 interpretation: the **workflow-root ceiling is the only built-in enforcement mechanism**, and **per-node budgets are optional diagnostic thresholds** that emit warnings but do not change control flow unless the author explicitly wires logic for them.
+
+A useful ranking is **(c) > (a) >> (b)**. Option (c) best matches the actual goal: bounded spend first, actionable attribution second. Option (a) is the best fallback if scope must be minimized. Option (b) alone is not enough for the stated problem, because it surfaces spend but does not reliably stop it.
+
+| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High** for total workflow spend: it is the only single mechanism here that reliably stops future spend. But enforcement is reactive to `TokenUsageRecord` arrival, so a large node can overshoot before the saga fails. | **Best**: one root setting, easy to explain and adopt. | **High**: one rule, one terminal outcome (`Failed` via implicit Failed port). | **Limited**: operators can inspect existing token-usage data after failure, but there is no inline attribution of which node was the hotspot. | **Lowest**: aggregate running total on the parent saga, include subflows/ReviewLoop rollup, fail when threshold is crossed. Lowest UI/runtime surface area. |
+| **(b) Soft per-node warnings** | **Low**: by default it does not stop spend. Even if authors wire logic from warnings, it only reacts after the node completes. Weakest protection against runaway loops. | **Worst**: authors must choose thresholds node-by-node, and unconfigured nodes have no threshold at all. Easy to miss coverage. | **Medium-Low**: behavior varies by workflow authoring; some traces continue, some branch, some terminate. | **Best per-node visibility**: warnings identify where tokens were spent and can surface directly in the trace inspector/SSE stream. | **Medium**: per-node config, warning events, UI chips, and Logic-node integration. Broader product surface than (a). |
+| **(c) Both** | **Highest overall**: the root ceiling stops future spend, while per-node warnings expose hotspots. Still reactive rather than pre-spend, so some overshoot remains possible. | **Medium**: authors can get baseline safety from one root number, then add node thresholds only where they want insight. | **Medium-High**: keep terminal behavior singular—if the root ceiling is exceeded, always fail the same way. Warnings add signal without changing default semantics. | **Best overall**: operators get both “the trace exceeded budget” and “this node is where tokens concentrated.” | **Highest**: combines saga enforcement with per-node config/events/UI and interaction testing. More scope, but also the strongest product outcome. |
+
+The main reason to choose **(c)** is that the hard ceiling and the warnings solve different problems. The **root saga ceiling** is the safety rail: it puts a real upper bound on future spend for a trace, including subflow and ReviewLoop activity rolled into the parent saga total. The **per-node warnings** are diagnostics: they tell authors where to tune prompts, models, or loop structure. That separation is important because per-node thresholds should not be presented as protection; otherwise authors may get false confidence from a feature that does not actually stop runaway spend by default.
+
+For v1, the implementation should be staged conceptually even if the product choice is (c): define **one workflow-level ceiling on the parent saga total**, and if that total is exceeded, always transition the trace to **`Failed` on the implicit Failed port**. Then add **optional per-node warning thresholds** that emit structured events and inspector chips but do not themselves terminate the trace unless the author explicitly wires downstream logic. That keeps failure semantics easy to reason about while still giving operators the observability that option (a) lacks.
+
+If scope pressure forces a narrower first cut, ship **(a)** before **(b)**. But among the three choices on the table, **(c)** is the right recommendation because it preserves the non-negotiable guardrail while adding the visibility needed to make budgets actionable.",,,,,,
+B,B,"| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High**. Only option that guarantees a workflow trace cannot continue spending past a configured ceiling, aside from in-flight overshoot between usage reporting and saga reaction. Best protection against runaway loops and giant prompts. | **High simplicity**. One root-level setting, easy to explain and adopt broadly. Little tuning burden. | **High**. “Budget exceeded ⇒ trace fails on implicit Failed port” is simple and deterministic. Easy for authors and operators to reason about. | **Low–Medium**. You know total spend caused failure, but not which node was inefficient unless you manually inspect token usage records after the fact. No proactive hotspot signal. | **Low–Medium**. Mostly saga-side accumulation and fail-fast behavior using existing token records/events. Lowest migration/config surface. |
+| **(b) Soft per-node warnings** | **Low**. Does not stop spend by itself; relies on authors to wire explicit handling. A runaway loop can continue indefinitely if nobody gates on the warning. | **Medium–Low**. Flexible, but every meaningful threshold must be configured node-by-node, and authors must decide what to do with warnings. Easy to under-configure. | **Medium**. Warning semantics are clear, but resulting workflow behavior varies by author wiring. Same over-budget condition may terminate one workflow, route another, and do nothing in a third. | **High**. Best visibility into where tokens are being consumed. Strong debugging and tuning story via warning events and inspector chips. | **Medium**. Needs warning event model, node-level config UX, and downstream wiring semantics, but avoids hard-stop saga logic. |
+| **(c) Both** | **High**. Hard ceiling provides actual protection; per-node warnings add earlier local signals before total budget is exhausted. | **Medium**. Authors can get safety from the root ceiling alone, then opt into node thresholds where useful. More knobs overall, but defaults can keep it manageable. | **Medium–High**. The hard ceiling is predictable; warnings are advisory. Slightly more conceptual surface, but the distinction between “warn” and “stop” is understandable. | **High**. Operators get both total-spend protection and attribution signals about which nodes are driving usage. | **Medium–High**. Combines both feature sets: saga enforcement plus node-threshold config/events/UI. More runtime and product surface than either alone. |
+
+**Recommendation: (c) Both — soft per-node warnings plus a saga-level hard ceiling.**
+
+If the product goal is truly “put a ceiling on how many tokens a single trace may spend,” then a hard saga ceiling is non-negotiable. Option **(b)** fails the core requirement because it does not actually cap spend unless every author correctly wires explicit control logic. That makes budget enforcement optional in practice, which is exactly what you do not want for runaway loops. Option **(a)** satisfies the safety goal cleanly, but it is weak on operator feedback: when a trace dies for budget, the next question is immediately “which node burned it?” and v1 should answer that without requiring forensic digging through raw usage records.
+
+Option **(c)** is the best product shape because it separates two concerns cleanly: **the root ceiling is the safety rail**, and **per-node thresholds are diagnostics and tuning aids**. That division keeps failure semantics predictable — the trace always stops the same way when the saga ceiling is exceeded — while still giving authors and operators visibility into hotspots before they hit the wall. It also fits the existing plumbing well: token usage already rolls up at the saga level, and node completion already emits the data needed for warnings. The extra complexity is real, but it is bounded and worth it because it avoids choosing between “safe but opaque” and “visible but unenforced.”
+
+For a v1, I would implement **(c)** with opinionated defaults: the **workflow-level hard ceiling** is the primary feature and should be easy to configure at the root; **per-node budgets are optional** and purely advisory. In docs and UI, make the semantics explicit: **warnings never stop execution; the saga ceiling always can**. That gives CodeFlow a credible spend-control story on day one without overdesigning hierarchical budgets or external policy machinery.",,,,,,
+C,A,"Problem
+
+Today, operators who want to start a workflow from an existing Shortcut story or epic must manually open Shortcut, copy the title and description, and paste that content into the workflow input field. This is slow, repetitive, and error-prone. It also weakens reproducibility: two runs that are supposedly based on the same Shortcut artifact may differ because one operator pasted stale text, omitted part of the description, or added ad hoc edits during copy/paste.
+
+The pain is felt most directly by workflow operators who initiate runs from product work already tracked in Shortcut, and by workflow authors who want a dependable, low-friction entrypoint near Start. It is also felt indirectly by downstream consumers of the run output, including both humans and later workflow nodes, when the seeded context is incomplete, inconsistent, or not clearly sourced from Shortcut.
+
+This problem occurs any time a workflow is intended to transform or act on work already represented in Shortcut rather than freeform operator input. For teams using workflows to generate PRDs, plans, implementation outlines, or similar artifacts from stories and epics, this can happen many times per day. Even at lower frequency, the manual step adds unnecessary setup time and makes the workflow feel disconnected from the system of record.
+
+Users
+
+The primary user is the workflow operator at run time: a product manager, engineer, designer, TPM, or other internal user who has a Shortcut story ID or epic ID and wants to launch a workflow from it.
+
+A secondary user is the workflow author at design time, who places this node early in a workflow, typically adjacent to Start, and expects it to establish a stable contract for downstream execution by populating `workflow.mission` and `workflow.context`.
+
+A tertiary user is the downstream node author or prompt author, who benefits from knowing that successful runs will expose a predictable pair of workflow-scoped values with no need for custom parsing or manual operator instructions.
+
+Downstream readers of the node’s output include later workflow nodes, prompts, agents, and logic that consume `workflow.mission` and `workflow.context`, as well as human reviewers inspecting run state and node execution details.
+
+Goals
+
+Ship a workflow node that accepts a Shortcut reference and retrieves the corresponding title and description for either a story or an epic.
+
+On successful resolution, write the retrieved title to `workflow.mission` and the retrieved description to `workflow.context`, using the existing workflow variable model so downstream nodes can consume those values without any new conventions.
+
+Support both Shortcut stories and epics in v1, with a single operator flow that is clear and reliable.
+
+Eliminate manual copy/paste for the common case where the operator already knows the Shortcut artifact they want to use.
+
+Provide a dependable execution contract: on success, the node seeds workflow state deterministically; on failure, the node exposes a clear, visible failure state and does not silently pretend the workflow was seeded from Shortcut.
+
+Preserve source fidelity: the title and description written into workflow state should match the current Shortcut artifact at fetch time, subject only to any explicitly defined text normalization required by the platform.
+
+Measurable success for v1:
+- Operators can start a workflow from a valid Shortcut story or epic without manually pasting title/description.
+- 100% of successful runs using this node populate `workflow.mission` from the resolved title and `workflow.context` from the resolved description according to defined empty-description behavior.
+- 0 silent resolution failures where the node cannot fetch the artifact but downstream execution is led to believe Shortcut content was successfully seeded.
+- Node execution details make it clear whether the resolved artifact was a story or epic and whether the fetch succeeded or failed.
+
+Non-goals
+
+v1 is not a general-purpose Shortcut import node. It is a narrowly scoped bootstrap node for populating `workflow.mission` and `workflow.context`.
+
+v1 does not support importing arbitrary Shortcut fields such as comments, labels, owners, estimates, workflow state, relationships, acceptance criteria fields, attachments, or linked documents.
+
+v1 does not write back to Shortcut, create or update stories or epics, or synchronize changes in either direction.
+
+v1 does not support systems other than Shortcut.
+
+v1 does not infer artifacts from free-text search, natural-language references, or broad discovery flows.
+
+v1 does not perform summarization, enrichment, or semantic transformation of the retrieved content beyond any minimal formatting normalization required to store title and description in workflow values.
+
+v1 does not guarantee graceful recovery from every integration, permission, or network issue beyond surfacing a clear failure category.
+
+Acceptance criteria
+
+A workflow author can add a node near the start of a workflow whose purpose is to fetch a Shortcut artifact and seed workflow-scoped values.
+
+The node accepts operator input sufficient to resolve either a Shortcut story or epic, according to the final chosen input model.
+
+Given a valid Shortcut story reference, the node retrieves the story title and description, writes the title to `workflow.mission`, and writes the description to `workflow.context`.
+
+Given a valid Shortcut epic reference, the node retrieves the epic title and description, writes the title to `workflow.mission`, and writes the description to `workflow.context`.
+
+On success, downstream nodes in the same run can read `workflow.mission` and `workflow.context` with no additional operator input or special accessor.
+
+The node’s mapping is deterministic: title always maps to `workflow.mission`, and description always maps to `workflow.context`.
+
+The node indicates in its execution status or details which artifact type was resolved (story or epic), and enough provenance to make the fetch understandable to an operator, at minimum success/failure and the resolved reference.
+
+The node writes values atomically from a single resolved artifact. It must not partially update `workflow.mission` without also handling `workflow.context` according to the defined empty-description rule.
+
+If the artifact cannot be resolved or fetched because the input is malformed, not found, inaccessible, integration credentials are missing or invalid, or the upstream service is unavailable, the node degrades clearly. It must expose an explicit failure or error state rather than silently proceeding as though seeding succeeded.
+
+On failure, the node must not overwrite existing `workflow.mission` or `workflow.context` with placeholder, partial, or misleading values.
+
+If the retrieved description is empty, the node follows one defined and documented behavior consistently across stories and epics: either set `workflow.context` to the platform’s empty value and still succeed, or succeed with a warning. This behavior must be chosen before implementation.
+
+If the platform exposes node logs or execution details, those details must distinguish high-level failure categories such as invalid input, not found, unauthorized or misconfigured integration, and upstream or network failure.
+
+The node uses existing workflow state propagation and does not require downstream nodes to adopt new key names.
+
+Open questions
+
+Blocking for v1:
+- What is the input model? Options include a typed input (`artifact type` + `ID`), a single reference field with conservative auto-detection, or support for URLs as well as IDs. This is the main UX versus ambiguity tradeoff.
+- What are the execution semantics on failure? Should the node hard-fail the run, fail only the node and allow conditional handling, or use another existing workflow failure model? The brief requires clear degradation, but the exact behavior must be defined.
+- What authentication model does the node use? It should preferably reuse an existing Shortcut integration, but this must be confirmed.
+- What exact Shortcut fields count as “title” and “description” for both stories and epics, and is any text conversion required before writing to workflow values?
+
+Potentially blocking:
+- If stories and epics use overlapping or ambiguous identifiers, how should the node disambiguate them?
+- Should malformed input be rejected locally before any API call, and what validation rules are appropriate?
+
+Important but likely non-blocking:
+- Should the node accept Shortcut URLs in addition to bare IDs?
+- Should it overwrite preexisting `workflow.mission` and `workflow.context` unconditionally, or only when unset? Given intended placement near Start, unconditional overwrite is likely simplest, but this should be explicit.
+- How much provenance should be shown in node details beyond success or failure, such as resolved artifact type, ID, and title?
+- If Shortcut descriptions contain rich text or formatting differences across APIs, should the node pass through raw text, normalized markdown, or another canonical representation?
+
+Dependencies
+
+A functioning Shortcut integration is required, including network access and valid authentication and authorization to read stories and epics in the relevant workspace.
+
+The node depends on the workflow engine’s ability to write workflow-scoped values, specifically `workflow.mission` and `workflow.context`, early enough for downstream nodes to consume them.
+
+The capability depends on existing workflow node infrastructure for configuration UI, runtime execution, status reporting, and variable propagation.
+
+If the platform already has secret management or third-party integration infrastructure, this node should reuse it rather than introducing bespoke credential handling.
+
+The implementation depends on a normalization layer between Shortcut APIs and the workflow contract, especially if stories and epics are fetched from different endpoints or returned with different schemas. That layer must consistently produce the same internal mapping for both artifact types.
+
+The final degradation behavior may also depend on existing workflow failure-handling and conditional-execution capabilities, if those are used to make node failure actionable rather than opaque.",,,,,,
+D,A,"# Problem
+
+Today, operators who want to run a workflow against a Shortcut story or epic must manually open Shortcut, copy the title and description, and paste that content into the workflow input field. This is slow, repetitive, and error-prone. It also creates inconsistency: some operators paste only the title, some paste the description incompletely, and some include extra formatting or surrounding context that downstream nodes were not designed to consume.
+
+The pain is felt most directly by workflow authors and operators who use CodeFlow to synthesize plans, PRDs, implementation tasks, or other outputs from Shortcut work items. It is also felt indirectly by downstream consumers of workflow outputs, because the quality of the workflow run depends on the quality and completeness of the manually pasted input.
+
+This pain occurs every time a workflow is initiated from a Shortcut artifact rather than from freeform text. For teams that routinely use Shortcut as the system of record for work definition, this can be a frequent, daily action. The friction is especially noticeable in workflows designed to start from a story or epic, where the manual copy/paste step is pure overhead and undermines the promise of automation.
+
+A second problem is discoverability and reliability. Because there is no first-class node for “load mission/context from Shortcut,” workflow builders must rely on operator instructions or ad hoc conventions. This makes workflows less self-contained and harder to reuse. It also increases the chance of failed or low-quality runs when an operator forgets to paste content, pastes the wrong item, or uses stale text after the Shortcut item has changed.
+
+The requested capability addresses this by introducing a workflow node type that accepts a Shortcut story or epic ID, fetches the corresponding title and description, and seeds them into `workflow.mission` and `workflow.context` early in the run.
+
+# Users
+
+The primary initiating user is a workflow operator or builder who starts a workflow and knows the Shortcut story or epic ID they want to use as input. In many cases this will be an internal user running a standard workflow template, likely near the beginning of a run, alongside Start.
+
+A secondary initiating user is a workflow author who wants to design reusable workflows that begin from structured work items rather than requiring freeform pasted input. For this user, the node reduces setup instructions and makes the workflow more portable and less dependent on operator discipline.
+
+The downstream readers of this node’s output are other workflow nodes that consume `workflow.mission` and `workflow.context`. This may include LLM-powered synthesis nodes, routing logic, task decomposition nodes, documentation generators, or any custom node that expects those workflow keys to exist. These downstream nodes are not direct users of the UI, but they are key consumers of the capability and depend on predictable population of the workflow bag.
+
+A tertiary stakeholder is platform/support staff, who benefit from clearer failure behavior when an ID cannot be resolved. Explicit degradation reduces debugging time compared with today’s ambiguous “bad input” failures later in the workflow.
+
+# Goals
+
+The primary goal is to let a workflow start from a Shortcut story or epic ID without requiring manual copy/paste of the item’s contents.
+
+Success in v1 looks like:
+
+- A workflow author can place a new node type early in a workflow and configure it to accept a Shortcut ID.
+- When given a valid story ID, the node fetches the story title and description and writes them into workflow state in a predictable way.
+- When given a valid epic ID, the node does the same.
+- Downstream nodes can reliably read:
+  - `workflow.mission`: seeded from the Shortcut title
+  - `workflow.context`: seeded from the Shortcut description
+- When the ID cannot be resolved, the node fails or surfaces a clear, explicit status such that the operator understands what went wrong and downstream nodes do not silently operate on missing or misleading data.
+
+Measurable indicators of success:
+
+- Reduce operator setup steps for Shortcut-based workflows from manual copy/paste to entering or passing a single ID.
+- High success rate for valid IDs resolving to the correct Shortcut item type.
+- Low incidence of downstream failures caused by missing `workflow.mission` / `workflow.context` when this node is present and configured correctly.
+- Clear operator-visible error messaging for unresolved IDs, wrong IDs, or missing integration/authentication.
+
+A secondary goal is standardization: workflows that begin from Shortcut should use a common mechanism and common workflow keys, improving reuse and predictability across templates.
+
+# Non-goals
+
+v1 is not a general Shortcut sync feature. It does not need to import arbitrary fields beyond title and description.
+
+v1 is not required to support searching Shortcut by freeform text, URL, or human-readable slug. The input can be limited to a story or epic ID in a defined format.
+
+v1 is not required to support writing back to Shortcut, updating stories/epics, posting comments, or changing status.
+
+v1 is not required to merge multiple Shortcut items into one mission/context payload, nor to traverse linked stories under an epic.
+
+v1 is not required to transform, summarize, or clean the fetched content beyond whatever minimal normalization is necessary to store it safely in `workflow.mission` and `workflow.context`.
+
+v1 is not required to support every possible Shortcut field formatting edge case identically to the Shortcut UI. Preserving the core textual title and description is sufficient.
+
+v1 is not required to provide advanced caching, historical snapshots, or change detection between workflow runs.
+
+v1 is not required to infer whether an ID is a story or epic from ambiguous input if Shortcut APIs or internal conventions require explicit disambiguation; if needed, the product may require enough information to resolve the item deterministically.
+
+# Acceptance criteria
+
+1. A new workflow node type exists for loading mission/context from Shortcut.
+2. The node can be placed near the start of a workflow and executed before downstream nodes that read workflow bag values.
+3. The node accepts an input representing a Shortcut story or epic ID.
+4. Given a valid story ID and working Shortcut connectivity/authentication:
+   - the node fetches the story title and description;
+   - `workflow.mission` is set to the story title;
+   - `workflow.context` is set to the story description.
+5. Given a valid epic ID and working Shortcut connectivity/authentication:
+   - the node fetches the epic title and description;
+   - `workflow.mission` is set to the epic title;
+   - `workflow.context` is set to the epic description.
+6. The node’s behavior is documented and consistent across stories and epics, including how empty or null descriptions are handled.
+7. If the provided ID cannot be resolved to a story or epic:
+   - the run surfaces a clear, operator-visible error or failure state;
+   - the error indicates that the Shortcut item could not be resolved;
+   - the workflow does not silently proceed as though mission/context were loaded successfully.
+8. If Shortcut authentication/configuration is missing or invalid:
+   - the node surfaces a clear configuration/integration error;
+   - the failure is distinguishable from “ID not found.”
+9. If the fetched title or description is empty:
+   - the node still behaves predictably according to documented rules;
+   - at minimum, title handling must not produce an ambiguous success with unusable `workflow.mission`.
+10. Downstream nodes in the same run can read the written `workflow.mission` and `workflow.context` values through the normal workflow bag mechanism.
+11. The node works for both manually entered IDs and IDs passed from prior nodes, if the workflow system supports parameterized node inputs.
+12. The node does not require the operator to paste the story/epic body into the workflow input field when used as intended.
+
+# Open questions
+
+1. **How is item type determined: story vs epic?**  
+   Does the node accept a single ID field and attempt both lookups, or does it require the operator/workflow to specify the type?  
+   **Blocks v1 if unresolved**, because it affects API calls, UX, and error semantics.
+
+2. **What exact input formats are supported?**  
+   Numeric ID only, prefixed forms, or full Shortcut URLs?  
+   Not necessarily blocking if v1 narrows scope to one format, but must be specified before implementation.
+
+3. **What should happen when description is empty or null?**  
+   Should `workflow.context` be set to an empty string, omitted, or populated with a placeholder?  
+   This should be decided before implementation for consistency, but is likely not blocking if a simple rule is chosen.
+
+4. **What should happen when title is empty or malformed?**  
+   Since `workflow.mission` is often critical to downstream prompts, should this be treated as an error?  
+   Potentially **blocking for v1**, depending on how tolerant downstream workflows are.
+
+5. **Should the node hard-fail the workflow or emit a structured error output?**  
+   “Degrade clearly” could mean stopping execution, or it could mean exposing a failure state that can be handled by branching logic.  
+   **Blocks v1** if the workflow engine requires one model or the other to be designed explicitly.
+
+6. **How are rich-text descriptions normalized?**  
+   Shortcut descriptions may contain markdown or formatting. Should the node preserve raw text/markdown, strip formatting, or convert to plain text?  
+   Not blocking if v1 preserves the API-returned textual representation, but it should be documented.
+
+7. **What permissions and workspace selection model apply?**  
+   If multiple Shortcut workspaces or integrations exist, how does the node know which one to query?  
+   **Blocks v1** if integration selection is not already solved elsewhere in CodeFlow.
+
+8. **Should the node overwrite existing `workflow.mission` and `workflow.context` values?**  
+   Since it sits early in the workflow, overwrite may be acceptable, but behavior should be explicit.  
+   Not blocking if default overwrite semantics already exist for workflow bag writes.
+
+# Dependencies
+
+This capability depends on an existing or newly added Shortcut integration that can authenticate to the relevant Shortcut workspace and fetch stories and epics by ID.
+
+It depends on workflow engine support for:
+- a first-class node type with configurable inputs;
+- execution early in the workflow graph;
+- writing to workflow-scoped bag keys;
+- downstream node access to `workflow.mission` and `workflow.context`;
+- clear run-state reporting for node failures or operator-visible errors.
+
+It depends on product/UI support for configuring the node, including entering or binding the Shortcut ID and, if needed, selecting item type or workspace/integration.
+
+It may depend on secrets/configuration management for storing Shortcut API credentials securely.
+
+It depends on Shortcut API behavior and field availability for both stories and epics, including stable access to title/name and description/body fields.
+
+If CodeFlow already has conventions around workflow initialization, Start-node behavior, or reserved workflow keys, this node must align with those conventions rather than introducing conflicting semantics.
+
+Finally, documentation and template guidance are dependencies for adoption: workflow authors need to know that this node is the standard way to seed `workflow.mission` and `workflow.context` from Shortcut artifacts.",,,,,,
+E,B,"Recommend **(a) Hard saga ceiling** for v1.
+
+| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High** for actual spend control. It is the only single mechanism here that reliably stops a trace from continuing indefinitely once cumulative recorded usage crosses the limit. Important caveat: enforcement is **reactive**, not preflight; the trace may overshoot by the tokens spent by the in-flight node before its `TokenUsageRecord` arrives. | **High**. One optional integer on the workflow root is easy to understand and document. Authors do not need to tune every node. | **High**. One global rule: when cumulative trace tokens exceed the ceiling, the saga transitions to `Failed` on the implicit Failed port and no further nodes are scheduled. | **Low–medium**. It tells you that the trace exceeded budget, but not as a first-class runtime signal which node was responsible. Still, the existing trace-token-usage endpoint and `TokenUsageRecorded` SSE events provide post hoc attribution. | **Low**. Mostly a saga-state enhancement plus root config/UI. Reuses existing token accounting and avoids new event types, node schema, inspector chips, and graph-control semantics. Low migration risk because it is opt-in. |
+| **(b) Soft per-node warnings** | **Low**. By itself it does not stop spend. A runaway loop can continue burning tokens unless the author correctly wires warning handling everywhere it matters. | **Medium–low**. Flexible, but pushes authors to think about thresholds on many nodes; unconfigured nodes have no protection. | **Medium–low**. Terminal behavior depends on workflow design, not one platform rule. Different graphs will react differently to the same warning. | **High**. Best first-class visibility into where tokens are being spent because warnings are attached to specific nodes and surfaced in the inspector/event stream. | **Medium**. Requires node-level config, warning events, UI surfacing, and downstream routing semantics, but avoids hard-stop saga behavior. |
+| **(c) Both** | **High**. Best overall coverage: per-node visibility plus a hard stop for runaway aggregate spend. Still reactive, so the hard ceiling can overshoot by one in-flight node’s usage. | **Medium**. Root ceiling plus optional per-node thresholds is manageable, but clearly more to teach and configure than (a). | **Medium**. The hard ceiling is predictable, but combining warnings with eventual hard failure introduces ordering questions: warning first, then fail; or fail before a downstream warning handler can act. | **High**. Best observability because it combines local attribution with aggregate protection. | **High**. Requires both systems and their interactions to be correct across loops, subflows, ReviewLoop iterations, and event timing. Highest rollout and testing risk for v1. |
+
+The deciding factor is that the core problem is **preventing open-ended spend**, not merely surfacing that spend happened. Only options with a hard ceiling solve that reliably, and **(a)** does so with the smallest product and runtime surface. It gives authors a simple mental model — “this trace may spend at most N tokens” — and gives operators a deterministic terminal state when the budget is crossed. That is especially valuable in v1, where predictable behavior matters more than rich policy composition. The existing token-usage plumbing already gives enough diagnostic data to investigate where tokens went, even if the runtime does not yet elevate per-node budget warnings as a first-class feature.
+
+Option **(c)** is probably the right long-term direction, but it bundles an essential control with a non-essential observability feature. That increases schema, UI, runtime, and edge-case complexity without improving the core enforcement guarantee beyond what **(a)** already provides. Ship the smallest feature that caps aggregate spend now, and leave per-node warnings for a later, additive release once real usage shows where authors need more visibility.
+
+Recommended v1 semantics for **(a)**:
+- Add a single optional integer token budget on the workflow root.
+- Count all `TokenUsageRecord`s in the trace total, including subflows and ReviewLoop iterations rolled into the parent saga.
+- Enforce on usage record arrival, so this is a **reactive stop** rather than exact pre-admission control.
+- When cumulative recorded usage exceeds the ceiling, transition the saga to `Failed` on the implicit Failed port and schedule no further nodes.
+- Keep existing token-usage APIs/SSE as the attribution path in v1; do not add per-node warning surfaces yet.
+
+This keeps migration risk low, preserves current behavior for unconfigured workflows, and leaves a clean path to add per-node warnings later without changing the core enforcement contract.",,,,,,
+F,A,"# Problem
+
+Today, users who want to run a workflow based on a Shortcut story or epic must manually copy the title and description from Shortcut and paste that content into the workflow input. This creates unnecessary setup work at the very beginning of a run and introduces avoidable errors. The workflow already conceptually starts from a Shortcut artifact, but the system does not let the operator reference that artifact directly.
+
+The pain is felt most by:
+- Workflow operators running benchmark or production-like flows
+- Workflow authors who want reusable, parameterized workflows
+- Evaluators repeatedly running the same workflow against different Shortcut items
+
+This happens every time a workflow is initiated from a Shortcut story or epic. In the swarm-bench harness use case, that can be frequent and repetitive. The current process is especially painful because it is both low-value and easy to get wrong: users may paste the wrong content, omit part of the description, or use stale text that no longer matches the source of truth in Shortcut.
+
+The lack of direct Shortcut hydration also weakens workflow portability. A workflow that should be runnable from an ID alone instead depends on manual operator preparation. That makes automation harder, benchmarking noisier, and the user experience less trustworthy.
+
+# Users
+
+The primary user is the workflow operator who starts a run and knows the Shortcut story or epic ID they want to use. This user wants to provide a stable identifier, not manually transcribe content.
+
+A secondary user is the workflow author or builder who places this node near the start of a workflow and expects downstream nodes to consume standardized workflow keys. For this user, the value is consistency: they can design prompts and logic around `workflow.mission` and `workflow.context` being populated from Shortcut.
+
+Downstream consumers include:
+- Prompt nodes that read `workflow.mission`
+- Context-aware nodes that read `workflow.context`
+- Logic or routing nodes that depend on those values being present
+- Debuggers or observers inspecting workflow state during execution
+
+In short, one user initiates the node, but many downstream nodes and authors benefit from its output.
+
+# Goals
+
+The primary goal is to add a workflow node type that accepts a Shortcut story or epic ID, fetches the corresponding title and description, and seeds them into:
+- `workflow.mission`
+- `workflow.context`
+
+Success in v1 means a user can start a workflow from a Shortcut identifier without manually pasting story content into the workflow input field.
+
+Specific goals:
+- Support both Shortcut stories and epics
+- Make the node usable early in a workflow, alongside Start
+- Populate workflow-scoped keys that downstream nodes can read immediately
+- Fail or degrade clearly when the ID cannot be resolved
+- Reduce manual setup time and copy/paste errors
+
+Measurable indicators of success:
+- High success rate for valid story and epic IDs
+- Zero manual copy/paste required in the happy path
+- Clear operator-visible error messaging for invalid or inaccessible IDs
+- Reliable downstream access to `workflow.mission` and `workflow.context` after node execution
+
+# Non-goals
+
+The following are out of scope for v1:
+- Editing or writing data back to Shortcut
+- Supporting Shortcut object types beyond stories and epics
+- Fetching a broad set of Shortcut metadata beyond title and description
+- Bulk import of multiple stories or epics in one node
+- Search-based lookup by text query instead of ID
+- Automatic summarization, transformation, or rewriting of the fetched content
+- Advanced caching, synchronization, or change detection
+- Resolving arbitrary Shortcut URLs unless that falls out trivially from the chosen ID format
+- Rich downstream schema beyond the two required workflow keys
+
+v1 is intentionally narrow: resolve one Shortcut story or epic by ID and seed two workflow values.
+
+# Acceptance criteria
+
+1. A new workflow node type is available for Shortcut hydration by ID.
+2. The node can be configured with a Shortcut identifier representing either a story or an epic.
+3. When given a valid story ID, the node fetches the story title and description.
+4. When given a valid epic ID, the node fetches the epic title and description.
+5. On successful fetch:
+   - `workflow.mission` is set to the Shortcut item title
+   - `workflow.context` is set to the Shortcut item description
+6. These workflow keys are available to downstream nodes in the same run.
+7. The node is usable near the beginning of a workflow and does not require manual pasting of story content into the workflow input field.
+8. If the ID cannot be resolved, the system surfaces a clear, operator-visible outcome explaining that the Shortcut item could not be found or accessed.
+9. The failure/degradation behavior is consistent and documented, including whether downstream nodes continue to run.
+10. If the Shortcut item has an empty or missing description, the node handles it deterministically and documents the resulting value of `workflow.context`.
+11. Execution logs or node state make it possible to distinguish:
+   - successful resolution
+   - invalid ID / not found
+   - authentication or configuration failure
+   - other upstream integration errors
+12. The node works for both stories and epics without requiring the operator to manually paste or reformat content.
+
+# Open questions
+
+1. **Blocking v1:** How should the node determine whether the supplied ID is a story or an epic?
+   - Explicit type selector in the node UI
+   - Auto-detection by trying both
+   - Some encoded ID format
+   This affects both UX and implementation.
+
+2. **Blocking v1:** What exact ID formats should be accepted?
+   - Numeric internal IDs
+   - Public IDs
+   - Shortcut URLs
+   - Type-prefixed IDs
+   Input validation and operator guidance depend on this.
+
+3. **Blocking v1:** What is the desired failure mode when resolution fails?
+   - Hard fail the workflow
+   - Mark the node failed and stop downstream execution
+   - Allow downstream execution with empty/unset values
+   This must be defined so workflow authors can rely on predictable behavior.
+
+4. **Blocking v1:** What should happen if `workflow.mission` or `workflow.context` already contain values?
+   - Always overwrite
+   - Only set if empty
+   - Make overwrite configurable
+   Since the node is intended to run early, overwrite may be acceptable, but it should be explicit.
+
+5. Should the node preserve Shortcut formatting exactly, or normalize description text before writing to `workflow.context`?
+   This may affect prompt quality downstream.
+
+6. Should the node expose any additional metadata, such as resolved item type or canonical Shortcut URL, for debugging?
+   Not required by the brief, but potentially useful.
+
+7. Should authentication/configuration failures be surfaced differently from “not found” failures?
+   This would improve operator troubleshooting.
+
+8. Should the node support retries for transient Shortcut API failures?
+   Helpful, but not necessarily required for v1.
+
+# Dependencies
+
+This feature depends on:
+- A Shortcut integration or API client capable of fetching stories and epics by ID
+- Valid Shortcut authentication and workspace configuration
+- Workflow runtime support for writing workflow-scoped values
+- Existing semantics for `workflow.mission` and `workflow.context`
+- Downstream node support for reading those workflow keys
+- A node execution model that allows this node to run near the start of a workflow
+- Operator-visible execution state, logging, or error reporting
+- Node configuration UI for entering the Shortcut identifier and, if needed, selecting item type
+
+It may also depend on:
+- Secret management for Shortcut credentials
+- Network access from the workflow runtime to Shortcut
+- A normalized internal mapping layer if story and epic payloads differ structurally
+- Documentation updates so workflow authors understand how to use the node and what guarantees it provides
+
+Overall, this is a small but high-leverage capability. It removes repetitive manual setup, makes workflows more source-of-truth-driven, and standardizes how Shortcut-backed runs are initialized. The v1 should stay tightly scoped: resolve one story or epic by ID, populate the two workflow keys, and fail clearly when resolution is not possible.",,,,,,
+G,B,"| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High** for total spend: it is the only single mechanism here that guarantees a trace cannot continue spending indefinitely once the running total crosses the ceiling. It is still reactive rather than preflight, so the overage is “stop after crossing,” not “never exceed by 1 token,” but it does stop runaway traces. | **Very good**: one workflow-level setting, easy to explain and adopt. Minimal author decision surface. | **High**: one clear behavior — trace fails on the implicit Failed port when the ceiling is exceeded. Easy to reason about in ops and support. | **Weak**: you know the trace exceeded budget, but not which node or loop was responsible unless you manually inspect token records after the fact. | **Low–moderate**: mostly saga-side accumulation and a terminal transition on threshold breach, using existing `TokenUsageRecord` plumbing. Lowest migration/config risk. |
+| **(b) Soft per-node warnings** | **Low**: does not stop spend on its own. It can help disciplined authors build their own guardrails, but it does not protect against runaway loops or inattentive workflow authors. | **Mixed**: flexible, but requires authors to think node-by-node and decide thresholds. Unconfigured nodes have no protection, so coverage is uneven by default. | **Medium–low**: behavior depends on whether the author wired downstream logic from warning events. Two workflows with the same warning may behave differently. | **Strong**: best visibility into where tokens are being spent; warning chips/events point directly to the expensive node. | **Moderate**: eventing/UI work plus node-level config surfaces. Less risky than hard-stop semantics, but more product surface area than (a). |
+| **(c) Both** | **High**: the saga ceiling provides an actual stop, while per-node warnings provide earlier local signals. Best overall protection. | **Fair**: authors can get value from just the root ceiling, but full value requires optional per-node thresholds. More concepts to teach than (a). | **Medium–high**: the hard ceiling remains predictable, but there are now two budget concepts and two classes of outcomes (warning vs terminal failure). Still understandable if documented clearly. | **Very strong**: operators can see both the total cap breach and the nodes that were trending expensive before failure. Best for diagnosis and tuning. | **Highest**: combines saga enforcement with node-level warning/event/UI/config work. More runtime and product complexity, more testing surface, more migration/docs burden. |
+
+## Recommendation: **(a) Hard saga ceiling** for v1
+
+If the primary goal is “don’t let a single trace burn an open-ended bill,” then **(a)** is the best v1 choice because it is the only option that directly and reliably enforces that outcome with the smallest conceptual and implementation footprint. It maps cleanly to the user promise: “this workflow trace will not continue past this token ceiling.” That makes it strong on the two most important axes for a first release of a safety control: **enforcement strictness** and **failure-mode predictability**. It also fits the existing plumbing well: token usage already lands as `TokenUsageRecord`s and rolls up across subflows/review loops, so the saga can maintain a single running total and fail deterministically on breach.
+
+The main downside of (a) is weaker observability: it tells you **that** the trace overspent, not immediately **where**. But for v1, that is an acceptable tradeoff because the underlying token records and trace-token-usage endpoint already exist for post hoc diagnosis, while the hard ceiling solves the more urgent platform-risk problem. By contrast, **(b)** improves visibility but fails the core requirement of actually stopping runaway spend unless authors do extra work correctly. **(c)** is the best end-state product shape, but it is not the best first cut: it adds a second configuration model, more UI/event semantics, and more testing complexity before the core enforcement primitive has proven itself. Ship **(a)** first, make it simple and reliable, and treat per-node warnings as the natural v2 extension once real usage shows where authors need more attribution and tuning help.",,,,,,
+H,A,"# Problem
+
+Today, operators who want to run a workflow against a Shortcut story or epic must manually open Shortcut, copy the title and description, and paste that content into the workflow input field. This is slow, repetitive, and error-prone. It also creates inconsistency: some operators paste only the title, some paste title plus description, and some include extra context that downstream nodes were not designed to consume.
+
+The pain is felt most directly by workflow authors and operators who use CodeFlow to synthesize plans, PRDs, implementation tasks, or other artifacts from Shortcut work items. It is also felt indirectly by downstream consumers of workflow outputs, because missing or malformed mission/context inputs reduce output quality and make runs less reproducible.
+
+This pain occurs whenever a workflow is initiated from an existing Shortcut artifact rather than from a freshly typed prompt. For teams that use Shortcut as the system of record for product and engineering work, this is likely a common path, especially for workflows that begin with planning, summarization, decomposition, or implementation support. The pain compounds in repeated use: every run requires context switching, manual copy/paste, and judgment about what text belongs in which field.
+
+A second problem is workflow portability and standardization. If the workflow depends on an operator manually formatting input, then the workflow is less self-serve and less reliable. A dedicated node that resolves a Shortcut story or epic into standard workflow keys would make these workflows easier to run, easier to document, and less dependent on operator expertise.
+
+Finally, failure handling is weak today. If an operator pastes the wrong item, uses an invalid ID, or omits key details, downstream nodes may fail in confusing ways. A dedicated node can centralize resolution and provide a clear, early failure mode when the ID cannot be found.
+
+# Users
+
+The primary initiating user is a workflow operator who starts a workflow run and knows the Shortcut story ID or epic ID they want to use. This may be a product manager, engineer, designer, TPM, or AI workflow author depending on the workflow’s purpose.
+
+A secondary initiating user is a workflow builder who places this node near the start of a workflow so that later nodes can rely on standardized inputs. This user cares about composability, predictable key names, and clear failure behavior.
+
+Downstream readers are any nodes in the workflow that consume `workflow.mission` and `workflow.context`. In practice, these may include prompt-generation nodes, planning agents, synthesis agents, routing logic, document generators, or implementation assistants. These downstream nodes benefit from not needing to know whether the source artifact was a Shortcut story or epic; they only need the normalized mission and context fields.
+
+A tertiary user is an administrator or platform owner responsible for configuring Shortcut access. They care that the node uses existing credentials/configuration patterns and fails clearly when integration prerequisites are missing.
+
+# Goals
+
+The primary goal is to let a workflow run begin from a Shortcut story or epic ID without requiring manual copy/paste of title and description.
+
+Success in v1 means:
+
+- An operator can provide a Shortcut story ID or epic ID to the node and run the workflow.
+- The node fetches the corresponding Shortcut item and writes:
+  - `workflow.mission` = the item title
+  - `workflow.context` = the item description
+- This works for both stories and epics through one node type or one clearly unified capability.
+- If the ID cannot be resolved, the node fails early and clearly enough that the operator understands what went wrong and what to try next.
+- Downstream nodes can read the keys exactly as they do for manually seeded workflows, with no special-case handling.
+
+Measurable indicators of success:
+
+- Reduced operator setup time for Shortcut-backed workflows versus manual copy/paste.
+- High successful resolution rate for valid story and epic IDs.
+- Low incidence of downstream failures caused by missing mission/context when this node is used.
+- Adoption by workflows that currently instruct users to paste Shortcut content manually.
+
+A secondary goal is standardization: workflows that start from Shortcut should converge on the same seeded keys and behavior, improving reuse and documentation.
+
+# Non-goals
+
+v1 does not aim to import the full Shortcut object model into workflow state. Only the title and description need to be seeded into the specified workflow keys.
+
+v1 does not need to support arbitrary Shortcut entities beyond stories and epics. Initiatives, comments, tasks, attachments, labels, owners, and linked documents are out of scope unless they are required to resolve title/description for stories or epics.
+
+v1 does not need to transform, summarize, or clean the fetched content beyond whatever minimal normalization is required for safe storage and downstream use. The node is a fetch-and-seed capability, not an interpretation layer.
+
+v1 does not need to infer whether an ID refers to a story or epic from ambiguous formats if Shortcut does not make that straightforward. It may require explicit type input if needed, so long as the UX is clear.
+
+v1 does not include bidirectional sync or writeback to Shortcut.
+
+v1 does not guarantee graceful recovery from all integration failures. Clear degradation is required, but sophisticated retry policies, fallback search, or partial hydration are not necessary for the first version.
+
+v1 does not replace Start or become a universal workflow entrypoint. It is an early workflow node intended to sit alongside Start in workflows that need Shortcut-seeded context.
+
+# Acceptance criteria
+
+1. The platform provides a workflow node that accepts a Shortcut identifier sufficient to resolve either a story or an epic.
+2. For a valid Shortcut story ID, the node retrieves the story title and description and writes:
+   - `workflow.mission` to the story title
+   - `workflow.context` to the story description
+3. For a valid Shortcut epic ID, the node retrieves the epic title and description and writes:
+   - `workflow.mission` to the epic title
+   - `workflow.context` to the epic description
+4. After successful execution, downstream nodes in the same workflow can read both workflow keys without additional mapping or operator input.
+5. If the resolved item has an empty or null description, the node still succeeds, writes the title to `workflow.mission`, and writes an empty string or other defined empty value to `workflow.context` consistently.
+6. If the ID cannot be resolved, the node does not silently continue with missing values. It surfaces a clear error state indicating that the Shortcut item could not be found or resolved.
+7. If the node cannot execute because Shortcut integration is not configured or credentials are invalid, it surfaces a clear configuration/authentication error distinct from “item not found.”
+8. The node’s behavior is documented well enough that a workflow author knows where to place it and which workflow keys it populates.
+9. The node can be placed early in a workflow and complete before downstream nodes that depend on `workflow.mission` and `workflow.context`.
+10. The node behaves consistently across stories and epics such that downstream nodes do not need to know which entity type was used.
+
+# Open questions
+
+**Blocking for v1**
+
+- **How is the node told whether the ID is a story or an epic?**  
+  The brief requires support for both, but does not specify whether the node should accept a typed input (`story` vs `epic`), auto-detect based on ID format, or attempt both lookups. This affects UX, implementation complexity, and error clarity.
+
+- **What exact field in Shortcut maps to “description” for stories and epics?**  
+  The implementation needs a canonical source field for each entity type, including how rich text or markdown-like content is represented.
+
+- **What is the expected failure behavior in the workflow engine?**  
+  “Degrade clearly” likely means fail the node with a user-visible message, but it should be confirmed whether the workflow should halt, branch, or allow optional continuation.
+
+- **What Shortcut integration path should be used?**  
+  The node depends on an existing authenticated Shortcut integration or a new one. If no standard integration pattern exists yet in CodeFlow, that is a blocker.
+
+**Non-blocking or can be decided during implementation**
+
+- Should the node accept raw numeric IDs only, or also Shortcut URLs / human-friendly references?
+- Should the node expose optional outputs beyond the two workflow keys, such as item type, Shortcut URL, or ID for observability?
+- Should empty descriptions be normalized to `""""` or `null`?
+- Should the node support retries for transient API failures?
+- Should permissions errors be surfaced differently from generic auth/config errors?
+- Should the node name be Shortcut Import, Shortcut Seed Context, or something more specific?
+- Should the node log the resolved entity type and ID in run metadata for debugging?
+
+# Dependencies
+
+This capability depends on an available Shortcut API and valid credentials with permission to read stories and epics relevant to the user’s workflows.
+
+Within CodeFlow, it depends on the ability for a node to write to workflow-scoped keys, specifically `workflow.mission` and `workflow.context`, in a way that downstream nodes can reliably consume.
+
+It also depends on workflow execution ordering such that this node can run before dependent nodes. If CodeFlow supports explicit data dependencies or sequential execution near Start, this node must integrate with that model.
+
+The feature likely depends on existing secret/configuration management for external integrations, including storage of API tokens and environment-specific configuration.
+
+It may also depend on a standard error-reporting mechanism for nodes so that “not found,” “auth/config error,” and “unexpected API failure” can be distinguished clearly to the operator.
+
+If CodeFlow already has a generic HTTP/integration layer, this node should build on it rather than introducing a bespoke Shortcut client path. If no such layer exists, implementation scope increases.
+
+Finally, documentation and example workflow support are dependencies for adoption: workflow authors need a clear pattern for placing this node near Start and relying on the seeded workflow keys.",,,,,,
+I,B,"Recommend **(a) Hard saga ceiling** for v1.
+
+| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High** for the actual goal: it is the only simple option that directly caps total trace spend. Enforcement is reactive to arriving `TokenUsageRecord`s, so expect **bounded overshoot** from any in-flight node/iteration before the saga flips to `Failed`. | **Best**. One workflow-root setting is easy to understand, document, and adopt. | **Highest**. One invariant: if cumulative tokens for the parent saga exceed the ceiling, the trace fails on the implicit Failed port. | **Low–Medium**. It does not add first-class attribution UX, but operators can still inspect `TokenUsageRecord`s, SSE events, and the trace token-usage endpoint after the fact. | **Lowest**. Mostly saga-side accounting and fail transition logic on top of existing token plumbing. Lowest schema/UI/test expansion. |
+| **(b) Soft per-node warnings** | **Low**. It does not stop runaway spend unless authors explicitly wire their own termination logic. | **Worst**. Authors must set thresholds node-by-node and decide how to react. Unconfigured nodes have no protection signal. | **Medium–Low**. The warning is understandable, but resulting behavior varies by workflow wiring, so traces are less uniform to reason about. | **High**. Best built-in visibility into which node exceeded expectations. | **Medium**. Requires warning events, node-level config, inspector surfacing, and guidance for downstream handling patterns. |
+| **(c) Both** | **High**. The hard ceiling still caps total spend, with the same bounded-overshoot caveat as (a). | **Medium**. Authors can start with the root cap and optionally add node thresholds, but there are more knobs and semantics to learn. | **Medium–High**. Terminal behavior is still predictable because the hard ceiling wins, but warnings add another concept to explain. | **Highest**. Gives both total-spend protection and selective node-level signals about where tokens are going. | **Highest**. Combines root enforcement with node config, warning contracts, UI chips, docs, and a larger test matrix. |
+
+The deciding factor is the mission’s primary requirement: **put a ceiling on how many tokens a single trace may spend so runaway loops do not create open-ended bills**. That is fundamentally an enforcement problem, not an observability problem. Option **(b)** therefore falls out immediately, because advisory warnings are not enough. Between **(a)** and **(c)**, both provide the same essential protection because both rely on post-hoc `TokenUsageRecord` accounting; neither can stop exactly at token N, only after usage is reported. That means the extra value in **(c)** is mostly diagnosis, not materially stronger safety.
+
+For a v1, the better tradeoff is **(a)**: one workflow-level token ceiling at the root, rolled up across subflows and ReviewLoop iterations into the parent saga, with one clear terminal behavior when exceeded. It is easier for authors to configure, easier for operators to reason about, and materially lower risk to implement because it fits the current execution model and existing token plumbing. The main downside is weaker first-class attribution, but that is tolerable in v1 because the underlying usage data already exists for post-failure inspection. Document it explicitly as a **hard cap with bounded overshoot**, not a precise circuit breaker. If the product later wants richer tuning and attribution, **(c)** is the right follow-on evolution—but it should be treated as an observability enhancement on top of the root ceiling, not as the v1 baseline.",,,,,,
+J,A,"Problem
+
+Today, users who want to run a workflow from a Shortcut planning artifact must manually open the story or epic, copy its title and description, and paste that content into the workflow input field. This creates repetitive setup work at the very start of a run and introduces avoidable failure modes: stale content, partial copy/paste, inconsistent formatting, and confusion about what belongs in `workflow.mission` versus `workflow.context`.
+
+The pain is felt most by workflow operators and template authors who repeatedly launch workflows from Shortcut-backed work items such as PRD generation, planning, execution, and review flows. It is also felt downstream by nodes and agents that perform better when `workflow.mission` and `workflow.context` are present in a consistent, predictable shape. For teams using Shortcut as a source of truth, this friction occurs whenever a run should begin from an existing story or epic, making it a common recurring problem rather than an edge case.
+
+Users
+
+The primary users are workflow authors and workflow operators. Authors need a reusable early-workflow node they can place near Start so a template can initialize itself from a Shortcut artifact without custom prompt instructions. Operators need a simple way to provide a Shortcut reference and launch the run without manually pasting artifact contents.
+
+Secondary users are downstream consumers of the seeded workflow state: later nodes, prompts, agents, and logic that read `workflow.mission` and `workflow.context`. These consumers should not need to know whether the source artifact was a story or an epic; they should simply receive the expected workflow keys.
+
+Support and platform teams are also indirect users because they need clear diagnostics when a lookup fails due to bad input, missing permissions, or external service issues.
+
+Goals
+
+Ship a workflow node type that accepts a Shortcut artifact reference, retrieves the artifact title and description, and writes them to:
+- `workflow.mission = title`
+- `workflow.context = description`
+
+For v1, success means:
+- A workflow author can add this node near Start and rely on those workflow keys being available to downstream nodes after successful execution.
+- An operator can provide a valid Shortcut story or epic ID without manually pasting title/description into the workflow input field.
+- The node works for both stories and epics through one understandable product surface.
+- Failures are explicit and operator-readable rather than silent or misleading.
+- Successful writes are atomic: both workflow keys are written together, or neither is changed.
+
+Recommended measurable outcomes after launch:
+- Reduced frequency of manual copy/paste launches for Shortcut-backed workflows.
+- High successful resolution rate for valid configured IDs.
+- Lower support volume related to missing or malformed initial mission/context.
+- Faster median time from run start to usable workflow initialization for Shortcut-based runs.
+
+Non-goals
+
+v1 does not include arbitrary field mapping from Shortcut into additional workflow keys.
+
+v1 does not support creating, updating, or syncing data back to Shortcut.
+
+v1 does not support bulk import, multiple artifact IDs in one node, recursive expansion of linked artifacts, or search-based resolution.
+
+v1 does not require support for URLs, names, or shorthand identifiers if raw ID entry is sufficient.
+
+v1 does not expose extra outputs such as labels, owners, comments, attachments, acceptance criteria, or raw payload unless required for implementation.
+
+v1 does not perform summarization, rewriting, or semantic cleanup of Shortcut content beyond storing the fetched title and description in the designated workflow keys.
+
+v1 does not add configurable overwrite protection, caching, snapshot history, or advanced retry policy.
+
+Acceptance criteria
+
+1. The product provides a workflow node whose purpose is to initialize workflow state from a Shortcut artifact.
+
+2. The node supports both Shortcut stories and Shortcut epics.
+
+3. For v1, the node uses an explicit artifact-type selector (`Story` or `Epic`) and a required ID input field. This avoids ambiguous auto-detection and makes validation and error messages clearer.
+
+4. The ID input can be supplied either as a literal configured value or via workflow-supported variable binding, so the node can be used in reusable templates and dynamic runs.
+
+5. Given a valid Story ID, the node fetches the story title and description and writes:
+- `workflow.mission = <story title>`
+- `workflow.context = <story description>`
+
+6. Given a valid Epic ID, the node fetches the epic title and description and writes:
+- `workflow.mission = <epic title>`
+- `workflow.context = <epic description>`
+
+7. On success, both keys are written in the same execution outcome. Downstream nodes must never observe only one of the two as a result of partial success.
+
+8. On failure, the node hard-fails execution of that step and surfaces a human-readable reason to the operator. It does not silently continue as though initialization succeeded.
+
+9. On any unsuccessful resolution, the node does not modify `workflow.mission` or `workflow.context`; existing values remain unchanged or unset.
+
+10. The node surfaces distinct, operator-readable failure categories for at least:
+- invalid or malformed ID input
+- artifact not found
+- authentication or integration misconfiguration
+- permission/access failure
+- external Shortcut service failure
+
+11. If the artifact description is empty or null, the node still succeeds and sets `workflow.context` to an empty string.
+
+12. The node is usable early in a workflow alongside Start and does not require the operator to paste story or epic content into the workflow input field.
+
+13. The node behaves consistently across stories and epics from the configured Shortcut workspace.
+
+14. The node’s configuration requirements, including authentication/integration prerequisites, are discoverable enough that a workflow author can configure it without custom engineering.
+
+15. The node writes only the two required workflow keys in v1 unless additional internal metadata is needed solely for logging or diagnostics.
+
+Open questions
+
+Blocking v1:
+- Authentication model: should Shortcut access be configured at workspace, organization, or environment level? A workspace-level integration is likely the best v1 fit because it supports reusable templates better than per-user auth, but this must be confirmed.
+- Description format mapping: what exact Shortcut field should be used for stories and epics, and in what format should it be stored in `workflow.context`? This should be defined explicitly because downstream prompt quality depends on whether the content is plain text, markdown-like text, or raw rich-text output.
+- Error presentation details: while hard-fail is the recommended behavior, the exact UI/run-surface presentation for failure states must be aligned with existing node error patterns.
+
+Non-blocking or deferrable:
+- Whether to support pasted Shortcut URLs in addition to raw IDs.
+- Whether to auto-detect artifact type from a single freeform identifier in a future release.
+- Whether to expose optional metadata such as artifact URL or type.
+- Whether to add overwrite protection or configurable collision handling later.
+
+Dependencies
+
+This capability depends on a working integration between the workflow platform and Shortcut, including network access to Shortcut APIs and a supported credential mechanism.
+
+It depends on the workflow runtime supporting writes to workflow-scoped state, specifically `workflow.mission` and `workflow.context`, with visibility to downstream nodes.
+
+It depends on the node framework supporting a new node type with configuration UI, validation, execution, and failure reporting.
+
+It depends on the platform’s error-state and run-state presentation patterns so “degrade clearly” can be implemented as explicit, operator-visible failure.
+
+It depends on secret or integration management infrastructure if Shortcut credentials are stored outside the node itself.
+
+It depends on Shortcut API support for retrieving title and description fields for both stories and epics in a stable, documented way.
+
+It should also depend on basic observability: failed lookups should be logged with artifact type, supplied ID, and error category, without leaking secrets, so support teams can diagnose issues efficiently.",,,,,,
+K,A,"Problem
+
+Today, operators who want to start a workflow from a Shortcut story or epic must manually open Shortcut, copy the item’s title and description, and paste that content into the workflow input. This creates friction at the very start of the run, even when Shortcut is already the source of truth for the work being executed. The pain is felt primarily by workflow operators launching runs and workflow builders trying to make reusable workflows easy to start. It is also felt downstream by prompts, nodes, and agents that depend on consistent initialization data.
+
+This happens whenever teams use Shortcut artifacts as the starting point for planning, implementation, or review workflows. For teams that launch many runs per week, the repeated copy/paste step adds meaningful time and introduces avoidable mistakes. Operators may paste stale content, omit the description, or map content inconsistently. As a result, downstream workflow behavior becomes less reliable because later steps cannot safely assume that `workflow.mission` and `workflow.context` are present and correctly populated.
+
+The opportunity is not only convenience. This feature standardizes workflow initialization around canonical workflow keys, improving portability of prompts and downstream nodes across workflows. If workflows can rely on `workflow.mission` and `workflow.context` being seeded in a consistent way, authors can design more reusable automations with less per-run operator guidance.
+
+Users
+
+The primary user is the workflow operator or workflow builder who places this node near the beginning of a workflow and provides a Shortcut artifact reference. In v1, that means selecting an artifact type and entering an ID. This user wants a faster and more reliable way to initialize a run from an existing Shortcut item.
+
+A secondary user is the workflow author creating reusable templates or team workflows. This user benefits from a standard node that hydrates canonical workflow keys without requiring operators to understand manual copy/paste conventions.
+
+The downstream consumers are subsequent nodes, prompts, agents, and routing logic that read `workflow.mission` and `workflow.context`. Their need is consistency: if the node succeeds, they should be able to trust that those keys exist and contain the Shortcut title and description.
+
+Goals
+
+The primary goal is to let a workflow initialize itself directly from a Shortcut story or epic without requiring the operator to paste content by hand.
+
+Success in v1 means:
+- A workflow author can add a dedicated node early in a workflow to load a Shortcut artifact.
+- The operator configures the node with an `artifact_type` (`story` or `epic`) and an `artifact_id`.
+- On success, the node writes the artifact title to `workflow.mission` and the artifact description to `workflow.context`.
+- The written values are available to all downstream nodes through standard workflow-scope access.
+- On failure, the node degrades clearly through a visible, human-readable error and does not silently leave misleading values behind.
+
+Measurable indicators of success:
+- Reduce operator setup from manual copy/paste of title and description to selecting a type and entering one ID.
+- Achieve near-100% successful hydration for valid, accessible Shortcut IDs under normal service availability.
+- Reduce launch-time errors related to missing or malformed `workflow.mission` and `workflow.context` relative to the current manual process.
+- Increase adoption of reusable workflows that assume canonical mission/context initialization.
+
+Non-goals
+
+v1 is not a general Shortcut sync feature. It does not import comments, subtasks, labels, owners, estimates, attachments, linked documents, or arbitrary metadata beyond the title and description needed to seed the workflow.
+
+v1 is read-only with respect to Shortcut. It does not update stories or epics, post comments, write back workflow output, or maintain ongoing synchronization.
+
+v1 does not support bulk import, multiple IDs in one execution, search by text, or automatic discovery of related artifacts.
+
+v1 does not transform, summarize, or reinterpret Shortcut content. The node preserves title and description as returned by Shortcut, subject only to any existing integration-level decoding already used by the platform.
+
+v1 does not accept pasted Shortcut URLs unless that falls out trivially from existing ID parsing; the intended v1 interface is explicit type plus raw ID.
+
+v1 does not introduce a generalized external-artifact abstraction for Jira, Linear, or other systems. This node is Shortcut-specific.
+
+Acceptance criteria
+
+- A new workflow node type exists for loading a Shortcut artifact into workflow scope.
+- The node configuration requires two inputs: `artifact_type` with allowed values `story` or `epic`, and `artifact_id`.
+- The node can be placed near the start of a workflow and executed before downstream nodes that read workflow-scoped values.
+- On successful resolution of a story:
+  - `workflow.mission` is set to the story title.
+  - `workflow.context` is set to the story description.
+- On successful resolution of an epic:
+  - `workflow.mission` is set to the epic title.
+  - `workflow.context` is set to the epic description.
+- If the resolved artifact has no description, the node still succeeds and sets `workflow.context` to an empty string.
+- On success, the node overwrites any pre-existing values in `workflow.mission` and `workflow.context` for that run.
+- The values written by the node are readable by all downstream nodes through normal workflow-scope access.
+- If resolution or fetch fails, the node does not perform a partial write; neither key is updated during that execution.
+- If the ID is malformed, not found, inaccessible, of the wrong type, or the Shortcut integration is unavailable, the node fails clearly with a human-readable error visible in the run UI.
+- Error messaging includes the attempted artifact type and ID where possible, such as “Story 12345 not found” or “Epic 88 could not be fetched because the Shortcut integration is not configured.”
+- Successful execution is visible in run details, including which artifact type and ID were resolved.
+- The node uses existing Shortcut authentication and integration configuration; operators are not asked to enter raw API credentials in the node.
+- If the platform supports dynamic inputs, behavior is identical whether `artifact_id` is provided literally in configuration or passed from an upstream step.
+
+Open questions
+
+Blocking v1:
+- Does the existing Shortcut integration support fetching both stories and epics from the workflow runtime, or is additional integration work required?
+- Does the workflow engine guarantee atomic workflow-bag writes so a failed execution cannot leave stale or partial values in `workflow.mission` or `workflow.context`?
+- Is hard-fail-on-error the correct behavior for this node according to existing platform conventions for source/loading nodes, or must it follow an established recoverable-error pattern?
+
+Non-blocking / post-v1:
+- Should the node also emit metadata such as resolved Shortcut URL, artifact type, or raw ID for traceability and debugging?
+- Should pasted Shortcut URLs be accepted in addition to raw IDs?
+- Should future work generalize this into a broader “load external artifact into workflow keys” pattern for parity with other systems?
+- Should the node offer optional controls for overwrite behavior in a later version, or remain strictly canonical?
+
+Dependencies
+
+This feature depends on an existing Shortcut integration that can authenticate and fetch both stories and epics by ID from within workflow execution. It also depends on network access to Shortcut APIs and whatever secret or integration configuration the platform already uses.
+
+It depends on the workflow runtime supporting writes to `workflow.mission` and `workflow.context` in a way that downstream nodes can reliably read. Atomicity of those writes is especially important if the product requirement is that failures must not leave partial or misleading values behind.
+
+It depends on the node framework and run UI supporting:
+- configuration fields for artifact type and ID,
+- execution-time validation,
+- visible success/failure states,
+- human-readable error reporting.
+
+Finally, the value of the feature depends on `workflow.mission` and `workflow.context` being established conventions in CodeFlow workflows, since the node is most useful when downstream prompts and templates already expect those keys.",,,,,,
+L,B,"Recommend **(c) Both** — soft per-node warnings plus a workflow-level hard ceiling.
+
+| Option | Enforcement strictness | Author ergonomics | Failure-mode predictability | Observability impact | Implementation complexity |
+|---|---|---|---|---|---|
+| **(a) Hard saga ceiling** | **High.** It is the only option that reliably caps total spend for a trace. Once the running total crosses the root budget, the saga fails on the implicit Failed port. | **High simplicity.** One setting at the workflow root; easy to explain and adopt. | **Medium-high.** The terminal behavior is clear, but the exact point of failure may feel abrupt because enforcement happens after usage records arrive, not necessarily before the next expensive step is queued. | **Low-medium.** Operators know the trace exceeded budget, but not which node(s) were responsible unless they manually inspect token records after the fact. | **Low.** Mostly saga accounting plus a transition to Failed. Minimal schema/UI surface area. Lowest migration risk. |
+| **(b) Soft per-node warnings** | **Low.** It does not stop spend on its own; runaway loops can continue burning tokens unless the author explicitly wires handling logic. | **Medium-low.** Flexible, but every meaningful threshold must be configured node-by-node, and authors must understand/event-handle the warning path. Unconfigured nodes have no protection. | **Medium.** The runtime itself stays non-terminal, but resulting behavior depends on user-authored downstream logic, so traces become less uniform and harder to reason about across workflows. | **High.** Best visibility into where tokens are being spent; warnings can point directly to the offending node and show up in the inspector/SSE stream. | **Medium.** Requires warning events, UI chips, and budget config on nodes, but avoids hard-stop semantics in the saga. |
+| **(c) Both** | **High.** The hard ceiling guarantees a maximum trace spend; per-node warnings provide earlier signals before the ceiling is hit. | **Medium.** Authors can get safety with just the root ceiling, then optionally add node thresholds where they care. More knobs than (a), but defaults can keep it manageable. | **High.** There is one universal terminal rule at the workflow level, plus non-terminal warning signals that do not change control flow unless the author opts in. This is easier to reason about than warning-only systems. | **High.** Operators get both “why did this trace stop?” and “which node(s) were expensive?” without requiring post hoc forensic work. | **Medium-high.** It combines both feature sets: saga-level accounting/enforcement plus node config, warning events, and inspector affordances. More UI/runtime work, but still bounded because token plumbing already exists and v1 excludes hierarchical budgets. |
+
+### Recommendation
+
+Choose **(c)**.
+
+The deciding factor is that the product goal is explicitly to prevent “a runaway loop or oversized prompt” from creating an open-ended bill. That requires a **hard workflow-level ceiling**; option **(b)** cannot satisfy the core safety requirement because it depends on authors wiring their own response logic correctly, and any unconfigured node or missed branch becomes a hole in enforcement. Option **(a)** does satisfy the safety goal, but it is too opaque on its own: when a trace suddenly fails for budget reasons, operators will immediately ask which node or loop consumed the tokens. Since CodeFlow already has `TokenUsageRecord` plumbing and SSE events, adding **soft per-node warnings** is a relatively leverageful way to make the hard stop understandable.
+
+Option **(c)** also gives the cleanest v1 adoption path. Make the **root hard ceiling** the primary control and the only thing authors need to set for baseline protection. Treat **per-node thresholds** as optional observability/guardrail hints for hotspots like LLM-heavy nodes, ReviewLoop bodies, or known-expensive subflows. That preserves a simple mental model: “every workflow can have one max token budget; some nodes may also warn when they are unusually expensive.” The runtime semantics stay predictable because only the saga-level ceiling is intrinsically terminal; warnings are informative unless the author explicitly chooses to route on them. This balances strictness, usability, and debuggability better than either single-mechanism alternative.",,,,,,
