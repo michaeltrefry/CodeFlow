@@ -58,6 +58,31 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         return Map(entity);
     }
 
+    public async Task<AssistantConversation> CreateAnonymousAsync(
+        AssistantConversationScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        var now = DateTime.UtcNow;
+        var entity = new AssistantConversationEntity
+        {
+            Id = Guid.NewGuid(),
+            UserId = AnonymousAssistantUser.New(),
+            ScopeKind = scope.Kind,
+            EntityType = scope.EntityType,
+            EntityId = scope.EntityId,
+            ScopeKey = scope.ToScopeKey(),
+            SyntheticTraceId = Guid.NewGuid(),
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+        };
+
+        dbContext.AssistantConversations.Add(entity);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Map(entity);
+    }
+
     public async Task<AssistantConversation?> GetByIdAsync(
         Guid conversationId,
         CancellationToken cancellationToken = default)

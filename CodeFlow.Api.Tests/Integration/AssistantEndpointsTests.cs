@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Auth;
 using CodeFlow.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -38,6 +39,25 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
             {
                 services.RemoveAll<ICodeFlowAssistant>();
                 services.AddSingleton<ICodeFlowAssistant>(AssistantStub);
+            });
+        }).CreateClient();
+
+    /// <summary>
+    /// Like <see cref="CreateClientWithStub"/> but also overrides <see cref="ICurrentUser"/> with
+    /// an anonymous shim so the endpoint sees an unauthenticated request even though the
+    /// development-bypass auth handler is still wired up at the framework layer. This is the only
+    /// seam the endpoint code reads from for authentication state, so swapping it is sufficient
+    /// to exercise the demo-mode branches.
+    /// </summary>
+    private HttpClient CreateAnonymousClientWithStub() =>
+        factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<ICodeFlowAssistant>();
+                services.AddSingleton<ICodeFlowAssistant>(AssistantStub);
+                services.RemoveAll<ICurrentUser>();
+                services.AddScoped<ICurrentUser>(_ => new AnonymousCurrentUser());
             });
         }).CreateClient();
 
@@ -244,6 +264,170 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         persistedPayload.GetProperty("content").GetString().Should().Be("Looking it up. Found alpha v1.");
     }
 
+    // HAA-6-FOLLOWUP — demo-mode (anonymous) homepage conversations.
+
+    [Fact]
+    public async Task PostConversation_AnonymousHomepage_CreatesEphemeralAnonymousConversation()
+    {
+        AssistantStub.Reset();
+        using var client = CreateAnonymousClientWithStub();
+
+        var response = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var payload = await response.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        payload.Should().NotBeNull();
+        payload!.Conversation.Id.Should().NotBeEmpty();
+        payload.Conversation.Scope.Kind.Should().Be("homepage");
+
+        // Anonymous conversations carry a synthetic anon: user id and each call mints a fresh
+        // row (no dedupe — there's no stable per-visitor identifier without auth).
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var stored = await dbContext.AssistantConversations
+            .AsNoTracking()
+            .SingleAsync(c => c.Id == payload.Conversation.Id);
+        AnonymousAssistantUser.IsAnonymous(stored.UserId).Should().BeTrue();
+
+        var second = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        var secondPayload = await second.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        secondPayload!.Conversation.Id.Should().NotBe(payload.Conversation.Id,
+            "each anonymous POST mints a fresh ephemeral conversation");
+    }
+
+    [Fact]
+    public async Task PostConversation_AnonymousEntityScope_Returns401()
+    {
+        using var client = CreateAnonymousClientWithStub();
+        var response = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "trace", entityId = "trace-anon-attempt" }
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task GetConversation_AnonymousByGuid_AllowsAccessToAnonymousConversation()
+    {
+        using var anonClient = CreateAnonymousClientWithStub();
+        var created = await anonClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        var conversation = (await created.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var fetched = await anonClient.GetAsync($"/api/assistant/conversations/{conversation.Id}");
+        fetched.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task GetConversation_AnonymousCannotReachAuthenticatedUsersConversation()
+    {
+        // Authenticated user creates a homepage conversation owned by their real user id.
+        using var authClient = CreateClientWithStub();
+        var authResponse = await authClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "trace", entityId = $"trace-auth-{Guid.NewGuid()}" }
+        });
+        var authConversation = (await authResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        // An anonymous client cannot fetch it just by guessing/learning the guid.
+        using var anonClient = CreateAnonymousClientWithStub();
+        var fetched = await anonClient.GetAsync($"/api/assistant/conversations/{authConversation.Id}");
+        fetched.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PostMessage_AnonymousHomepage_StreamsReplyWithEmptyToolPolicy()
+    {
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("Hello in demo mode."),
+            new AssistantTokenUsage(
+                Provider: "anthropic",
+                Model: "claude-sonnet-4",
+                Usage: JsonSerializer.SerializeToElement(new { input_tokens = 5, output_tokens = 4 })),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateAnonymousClientWithStub();
+        var created = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        var conversation = (await created.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "Hi there" })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        streamResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await streamResponse.Content.ReadAsStringAsync();
+        var events = ParseSse(body);
+        events.Select(e => e.Event).Should().Contain("assistant-message-persisted");
+
+        // The chat service resolves IAssistantToolPolicy per turn and passes the allowed-tools
+        // list into AskAsync. For anonymous (anon:*) conversations the default policy returns
+        // an empty list — so demo-mode visitors get system-prompt knowledge with zero tool
+        // surface, satisfying the HAA-6 acceptance criterion.
+        AssistantStub.LastAllowedTools.Should().NotBeNull();
+        AssistantStub.LastAllowedTools!.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PostMessage_AuthenticatedHomepage_StreamsReplyWithFullToolPolicy()
+    {
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("Authenticated reply."),
+            new AssistantTokenUsage(
+                Provider: "anthropic",
+                Model: "claude-sonnet-4",
+                Usage: JsonSerializer.SerializeToElement(new { input_tokens = 5, output_tokens = 3 })),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var created = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "trace", entityId = $"tools-{Guid.NewGuid()}" }
+        });
+        var conversation = (await created.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "What workflows do I have?" })
+        };
+        using var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        streamResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        // Drain the body so the chat service fully consumes the AskAsync stub before we read
+        // back what allowedTools the stub observed.
+        _ = await streamResponse.Content.ReadAsStringAsync();
+
+        AssistantStub.LastAllowedTools.Should().NotBeNull();
+        AssistantStub.LastAllowedTools!.Should().NotBeEmpty(
+            "the default policy resolves the full registry for authenticated callers");
+    }
+
+    private sealed class AnonymousCurrentUser : ICurrentUser
+    {
+        public bool IsAuthenticated => false;
+        public string? Id => null;
+        public string? Email => null;
+        public string? Name => null;
+        public IReadOnlyList<string> Roles => Array.Empty<string>();
+    }
+
     private static List<SseFrame> ParseSse(string body)
     {
         var frames = new List<SseFrame>();
@@ -283,16 +467,25 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     public sealed class StubAssistant : ICodeFlowAssistant
     {
         private IReadOnlyList<AssistantStreamItem> reply = Array.Empty<AssistantStreamItem>();
+        private IReadOnlyList<CodeFlow.Api.Assistant.Tools.IAssistantTool>? lastAllowedTools;
 
-        public void Reset() => reply = Array.Empty<AssistantStreamItem>();
+        public IReadOnlyList<CodeFlow.Api.Assistant.Tools.IAssistantTool>? LastAllowedTools => lastAllowedTools;
+
+        public void Reset()
+        {
+            reply = Array.Empty<AssistantStreamItem>();
+            lastAllowedTools = null;
+        }
 
         public void SetReply(IReadOnlyList<AssistantStreamItem> items) => reply = items;
 
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
+            IReadOnlyList<CodeFlow.Api.Assistant.Tools.IAssistantTool> allowedTools,
             CancellationToken cancellationToken = default)
         {
+            lastAllowedTools = allowedTools;
             foreach (var item in reply)
             {
                 yield return item;

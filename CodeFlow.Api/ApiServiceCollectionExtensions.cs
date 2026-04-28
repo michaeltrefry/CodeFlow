@@ -124,6 +124,10 @@ public static class ApiServiceCollectionExtensions
 
         services.AddScoped<AssistantToolDispatcher>();
 
+        // HAA-6-FOLLOWUP: tool-policy gate. Demo-mode (anonymous homepage) conversations get
+        // an empty tool set; authenticated conversations get the full registry above.
+        services.AddScoped<IAssistantToolPolicy, AssistantToolPolicy>();
+
         return services;
     }
 

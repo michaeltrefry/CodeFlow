@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Persistence;
 using MassTransit;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ namespace CodeFlow.Api.Assistant;
 public sealed class AssistantChatService(
     IAssistantConversationRepository conversations,
     ICodeFlowAssistant assistant,
+    IAssistantToolPolicy toolPolicy,
     ITokenUsageRecordRepository tokenUsageRepository,
     IPublishEndpoint publishEndpoint,
     ILogger<AssistantChatService> logger)
@@ -54,7 +56,8 @@ public sealed class AssistantChatService(
         var contentBuffer = new StringBuilder();
         string? finalProvider = null;
         string? finalModel = null;
-        var enumerator = assistant.AskAsync(userContent, historyForLlm, cancellationToken)
+        var allowedTools = toolPolicy.ResolveAllowedTools(conversation);
+        var enumerator = assistant.AskAsync(userContent, historyForLlm, allowedTools, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
         try

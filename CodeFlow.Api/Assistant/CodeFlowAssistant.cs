@@ -17,6 +17,7 @@ public interface ICodeFlowAssistant
     IAsyncEnumerable<AssistantStreamItem> AskAsync(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyList<IAssistantTool> allowedTools,
         CancellationToken cancellationToken = default);
 }
 
@@ -46,18 +47,20 @@ public sealed class CodeFlowAssistant(
     public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyList<IAssistantTool> allowedTools,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
         ArgumentNullException.ThrowIfNull(history);
+        ArgumentNullException.ThrowIfNull(allowedTools);
 
         var config = await settingsResolver.ResolveAsync(cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch
         {
-            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, cancellationToken),
-            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, cancellationToken),
+            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
+            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
             _ => throw new InvalidOperationException(
                 $"Assistant provider '{config.Provider}' is not supported. Expected one of: anthropic, openai, lmstudio.")
         };
@@ -73,6 +76,7 @@ public sealed class CodeFlowAssistant(
         string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyList<IAssistantTool> allowedTools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(LlmProviderKeys.Anthropic, cancellationToken)
@@ -87,8 +91,8 @@ public sealed class CodeFlowAssistant(
             BaseUrl = string.IsNullOrWhiteSpace(endpointUrl) ? opts.BaseUrl : new Uri(endpointUrl)
         });
 
-        var tools = toolDispatcher.Tools;
-        var anthropicTools = tools.Count > 0 ? AnthropicToolMapper.Map(tools) : null;
+        var anthropicTools = allowedTools.Count > 0 ? AnthropicToolMapper.Map(allowedTools) : null;
+        var allowedToolNames = BuildAllowedToolNameSet(allowedTools);
 
         var messages = new List<MessageParam>(history.Count + 1);
         foreach (var msg in history)
@@ -194,7 +198,9 @@ public sealed class CodeFlowAssistant(
             {
                 var args = ParseToolArguments(pending.JsonBuffer.ToString());
                 yield return new AssistantToolCallStarted(pending.Id, pending.Name, args);
-                var result = await toolDispatcher.InvokeAsync(pending.Name, args, cancellationToken);
+                var result = allowedToolNames.Contains(pending.Name)
+                    ? await toolDispatcher.InvokeAsync(pending.Name, args, cancellationToken)
+                    : DisallowedToolResult(pending.Name);
                 yield return new AssistantToolCallCompleted(pending.Id, pending.Name, result.ResultJson, result.IsError);
 
                 resultBlocks.Add((ToolResultBlockParam)new ToolResultBlockParam
@@ -262,6 +268,7 @@ public sealed class CodeFlowAssistant(
         string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
+        IReadOnlyList<IAssistantTool> allowedTools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(config.Provider, cancellationToken)
@@ -278,8 +285,8 @@ public sealed class CodeFlowAssistant(
 
         var chatClient = new ChatClient(config.Model, new ApiKeyCredential(apiKey), clientOptions);
 
-        var tools = toolDispatcher.Tools;
-        var openAiTools = tools.Count > 0 ? OpenAiToolMapper.Map(tools) : null;
+        var openAiTools = allowedTools.Count > 0 ? OpenAiToolMapper.Map(allowedTools) : null;
+        var allowedToolNames = BuildAllowedToolNameSet(allowedTools);
 
         var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 2);
         if (!string.IsNullOrWhiteSpace(systemPrompt))
@@ -411,7 +418,9 @@ public sealed class CodeFlowAssistant(
                 var id = pending.Id ?? string.Empty;
                 var name = pending.Name ?? string.Empty;
                 yield return new AssistantToolCallStarted(id, name, args);
-                var result = await toolDispatcher.InvokeAsync(name, args, cancellationToken);
+                var result = allowedToolNames.Contains(name)
+                    ? await toolDispatcher.InvokeAsync(name, args, cancellationToken)
+                    : DisallowedToolResult(name);
                 yield return new AssistantToolCallCompleted(id, name, result.ResultJson, result.IsError);
 
                 chatMessages.Add(new ToolChatMessage(id, result.ResultJson));
@@ -469,6 +478,25 @@ public sealed class CodeFlowAssistant(
             using var empty = JsonDocument.Parse("{}");
             return empty.RootElement.Clone();
         }
+    }
+
+    private static HashSet<string> BuildAllowedToolNameSet(IReadOnlyList<IAssistantTool> allowedTools)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < allowedTools.Count; i++)
+        {
+            set.Add(allowedTools[i].Name);
+        }
+        return set;
+    }
+
+    private static AssistantToolResult DisallowedToolResult(string name)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            error = $"Tool '{name}' is not available in this conversation."
+        });
+        return new AssistantToolResult(payload, IsError: true);
     }
 
     private sealed record PendingAnthropicToolUse(string Id, string Name, StringBuilder JsonBuffer);
