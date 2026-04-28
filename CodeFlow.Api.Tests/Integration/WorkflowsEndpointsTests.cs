@@ -598,6 +598,78 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task ApplyPackageImport_SwarmBenchSequentialV1_RoundTripsParentAndSubflow()
+    {
+        // sc-40 — Variant V2 of the swarm-bench harness. End-to-end import sanity for the
+        // hand-authored Sequential subflow library entry: deserialize, resolve references, write
+        // through the importer, then query both workflows back via the same paths the runtime uses.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("swarm-bench-sequential-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(5,
+            "package contains 2 workflows + 3 agents");
+
+        // Parent: a thin shell — Start (with mission-seeding inputScript) + Subflow node pointing at
+        // the child. The Subflow node's outputPorts list mirrors the child's terminal port names.
+        var parentJson = await client.GetStringAsync("/api/workflows/swarm-bench-sequential/1");
+        using var parentDoc = JsonDocument.Parse(parentJson);
+        var parentNodes = parentDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        parentNodes.Should().HaveCount(2);
+
+        var startNode = parentNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        startNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('mission'",
+            "the parent's Start node is responsible for seeding workflow.mission from the input artifact");
+
+        var subflowNode = parentNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Subflow", StringComparison.Ordinal));
+        subflowNode.GetProperty("subflowKey").GetString().Should().Be("swarm-bench-sequential-subflow");
+        subflowNode.GetProperty("subflowVersion").GetInt32().Should().Be(1);
+        subflowNode.GetProperty("outputPorts").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "Synthesized" },
+                "the Subflow node inherits the child's terminal port name");
+
+        // Child: 5 nodes — Start + 3 contributors + 1 synthesizer. Each agent node uses
+        // mirrorOutputToWorkflowVar to capture its output into a per-position workflow variable so
+        // downstream agents see prior contributions via the prompt template.
+        var childJson = await client.GetStringAsync("/api/workflows/swarm-bench-sequential-subflow/1");
+        using var childDoc = JsonDocument.Parse(childJson);
+        var childNodes = childDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        childNodes.Should().HaveCount(5);
+
+        var agentNodes = childNodes
+            .Where(n => string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal))
+            .ToList();
+        agentNodes.Should().HaveCount(4);
+
+        var mirrorTargets = agentNodes
+            .Select(n => n.GetProperty("mirrorOutputToWorkflowVar").GetString())
+            .ToList();
+        mirrorTargets.Should().BeEquivalentTo(new[]
+        {
+            "swarmContribution1",
+            "swarmContribution2",
+            "swarmContribution3",
+            "swarmFinal"
+        }, "each contributor mirrors into its own slot; the synthesizer mirrors into swarmFinal");
+
+        // Edges form a strict serial chain Start → A1 → A2 → A3 → Synth (no rotation, single path).
+        var edges = childDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        edges.Should().HaveCount(4);
+        edges.Should().AllSatisfy(e => e.GetProperty("rotatesRound").GetBoolean().Should().BeFalse(
+            "Sequential is non-rotating — each handoff stays in the same round-count budget"));
+    }
+
+    [Fact]
     public async Task ApplyPackageImport_SwarmBenchBaselineV1_RoundTripsSingleAgentWorkflow()
     {
         // sc-82 — Variant V1 of the swarm-bench harness (Epic 38). Apples-to-apples comparison
@@ -624,11 +696,11 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
         nodes.Should().HaveCount(2);
 
-        var startNode = nodes.Single(n =>
+        var baselineStartNode = nodes.Single(n =>
             string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
-        startNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('mission'",
+        baselineStartNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('mission'",
             "the Start node seeds workflow.mission from the input artifact");
-        startNode.GetProperty("agentKey").GetString().Should().Be("swarm-bench-baseline-init");
+        baselineStartNode.GetProperty("agentKey").GetString().Should().Be("swarm-bench-baseline-init");
 
         var agentNode = nodes.Single(n =>
             string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
@@ -639,9 +711,9 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         // One edge from Start.Continue → Agent.in; the answering agent's Answered port is unwired
         // and therefore terminal.
-        var edges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
-        edges.Should().ContainSingle();
-        edges[0].GetProperty("rotatesRound").GetBoolean().Should().BeFalse();
+        var baselineEdges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        baselineEdges.Should().ContainSingle();
+        baselineEdges[0].GetProperty("rotatesRound").GetBoolean().Should().BeFalse();
     }
 
     private static string LocateLibraryPackage(string fileName)

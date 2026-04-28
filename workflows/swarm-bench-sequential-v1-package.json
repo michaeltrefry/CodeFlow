@@ -1,0 +1,269 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-28T13:00:00Z",
+    "migrationNotes": "sc-40 — Variant V2 of the swarm-bench harness (Epic 38: Self-Organizing Agents). Phase 1 hand-authored Sequential subflow. Child workflow `swarm-bench-sequential-subflow` runs N=4 Agent nodes in series: 3 contributors (each examines prior contributions and self-selects a role, or abstains) + 1 synthesizer. Mission threaded via workflow.mission (seeded by the parent's Start inputScript). Per-agent contributions accumulate into workflow.swarmContribution1 / 2 / 3 via P4 mirrorOutputToWorkflowVar; the synthesizer's output lands in workflow.swarmFinal. Parent workflow `swarm-bench-sequential` is a thin shell (Start → Subflow), kept separate so the subflow can be re-used from any parent (including, eventually, the candidate Intake → Expand → Swarm → Review/QA workflow in sc-45). Authored at the library default (openai/gpt-5.4); the bench harness in sc-41 pins all variants to one model — flip by editing the three agents (`swarm-bench-init`, `swarm-bench-contributor`, `swarm-bench-synthesizer`) and bumping versions before each run. Two design choices V2 makes that feed sc-42 (P2 Swarm-node design): (1) abstention is encoded as a `ROLE: abstain` line in the contributor's text rather than routed through a separate port; (2) one shared contributor AgentRole is reused at three positions rather than a curated pool of role-flavored agents. Acceptance: the subflow runs end-to-end on a real mission, produces a synthesized output, and the per-agent role choice is visible in the trace via each contributor's first message line."
+  },
+  "entryPoint": {
+    "key": "swarm-bench-sequential",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "swarm-bench-sequential-subflow",
+      "version": 1,
+      "name": "Swarm Bench — Sequential Subflow (N=4)",
+      "maxRoundsPerRound": 5,
+      "category": "Subflow",
+      "tags": ["swarm", "sequential", "bench", "swarm-bench", "self-organization"],
+      "createdAtUtc": "2026-04-28T13:00:00Z",
+      "workflowVarsReads": ["mission", "swarmContribution1", "swarmContribution2", "swarmContribution3"],
+      "workflowVarsWrites": ["swarmContribution1", "swarmContribution2", "swarmContribution3", "swarmFinal"],
+      "nodes": [
+        {
+          "id": "5a90b001-0001-0001-0002-000000000001",
+          "kind": "Start",
+          "agentKey": "swarm-bench-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "5a90b001-0001-0001-0002-000000000002",
+          "kind": "Agent",
+          "agentKey": "swarm-bench-contributor",
+          "agentVersion": 1,
+          "outputPorts": ["Contributed"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "mirrorOutputToWorkflowVar": "swarmContribution1"
+        },
+        {
+          "id": "5a90b001-0001-0001-0002-000000000003",
+          "kind": "Agent",
+          "agentKey": "swarm-bench-contributor",
+          "agentVersion": 1,
+          "outputPorts": ["Contributed"],
+          "layoutX": 650,
+          "layoutY": 200,
+          "mirrorOutputToWorkflowVar": "swarmContribution2"
+        },
+        {
+          "id": "5a90b001-0001-0001-0002-000000000004",
+          "kind": "Agent",
+          "agentKey": "swarm-bench-contributor",
+          "agentVersion": 1,
+          "outputPorts": ["Contributed"],
+          "layoutX": 950,
+          "layoutY": 200,
+          "mirrorOutputToWorkflowVar": "swarmContribution3"
+        },
+        {
+          "id": "5a90b001-0001-0001-0002-000000000005",
+          "kind": "Agent",
+          "agentKey": "swarm-bench-synthesizer",
+          "agentVersion": 1,
+          "outputPorts": ["Synthesized"],
+          "layoutX": 1250,
+          "layoutY": 200,
+          "mirrorOutputToWorkflowVar": "swarmFinal"
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "5a90b001-0001-0001-0002-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "5a90b001-0001-0001-0002-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "5a90b001-0001-0001-0002-000000000002",
+          "fromPort": "Contributed",
+          "toNodeId": "5a90b001-0001-0001-0002-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "5a90b001-0001-0001-0002-000000000003",
+          "fromPort": "Contributed",
+          "toNodeId": "5a90b001-0001-0001-0002-000000000004",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "5a90b001-0001-0001-0002-000000000004",
+          "fromPort": "Contributed",
+          "toNodeId": "5a90b001-0001-0001-0002-000000000005",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Mission (passthrough)",
+          "kind": "Text",
+          "required": false,
+          "description": "Pass-through. The subflow reads workflow.mission, which the parent's Start node seeded from its input. The first agent ignores `input` directly.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "swarm-bench-sequential",
+      "version": 1,
+      "name": "Swarm Bench — Sequential (V2 entry)",
+      "maxRoundsPerRound": 5,
+      "category": "Workflow",
+      "tags": ["swarm", "sequential", "bench", "swarm-bench"],
+      "createdAtUtc": "2026-04-28T13:00:00Z",
+      "workflowVarsReads": ["mission"],
+      "workflowVarsWrites": ["mission"],
+      "nodes": [
+        {
+          "id": "5a90b001-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "swarm-bench-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "setWorkflow('mission', input.text);"
+        },
+        {
+          "id": "5a90b001-0001-0001-0001-000000000002",
+          "kind": "Subflow",
+          "outputPorts": ["Synthesized"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "subflowKey": "swarm-bench-sequential-subflow",
+          "subflowVersion": 1
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "5a90b001-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "5a90b001-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Mission",
+          "kind": "Text",
+          "required": true,
+          "description": "The mission text the swarm should produce a synthesized answer for. Sparse briefs work well — the swarm thesis is that emergent role differentiation produces broader coverage than a single agent.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "swarm-bench-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Bench Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for a swarm-bench workflow. The mission has already been seeded into workflow state by an input script (or by a parent workflow that ran the input script).\n\nYour only job: write the single word `Initialized.` as your message content, then submit on port `Continue`.",
+        "promptTemplate": "Mission has been seeded into the workflow bag as `workflow.mission`. Acknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands off to the swarm chain. The mission is already in the workflow bag; this agent does no setup of its own."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T13:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands off to the swarm chain."
+        }
+      ]
+    },
+    {
+      "key": "swarm-bench-contributor",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Bench Contributor",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a member of a small panel of LLM agents working on the same mission, one after another. Each agent examines what prior agents have produced and contributes whatever role would most advance the work — there are no pre-assigned roles.\n\n## Hard rules\n\n1. The first line of your output is exactly `ROLE: <your-role>` (e.g. `ROLE: analyst`, `ROLE: gap-finder`, `ROLE: devil's advocate`, `ROLE: structurer`). The role is your own choice, in your own words, picked to complement what's already there.\n2. If after reading the mission and prior contributions you genuinely believe nothing useful remains for you to add, the first line is `ROLE: abstain` followed on the next line by a single sentence explaining why. Then submit. Abstaining is a valid choice — do not pad with filler.\n3. Otherwise, after the role line, contribute substantively in the role you chose. Aim for the right size for the contribution; do not pad.\n4. Submit on port `Contributed` regardless of whether you contributed or abstained.\n\n## Why this protocol\n\nSelf-organization is the point: the panel's quality comes from agents distributing work without a central coordinator. Pick a role that complements what's already there. Abstain when there's nothing useful for you to add — passing is a contribution.",
+        "promptTemplate": "## Mission\n\n{{ workflow.mission }}\n\n{{ if workflow.swarmContribution1 }}\n## Prior contribution 1\n\n{{ workflow.swarmContribution1 }}\n{{ end }}\n{{ if workflow.swarmContribution2 }}\n## Prior contribution 2\n\n{{ workflow.swarmContribution2 }}\n{{ end }}\n{{ if workflow.swarmContribution3 }}\n## Prior contribution 3\n\n{{ workflow.swarmContribution3 }}\n{{ end }}\n\nExamine the mission and any prior contributions. Decide the role most useful right now. State that role on the first line as `ROLE: <role>`, then make your contribution. Submit on `Contributed`.",
+        "maxTokens": 4000,
+        "temperature": 0.6,
+        "outputs": [
+          {
+            "kind": "Contributed",
+            "description": "The agent's contribution, with `ROLE: <role>` (or `ROLE: abstain`) as the first line. The runtime mirrors this body into workflow.swarmContribution{1|2|3} per the node's mirrorOutputToWorkflowVar config."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T13:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Contributed",
+          "description": "Single contribution from one panelist. First line declares the self-selected role."
+        }
+      ]
+    },
+    {
+      "key": "swarm-bench-synthesizer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Bench Synthesizer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the synthesizer for a panel of LLM agents who each contributed to the same mission. Your job is to read the mission and all contributions, then produce a single coherent answer.\n\n## Hard rules\n\n1. Write the answer to the mission, not commentary on the panel. Do not list contributors, do not narrate the synthesis process, do not include a `Synthesis` or `Final answer` heading — just write the answer as if it were the only thing the requester sees.\n2. Integrate the strongest elements from the contributions; ignore weak or contradictory parts.\n3. If a contributor abstained (their text begins with `ROLE: abstain`), simply skip their contribution.\n4. Submit on port `Synthesized`.",
+        "promptTemplate": "## Mission\n\n{{ workflow.mission }}\n\n## Contributions in order\n\n### 1.\n{{ workflow.swarmContribution1 }}\n\n### 2.\n{{ workflow.swarmContribution2 }}\n\n### 3.\n{{ workflow.swarmContribution3 }}\n\nProduce the synthesized answer to the mission. Submit on `Synthesized`.",
+        "maxTokens": 6000,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Synthesized",
+            "description": "The final synthesized answer. Mirrored into workflow.swarmFinal."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T13:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Synthesized",
+          "description": "The synthesized terminal output. The Subflow's terminal port name rides up to the parent."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "swarm-bench-init", "roleKeys": [] },
+    { "agentKey": "swarm-bench-contributor", "roleKeys": [] },
+    { "agentKey": "swarm-bench-synthesizer", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}
