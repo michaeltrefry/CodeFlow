@@ -127,6 +127,11 @@ public static class ApiServiceCollectionExtensions
         // (preview); the UI completes the mutation by posting to the existing apply endpoint.
         services.AddScoped<IAssistantTool, SaveWorkflowPackageTool>();
 
+        // HAA-11: confirmation-gated workflow run. Same split — the tool validates the run
+        // request against the workflow's declared input schema; the UI POSTs to /api/traces
+        // when the user clicks the chip.
+        services.AddScoped<IAssistantTool, RunWorkflowTool>();
+
         services.AddScoped<AssistantToolDispatcher>();
 
         return services;

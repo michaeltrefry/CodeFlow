@@ -59,6 +59,27 @@ import { ChatToolCallComponent, ChatToolCallView } from '../../ui/chat/chat-tool
           (cancelConfirmation)="onMockCancel()"
         />
       </section>
+
+      <section class="mock-section" data-testid="haa11-mock">
+        <h2>HAA-11 — run_workflow confirmation chip (mock)</h2>
+        <p>
+          Same chip primitive as HAA-10 but with the <code>run_workflow</code> kind: success
+          banner renders a trace link instead of a workflow link. The real chat-panel posts to
+          <code>/api/traces</code> when the user confirms.
+        </p>
+        <div class="mock-controls">
+          <button type="button" (click)="setMockRunState('idle')">Reset to idle</button>
+          <button type="button" (click)="setMockRunState('applying')">applying…</button>
+          <button type="button" (click)="setMockRunState('success')">success</button>
+          <button type="button" (click)="setMockRunState('error')">error</button>
+          <button type="button" (click)="setMockRunState('cancelled')">cancelled</button>
+        </div>
+        <cf-chat-tool-call
+          [view]="mockRunView()"
+          (confirmConfirmation)="onMockRunConfirm()"
+          (cancelConfirmation)="onMockRunCancel()"
+        />
+      </section>
     </main>
   `,
   styles: [`
@@ -172,7 +193,9 @@ export class AssistantPreviewComponent {
       confirmation: {
         ...v.confirmation!,
         state,
-        applied: state === 'success' ? { key: 'draft-flow', version: 1 } : undefined,
+        applied: state === 'success'
+          ? { kind: 'workflow' as const, key: 'draft-flow', version: 1 }
+          : undefined,
         errorMessage: state === 'error' ? '500 Internal Server Error — workflow draft-flow already exists.' : undefined,
       },
     }));
@@ -186,5 +209,48 @@ export class AssistantPreviewComponent {
 
   protected onMockCancel(): void {
     this.setMockState('cancelled');
+  }
+
+  /**
+   * HAA-11 visual smoke: a hand-rolled tool-call view for `run_workflow` so the Run chip can
+   * be verified without an API. Mirrors the HAA-10 mock structure; the success banner uses the
+   * `applied: { kind: 'trace', traceId }` discriminant so the trace-link variant renders.
+   */
+  protected readonly mockRunView = signal<ChatToolCallView>({
+    id: 'mock-haa11',
+    name: 'run_workflow',
+    status: 'success',
+    argsPreview: '{ "workflowKey": "haiku-writer", "input": "ports", "inputs": { "subject": "ports" } }',
+    resultPreview: '{ "status": "preview_ok", "workflow": { "key": "haiku-writer", "version": 3, "name": "Haiku writer" }, "resolvedInputs": { "subject": "ports", "tone": "professional" } }',
+    confirmation: {
+      kind: 'run_workflow',
+      prompt: 'Run Haiku writer v3 with 2 inputs?',
+      confirmLabel: 'Run',
+      cancelLabel: 'Cancel',
+      state: 'idle',
+    },
+  });
+
+  protected setMockRunState(state: 'idle' | 'applying' | 'success' | 'error' | 'cancelled'): void {
+    this.mockRunView.update(v => ({
+      ...v,
+      confirmation: {
+        ...v.confirmation!,
+        state,
+        applied: state === 'success'
+          ? { kind: 'trace' as const, traceId: '01931abc-def0-7000-8000-000000000042' }
+          : undefined,
+        errorMessage: state === 'error' ? '422 Unprocessable Entity — workflow has no Start node configured.' : undefined,
+      },
+    }));
+  }
+
+  protected onMockRunConfirm(): void {
+    this.setMockRunState('applying');
+    setTimeout(() => this.setMockRunState('success'), 400);
+  }
+
+  protected onMockRunCancel(): void {
+    this.setMockRunState('cancelled');
   }
 }

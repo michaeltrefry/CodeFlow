@@ -4,14 +4,17 @@ import { ChatConfirmationChipComponent, ChatConfirmationView } from './chat-conf
 export type ChatToolCallStatus = 'pending' | 'success' | 'error';
 
 /**
- * HAA-10: confirmation state attached to a tool call when the tool's verdict requires the user
- * to authorize a follow-on mutating action. Rendered as an inline {@link ChatConfirmationChipComponent}
- * inside the tool-call body. The chat-panel owns the API call when the user confirms; this
- * component just surfaces the chip and emits confirm/cancel events.
+ * HAA-10 / HAA-11: confirmation state attached to a tool call when the tool's verdict requires
+ * the user to authorize a follow-on mutating action. Rendered as an inline
+ * {@link ChatConfirmationChipComponent} inside the tool-call body. The chat-panel owns the API
+ * call when the user confirms; this component just surfaces the chip and emits confirm/cancel.
+ *
+ * The `kind` discriminator + per-kind `applied` shape lets the chip display a tool-specific
+ * success banner (library link for save, trace link for run) without leaking either tool's
+ * domain into the chip primitive.
  */
 export interface ChatToolCallConfirmation {
-  /** Discriminator so future tools (HAA-11 run, HAA-13 replay) can plug in their own renderers. */
-  kind: 'save_workflow_package';
+  kind: 'save_workflow_package' | 'run_workflow';
   prompt: string;
   confirmLabel?: string;
   cancelLabel?: string;
@@ -21,8 +24,13 @@ export interface ChatToolCallConfirmation {
    * banner below the chip surfaces the resolution.
    */
   state: 'idle' | 'applying' | 'success' | 'error' | 'cancelled';
-  /** When state === 'success', the resulting workflow library entry. */
-  applied?: { key: string; version: number };
+  /**
+   * When state === 'success', the per-tool result payload used to render the success banner.
+   * Save: `{ kind: 'workflow', key, version }`. Run: `{ kind: 'trace', traceId }`.
+   */
+  applied?:
+    | { kind: 'workflow'; key: string; version: number }
+    | { kind: 'trace'; traceId: string };
   /** When state === 'error', a human-readable error message. */
   errorMessage?: string;
 }
@@ -83,12 +91,20 @@ export interface ChatToolCallView {
             @if (confirmation.state === 'applying') {
               <p class="tool-confirmation-status">Saving…</p>
             }
-            @if (confirmation.state === 'success' && confirmation.applied) {
+            @if (confirmation.state === 'success' && confirmation.applied; as applied) {
               <p class="tool-confirmation-status tool-confirmation-success">
-                Saved as
-                <a [href]="'/workflows/' + confirmation.applied.key + '/' + confirmation.applied.version">
-                  {{ confirmation.applied.key }} v{{ confirmation.applied.version }}
-                </a>.
+                @switch (applied.kind) {
+                  @case ('workflow') {
+                    Saved as
+                    <a [href]="'/workflows/' + applied.key + '/' + applied.version">
+                      {{ applied.key }} v{{ applied.version }}
+                    </a>.
+                  }
+                  @case ('trace') {
+                    Started trace
+                    <a [href]="'/traces/' + applied.traceId">{{ applied.traceId.slice(0, 8) }}…</a>.
+                  }
+                }
               </p>
             }
             @if (confirmation.state === 'error' && confirmation.errorMessage) {
