@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using CodeFlow.Persistence;
 using MassTransit;
 using Microsoft.Extensions.Logging;
@@ -128,6 +129,14 @@ public sealed class AssistantChatService(
                         finalModel ??= done.Model;
                         break;
 
+                    case AssistantToolCallStarted tcs:
+                        yield return new ToolCallStarted(tcs.ToolUseId, tcs.Name, tcs.Arguments);
+                        break;
+
+                    case AssistantToolCallCompleted tcc:
+                        yield return new ToolCallCompleted(tcc.ToolUseId, tcc.Name, tcc.ResultJson, tcc.IsError);
+                        break;
+
                     case AssistantTurnError err:
                         yield return new TurnFailed(err.Message);
                         yield break;
@@ -163,3 +172,16 @@ public sealed record TokenUsageEmitted(TokenUsageRecord Record) : AssistantTurnE
 public sealed record AssistantMessagePersisted(AssistantMessage Message) : AssistantTurnEvent;
 
 public sealed record TurnFailed(string Message) : AssistantTurnEvent;
+
+/// <summary>
+/// A tool call requested by the model. Emitted before the tool runs so the UI can show a
+/// "running" state. <see cref="Arguments"/> is the parsed JSON the model produced as the input.
+/// </summary>
+public sealed record ToolCallStarted(string Id, string Name, JsonElement Arguments) : AssistantTurnEvent;
+
+/// <summary>
+/// The result of a tool call. <see cref="ResultJson"/> is the raw JSON string returned by the
+/// tool (preserved unparsed so the UI can render it verbatim). <see cref="IsError"/> distinguishes
+/// a recoverable tool error from a successful invocation.
+/// </summary>
+public sealed record ToolCallCompleted(string Id, string Name, string ResultJson, bool IsError) : AssistantTurnEvent;

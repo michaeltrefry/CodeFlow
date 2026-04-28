@@ -6,6 +6,7 @@ import { AssistantApi, AssistantMessage, AssistantScope } from '../../core/assis
 import { AssistantStreamEvent, streamAssistantTurn } from '../../core/assistant-stream';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
+import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
 
 interface PendingAssistantTurn {
   /** The assistant message-id assigned by the server once it persists; null while streaming. */
@@ -17,6 +18,15 @@ interface PendingAssistantTurn {
 }
 
 /**
+ * One row in the rendered thread. `kind` discriminates between a chat message bubble and a
+ * tool-call card so the template can render the right component for each entry without losing
+ * insertion order — tool calls land between the user prompt and the final assistant answer.
+ */
+type ThreadEntry =
+  | ({ kind: 'message' } & ChatMessageView)
+  | ({ kind: 'tool' } & ChatToolCallView);
+
+/**
  * Embeddable assistant chat panel. Connects to the HAA-1 assistant API for the supplied
  * <c>scope</c> (homepage or entity-scoped) and streams the conversation in place. Designed to
  * live in any parent — the homepage main pane or the right-rail sidebar — without knowledge of
@@ -26,7 +36,7 @@ interface PendingAssistantTurn {
   selector: 'cf-chat-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChatMessageComponent, ChatComposerComponent],
+  imports: [ChatMessageComponent, ChatComposerComponent, ChatToolCallComponent],
   template: `
     <section class="chat-panel" [attr.data-scope-kind]="scope().kind">
       <header class="chat-panel-head">
@@ -36,14 +46,21 @@ interface PendingAssistantTurn {
         }
       </header>
 
-      <div class="chat-panel-thread" #thread role="log" aria-live="polite">
+      <div class="chat-panel-thread" #threadEl role="log" aria-live="polite">
         @if (loadFailed()) {
           <p class="chat-panel-error">{{ loadFailed() }}</p>
-        } @else if (messages().length === 0 && !loading()) {
+        } @else if (thread().length === 0 && !loading()) {
           <p class="chat-panel-empty">No messages yet — say hello.</p>
         } @else {
-          @for (msg of messages(); track msg.id ?? msg.role + msg.content.length) {
-            <cf-chat-message [message]="msg" />
+          @for (entry of thread(); track entry.kind === 'message' ? 'm:' + (entry.id ?? entry.role + entry.content.length) : 't:' + entry.id) {
+            @switch (entry.kind) {
+              @case ('message') {
+                <cf-chat-message [message]="entry" />
+              }
+              @case ('tool') {
+                <cf-chat-tool-call [view]="entry" />
+              }
+            }
           }
         }
         @if (turnError()) {
@@ -117,7 +134,7 @@ export class ChatPanelComponent {
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
 
-  @ViewChild('thread') private threadRef?: ElementRef<HTMLDivElement>;
+  @ViewChild('threadEl') private threadRef?: ElementRef<HTMLDivElement>;
 
   protected readonly conversationId = signal<string | null>(null);
   protected readonly loading = signal(false);
@@ -130,14 +147,22 @@ export class ChatPanelComponent {
   private readonly pending = signal<PendingAssistantTurn | null>(null);
   /** The current user turn rendered immediately while waiting for server-id assignment. */
   private readonly optimisticUser = signal<string | null>(null);
+  /**
+   * Tool-call cards for the in-flight turn, in insertion order. Reset at the start of each new
+   * user message — only the FINAL assistant text is persisted to history, so tool cards from
+   * prior turns can't be reconstructed on reload (which is fine: they're a debugging aid for the
+   * current exchange).
+   */
+  private readonly toolCalls = signal<ChatToolCallView[]>([]);
 
   private streamSub: Subscription | null = null;
 
-  protected readonly messages = computed<ChatMessageView[]>(() => {
-    const out: ChatMessageView[] = [];
+  protected readonly thread = computed<ThreadEntry[]>(() => {
+    const out: ThreadEntry[] = [];
     for (const m of this.history()) {
       if (m.role === 'system') continue;
       out.push({
+        kind: 'message',
         id: m.id,
         role: m.role,
         content: m.content,
@@ -147,11 +172,15 @@ export class ChatPanelComponent {
     }
     const optimistic = this.optimisticUser();
     if (optimistic !== null) {
-      out.push({ id: null, role: 'user', content: optimistic });
+      out.push({ kind: 'message', id: null, role: 'user', content: optimistic });
+    }
+    for (const tc of this.toolCalls()) {
+      out.push({ kind: 'tool', ...tc });
     }
     const pending = this.pending();
     if (pending !== null) {
       out.push({
+        kind: 'message',
         id: pending.serverId,
         role: 'assistant',
         content: pending.content,
@@ -193,6 +222,7 @@ export class ChatPanelComponent {
     }
     this.turnError.set(null);
     this.optimisticUser.set(content);
+    this.toolCalls.set([]);
     this.pending.set({ serverId: null, content: '', provider: null, model: null });
     this.streaming.set(true);
 
@@ -221,6 +251,7 @@ export class ChatPanelComponent {
     this.streaming.set(false);
     this.pending.set(null);
     this.optimisticUser.set(null);
+    this.toolCalls.set([]);
   }
 
   private handleStreamEvent(evt: AssistantStreamEvent): void {
@@ -247,6 +278,34 @@ export class ChatPanelComponent {
         }
         break;
       }
+      case 'tool-call': {
+        // New tool card in pending state. argsPreview is a single-line stringification — the user
+        // can expand the card to see the full payload when the server fills in the result.
+        this.toolCalls.update(list => [...list, {
+          id: evt.id,
+          name: evt.name,
+          status: 'pending',
+          argsPreview: stringifyArgs(evt.arguments),
+        }]);
+        this.scrollToBottom();
+        break;
+      }
+      case 'tool-result': {
+        // Pair with the matching tool-call by id and flip its status. If we get a result without
+        // a prior call (shouldn't happen, but server bugs are server bugs), drop it on the floor.
+        this.toolCalls.update(list => list.map(card =>
+          card.id === evt.id
+            ? {
+                ...card,
+                status: evt.isError ? 'error' : 'success',
+                resultPreview: evt.isError ? undefined : truncatePreview(evt.result),
+                errorMessage: evt.isError ? truncatePreview(evt.result) : undefined,
+              }
+            : card,
+        ));
+        this.scrollToBottom();
+        break;
+      }
       case 'assistant-message-persisted': {
         this.history.update(h => [...h, evt.message]);
         this.pending.set(null);
@@ -270,6 +329,7 @@ export class ChatPanelComponent {
     this.history.set([]);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.toolCalls.set([]);
   }
 
   private loadConversation(scope: AssistantScope): void {
@@ -298,6 +358,21 @@ export class ChatPanelComponent {
   }
 }
 
+function stringifyArgs(args: unknown): string {
+  if (args === undefined || args === null) return '';
+  try {
+    return truncatePreview(JSON.stringify(args, null, 2));
+  } catch {
+    return String(args);
+  }
+}
+
+function truncatePreview(value: string): string {
+  const PREVIEW_CAP = 4_000;
+  if (value.length <= PREVIEW_CAP) return value;
+  return value.slice(0, PREVIEW_CAP) + `\n... [truncated, original was ${value.length} chars]`;
+}
+
 function formatError(err: unknown): string {
   if (err instanceof HttpErrorResponse) {
     // HttpClient wraps non-2xx responses; the default toString() yields "[object Object]".
@@ -311,5 +386,3 @@ function formatError(err: unknown): string {
   }
   return String(err);
 }
-
-

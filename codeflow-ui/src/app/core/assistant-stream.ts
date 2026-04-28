@@ -8,6 +8,8 @@ import { AssistantMessage } from './assistant.api';
  *   - <c>user-message-persisted</c>: full user-turn message row, with stable id + sequence.
  *   - <c>text-delta</c>: incremental assistant content; concatenate to build the running text.
  *   - <c>token-usage</c>: provider-reported usage for the just-completed turn.
+ *   - <c>tool-call</c>: assistant requested a tool invocation. Render in pending state.
+ *   - <c>tool-result</c>: tool finished. Pair with the matching tool-call by `id`.
  *   - <c>assistant-message-persisted</c>: full assistant-turn message row, with finalized
  *     content + provider/model/invocationId.
  *   - <c>done</c>: terminal — stream is closing.
@@ -17,6 +19,8 @@ export type AssistantStreamEvent =
   | { kind: 'user-message-persisted'; message: AssistantMessage }
   | { kind: 'text-delta'; delta: string }
   | { kind: 'token-usage'; recordId: string; provider: string; model: string; usage: unknown }
+  | { kind: 'tool-call'; id: string; name: string; arguments: unknown }
+  | { kind: 'tool-result'; id: string; name: string; result: string; isError: boolean }
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
   | { kind: 'done' }
   | { kind: 'error'; message: string };
@@ -141,6 +145,14 @@ function parseSseFrame(raw: string): AssistantStreamEvent | null {
     }
     case 'assistant-message-persisted':
       return { kind: 'assistant-message-persisted', message: payload as AssistantMessage };
+    case 'tool-call': {
+      const c = payload as { id: string; name: string; arguments: unknown };
+      return { kind: 'tool-call', id: c.id, name: c.name, arguments: c.arguments };
+    }
+    case 'tool-result': {
+      const r = payload as { id: string; name: string; result: string; isError: boolean };
+      return { kind: 'tool-result', id: r.id, name: r.name, result: r.result, isError: r.isError ?? false };
+    }
     case 'done':
       return { kind: 'done' };
     case 'error':
