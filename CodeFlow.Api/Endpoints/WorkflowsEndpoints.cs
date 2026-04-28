@@ -724,7 +724,16 @@ public static class WorkflowsEndpoints
                     MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
                     OutputPortReplacements: node.OutputPortReplacements,
                     Template: node.Template,
-                    OutputType: node.OutputType))
+                    OutputType: node.OutputType,
+                    SwarmProtocol: node.SwarmProtocol,
+                    SwarmN: node.SwarmN,
+                    ContributorAgentKey: node.ContributorAgentKey,
+                    ContributorAgentVersion: node.ContributorAgentVersion,
+                    SynthesizerAgentKey: node.SynthesizerAgentKey,
+                    SynthesizerAgentVersion: node.SynthesizerAgentVersion,
+                    CoordinatorAgentKey: node.CoordinatorAgentKey,
+                    CoordinatorAgentVersion: node.CoordinatorAgentVersion,
+                    SwarmTokenBudget: node.SwarmTokenBudget))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(
@@ -789,7 +798,16 @@ public static class WorkflowsEndpoints
                 MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
                 OutputPortReplacements: node.OutputPortReplacements,
                 Template: node.Template,
-                OutputType: node.OutputType))
+                OutputType: node.OutputType,
+                SwarmProtocol: node.SwarmProtocol,
+                SwarmN: node.SwarmN,
+                ContributorAgentKey: node.ContributorAgentKey,
+                ContributorAgentVersion: node.ContributorAgentVersion,
+                SynthesizerAgentKey: node.SynthesizerAgentKey,
+                SynthesizerAgentVersion: node.SynthesizerAgentVersion,
+                CoordinatorAgentKey: node.CoordinatorAgentKey,
+                CoordinatorAgentVersion: node.CoordinatorAgentVersion,
+                SwarmTokenBudget: node.SwarmTokenBudget))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

@@ -134,6 +134,28 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? ParentLoopDecision { get; set; }
 
     /// <summary>
+    /// Set when the saga is currently inside a Swarm node (sc-43). Holds the Swarm node's id from
+    /// dispatch through the synthesizer's completion. Used by the saga to (a) route contributor
+    /// completions back into the swarm dispatch path instead of the normal edge-routing flow, and
+    /// (b) for the Coordinator protocol (sc-46), serve as the stale-round guard so a parallel
+    /// completion arriving after the saga has moved past the Swarm node is rejected, not silently
+    /// merged. Null whenever the saga is outside a Swarm node, including before the first
+    /// dispatch and after the synthesizer's terminal port has been routed. The on-disk column
+    /// name is <c>current_swarm_coordinator_node_id</c> per the design doc; the field name keeps
+    /// the broader v1 semantics (any swarm protocol, not just Coordinator).
+    /// </summary>
+    public Guid? CurrentSwarmNodeId { get; set; }
+
+    /// <summary>
+    /// Coordinator-protocol only (sc-46): JSON-serialised list of <see cref="Guid"/> round IDs the
+    /// saga is awaiting completions on after the coordinator's parallel dispatch. Null / empty in
+    /// Sequential mode and when the saga is outside a Swarm node. Read-side checks treat null and
+    /// <c>"[]"</c> identically. The schema lands in sc-43 so sc-46 doesn't need its own migration;
+    /// sc-43 never writes a non-null value.
+    /// </summary>
+    public string? PendingParallelRoundIdsJson { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

@@ -90,6 +90,45 @@ public static class AgentPromptScopeBuilder
         return variables;
     }
 
+    /// <summary>
+    /// Top-level Swarm-context variables exposed to a contributor / synthesizer / coordinator's
+    /// prompt template. Mirrors <see cref="BuildReviewLoopVariables"/>: each field becomes a
+    /// flat top-level template variable. The renderer reads them as <c>{{ swarmPosition }}</c>,
+    /// <c>{{ swarmEarlyTerminated }}</c>, etc. — matching the V2 hand-authored library entry's
+    /// convention so prompts can be migrated cleanly.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string?> BuildSwarmVariables(
+        CodeFlow.Contracts.SwarmInvocationContext? swarm)
+    {
+        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (swarm is null)
+        {
+            return variables;
+        }
+
+        if (swarm.Position is int position)
+        {
+            variables["swarmPosition"] = position.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (swarm.MaxN is int maxN)
+        {
+            variables["swarmMaxN"] = maxN.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (!string.IsNullOrWhiteSpace(swarm.Assignment))
+        {
+            variables["swarmAssignment"] = swarm.Assignment;
+        }
+
+        if (swarm.EarlyTerminated is bool earlyTerminated)
+        {
+            variables["swarmEarlyTerminated"] = earlyTerminated ? "true" : "false";
+        }
+
+        return variables;
+    }
+
     public static IReadOnlyDictionary<string, string?> BuildInputVariables(string? input)
     {
         var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);

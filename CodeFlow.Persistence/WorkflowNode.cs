@@ -29,4 +29,27 @@ public sealed record WorkflowNode(
     string? Template = null,
     // Transform nodes: "string" (default) — rendered text becomes the Out artifact verbatim.
     // "json" mode (deserialize rendered text before emitting) is gated behind TN-2.
-    string OutputType = "string");
+    string OutputType = "string",
+    // Swarm nodes (sc-43): "Sequential" or "Coordinator". Closed enum stored as string. Null on
+    // every other kind. The Coordinator runtime ships in sc-46; v1 only Sequential is dispatchable.
+    string? SwarmProtocol = null,
+    // Swarm nodes: number of contributors (Sequential) or max workers (Coordinator). 1..16.
+    int? SwarmN = null,
+    // Swarm nodes: agent key/version used for every contributor position (and every Coordinator
+    // worker position). Single role, reused — per-position differentiation comes from the prompt
+    // template's swarmPosition / swarmContributions inputs, not from separate roles.
+    string? ContributorAgentKey = null,
+    int? ContributorAgentVersion = null,
+    // Swarm nodes: agent key/version for the final synthesis step. Runs once after all
+    // contributors complete and produces the node's terminal artifact.
+    string? SynthesizerAgentKey = null,
+    int? SynthesizerAgentVersion = null,
+    // Swarm-Coordinator nodes only: the agent that runs first and returns assignments. Validator
+    // requires non-null when SwarmProtocol == "Coordinator" and rejects non-null on Sequential.
+    string? CoordinatorAgentKey = null,
+    int? CoordinatorAgentVersion = null,
+    // Swarm nodes: optional cumulative token cap (input + output tokens summed across coordinator,
+    // contributors, and synthesizer for this node only). Null = unbounded. > 0 when set. The
+    // saga checks the budget after each contributor completion and may run the synthesizer early
+    // with swarmEarlyTerminated = true. See docs/swarm-node.md §"Token budget".
+    int? SwarmTokenBudget = null);

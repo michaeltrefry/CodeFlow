@@ -140,6 +140,13 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("parent_loop_decision")
             .HasMaxLength(64);
 
+        builder.Property(saga => saga.CurrentSwarmNodeId)
+            .HasColumnName("current_swarm_coordinator_node_id");
+
+        builder.Property(saga => saga.PendingParallelRoundIdsJson)
+            .HasColumnName("pending_parallel_round_ids_json")
+            .HasColumnType("longtext");
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);
