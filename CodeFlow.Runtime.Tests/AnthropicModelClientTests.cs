@@ -319,6 +319,103 @@ public sealed class AnthropicModelClientTests
         exception.Which.Message.Should().NotContain("test-key");
     }
 
+    [Fact]
+    public async Task InvokeAsync_ShouldExposeRawUsageVerbatimIncludingCacheAndThinkingAndUnknownFields()
+    {
+        // Slice 3 of the Token Usage Tracking epic. Anthropic surfaces several usage fields that
+        // the schema-flat `TokenUsage` drops — cache_creation_input_tokens, cache_read_input_tokens,
+        // and (when extended thinking is enabled) cache_creation detail blocks plus per-call
+        // thinking budget fields. The model client must clone `usage` verbatim so the
+        // orchestration-side capture observer can persist every field, including ones we don't
+        // know about yet.
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "id": "msg_usage",
+                  "type": "message",
+                  "role": "assistant",
+                  "content": [
+                    { "type": "text", "text": "ok" }
+                  ],
+                  "stop_reason": "end_turn",
+                  "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_creation_input_tokens": 25,
+                    "cache_read_input_tokens": 12,
+                    "cache_creation": { "ephemeral_5m_input_tokens": 25, "ephemeral_1h_input_tokens": 0 },
+                    "server_tool_use": { "web_search_requests": 0 },
+                    "some_future_field": "future_value"
+                  }
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new AnthropicModelClient(httpClient, new AnthropicModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "claude-sonnet-4-20250514"));
+
+        // Flat TokenUsage stays as the existing 3-int shape — that's the live-UI surface.
+        response.TokenUsage.Should().BeEquivalentTo(new TokenUsage(100, 50, 150));
+
+        // RawUsage is the new surface and the only one that retains the full provider payload.
+        response.RawUsage.Should().NotBeNull();
+        var usage = response.RawUsage!.Value;
+        usage.GetProperty("input_tokens").GetInt32().Should().Be(100);
+        usage.GetProperty("output_tokens").GetInt32().Should().Be(50);
+        usage.GetProperty("cache_creation_input_tokens").GetInt32().Should().Be(25);
+        usage.GetProperty("cache_read_input_tokens").GetInt32().Should().Be(12);
+        usage.GetProperty("cache_creation").GetProperty("ephemeral_5m_input_tokens").GetInt32().Should().Be(25);
+        usage.GetProperty("server_tool_use").GetProperty("web_search_requests").GetInt32().Should().Be(0);
+        usage.GetProperty("some_future_field").GetString().Should().Be("future_value");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WhenResponseHasNoUsageObject_RawUsageIsNull()
+    {
+        // Edge case mirroring the OpenAI client: a response that omits `usage` entirely must
+        // surface RawUsage = null so the capture observer's `rawUsage != null` gate skips
+        // cleanly (rather than persisting an empty object).
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "id": "msg_no_usage",
+                  "type": "message",
+                  "role": "assistant",
+                  "content": [
+                    { "type": "text", "text": "ok" }
+                  ],
+                  "stop_reason": "end_turn"
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new AnthropicModelClient(httpClient, new AnthropicModelClientOptions { ApiKey = "test-key" });
+
+        var response = await client.InvokeAsync(
+            new InvocationRequest(
+                Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+                Tools: null,
+                Model: "claude-sonnet-4-20250514"));
+
+        response.TokenUsage.Should().BeNull();
+        response.RawUsage.Should().BeNull();
+    }
+
     private static StringContent JsonContent(string json)
     {
         return new StringContent(json, Encoding.UTF8, "application/json");

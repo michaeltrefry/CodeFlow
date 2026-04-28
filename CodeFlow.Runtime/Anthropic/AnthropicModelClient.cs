@@ -383,7 +383,23 @@ public sealed class AnthropicModelClient : IModelClient
         return new InvocationResponse(
             assistantMessage,
             stopReason,
-            ParseTokenUsage(root));
+            ParseTokenUsage(root),
+            CloneRawUsage(root));
+    }
+
+    /// <summary>
+    /// Clone Anthropic's <c>usage</c> object verbatim so the orchestration-side capture observer
+    /// can persist every reported field — input_tokens, output_tokens, cache_creation_input_tokens,
+    /// cache_read_input_tokens, extended-thinking detail blocks, and any future field the SDK
+    /// surfaces. Returns null when the response has no usage object at all (capture is skipped).
+    /// </summary>
+    private static JsonElement? CloneRawUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        return usageElement.Clone();
     }
 
     private static InvocationStopReason ParseStopReason(JsonElement root)
