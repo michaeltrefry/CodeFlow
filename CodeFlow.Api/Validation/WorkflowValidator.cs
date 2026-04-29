@@ -36,10 +36,8 @@ public static class WorkflowValidator
     /// fan-out. Bumping is a config-only change later. See docs/swarm-node.md §"Validator rules".</summary>
     public const int MaxSwarmN = 16;
 
-    /// <summary>Allowed protocol values on a Swarm node. Sequential implements in sc-43;
-    /// Coordinator dispatch lands in sc-46 but the validator accepts both as soon as the runtime
-    /// can save them. Authors can stage a Coordinator workflow and have it stand idle until sc-46
-    /// ships; the dispatch path will refuse it explicitly until then.</summary>
+    /// <summary>Allowed protocol values on a Swarm node. Sequential shipped in sc-43,
+    /// Coordinator in sc-46. Both protocols are dispatched by the runtime.</summary>
     internal const string SwarmProtocolSequential = "Sequential";
     internal const string SwarmProtocolCoordinator = "Coordinator";
 
