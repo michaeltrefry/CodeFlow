@@ -243,10 +243,16 @@ public sealed class DryRunExecutor
 
                     // P4: mirror agent output text into the named workflow variable BEFORE
                     // routing, so downstream Logic nodes / port replacements observe it.
-                    if (!string.IsNullOrWhiteSpace(currentNode.MirrorOutputToWorkflowVar))
+                    var mirrorTarget = AgentOutputTransforms.NormalizeMirrorTarget(currentNode.MirrorOutputToWorkflowVar);
+                    if (mirrorTarget is not null)
                     {
-                        workflowVars[currentNode.MirrorOutputToWorkflowVar!] =
-                            JsonSerializer.SerializeToElement(output);
+                        var mirrored = AgentOutputTransforms.Mirror(workflowVars, mirrorTarget, output);
+                        // Replace the mutable bag's contents so downstream steps see the update.
+                        workflowVars.Clear();
+                        foreach (var (k, v) in mirrored)
+                        {
+                            workflowVars[k] = v;
+                        }
                         state.RecordEvent(new DryRunEvent(
                             Ordinal: state.NextOrdinal(),
                             Kind: DryRunEventKind.BuiltinApplied,
@@ -254,7 +260,7 @@ public sealed class DryRunExecutor
                             NodeKind: currentNode.Kind.ToString(),
                             AgentKey: currentNode.AgentKey,
                             PortName: null,
-                            Message: $"P4 mirror: workflow.{currentNode.MirrorOutputToWorkflowVar} ← agent output ({output.Length} chars).",
+                            Message: $"P4 mirror: workflow.{mirrorTarget} ← agent output ({output.Length} chars).",
                             InputPreview: null,
                             OutputPreview: null,
                             ReviewRound: reviewRound,
@@ -332,30 +338,32 @@ public sealed class DryRunExecutor
                     // P5: if the port has a configured replacement, swap the artifact for the
                     // named workflow variable's contents. Runs AFTER the output script so the
                     // script-managed variable updates are visible.
-                    if (currentNode.OutputPortReplacements is not null
-                        && currentNode.OutputPortReplacements.TryGetValue(effectivePort, out var replacementVarName)
-                        && workflowVars.TryGetValue(replacementVarName, out var replacementValue))
+                    var portReplacements = AgentOutputTransforms.NormalizePortReplacements(currentNode.OutputPortReplacements);
+                    if (portReplacements is not null)
                     {
-                        effectiveOutput = replacementValue.ValueKind == JsonValueKind.String
-                            ? replacementValue.GetString() ?? string.Empty
-                            : replacementValue.GetRawText();
-                        state.RecordEvent(new DryRunEvent(
-                            Ordinal: state.NextOrdinal(),
-                            Kind: DryRunEventKind.BuiltinApplied,
-                            NodeId: currentNode.Id,
-                            NodeKind: currentNode.Kind.ToString(),
-                            AgentKey: currentNode.AgentKey,
-                            PortName: effectivePort,
-                            Message: $"P5 replace: artifact on '{effectivePort}' ← workflow.{replacementVarName} ({effectiveOutput.Length} chars).",
-                            InputPreview: null,
-                            OutputPreview: Preview(effectiveOutput),
-                            ReviewRound: reviewRound,
-                            MaxRounds: maxRounds,
-                            SubflowDepth: depth,
-                            SubflowKey: null,
-                            SubflowVersion: null,
-                            Logs: null,
-                            DecisionPayload: null));
+                        var (replacementText, boundVar) = AgentOutputTransforms.ResolvePortReplacement(
+                            portReplacements, effectivePort, workflowVars);
+                        if (replacementText is not null)
+                        {
+                            effectiveOutput = replacementText;
+                            state.RecordEvent(new DryRunEvent(
+                                Ordinal: state.NextOrdinal(),
+                                Kind: DryRunEventKind.BuiltinApplied,
+                                NodeId: currentNode.Id,
+                                NodeKind: currentNode.Kind.ToString(),
+                                AgentKey: currentNode.AgentKey,
+                                PortName: effectivePort,
+                                Message: $"P5 replace: artifact on '{effectivePort}' ← workflow.{boundVar} ({effectiveOutput.Length} chars).",
+                                InputPreview: null,
+                                OutputPreview: Preview(effectiveOutput),
+                                ReviewRound: reviewRound,
+                                MaxRounds: maxRounds,
+                                SubflowDepth: depth,
+                                SubflowKey: null,
+                                SubflowVersion: null,
+                                Logs: null,
+                                DecisionPayload: null));
+                        }
                     }
 
                     var agentEdge = workflow.FindNext(currentNode.Id, effectivePort);
