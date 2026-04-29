@@ -45,7 +45,14 @@ public sealed class AnthropicModelClient : IModelClient
 
         var toolNameMap = ProviderToolNameMap.Create(request.Tools);
         using var httpRequest = BuildHttpRequest(request, options, toolNameMap);
-        using var response = await SendWithRetryAsync(httpRequest, options, cancellationToken);
+        using var response = await ChatModelHttpRetry.SendWithRetryAsync(
+            httpClient,
+            httpRequest,
+            maxRetryAttempts: options.MaxRetryAttempts,
+            initialRetryDelay: options.InitialRetryDelay,
+            extraRetryStatusCheck: AnthropicExtraRetryStatus,
+            extraRetryAfterExtractor: TryReadAnthropicRetryAfter,
+            cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
 
@@ -113,95 +120,26 @@ public sealed class AnthropicModelClient : IModelClient
         return httpRequest;
     }
 
-    private async Task<HttpResponseMessage> SendWithRetryAsync(
-        HttpRequestMessage request,
-        AnthropicModelClientOptions options,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Anthropic returns 529 ("Overloaded") in addition to the standard retryable set;
+    /// the shared <see cref="ChatModelHttpRetry"/> helper accepts that via this hook.
+    /// </summary>
+    private static bool AnthropicExtraRetryStatus(HttpStatusCode statusCode) =>
+        (int)statusCode == 529;
+
+    /// <summary>
+    /// Anthropic occasionally surfaces <c>retry-after</c> as a lower-cased header that
+    /// <see cref="System.Net.Http.Headers.HttpResponseHeaders.RetryAfter"/> doesn't pick up.
+    /// Read it directly so callers don't lose the server-supplied delay.
+    /// </summary>
+    private static TimeSpan? TryReadAnthropicRetryAfter(HttpResponseMessage response)
     {
-        var attempt = 0;
-
-        while (true)
+        if (response.Headers.TryGetValues("retry-after", out var values)
+            && int.TryParse(values.FirstOrDefault(), out var seconds))
         {
-            attempt++;
-
-            var requestClone = await CloneRequestAsync(request, cancellationToken);
-
-            try
-            {
-                var response = await httpClient.SendAsync(requestClone, cancellationToken);
-
-                if (!ShouldRetry(response.StatusCode) || attempt >= options.MaxRetryAttempts)
-                {
-                    return response;
-                }
-
-                var delay = GetRetryDelay(response, options, attempt);
-                response.Dispose();
-                await Task.Delay(delay, cancellationToken);
-            }
-            catch (HttpRequestException) when (attempt < options.MaxRetryAttempts)
-            {
-                await Task.Delay(GetRetryDelay(response: null, options, attempt), cancellationToken);
-            }
+            return TimeSpan.FromSeconds(Math.Max(0, seconds));
         }
-    }
-
-    private static bool ShouldRetry(HttpStatusCode statusCode)
-    {
-        return statusCode == HttpStatusCode.TooManyRequests
-            || statusCode == HttpStatusCode.RequestTimeout
-            || statusCode == HttpStatusCode.BadGateway
-            || statusCode == HttpStatusCode.ServiceUnavailable
-            || statusCode == HttpStatusCode.GatewayTimeout
-            || (int)statusCode == 529
-            || (int)statusCode >= 500;
-    }
-
-    private static TimeSpan GetRetryDelay(
-        HttpResponseMessage? response,
-        AnthropicModelClientOptions options,
-        int attempt)
-    {
-        if (response?.Headers.RetryAfter?.Delta is TimeSpan retryAfterDelta)
-        {
-            return retryAfterDelta;
-        }
-
-        if (response?.Headers.TryGetValues("retry-after", out var retryAfterValues) == true
-            && int.TryParse(retryAfterValues.FirstOrDefault(), out var retryAfterSeconds))
-        {
-            return TimeSpan.FromSeconds(Math.Max(0, retryAfterSeconds));
-        }
-
-        var multiplier = Math.Pow(2, Math.Max(0, attempt - 1));
-        var calculatedDelay = TimeSpan.FromMilliseconds(options.InitialRetryDelay.TotalMilliseconds * multiplier);
-
-        return calculatedDelay > TimeSpan.Zero ? calculatedDelay : TimeSpan.Zero;
-    }
-
-    private static async Task<HttpRequestMessage> CloneRequestAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        var clone = new HttpRequestMessage(request.Method, request.RequestUri);
-
-        foreach (var header in request.Headers)
-        {
-            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-
-        if (request.Content is not null)
-        {
-            var content = await request.Content.ReadAsStringAsync(cancellationToken);
-            clone.Content = new StringContent(content, Encoding.UTF8, request.Content.Headers.ContentType?.MediaType);
-
-            foreach (var header in request.Content.Headers)
-            {
-                clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-        }
-
-        return clone;
+        return null;
     }
 
     private static string? BuildSystemPrompt(IReadOnlyList<ChatMessage> messages)
