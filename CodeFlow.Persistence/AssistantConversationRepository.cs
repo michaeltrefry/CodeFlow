@@ -124,6 +124,82 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         return Map(entity);
     }
 
+    public async Task<IReadOnlyList<AssistantConversationSummary>> ListByUserAsync(
+        string userId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        // Defensive — caller is expected to clamp, but guard against accidental zero/negative
+        // limits silently returning empty.
+        if (limit <= 0)
+        {
+            return Array.Empty<AssistantConversationSummary>();
+        }
+
+        var trimmedUserId = userId.Trim();
+
+        // Single round-trip: pull the most recent N conversations for the user, plus aggregate
+        // message stats (count + earliest user-message body) per conversation. Done as a left
+        // join so conversations with zero messages still surface (a brand-new homepage thread
+        // exists in the DB the moment the user lands on the page; the rail still shows it as
+        // "Homepage").
+        var rows = await (
+            from c in dbContext.AssistantConversations.AsNoTracking()
+            where c.UserId == trimmedUserId
+            orderby c.UpdatedAtUtc descending, c.Id
+            select new
+            {
+                Conversation = c,
+                MessageCount = dbContext.AssistantMessages.Count(m => m.ConversationId == c.Id),
+                FirstUserMessage = dbContext.AssistantMessages
+                    .Where(m => m.ConversationId == c.Id && m.Role == AssistantMessageRole.User)
+                    .OrderBy(m => m.Sequence)
+                    .Select(m => m.Content)
+                    .FirstOrDefault()
+            })
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+
+        var result = new AssistantConversationSummary[rows.Count];
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            result[i] = new AssistantConversationSummary(
+                Id: row.Conversation.Id,
+                UserId: row.Conversation.UserId,
+                ScopeKind: row.Conversation.ScopeKind,
+                EntityType: row.Conversation.EntityType,
+                EntityId: row.Conversation.EntityId,
+                ScopeKey: row.Conversation.ScopeKey,
+                SyntheticTraceId: row.Conversation.SyntheticTraceId,
+                CreatedAtUtc: DateTime.SpecifyKind(row.Conversation.CreatedAtUtc, DateTimeKind.Utc),
+                UpdatedAtUtc: DateTime.SpecifyKind(row.Conversation.UpdatedAtUtc, DateTimeKind.Utc),
+                MessageCount: row.MessageCount,
+                FirstUserMessagePreview: TruncatePreview(row.FirstUserMessage));
+        }
+
+        return result;
+    }
+
+    private const int PreviewCharLimit = 120;
+
+    private static string? TruncatePreview(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        // Collapse whitespace + cap length so the rail can render a clean single line. We only
+        // keep the leading window — the rail uses this purely to disambiguate threads.
+        var collapsed = System.Text.RegularExpressions.Regex.Replace(content.Trim(), @"\s+", " ");
+        return collapsed.Length <= PreviewCharLimit
+            ? collapsed
+            : collapsed[..PreviewCharLimit] + "…";
+    }
+
     private static AssistantConversation Map(AssistantConversationEntity entity) => new(
         Id: entity.Id,
         UserId: entity.UserId,

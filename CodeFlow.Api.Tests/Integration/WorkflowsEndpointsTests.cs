@@ -833,6 +833,111 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         listResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task ListRecent_OrdersByMostRecentSagaActivity_AndOmitsWorkflowsWithNoSaga()
+    {
+        // HAA-14: GET /api/workflows/recent surfaces workflows the user is most likely to revisit
+        // for the homepage rail. Order: most recent saga UpdatedAtUtc first. Workflows that have
+        // never been run are filtered out.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "recent-test-writer");
+
+        var keyA = $"recent-flow-a-{Guid.NewGuid():N}";
+        var keyB = $"recent-flow-b-{Guid.NewGuid():N}";
+        var keyC = $"recent-flow-c-{Guid.NewGuid():N}";
+
+        // Create three distinct workflows so we can prove ordering and filtering.
+        foreach (var key in new[] { keyA, keyB, keyC })
+        {
+            var startId = Guid.NewGuid();
+            var createResponse = await client.PostAsJsonAsync("/api/workflows", new
+            {
+                key,
+                name = $"Recent test {key}",
+                maxRoundsPerRound = 3,
+                nodes = new object[]
+                {
+                    new
+                    {
+                        id = startId,
+                        kind = "Start",
+                        agentKey = "recent-test-writer",
+                        agentVersion = (int?)null,
+                        outputScript = (string?)null,
+                        outputPorts = new[] { "Completed" },
+                        layoutX = 0,
+                        layoutY = 0
+                    }
+                },
+                edges = Array.Empty<object>()
+            });
+            createResponse.EnsureSuccessStatusCode();
+        }
+
+        // Seed sagas with explicit UpdatedAtUtc values so ordering is deterministic. KeyA = oldest,
+        // keyB = middle, keyC has NO saga at all and must be omitted from the response.
+        var now = DateTime.UtcNow;
+        await SeedSagaForKeyAsync(keyA, now.AddMinutes(-30));
+        await SeedSagaForKeyAsync(keyB, now.AddMinutes(-5));
+
+        var response = await client.GetAsync("/api/workflows/recent?take=10");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<RecentWorkflowDto[]>();
+        payload.Should().NotBeNull();
+
+        // Filter to just the keys we created so other tests' sagas don't pollute.
+        var ours = payload!
+            .Where(p => p.Summary.Key == keyA || p.Summary.Key == keyB || p.Summary.Key == keyC)
+            .ToList();
+
+        ours.Select(p => p.Summary.Key).Should().BeEquivalentTo(new[] { keyB, keyA }, opts => opts.WithStrictOrdering());
+        ours.Single(p => p.Summary.Key == keyA).LastUsedAtUtc.Should().BeCloseTo(now.AddMinutes(-30), TimeSpan.FromMinutes(1));
+        ours.Single(p => p.Summary.Key == keyB).LastUsedAtUtc.Should().BeCloseTo(now.AddMinutes(-5), TimeSpan.FromMinutes(1));
+    }
+
+    private async Task SeedSagaForKeyAsync(string workflowKey, DateTime updatedAtUtc)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+        {
+            CorrelationId = Guid.NewGuid(),
+            TraceId = Guid.NewGuid(),
+            CurrentState = "Completed",
+            CurrentNodeId = Guid.NewGuid(),
+            CurrentAgentKey = "recent-test-writer",
+            CurrentRoundId = Guid.NewGuid(),
+            RoundCount = 1,
+            AgentVersionsJson = """{"recent-test-writer":1}""",
+            DecisionHistoryJson = "[]",
+            LogicEvaluationHistoryJson = "[]",
+            DecisionCount = 0,
+            LogicEvaluationCount = 0,
+            WorkflowKey = workflowKey,
+            WorkflowVersion = 1,
+            InputsJson = "{}",
+            CurrentInputRef = "file:///tmp/input.bin",
+            CreatedAtUtc = updatedAtUtc,
+            UpdatedAtUtc = updatedAtUtc,
+            Version = 1
+        });
+        await db.SaveChangesAsync();
+    }
+
+    // Local DTO mirrors the API contract — kept in-test so the test fails loudly if the API
+    // shape drifts.
+    private sealed record RecentWorkflowDto(WorkflowSummaryShape Summary, DateTime LastUsedAtUtc);
+    private sealed record WorkflowSummaryShape(
+        string Key,
+        int LatestVersion,
+        string Name,
+        string Category,
+        IReadOnlyList<string> Tags,
+        int NodeCount,
+        int EdgeCount,
+        int InputCount,
+        DateTime CreatedAtUtc);
+
     private static async Task SeedAgentAsync(HttpClient client, string key)
     {
         var response = await client.PostAsJsonAsync("/api/agents", new

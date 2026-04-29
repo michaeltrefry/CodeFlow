@@ -136,6 +136,47 @@ public sealed class TraceTokenUsageEndpointTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
+    public async Task GetTokenUsage_WorkflowSagaTrace_LabelsStreamKindAsWorkflow()
+    {
+        // HAA-14: trace inspector reads streamKind to render the right panel title. Default
+        // workflow saga path must report 'workflow'.
+        var traceId = Guid.NewGuid();
+        await SeedTraceAsync(traceId, Guid.NewGuid());
+
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync($"/api/traces/{traceId}/token-usage");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var dto = await response.Content.ReadFromJsonAsync<TokenUsagePayload>();
+        dto!.StreamKind.Should().Be("workflow");
+    }
+
+    [Fact]
+    public async Task GetTokenUsage_AssistantSyntheticTrace_LabelsStreamKindAsAssistant()
+    {
+        // HAA-14: an assistant conversation's synthetic trace id has no saga row but DOES live
+        // in the AssistantConversations table. The endpoint must accept it and label the stream
+        // as 'assistant' so the panel renders the Assistant title + chip.
+        var (conversationId, syntheticTraceId) = await SeedAssistantConversationAsync();
+
+        // Land a token usage record against the synthetic trace so the rollup is non-empty —
+        // verifies the panel hydrates as if it were any other trace, just labeled differently.
+        await SeedRecordsAsync(
+            (syntheticTraceId, conversationId, Array.Empty<Guid>(), Guid.NewGuid(), "anthropic", "claude-sonnet-4",
+                """{"input_tokens":12,"output_tokens":7}"""));
+
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync($"/api/traces/{syntheticTraceId}/token-usage");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var dto = await response.Content.ReadFromJsonAsync<TokenUsagePayload>();
+        dto!.StreamKind.Should().Be("assistant");
+        dto.TraceId.Should().Be(syntheticTraceId);
+        dto.Total.CallCount.Should().Be(1);
+        dto.Total.Totals["input_tokens"].Should().Be(12);
+    }
+
+    [Fact]
     public async Task GetTokenUsage_NoSuchTrace_Returns404()
     {
         // A token-usage row could exist for a trace that no longer has a saga (e.g., raced delete)
@@ -175,6 +216,29 @@ public sealed class TraceTokenUsageEndpointTests : IClassFixture<CodeFlowApiFact
         await db.SaveChangesAsync();
     }
 
+    private async Task<(Guid ConversationId, Guid SyntheticTraceId)> SeedAssistantConversationAsync()
+    {
+        // Direct DB seed (rather than POST /api/assistant/conversations) so the test stays
+        // independent of the resolver's cookie minting and exercises the token endpoint's
+        // synthetic-trace lookup path explicitly.
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var conversationId = Guid.NewGuid();
+        var syntheticTraceId = Guid.NewGuid();
+        db.AssistantConversations.Add(new AssistantConversationEntity
+        {
+            Id = conversationId,
+            UserId = "test-user-token-stream",
+            ScopeKind = AssistantConversationScopeKind.Homepage,
+            ScopeKey = "homepage",
+            SyntheticTraceId = syntheticTraceId,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return (conversationId, syntheticTraceId);
+    }
+
     private async Task SeedRecordsAsync(
         params (Guid TraceId, Guid NodeId, IReadOnlyList<Guid> ScopeChain, Guid InvocationId, string Provider, string Model, string UsageJson)[] records)
     {
@@ -204,6 +268,7 @@ public sealed class TraceTokenUsageEndpointTests : IClassFixture<CodeFlowApiFact
     // shape drifts. Includes only the fields these tests inspect.
     private sealed record TokenUsagePayload(
         Guid TraceId,
+        string StreamKind,
         TokenUsageRollupPayload Total,
         IReadOnlyList<JsonElement> Records,
         IReadOnlyList<TokenUsageInvocationPayload> ByInvocation,

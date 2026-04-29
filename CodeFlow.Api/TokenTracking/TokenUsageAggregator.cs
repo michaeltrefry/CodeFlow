@@ -25,14 +25,32 @@ namespace CodeFlow.Api.TokenTracking;
 /// </remarks>
 public static class TokenUsageAggregator
 {
-    public static TraceTokenUsageDto Aggregate(Guid traceId, IReadOnlyList<TokenUsageRecord> records)
+    /// <summary>
+    /// HAA-14 — <c>"workflow"</c> stream marker for sagas managed by
+    /// <see cref="CodeFlow.Orchestration.WorkflowSagaStateMachine"/>. Default for any trace
+    /// the caller hasn't proven is synthetic.
+    /// </summary>
+    public const string WorkflowStreamKind = "workflow";
+
+    /// <summary>
+    /// HAA-14 — <c>"assistant"</c> stream marker for synthetic traces minted by
+    /// <see cref="CodeFlow.Persistence.AssistantConversation.SyntheticTraceId"/>.
+    /// </summary>
+    public const string AssistantStreamKind = "assistant";
+
+    public static TraceTokenUsageDto Aggregate(
+        Guid traceId,
+        IReadOnlyList<TokenUsageRecord> records,
+        string streamKind = WorkflowStreamKind)
     {
         ArgumentNullException.ThrowIfNull(records);
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamKind);
 
         if (records.Count == 0)
         {
             return new TraceTokenUsageDto(
                 TraceId: traceId,
+                StreamKind: streamKind,
                 Total: EmptyRollup(),
                 Records: Array.Empty<TokenUsageRecordDto>(),
                 ByInvocation: Array.Empty<TokenUsageInvocationRollupDto>(),
@@ -48,6 +66,7 @@ public static class TokenUsageAggregator
 
         return new TraceTokenUsageDto(
             TraceId: traceId,
+            StreamKind: streamKind,
             Total: BuildRollup(records),
             Records: raw,
             ByInvocation: BuildInvocationRollups(records),
@@ -70,6 +89,24 @@ public static class TokenUsageAggregator
             // Useful for the timeline view that shows each call individually.
             Totals: FlattenAndSum(new[] { record }));
     }
+
+    /// <summary>
+    /// HAA-14 — Public accessor for the underlying single-rollup builder so the cross-trace
+    /// assistant token-usage summary endpoint can reuse the same flatten-and-sum semantics as
+    /// the per-trace aggregation. <paramref name="records"/> may span multiple traces; the
+    /// rollup ignores trace identity and just sums numeric leaves keyed by dotted JSON path.
+    /// </summary>
+    public static TokenUsageRollupDto BuildRollup(IReadOnlyList<TokenUsageRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        return BuildRollupInternal(records);
+    }
+
+    /// <summary>
+    /// HAA-14 — Public empty-rollup constant so callers don't reach for the private helper to
+    /// represent "no usage captured yet."
+    /// </summary>
+    public static TokenUsageRollupDto EmptyRollup() => EmptyRollupInternal();
 
     private static IReadOnlyList<TokenUsageInvocationRollupDto> BuildInvocationRollups(
         IReadOnlyList<TokenUsageRecord> records)
@@ -117,11 +154,11 @@ public static class TokenUsageAggregator
             .ToArray();
     }
 
-    private static TokenUsageRollupDto BuildRollup(IReadOnlyList<TokenUsageRecord> records)
+    private static TokenUsageRollupDto BuildRollupInternal(IReadOnlyList<TokenUsageRecord> records)
     {
         if (records.Count == 0)
         {
-            return EmptyRollup();
+            return EmptyRollupInternal();
         }
 
         var byProviderModel = records
@@ -138,7 +175,7 @@ public static class TokenUsageAggregator
             ByProviderModel: byProviderModel);
     }
 
-    private static TokenUsageRollupDto EmptyRollup()
+    private static TokenUsageRollupDto EmptyRollupInternal()
     {
         return new TokenUsageRollupDto(
             CallCount: 0,

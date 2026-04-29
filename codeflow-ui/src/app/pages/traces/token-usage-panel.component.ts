@@ -41,8 +41,11 @@ import { aggregateTokenUsage, recordDtoFromStreamEvent } from './token-usage-agg
   imports: [CommonModule, CardComponent, ChipComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <cf-card title="Token usage" flush>
+    <cf-card [title]="cardTitle()" flush>
       <ng-template #cardRight>
+        @if (streamKind() === 'assistant') {
+          <cf-chip variant="accent" data-testid="token-panel-stream-assistant">Assistant</cf-chip>
+        }
         @if (aggregated().total.callCount > 0) {
           <cf-chip mono>{{ aggregated().total.callCount }} calls</cf-chip>
         }
@@ -179,6 +182,9 @@ export class TokenUsagePanelComponent {
       this.currentTraceId = value;
       this.records.set([]);
       this.loadError.set(null);
+      // Reset to default until the server tells us otherwise — this avoids a stale "Assistant"
+      // label flashing when switching between traces of different streams.
+      this.streamKind.set('workflow');
       this.loadHistorical(value);
     }
   }
@@ -203,11 +209,20 @@ export class TokenUsagePanelComponent {
   protected readonly loading = signal(false);
   protected readonly loadError = signal<string | null>(null);
 
+  /** HAA-14 — Stream label sourced from the server response. Drives the panel title and the
+   *  "Assistant" chip. Defaults to `'workflow'` so a server that hasn't been upgraded yet (or
+   *  a 404 path that never fetched) renders the original behavior unchanged. */
+  protected readonly streamKind = signal<'workflow' | 'assistant'>('workflow');
+
+  protected readonly cardTitle = computed(() =>
+    this.streamKind() === 'assistant' ? 'Assistant token usage' : 'Token usage',
+  );
+
   /** Aggregated rollup signal. Public so consuming overlays in the trace detail
    *  page can read per-node / per-scope rollups without duplicating the
    *  aggregator wiring. */
   readonly aggregated = computed<TraceTokenUsageDto>(() =>
-    aggregateTokenUsage(this.currentTraceId ?? '', this.records()),
+    aggregateTokenUsage(this.currentTraceId ?? '', this.records(), this.streamKind()),
   );
 
   protected readonly anyNodeHasMultipleCombos = computed(
@@ -246,6 +261,10 @@ export class TokenUsagePanelComponent {
     this.loading.set(true);
     this.api.getTokenUsage(traceId).subscribe({
       next: dto => {
+        // Server identifies whether this trace is a workflow saga or a synthetic assistant
+        // conversation; the rest of the panel uses the in-memory aggregator so the label is
+        // the only thing we read from `dto` here.
+        this.streamKind.set(dto.streamKind ?? 'workflow');
         this.records.set(dto.records);
         this.loading.set(false);
       },

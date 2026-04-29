@@ -183,6 +183,15 @@ export class WorkflowsApi {
     return this.http.get<WorkflowSummary[]>('/api/workflows');
   }
 
+  /**
+   * HAA-14 — Workflows ordered by most recent saga activity for the homepage rail. Backend
+   * filters out workflows that have never been run, so callers can render an empty state
+   * confidently when the user is brand-new.
+   */
+  listRecent(take = 5): Observable<RecentWorkflow[]> {
+    return this.http.get<RecentWorkflow[]>('/api/workflows/recent', { params: { take: String(take) } });
+  }
+
   getLatest(key: string): Observable<WorkflowDetail> {
     return this.http.get<WorkflowDetail>(`/api/workflows/${encodeURIComponent(key)}`);
   }
@@ -303,6 +312,13 @@ export class WorkflowsApi {
       payload
     );
   }
+}
+
+/** HAA-14 — Workflow summary annotated with the most recent saga `UpdatedAtUtc`. Returned by
+ *  `GET /api/workflows/recent` for the homepage rail. */
+export interface RecentWorkflow {
+  summary: WorkflowSummary;
+  lastUsedAtUtc: string;
 }
 
 // ---------- T1 types ----------

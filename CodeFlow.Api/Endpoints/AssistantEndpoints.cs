@@ -1,9 +1,12 @@
 using CodeFlow.Api.Assistant;
 using CodeFlow.Api.Auth;
+using CodeFlow.Api.Dtos;
+using CodeFlow.Api.TokenTracking;
 using CodeFlow.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
 namespace CodeFlow.Api.Endpoints;
@@ -21,11 +24,26 @@ public static class AssistantEndpoints
         var group = routes.MapGroup("/api/assistant");
 
         group.MapPost("/conversations", GetOrCreateConversationAsync);
+        group.MapGet("/conversations", ListConversationsAsync);
         group.MapGet("/conversations/{id:guid}", GetConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
 
+        // HAA-14: aggregated token usage across the user's assistant conversations. Drives the
+        // homepage rail's assistant-token chip; lives on the assistant prefix because it scopes
+        // per-user, unlike trace-scoped token usage which lives under /api/traces.
+        group.MapGet("/token-usage/summary", GetTokenUsageSummaryAsync);
+
         return routes;
     }
+
+    /// <summary>
+    /// Default cap on rows returned by the resume-conversation rail. The rail itself only renders
+    /// a handful, but we let clients widen up to <see cref="MaxConversationListLimit"/> for any
+    /// future "show all my threads" surface.
+    /// </summary>
+    private const int DefaultConversationListLimit = 20;
+
+    private const int MaxConversationListLimit = 100;
 
     private static async Task<IResult> GetOrCreateConversationAsync(
         ConversationScopeRequest request,
@@ -93,6 +111,126 @@ public static class AssistantEndpoints
             conversation = MapConversation(conversation),
             messages = messages.Select(MapMessage).ToArray()
         });
+    }
+
+    /// <summary>
+    /// HAA-14 — Lists the caller's recent assistant conversations for the resume-conversation
+    /// rail on the homepage. Mirrors the auth model of get-or-create: authenticated callers see
+    /// their own threads; anonymous callers get only the conversations attached to their
+    /// <c>cf_anon_id</c> cookie (so demo-mode users still see their single homepage thread).
+    /// </summary>
+    private static async Task<IResult> ListConversationsAsync(
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository repository,
+        CancellationToken cancellationToken,
+        int? limit = null)
+    {
+        // Allow anonymous so the rail renders the demo user's existing homepage thread without
+        // forcing a login. Reads only — no risk of data leakage; the resolver scopes everything
+        // to the current cookie or claims subject.
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: true);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var clamped = Math.Clamp(limit ?? DefaultConversationListLimit, 1, MaxConversationListLimit);
+        var conversations = await repository.ListByUserAsync(userId, clamped, cancellationToken);
+
+        return Results.Ok(new
+        {
+            conversations = conversations.Select(MapConversationSummary).ToArray()
+        });
+    }
+
+    /// <summary>
+    /// HAA-14 — Aggregated assistant token usage for the caller. Sums the token-usage records
+    /// captured against every <see cref="AssistantConversation.SyntheticTraceId"/> the user owns,
+    /// returning a "today" rollup (calendar UTC) and an all-time rollup. The homepage rail uses
+    /// this to render the assistant-token chip; nothing about the per-trace token panel surfaces
+    /// here. Anonymous callers see their own demo conversations' usage.
+    /// </summary>
+    private static async Task<IResult> GetTokenUsageSummaryAsync(
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository repository,
+        ITokenUsageRecordRepository tokenUsageRecords,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: true);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Results.Unauthorized();
+        }
+
+        // Pull the user's conversations with no preview overhead — we only need (id, scope,
+        // syntheticTraceId) to build the per-conversation breakdown. Reuse ListByUserAsync at
+        // the conservative max so the breakdown is bounded but covers every active thread.
+        var conversations = await repository.ListByUserAsync(userId, MaxConversationListLimit, cancellationToken);
+        if (conversations.Count == 0)
+        {
+            return Results.Ok(new AssistantTokenUsageSummaryDto(
+                Today: TokenUsageAggregator.EmptyRollup(),
+                AllTime: TokenUsageAggregator.EmptyRollup(),
+                PerConversation: Array.Empty<AssistantConversationTokenUsageDto>()));
+        }
+
+        // Bulk-load all records for all of the user's synthetic traces in one query, then
+        // partition in memory. Avoids N round trips for the typical "user has a few threads"
+        // case; for users with many entity-scoped conversations the IN list is still bounded by
+        // MaxConversationListLimit.
+        var syntheticTraceIds = conversations.Select(c => c.SyntheticTraceId).ToArray();
+        var allRecords = await dbContext.TokenUsageRecords
+            .AsNoTracking()
+            .Where(r => syntheticTraceIds.Contains(r.TraceId))
+            .ToListAsync(cancellationToken);
+
+        // "Today" is calendar UTC — matches how the rest of the system reasons about time, and
+        // avoids bringing per-user timezone into a token chip.
+        var todayCutoffUtc = DateTime.UtcNow.Date;
+
+        var allDomain = allRecords.Select(MapTokenUsageRecord).ToArray();
+        var todayDomain = allDomain.Where(r => r.RecordedAtUtc >= todayCutoffUtc).ToArray();
+
+        var perConversation = conversations
+            .Select(c =>
+            {
+                var conversationRecords = allDomain
+                    .Where(r => r.TraceId == c.SyntheticTraceId)
+                    .ToArray();
+                return new AssistantConversationTokenUsageDto(
+                    ConversationId: c.Id,
+                    SyntheticTraceId: c.SyntheticTraceId,
+                    Scope: new ScopeDto(
+                        Kind: c.ScopeKind.ToString().ToLowerInvariant(),
+                        EntityType: c.EntityType,
+                        EntityId: c.EntityId),
+                    Rollup: TokenUsageAggregator.BuildRollup(conversationRecords));
+            })
+            .Where(dto => dto.Rollup.CallCount > 0)
+            .ToArray();
+
+        return Results.Ok(new AssistantTokenUsageSummaryDto(
+            Today: TokenUsageAggregator.BuildRollup(todayDomain),
+            AllTime: TokenUsageAggregator.BuildRollup(allDomain),
+            PerConversation: perConversation));
+    }
+
+    private static TokenUsageRecord MapTokenUsageRecord(TokenUsageRecordEntity entity)
+    {
+        var usageDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(entity.UsageJson) ? "{}" : entity.UsageJson);
+        return new TokenUsageRecord(
+            Id: entity.Id,
+            TraceId: entity.TraceId,
+            NodeId: entity.NodeId,
+            InvocationId: entity.InvocationId,
+            ScopeChain: Array.Empty<Guid>(),
+            Provider: entity.Provider,
+            Model: entity.Model,
+            RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc),
+            Usage: usageDocument.RootElement.Clone());
     }
 
     private static async Task PostMessageAsync(
@@ -207,6 +345,27 @@ public static class AssistantEndpoints
         syntheticTraceId = conversation.SyntheticTraceId,
         createdAtUtc = conversation.CreatedAtUtc,
         updatedAtUtc = conversation.UpdatedAtUtc
+    };
+
+    /// <summary>
+    /// HAA-14 — Resume-rail projection. Mirrors <see cref="MapConversation"/> for stable id +
+    /// scope + timestamps and adds the message-count + first-user-message preview the rail
+    /// uses to label entries.
+    /// </summary>
+    private static object MapConversationSummary(AssistantConversationSummary summary) => new
+    {
+        id = summary.Id,
+        scope = new
+        {
+            kind = summary.ScopeKind.ToString().ToLowerInvariant(),
+            entityType = summary.EntityType,
+            entityId = summary.EntityId
+        },
+        syntheticTraceId = summary.SyntheticTraceId,
+        createdAtUtc = summary.CreatedAtUtc,
+        updatedAtUtc = summary.UpdatedAtUtc,
+        messageCount = summary.MessageCount,
+        firstUserMessagePreview = summary.FirstUserMessagePreview
     };
 
     private static object MapMessage(AssistantMessage message) => new

@@ -8,8 +8,14 @@ namespace CodeFlow.Api.Dtos;
 /// shape for both historical (one-shot fetch) and live (initial load + delta from
 /// <c>TokenUsageRecorded</c> SSE events) modes.
 /// </summary>
+/// <param name="StreamKind">HAA-14 — labels the trace as either a workflow saga
+/// (<c>"workflow"</c>) or a synthetic assistant conversation trace (<c>"assistant"</c>) so the
+/// token panel can title itself accordingly. Assistant token usage threads into the same
+/// <c>TokenUsageRecord</c> table as workflow runs (per HAA-1), so this flag is the only
+/// boundary marker between the two streams in the inspector.</param>
 public sealed record TraceTokenUsageDto(
     Guid TraceId,
+    string StreamKind,
     TokenUsageRollupDto Total,
     IReadOnlyList<TokenUsageRecordDto> Records,
     IReadOnlyList<TokenUsageInvocationRollupDto> ByInvocation,

@@ -552,6 +552,11 @@ export interface TokenUsageEventPayload {
  *  `CodeFlow.Api/TokenTracking/TokenUsageAggregator.cs`. */
 export interface TraceTokenUsageDto {
   traceId: string;
+  /** HAA-14 — `'workflow'` for saga-driven traces; `'assistant'` for synthetic
+   *  traces minted per assistant conversation. The token panel renders the
+   *  appropriate stream label based on this flag; default to `'workflow'` for
+   *  backward compatibility if a server response omits it. */
+  streamKind: 'workflow' | 'assistant';
   total: TokenUsageRollup;
   records: TokenUsageRecordDto[];
   byInvocation: TokenUsageInvocationRollup[];
