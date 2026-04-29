@@ -64,6 +64,7 @@
             "providersFile": "src/test-providers.ts",
             "codeCoverageReporters": [
               "text-summary",
+              "json-summary",
               "html",
               "lcov"
             ],
