@@ -1,6 +1,4 @@
-using CodeFlow.Runtime.Observability;
 using Octokit;
-using Activity = System.Diagnostics.Activity;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -12,27 +10,27 @@ namespace CodeFlow.Runtime.Workspace;
 /// taxonomy regardless of the underlying Octokit exception type, so callers can rely on a
 /// stable surface independent of the library's internals.
 /// </summary>
-public sealed class GitHubVcsProvider : IVcsProvider
+public sealed class GitHubVcsProvider : VcsProviderBase
 {
     private const string UserAgent = "CodeFlow";
 
     private readonly string token;
 
     public GitHubVcsProvider(string token)
+        : base(providerTag: "github")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         this.token = token;
     }
 
-    public GitHostMode Mode => GitHostMode.GitHub;
+    public override GitHostMode Mode => GitHostMode.GitHub;
 
-    public async Task<VcsRepoMetadata> GetRepoMetadataAsync(
+    public override async Task<VcsRepoMetadata> GetRepoMetadataAsync(
         string owner,
         string name,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ValidateOwnerName(owner, name);
 
         using var activity = StartActivity("vcs.github.get_repo", owner, name);
         var client = CreateClient();
@@ -51,7 +49,7 @@ public sealed class GitHubVcsProvider : IVcsProvider
         }
     }
 
-    public async Task<PullRequestInfo> OpenPullRequestAsync(
+    public override async Task<PullRequestInfo> OpenPullRequestAsync(
         string owner,
         string name,
         string head,
@@ -60,11 +58,7 @@ public sealed class GitHubVcsProvider : IVcsProvider
         string body,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(head);
-        ArgumentException.ThrowIfNullOrWhiteSpace(baseRef);
-        ArgumentException.ThrowIfNullOrWhiteSpace(title);
+        ValidatePullRequestInputs(owner, name, head, baseRef, title);
 
         using var activity = StartActivity("vcs.github.open_pr", owner, name);
         activity?.SetTag("vcs.github.head", head);
@@ -92,15 +86,6 @@ public sealed class GitHubVcsProvider : IVcsProvider
         {
             Credentials = new Credentials(token),
         };
-
-    private static Activity? StartActivity(string name, string owner, string repo)
-    {
-        var activity = CodeFlowActivity.StartChild(name);
-        activity?.SetTag("vcs.provider", "github");
-        activity?.SetTag("vcs.repo.owner", owner);
-        activity?.SetTag("vcs.repo.name", repo);
-        return activity;
-    }
 
     private static VcsRepoVisibility MapVisibility(RepositoryVisibility? visibility, bool isPrivate)
     {

@@ -3,8 +3,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using CodeFlow.Runtime.Observability;
-using Activity = System.Diagnostics.Activity;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -15,13 +13,14 @@ namespace CodeFlow.Runtime.Workspace;
 /// <c>VcsUnauthorized / VcsRepoNotFound / VcsConflict / VcsRateLimited</c> taxonomy so callers can
 /// be mode-agnostic.
 /// </summary>
-public sealed class GitLabVcsProvider : IVcsProvider
+public sealed class GitLabVcsProvider : VcsProviderBase
 {
     private readonly HttpClient httpClient;
     private readonly string token;
     private readonly Uri apiBase;
 
     public GitLabVcsProvider(HttpClient httpClient, string token, string baseUrl)
+        : base(providerTag: "gitlab")
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
@@ -32,15 +31,14 @@ public sealed class GitLabVcsProvider : IVcsProvider
         this.apiBase = new Uri(baseUrl.TrimEnd('/') + "/api/v4/");
     }
 
-    public GitHostMode Mode => GitHostMode.GitLab;
+    public override GitHostMode Mode => GitHostMode.GitLab;
 
-    public async Task<VcsRepoMetadata> GetRepoMetadataAsync(
+    public override async Task<VcsRepoMetadata> GetRepoMetadataAsync(
         string owner,
         string name,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ValidateOwnerName(owner, name);
 
         using var activity = StartActivity("vcs.gitlab.get_repo", owner, name);
         var projectPath = BuildProjectPath(owner, name);
@@ -62,7 +60,7 @@ public sealed class GitLabVcsProvider : IVcsProvider
             Visibility: MapVisibility(project.Visibility));
     }
 
-    public async Task<PullRequestInfo> OpenPullRequestAsync(
+    public override async Task<PullRequestInfo> OpenPullRequestAsync(
         string owner,
         string name,
         string head,
@@ -71,11 +69,7 @@ public sealed class GitLabVcsProvider : IVcsProvider
         string body,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(head);
-        ArgumentException.ThrowIfNullOrWhiteSpace(baseRef);
-        ArgumentException.ThrowIfNullOrWhiteSpace(title);
+        ValidatePullRequestInputs(owner, name, head, baseRef, title);
 
         using var activity = StartActivity("vcs.gitlab.open_mr", owner, name);
         activity?.SetTag("vcs.gitlab.source_branch", head);
@@ -115,15 +109,6 @@ public sealed class GitLabVcsProvider : IVcsProvider
 
     private static string BuildProjectPath(string owner, string name) =>
         Uri.EscapeDataString($"{owner}/{name}");
-
-    private static Activity? StartActivity(string name, string owner, string repo)
-    {
-        var activity = CodeFlowActivity.StartChild(name);
-        activity?.SetTag("vcs.provider", "gitlab");
-        activity?.SetTag("vcs.repo.owner", owner);
-        activity?.SetTag("vcs.repo.name", repo);
-        return activity;
-    }
 
     private static VcsRepoVisibility MapVisibility(string? visibility) => visibility switch
     {
