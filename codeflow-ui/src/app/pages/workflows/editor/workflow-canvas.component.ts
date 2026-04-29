@@ -31,6 +31,7 @@ import {
   WorkflowInput,
   WorkflowNodeKind,
   WorkflowSummary,
+  WorkflowSwarmProtocol,
   WorkflowTransformOutputType
 } from '../../../core/models';
 import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
@@ -334,6 +335,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item hitl" (click)="addPaletteNode('Hitl')">HITL</button>
             <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
             <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
+            <button type="button" class="palette-item swarm" (click)="addPaletteNode('Swarm')">Swarm</button>
           </div>
         </div>
 
@@ -724,6 +726,129 @@ function defaultStartInput(): WorkflowInput {
                     }
                   } @else {
                     <pre class="transform-preview-output">{{ transformPreviewRendered() }}</pre>
+                  }
+                </div>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'Swarm') {
+              <div class="inspector-section">
+                <p class="muted xsmall">
+                  A Swarm node fans out to <code>n</code> contributor agents under the chosen protocol, then
+                  hands their drafts to a synthesizer agent that emits the node's terminal output. Swarm nodes
+                  are <strong>non-replayable</strong> — replay re-runs the whole node fresh.
+                </p>
+
+                <label class="field">
+                  <span>Protocol</span>
+                  <select [ngModel]="sel.editor.swarmProtocol ?? 'Sequential'"
+                          (ngModelChange)="onSwarmProtocolChanged(sel.editor, $event)">
+                    <option value="Sequential">Sequential — each contributor sees prior drafts</option>
+                    <option value="Coordinator">Coordinator — agent 0 plans + assigns roles, contributors run in parallel</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>n — contributor count <span class="muted xsmall">(1–16)</span></span>
+                  <input type="number" min="1" max="16"
+                         [ngModel]="sel.editor.swarmN ?? null"
+                         (ngModelChange)="onSwarmNChanged(sel.editor, $event)" />
+                </label>
+
+                <div class="field">
+                  <span class="field-label">Contributor agent <span class="muted xsmall">(invoked n times)</span></span>
+                  <select [ngModel]="sel.editor.contributorAgentKey ?? ''"
+                          (ngModelChange)="onSwarmAgentKeyChanged(sel.editor, 'contributor', $event)">
+                    <option value="">(pick agent)</option>
+                    @for (agent of agents(); track agent.key) {
+                      <option [value]="agent.key">{{ agent.key }}</option>
+                    }
+                  </select>
+                  <input type="number" min="1" placeholder="version (required)"
+                         [ngModel]="sel.editor.contributorAgentVersion ?? null"
+                         (ngModelChange)="onSwarmAgentVersionChanged(sel.editor, 'contributor', $event)" />
+                  <span class="muted xsmall">Version must be pinned. Latest-version resolution happens at parent-workflow save time.</span>
+                </div>
+
+                <div class="field">
+                  <span class="field-label">Synthesizer agent <span class="muted xsmall">(emits the node's terminal output)</span></span>
+                  <select [ngModel]="sel.editor.synthesizerAgentKey ?? ''"
+                          (ngModelChange)="onSwarmAgentKeyChanged(sel.editor, 'synthesizer', $event)">
+                    <option value="">(pick agent)</option>
+                    @for (agent of agents(); track agent.key) {
+                      <option [value]="agent.key">{{ agent.key }}</option>
+                    }
+                  </select>
+                  <input type="number" min="1" placeholder="version (required)"
+                         [ngModel]="sel.editor.synthesizerAgentVersion ?? null"
+                         (ngModelChange)="onSwarmAgentVersionChanged(sel.editor, 'synthesizer', $event)" />
+                </div>
+
+                @if (sel.editor.swarmProtocol === 'Coordinator') {
+                  <div class="field">
+                    <span class="field-label">Coordinator agent <span class="muted xsmall">(plans + assigns; Coordinator-only)</span></span>
+                    <select [ngModel]="sel.editor.coordinatorAgentKey ?? ''"
+                            (ngModelChange)="onSwarmAgentKeyChanged(sel.editor, 'coordinator', $event)">
+                      <option value="">(pick agent)</option>
+                      @for (agent of agents(); track agent.key) {
+                        <option [value]="agent.key">{{ agent.key }}</option>
+                      }
+                    </select>
+                    <input type="number" min="1" placeholder="version (required)"
+                           [ngModel]="sel.editor.coordinatorAgentVersion ?? null"
+                           (ngModelChange)="onSwarmAgentVersionChanged(sel.editor, 'coordinator', $event)" />
+                  </div>
+                }
+
+                <label class="field">
+                  <span>Token budget <span class="muted xsmall">(optional; > 0 when set, blank for unbounded)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.swarmTokenBudget ?? null"
+                         (ngModelChange)="onSwarmTokenBudgetChanged(sel.editor, $event)" />
+                </label>
+
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(derived from synthesizer's declared outputs)</span></span>
+                  @if (derivedSwarmPortRows().length > 0) {
+                    <ul class="port-list mono">
+                      @for (p of derivedSwarmPortRows(); track p.name + ':' + p.status) {
+                        <li [attr.data-port-status]="p.status">
+                          <code>{{ p.name }}</code>
+                          @if (p.status === 'stale') {
+                            <span class="tag error xsmall" title="Wired on this node but the synthesizer agent can't submit it. Synthesizer reaching this port at runtime would crash.">stale (not declared by synthesizer)</span>
+                          } @else if (p.status === 'missing') {
+                            <span class="tag warn xsmall" title="Declared by the synthesizer agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</span>
+                          }
+                        </li>
+                      }
+                      <li class="implicit">
+                        <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
+                      </li>
+                    </ul>
+                    @if (selectedSwarmHasPortDrift()) {
+                      <div class="row" style="gap: 8px; align-items: center; margin-top: 8px">
+                        <button type="button" cf-button variant="default" size="sm" (click)="syncPortsFromSynthesizer(sel.editor)">
+                          Sync from synthesizer
+                        </button>
+                        <span class="muted xsmall">Replaces this node's ports with the synthesizer agent's declared outputs. Wires on still-declared ports are preserved.</span>
+                      </div>
+                    }
+                  } @else if (sel.editor.outputPortNames.length > 0) {
+                    <ul class="port-list mono">
+                      @for (p of sel.editor.outputPortNames; track p) {
+                        <li><code>{{ p }}</code></li>
+                      }
+                      <li class="implicit">
+                        <code>Failed</code> <span class="muted xsmall">(implicit, always wirable)</span>
+                      </li>
+                    </ul>
+                    <p class="muted xsmall">
+                      @if (sel.editor.synthesizerAgentKey) {
+                        Synthesizer agent doc still loading — drift badges will appear once the agent's outputs are known.
+                      } @else {
+                        Pick a synthesizer agent above to derive ports from its declared outputs. Defaults to <code>Synthesized</code> until then.
+                      }
+                    </p>
                   }
                 </div>
               </div>
@@ -1207,6 +1332,7 @@ function defaultStartInput(): WorkflowInput {
     .palette-item.escalation { border-left: 4px solid #f85149; }
     .palette-item.subflow { border-left: 4px solid #2ea3f2; }
     .palette-item.reviewloop { border-left: 4px solid #f5a623; }
+    .palette-item.swarm { border-left: 4px solid #ff7eb6; }
     .panel-title {
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -1501,6 +1627,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly selectedAgentDocs = signal<SelectedAgentDocs | null>(null);
   readonly selectedAgentDocsLoading = signal(false);
   readonly selectedAgentDocsError = signal<string | null>(null);
+  // Swarm-only: docs for the synthesizer agent. Kept separate from selectedAgentDocs so
+  // the contributor / coordinator slots can't clobber the cache the AGENT_BEARING_KINDS
+  // path relies on, and so the synthesizer's outputs drive the Swarm node's terminal ports
+  // independently of any contributor lookups.
+  readonly selectedSynthesizerDocs = signal<SelectedAgentDocs | null>(null);
+  readonly selectedSynthesizerDocsLoading = signal(false);
+  readonly selectedSynthesizerDocsError = signal<string | null>(null);
 
   /** VZ1: F2 dataflow snapshot for the workflow's current saved version. Null until first
    *  load completes (or for unsaved new workflows). The snapshot is the on-disk truth, so
@@ -1658,6 +1791,47 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return this.derivedPortRows().some(r => r.status !== 'ok');
   });
 
+  /** Swarm-only counterpart to derivedPortRows. The Swarm node's terminal ports follow the
+   *  *synthesizer* agent's declared outputs (contributor + coordinator outputs are internal
+   *  to the swarm and don't appear on the node). Until a synthesizer is picked, the row set
+   *  is empty and the existing default `Synthesized` port stays in place. */
+  readonly derivedSwarmPortRows = computed<{ name: string; status: 'ok' | 'stale' | 'missing' }[]>(() => {
+    this.portsRevision();
+    const sel = this.selectedNode();
+    if (!sel || sel.editor.kind !== 'Swarm') return [];
+
+    const docs = this.selectedSynthesizerDocs();
+    const declared = Array.isArray(docs?.config.outputs)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
+      : null;
+    const declaredSet = declared ? new Set(declared) : null;
+    const nodePorts = sel.editor.outputPortNames;
+    const nodePortSet = new Set(nodePorts);
+
+    const rows: { name: string; status: 'ok' | 'stale' | 'missing' }[] = nodePorts.map(name => ({
+      name,
+      status: declaredSet
+        ? (declaredSet.has(name) ? 'ok' : 'stale')
+        : 'ok',
+    }));
+
+    if (declared) {
+      for (const name of declared) {
+        if (!nodePortSet.has(name)) {
+          rows.push({ name, status: 'missing' });
+        }
+      }
+    }
+
+    return rows;
+  });
+
+  readonly selectedSwarmHasPortDrift = computed(() => {
+    return this.derivedSwarmPortRows().some(r => r.status !== 'ok');
+  });
+
   /** E1: ambient TS declarations for the input-script editor on the selected node.
    *  Narrows workflow / context to F2-detected keys; gates `input` + `setInput` to this slot. */
   readonly inputScriptAmbientLibs = computed<MonacoAmbientLib[]>(() => {
@@ -1795,6 +1969,74 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.selectedAgentDocsError.set(null);
   }
 
+  private clearSelectedSynthesizerDocs(): void {
+    this.selectedSynthesizerDocs.set(null);
+    this.selectedSynthesizerDocsLoading.set(false);
+    this.selectedSynthesizerDocsError.set(null);
+  }
+
+  /** Swarm port derivation: load the synthesizer agent's config so the inspector can render
+   *  derived ports + stale/missing drift badges. Mirrors loadAgentDocsForNode but writes to
+   *  the parallel selectedSynthesizerDocs* signals so it doesn't fight with the
+   *  AGENT_BEARING_KINDS path. */
+  private loadSynthesizerDocsForNode(node: WorkflowEditorNode | null): void {
+    if (!node || node.kind !== 'Swarm' || !node.synthesizerAgentKey) {
+      this.clearSelectedSynthesizerDocs();
+      return;
+    }
+
+    const nodeEditorId = node.id;
+    const agentKey = node.synthesizerAgentKey;
+    const agentVersion = node.synthesizerAgentVersion;
+    const request$ = agentVersion && agentVersion > 0
+      ? this.agentsApi.getVersion(agentKey, agentVersion)
+      : this.agentsApi.getLatest(agentKey);
+
+    this.selectedSynthesizerDocs.set(null);
+    this.selectedSynthesizerDocsLoading.set(true);
+    this.selectedSynthesizerDocsError.set(null);
+
+    request$.subscribe({
+      next: version => {
+        const selected = this.selectedNode();
+        if (!selected || selected.editor.id !== nodeEditorId
+            || selected.editor.synthesizerAgentKey !== agentKey) return;
+
+        this.selectedSynthesizerDocs.set({
+          nodeEditorId,
+          agentKey: version.key,
+          agentVersion: version.version,
+          config: version.config ?? {}
+        });
+        this.selectedSynthesizerDocsLoading.set(false);
+      },
+      error: err => {
+        const selected = this.selectedNode();
+        if (!selected || selected.editor.id !== nodeEditorId
+            || selected.editor.synthesizerAgentKey !== agentKey) return;
+
+        this.selectedSynthesizerDocs.set(null);
+        this.selectedSynthesizerDocsLoading.set(false);
+        this.selectedSynthesizerDocsError.set(`Failed to load synthesizer agent: ${err?.message ?? err}`);
+      }
+    });
+  }
+
+  /** Reconcile a Swarm node's output ports with its synthesizer agent's declared outputs.
+   *  Mirrors syncPortsFromAgent — stale ports drop with their wires, missing ports appear,
+   *  surviving ports keep their wires. Implicit Failed is unaffected. */
+  syncPortsFromSynthesizer(node: WorkflowEditorNode): void {
+    if (node.kind !== 'Swarm') return;
+    const docs = this.selectedSynthesizerDocs();
+    const declared = Array.isArray(docs?.config.outputs)
+      ? docs!.config.outputs
+          .map(o => o.kind)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
+      : null;
+    if (!declared) return;
+    this.applyNodePorts(node, declared);
+  }
+
   private loadAgentDocsForNode(node: WorkflowEditorNode | null): void {
     if (!node?.agentKey || !AGENT_BEARING_KINDS.has(node.kind)) {
       this.clearSelectedAgentDocs();
@@ -1889,6 +2131,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.selectedSubflowDetail.set(null);
         const picked = this.editor?.getNode(context.data.id) as WorkflowEditorNode | undefined;
         this.loadAgentDocsForNode(picked ?? null);
+        this.loadSynthesizerDocsForNode(picked ?? null);
         if ((picked?.kind === 'Subflow' || picked?.kind === 'ReviewLoop') && picked.subflowKey) {
           this.api.getLatest(picked.subflowKey).subscribe({
             next: detail => this.selectedSubflowDetail.set(detail),
@@ -2082,11 +2325,19 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
+    // Sensible defaults for Swarm so the inspector lands in a renderable state and the
+    // node label reads "Swarm Sequential ×3" instead of "Swarm ? ×?". Validator's [1, 16]
+    // range allows 3 as a reasonable starting fan-out; author refines in the inspector.
+    const swarmDefaults = kind === 'Swarm'
+      ? { swarmProtocol: 'Sequential' as const, swarmN: 3 }
+      : {};
+
     const node = new WorkflowEditorNode({
       nodeId: crypto.randomUUID(),
       kind,
-      label: labelFor({ kind, agentKey: null }),
-      outputPorts: defaultOutputPortsFor(kind)
+      label: labelFor({ kind, agentKey: null, ...swarmDefaults }),
+      outputPorts: defaultOutputPortsFor(kind),
+      ...swarmDefaults
     });
 
     await this.editor.addNode(node);
@@ -2107,6 +2358,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     event.preventDefault();
     this.selectedNodeId.set(nodeId);
     this.loadAgentDocsForNode(node);
+    this.loadSynthesizerDocsForNode(node);
 
     const items: NodeContextMenuItem[] = [];
 
@@ -2881,6 +3133,94 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.scheduleTransformPreview();
   }
 
+  onSwarmProtocolChanged(node: WorkflowEditorNode, value: WorkflowSwarmProtocol): void {
+    node.swarmProtocol = value;
+    // Validator rejects coordinator fields under Sequential. Clear them on switch
+    // so the inspector + serialized payload stay consistent.
+    if (value !== 'Coordinator') {
+      node.coordinatorAgentKey = null;
+      node.coordinatorAgentVersion = null;
+    }
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  onSwarmNChanged(node: WorkflowEditorNode, value: number | null): void {
+    // Clamp to validator's [1, 16] range so the UI can't desync from save-time errors.
+    if (value === null || value === undefined) {
+      node.swarmN = null;
+    } else {
+      node.swarmN = Math.max(1, Math.min(16, Math.floor(value)));
+    }
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  onSwarmAgentKeyChanged(
+    node: WorkflowEditorNode,
+    slot: 'contributor' | 'synthesizer' | 'coordinator',
+    value: string
+  ): void {
+    const key = value || null;
+    if (slot === 'contributor') node.contributorAgentKey = key;
+    else if (slot === 'synthesizer') {
+      node.synthesizerAgentKey = key;
+      // Synthesizer drives the Swarm node's terminal ports — refresh derived doc cache and
+      // (when an agent is picked) apply its declared outputs to the node's ports. Cleared
+      // selection just clears the cache; existing ports stay so authors don't lose wires.
+      this.loadSynthesizerDocsForNode(node);
+      if (key) this.fetchAndApplySynthesizerPorts(node);
+    }
+    else node.coordinatorAgentKey = key;
+    this.area?.update('node', node.id);
+  }
+
+  onSwarmAgentVersionChanged(
+    node: WorkflowEditorNode,
+    slot: 'contributor' | 'synthesizer' | 'coordinator',
+    value: number | string | null
+  ): void {
+    const num = typeof value === 'number' ? value : Number(value);
+    const version = Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+    if (slot === 'contributor') node.contributorAgentVersion = version;
+    else if (slot === 'synthesizer') {
+      node.synthesizerAgentVersion = version;
+      // Re-fetch — different versions may declare different outputs; the derived ports +
+      // drift badges should follow the version pin.
+      this.loadSynthesizerDocsForNode(node);
+    }
+    else node.coordinatorAgentVersion = version;
+  }
+
+  /** One-shot fetch + apply for the synthesizer's declared outputs. Called when the author
+   *  picks a synthesizer for the first time so the node's ports adopt the agent's outputs
+   *  without the author needing to click "Sync from synthesizer". */
+  private fetchAndApplySynthesizerPorts(node: WorkflowEditorNode): void {
+    if (node.kind !== 'Swarm' || !node.synthesizerAgentKey) return;
+    const request$ = node.synthesizerAgentVersion && node.synthesizerAgentVersion > 0
+      ? this.agentsApi.getVersion(node.synthesizerAgentKey, node.synthesizerAgentVersion)
+      : this.agentsApi.getLatest(node.synthesizerAgentKey);
+    request$.subscribe({
+      next: version => {
+        const declared = version.config?.outputs;
+        if (!declared || declared.length === 0) return;
+        const portNames = declared.map(d => d.kind).filter(n => typeof n === 'string' && n.length > 0);
+        if (portNames.length === 0) return;
+        this.applyNodePorts(node, portNames);
+      },
+      error: () => { /* best-effort; existing ports stay in place */ }
+    });
+  }
+
+  onSwarmTokenBudgetChanged(node: WorkflowEditorNode, value: number | null): void {
+    if (value === null || value === undefined) {
+      node.swarmTokenBudget = null;
+      return;
+    }
+    const floored = Math.floor(value);
+    node.swarmTokenBudget = floored > 0 ? floored : null;
+  }
+
   onTransformPreviewFixtureChanged(value: string): void {
     this.transformPreviewFixture.set(value);
     this.scheduleTransformPreview();
@@ -3112,6 +3452,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (!target) return;
     this.selectedNodeId.set(target.id);
     this.loadAgentDocsForNode(target);
+    this.loadSynthesizerDocsForNode(target);
     AreaExtensions.zoomAt(this.area, [target]);
   }
 

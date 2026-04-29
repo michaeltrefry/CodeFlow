@@ -64,8 +64,12 @@ public static class AssistantSystemPrompt
           inherited onto the Subflow node.
         - **ReviewLoop (R)** — a specialized subflow that bounds a review/refine cycle (max
           iterations + verdict ports). Child output ports are inherited the same way.
-        - **Swarm** — runs N agents over the same input; v1 ships the Sequential protocol from
-          arxiv:2603.28990 (each agent sees prior agents' outputs); non-replayable.
+        - **Swarm** — fans out to N contributor agents under a chosen protocol, then a
+          synthesizer agent emits the node's terminal output. Two protocols ship: `Sequential`
+          (each contributor sees prior contributors' drafts and self-selects a role; n+1 LLM
+          calls) and `Coordinator` (a coordinator agent runs first to plan + assign roles, then
+          n workers run in parallel, then the synthesizer; n+2 LLM calls). Non-replayable.
+          See "Swarm node" below for the full configuration shape.
         - **Transform (T)** — pure data transformation, runs the configured script with no LLM
           call; useful for shaping data between nodes.
         - **Logic (L)** — a routing-only node that runs a script to choose the next port without
@@ -85,6 +89,55 @@ public static class AssistantSystemPrompt
         and write workflow-scoped state. Threading large content through workflow globals via
         scripts is the recommended pattern — agent tool calls that try to push big payloads
         through `setGlobal` arguments overflow the LLM's token budget.
+
+        ## Swarm node
+        Source: `docs/swarm-node.md` is the canonical contract; arxiv:2603.28990 is the
+        underlying paper.
+
+        The Swarm node fans LLM work out to N contributor agents under one of two protocols
+        and aggregates their drafts through a synthesizer agent. Contributor / synthesizer /
+        (optional) coordinator agents are standard `AgentRole` definitions referenced by
+        `key + version`.
+
+        **Protocols (closed enum, author-selectable per node):**
+        - `Sequential` — contributors run one at a time, each seeing prior contributors'
+          outputs. The paper's headline result; contributors self-select roles per task.
+          n+1 LLM calls (n contributors + 1 synthesizer).
+        - `Coordinator` — a coordinator agent runs first with the mission and `swarmMaxN`,
+          returns ≤N assignments, then n workers run *in parallel* with their assignments,
+          then the synthesizer fuses all contributions. n+2 LLM calls.
+
+        **Required configuration fields (always):**
+        - `protocol`: `"Sequential"` or `"Coordinator"`.
+        - `n`: integer in `[1, 16]`. Sequential: number of contributors. Coordinator: max
+          workers (the coordinator may pick fewer).
+        - `contributorAgentKey` + `contributorAgentVersion`: the agent role used at every
+          contributor / worker position. One role, reused; per-position differentiation comes
+          from priors / assignments fed into the prompt template, not separate roles.
+        - `synthesizerAgentKey` + `synthesizerAgentVersion`: agent role for the final
+          synthesis. Runs once after all contributors complete.
+        - `outputPorts[]`: at least one port. Authoring default is `["Synthesized"]`; the
+          editor derives port names from the synthesizer agent's declared `outputs` once one
+          is picked.
+
+        **Coordinator-only:**
+        - `coordinatorAgentKey` + `coordinatorAgentVersion`: agent role that runs first in
+          Coordinator mode. Validator REJECTS save if Coordinator and these are null; REJECTS
+          save if Sequential and these are non-null. The two protocols are mutually exclusive
+          on this field pair.
+
+        **Optional:**
+        - `swarmTokenBudget`: integer (>0) cap on cumulative swarm-internal LLM tokens
+          (input + output, summed across coordinator + workers + synthesizer). Null = unbounded.
+        - `outputScript`: applies to the synthesizer's terminal output, same as on Agent nodes.
+
+        **Pinned versions are mandatory.** All three agent-version fields (contributor,
+        synthesizer, coordinator-when-set) must be pinned integers. Latest-version resolution
+        happens at parent-workflow save time — never leave them blank in a package.
+
+        **Non-replayable.** Replay-with-Edit re-executes a Swarm node fresh on replay; you
+        cannot substitute prior contributor outputs. This is a node-kind-level property — no
+        per-instance override.
 
         ## Workflow templates and packages
         - **Workflow templates** are seeded starter shapes the user materializes into a real
@@ -175,6 +228,18 @@ public static class AssistantSystemPrompt
         (`{ fromNodeId, fromPort, toNodeId, toPort, rotatesRound, sortOrder }`), and `inputs[]`.
         Node `kind` is one of `Agent`, `Hitl`, `Subflow`, `ReviewLoop`, `Swarm`, `Transform`,
         `Logic`. Node `id` is a fresh GUID per node.
+
+        Kind-specific node fields:
+        - `Subflow` / `ReviewLoop`: `subflowKey`, `subflowVersion`, plus `reviewMaxRounds`
+          and `loopDecision` for ReviewLoop.
+        - `Transform`: `template` (Scriban), `outputType` (`"string"` or `"json"`).
+        - `Swarm`: `swarmProtocol` (`"Sequential"` | `"Coordinator"`), `swarmN` (1..16),
+          `contributorAgentKey` + `contributorAgentVersion`, `synthesizerAgentKey` +
+          `synthesizerAgentVersion`, and — only when `swarmProtocol` is `"Coordinator"` —
+          `coordinatorAgentKey` + `coordinatorAgentVersion` (omit / null on Sequential).
+          Optional `swarmTokenBudget` (>0 when set, null for unbounded). Default
+          `outputPorts: ["Synthesized"]` if you don't have synthesizer output info; otherwise
+          mirror the synthesizer agent's declared outputs (excluding `Failed`).
 
         ## Self-containment rule (hard)
         Workflow packages must include every referenced entity at its existing version. The

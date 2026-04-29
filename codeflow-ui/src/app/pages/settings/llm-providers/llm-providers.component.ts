@@ -3,6 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { LlmProvidersApi } from '../../../core/llm-providers.api';
 import {
+  AssistantSettingsResponse,
   LLM_PROVIDER_KEYS,
   LlmProviderKey,
   LlmProviderResponse,
@@ -12,6 +13,17 @@ import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
 import { ChipComponent } from '../../../ui/chip.component';
 import { CardComponent } from '../../../ui/card.component';
+
+interface AssistantSettingsState {
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  provider: LlmProviderKey | '';
+  model: string;
+  maxTokensPerConversation: number | null;
+  updatedBy: string | null;
+  updatedAtUtc: string | null;
+}
 
 interface ProviderFormState {
   provider: LlmProviderKey;
@@ -73,6 +85,73 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
             <div class="trace-failure"><strong>Couldn't load current settings:</strong> {{ loadError() }}</div>
           </cf-card>
         }
+        <cf-card title="Assistant defaults">
+          <p class="muted small" style="margin-top: 0">
+            Defaults the homepage and sidebar assistant use when starting a fresh conversation.
+            Each conversation can override provider/model in the chat composer; this row sets the
+            initial selection and the per-conversation cumulative-token cap.
+          </p>
+          <form (submit)="saveAssistantSettings($event)">
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">Default provider</span>
+                <select class="input"
+                        [ngModel]="assistant().provider"
+                        (ngModelChange)="patchAssistant({ provider: $event, model: '' })"
+                        name="assistant_provider">
+                  <option value="">— Use first configured —</option>
+                  @for (p of LLM_PROVIDER_KEYS; track p) {
+                    <option [value]="p">{{ providerDisplayName(p) }}</option>
+                  }
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Default model</span>
+                <select class="input mono"
+                        [ngModel]="assistant().model"
+                        (ngModelChange)="patchAssistant({ model: $event })"
+                        name="assistant_model"
+                        [disabled]="!assistant().provider">
+                  <option value="">— Use first listed model —</option>
+                  @for (m of assistantModelOptions(); track m) {
+                    <option [value]="m">{{ m }}</option>
+                  }
+                </select>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">
+                  Max tokens per conversation
+                  <span class="muted small">(0 or empty = uncapped)</span>
+                </span>
+                <input class="input mono" type="number" min="0" step="1000"
+                       [ngModel]="assistant().maxTokensPerConversation ?? ''"
+                       (ngModelChange)="patchAssistant({ maxTokensPerConversation: parseCap($event) })"
+                       name="assistant_max_tokens"
+                       placeholder="200000" />
+                <span class="field-hint">
+                  Cumulative input + output tokens captured against a single conversation. When
+                  exceeded, the assistant refuses further turns until the user starts a new conversation.
+                </span>
+              </label>
+            </div>
+            @if (assistant().error) {
+              <div class="trace-failure"><strong>Save failed:</strong> {{ assistant().error }}</div>
+            }
+            <div class="row" style="margin-top: 14px; justify-content: space-between; align-items: center">
+              <span class="muted small">
+                @if (assistant().updatedAtUtc) {
+                  Last updated {{ assistant().updatedAtUtc | date:'medium' }}
+                  @if (assistant().updatedBy) { by {{ assistant().updatedBy }} }
+                } @else {
+                  Never saved
+                }
+              </span>
+              <button type="submit" cf-button variant="primary" [disabled]="assistant().saving">
+                {{ assistant().saving ? 'Saving…' : 'Save' }}
+              </button>
+            </div>
+          </form>
+        </cf-card>
         @for (state of providers(); track state.provider) {
           <cf-card [title]="state.displayName">
             <form (submit)="save($event, state)">
@@ -200,8 +279,81 @@ export class LlmProvidersComponent implements OnInit {
   protected readonly loading = signal(true);
   protected readonly loadError = signal<string | null>(null);
 
+  // HAA-15 — Assistant defaults card state. Loads in parallel with providers.
+  protected readonly assistant = signal<AssistantSettingsState>({
+    loading: true,
+    saving: false,
+    error: null,
+    provider: '',
+    model: '',
+    maxTokensPerConversation: null,
+    updatedBy: null,
+    updatedAtUtc: null,
+  });
+  protected readonly LLM_PROVIDER_KEYS = LLM_PROVIDER_KEYS;
+  protected readonly assistantModelOptions = computed<string[]>(() => {
+    const providerKey = this.assistant().provider;
+    if (!providerKey) return [];
+    const provider = this.providers().find(p => p.provider === providerKey);
+    return provider?.models ?? [];
+  });
+
   ngOnInit(): void {
     this.load();
+    this.loadAssistantSettings();
+  }
+
+  protected providerDisplayName(key: LlmProviderKey): string {
+    return PROVIDER_META[key].displayName;
+  }
+
+  protected patchAssistant(patch: Partial<AssistantSettingsState>): void {
+    this.assistant.update(s => ({ ...s, ...patch }));
+  }
+
+  protected parseCap(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.floor(n);
+  }
+
+  protected saveAssistantSettings(event: Event): void {
+    event.preventDefault();
+    const current = this.assistant();
+    this.patchAssistant({ saving: true, error: null });
+
+    this.api.setAssistantSettings({
+      provider: current.provider || null,
+      model: current.model || null,
+      maxTokensPerConversation: current.maxTokensPerConversation,
+    }).subscribe({
+      next: response => this.applyAssistantResponse(response),
+      error: err => this.patchAssistant({ saving: false, error: this.formatError(err) }),
+    });
+  }
+
+  private loadAssistantSettings(): void {
+    this.api.getAssistantSettings().subscribe({
+      next: response => this.applyAssistantResponse(response),
+      // Soft-fail: leave the form in its empty defaults so the operator can still save fresh
+      // values; banner above the providers card already covers the load-error case for the
+      // page as a whole.
+      error: () => this.patchAssistant({ loading: false }),
+    });
+  }
+
+  private applyAssistantResponse(response: AssistantSettingsResponse): void {
+    this.assistant.set({
+      loading: false,
+      saving: false,
+      error: null,
+      provider: (response.provider ?? '') as LlmProviderKey | '',
+      model: response.model ?? '',
+      maxTokensPerConversation: response.maxTokensPerConversation ?? null,
+      updatedBy: response.updatedBy ?? null,
+      updatedAtUtc: response.updatedAtUtc ?? null,
+    });
   }
 
   protected patch(state: ProviderFormState, patch: Partial<ProviderFormState>): void {

@@ -51,6 +51,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<AssistantMessageEntity> AssistantMessages => Set<AssistantMessageEntity>();
 
+    public DbSet<AssistantSettingsEntity> AssistantSettings => Set<AssistantSettingsEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

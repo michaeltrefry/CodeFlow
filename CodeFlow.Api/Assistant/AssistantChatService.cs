@@ -17,6 +17,7 @@ namespace CodeFlow.Api.Assistant;
 /// </summary>
 public sealed class AssistantChatService(
     IAssistantConversationRepository conversations,
+    IAssistantSettingsResolver settingsResolver,
     ICodeFlowAssistant assistant,
     ITokenUsageRecordRepository tokenUsageRepository,
     IPublishEndpoint publishEndpoint,
@@ -27,12 +28,28 @@ public sealed class AssistantChatService(
         Guid conversationId,
         string userContent,
         AssistantPageContext? pageContext = null,
+        string? overrideProvider = null,
+        string? overrideModel = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userContent);
 
         var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken)
             ?? throw new InvalidOperationException($"Assistant conversation '{conversationId}' does not exist.");
+
+        // HAA-15 — Enforce the per-conversation cumulative-token cap before persisting the user
+        // message so the user gets a clear refusal instead of a half-stored prompt and a silent
+        // dead-end. We deliberately swallow resolver failures here — the cap is a soft guardrail,
+        // and a real configuration error will surface in <see cref="ICodeFlowAssistant.AskAsync"/>
+        // below with the actual provider name in the message.
+        var cap = await TryReadConversationCapAsync(overrideProvider, overrideModel, cancellationToken);
+        if (cap is { } capValue
+            && conversation.InputTokensTotal + conversation.OutputTokensTotal >= capValue)
+        {
+            yield return new TurnFailed(
+                $"This conversation has hit the {capValue:N0}-token limit. Start a new conversation to continue.");
+            yield break;
+        }
 
         var userMessage = await conversations.AppendMessageAsync(
             conversationId,
@@ -57,11 +74,22 @@ public sealed class AssistantChatService(
         var contentBuffer = new StringBuilder();
         string? finalProvider = null;
         string? finalModel = null;
+        // Track cumulative totals locally so the frontend gets a live tally without reading back
+        // from the DB. Seeded with the persisted totals already on the conversation entity.
+        var inputTotal = conversation.InputTokensTotal;
+        var outputTotal = conversation.OutputTokensTotal;
         // HAA-6 demo mode: anonymous homepage conversations get no tool access — system-prompt
         // knowledge only. The conversation's UserId carries the marker (anon: prefix); the
         // resolver gives us a single source of truth.
         var toolPolicy = userResolver.IsDemoUser(conversation.UserId) ? ToolAccessPolicy.NoTools : null;
-        var enumerator = assistant.AskAsync(userContent, historyForLlm, toolPolicy, pageContext, cancellationToken)
+        var enumerator = assistant.AskAsync(
+                userContent,
+                historyForLlm,
+                toolPolicy,
+                pageContext,
+                overrideProvider,
+                overrideModel,
+                cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 
         try
@@ -128,7 +156,17 @@ public sealed class AssistantChatService(
                                 RecordedAtUtc: record.RecordedAtUtc,
                                 Usage: record.Usage),
                             cancellationToken);
-                        yield return new TokenUsageEmitted(record);
+
+                        // HAA-17 — extract input/output deltas from the provider-shape payload and
+                        // persist a running total on the conversation entity so the live chip + the
+                        // cap enforcement above don't have to re-aggregate every turn.
+                        var (inputDelta, outputDelta) = ExtractInputOutputTokens(usage.Usage);
+                        var totals = await conversations.AddTokenUsageAsync(
+                            conversationId, inputDelta, outputDelta, cancellationToken);
+                        inputTotal = totals.InputTokensTotal;
+                        outputTotal = totals.OutputTokensTotal;
+
+                        yield return new TokenUsageEmitted(record, inputTotal, outputTotal);
                         break;
 
                     case AssistantTurnDone done:
@@ -166,6 +204,50 @@ public sealed class AssistantChatService(
 
         yield return new AssistantMessagePersisted(assistantMessage);
     }
+
+    /// <summary>
+    /// HAA-15 — best-effort lookup of the admin-configured cap. Swallows resolver failures so a
+    /// missing provider configuration doesn't block the chat service from delegating to a
+    /// (possibly stubbed) assistant.
+    /// </summary>
+    private async Task<long?> TryReadConversationCapAsync(
+        string? overrideProvider, string? overrideModel, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
+            return config.MaxTokensPerConversation;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pulls the (input, output) integer pair out of a provider-shape usage payload. Anthropic
+    /// uses <c>input_tokens</c>/<c>output_tokens</c>; OpenAI uses <c>prompt_tokens</c>/
+    /// <c>completion_tokens</c>. Anything missing falls back to 0 — the conversation total just
+    /// doesn't move for that turn rather than throwing.
+    /// </summary>
+    private static (long Input, long Output) ExtractInputOutputTokens(JsonElement usage)
+    {
+        if (usage.ValueKind != JsonValueKind.Object)
+        {
+            return (0, 0);
+        }
+
+        var input = TryReadLong(usage, "input_tokens") ?? TryReadLong(usage, "prompt_tokens") ?? 0;
+        var output = TryReadLong(usage, "output_tokens") ?? TryReadLong(usage, "completion_tokens") ?? 0;
+        return (input, output);
+    }
+
+    private static long? TryReadLong(JsonElement obj, string propertyName)
+    {
+        if (!obj.TryGetProperty(propertyName, out var prop)) return null;
+        if (prop.ValueKind != JsonValueKind.Number) return null;
+        return prop.TryGetInt64(out var v) ? v : null;
+    }
 }
 
 public abstract record AssistantTurnEvent;
@@ -174,7 +256,15 @@ public sealed record UserMessagePersisted(AssistantMessage Message) : AssistantT
 
 public sealed record TextDelta(string Delta) : AssistantTurnEvent;
 
-public sealed record TokenUsageEmitted(TokenUsageRecord Record) : AssistantTurnEvent;
+/// <summary>
+/// HAA-17 — emitted after a per-turn token-usage record is persisted. Carries the raw record
+/// (provider-shape <c>Usage</c>) plus the conversation's running totals so the live chip can
+/// update without re-aggregating.
+/// </summary>
+public sealed record TokenUsageEmitted(
+    TokenUsageRecord Record,
+    long ConversationInputTokensTotal,
+    long ConversationOutputTokensTotal) : AssistantTurnEvent;
 
 public sealed record AssistantMessagePersisted(AssistantMessage Message) : AssistantTurnEvent;
 

@@ -24,7 +24,7 @@ describe('streamAssistantTurn', () => {
         'conversation/1',
         'Tell me',
         authWithToken('access-token'),
-        { kind: 'other', route: '/workflows' },
+        { pageContext: { kind: 'other', route: '/workflows' } },
       ),
     );
 

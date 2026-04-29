@@ -5,7 +5,7 @@ CodeFlow is a multi-agent workflow platform for authoring, running, and reviewin
 The current tree includes:
 
 - versioned agent configuration with in-place forking from the workflow editor
-- a visual workflow editor with Agent, Logic, HITL, Subflow, ReviewLoop, and Transform nodes
+- a visual workflow editor with Agent, Logic, HITL, Subflow, ReviewLoop, Transform, and Swarm nodes
 - user-defined output ports plus an implicit `Failed` port on every node
 - per-trace-tree workflow variables (`workflow.*`) and per-trace context (`context.*`)
 - input and output routing scripts on every Agent/HITL/Start node
@@ -115,7 +115,7 @@ CodeFlow is built around a small set of primitives. Most of the recent work has 
 ### Agents, workflows, and traces
 
 - **Agents** are versioned configurations: model/provider, system prompt, prompt template, declared outputs (port names + optional template), tool/skill grants, and partial pins.
-- **Workflows** are versioned directed graphs that route work between Start, Agent, Logic, HITL, Subflow, ReviewLoop, and Transform nodes.
+- **Workflows** are versioned directed graphs that route work between Start, Agent, Logic, HITL, Subflow, ReviewLoop, Transform, and Swarm nodes.
 - **Traces** capture workflow execution: artifacts, decisions, evaluations, HITL pauses, and per-trace working directories.
 
 ### Node kinds
@@ -129,8 +129,9 @@ CodeFlow is built around a small set of primitives. Most of the recent work has 
 | Subflow | Calls a child workflow as a reusable unit. Inherits the child's terminal port set. |
 | ReviewLoop | Specialized subflow with a bounded produce-review-revise loop. Synthesizes `Exhausted`; iterates while the child's terminal port equals the configured `LoopDecision` (default `"Rejected"`). |
 | Transform | Deterministic Scriban template that rewrites the artifact mid-traversal. No agent, no LLM. `outputType: "string" \| "json"`. |
+| Swarm | Fans out to N contributor agents, then a synthesizer agent emits the terminal output. Two protocols ship: `Sequential` (n+1 LLM calls; each contributor sees prior drafts) and `Coordinator` (n+2 LLM calls; coordinator plans + assigns roles, n workers run in parallel). Non-replayable. |
 
-See [docs/workflows.md](./docs/workflows.md) for the full model and [docs/transform-node.md](./docs/transform-node.md) for the Scriban-render-only node.
+See [docs/workflows.md](./docs/workflows.md) for the full model, [docs/transform-node.md](./docs/transform-node.md) for the Scriban-render-only node, and [docs/swarm-node.md](./docs/swarm-node.md) for the Swarm protocol contract.
 
 ### User-defined ports
 
@@ -335,6 +336,7 @@ CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted b
 - [Subflows and workflow composition](./docs/subflows.md)
 - [Review loop design](./docs/review-loop.md)
 - [Transform node](./docs/transform-node.md)
+- [Swarm node — Sequential + Coordinator protocols](./docs/swarm-node.md)
 - [Decision-output templates](./docs/decision-output-templates.md)
 - [Prompt templates (Scriban)](./docs/prompt-templates.md)
 - [Code-aware workflows](./docs/code-aware-workflows.md)

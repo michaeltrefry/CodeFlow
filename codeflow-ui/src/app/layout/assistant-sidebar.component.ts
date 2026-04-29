@@ -1,25 +1,22 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router } from '@angular/router';
+import { filter, map, startWith } from 'rxjs/operators';
 import { ChatPanelComponent } from '../ui/chat';
 import { IconComponent } from '../ui/icon.component';
 import { PageContextService } from '../core/page-context.service';
-import { pageContextToScope } from '../core/page-context';
 import { ThemeService } from '../core/theme.service';
 
 /**
- * HAA-7: Right-rail assistant sidebar. Available across the app, scoped per page.
+ * HAA-7: Right-rail assistant sidebar. Available across the app.
  *
- * Reads {@link PageContextService} to resolve the current page's context, derives an
- * `AssistantScope` via {@link pageContextToScope}, and mounts the HAA-2 chat panel keyed by
- * that scope. Switching from trace A to trace B remounts the chat against a different
- * conversation; returning to A resumes the original via the backend's `(userId, scopeKey)`
- * keying. Collapsed/expanded state persists per-user via {@link ThemeService}.
+ * Reads {@link PageContextService} to resolve the current page's context, but keeps the chat
+ * mounted against the global homepage conversation so a thread started on the home page follows
+ * the user into agents, workflows, traces, and other authoring surfaces. The page context is
+ * still forwarded per turn so the assistant can reason about the current screen.
  *
  * Suppresses itself on the home page — the home page's main pane already mounts the chat in a
- * larger layout, so a parallel sidebar would just show the same conversation twice. Likewise,
- * if the resolved scope is null (currently only `home`), the sidebar renders nothing.
- *
- * HAA-8 will inject PageContext details into the prompt and surface suggestion chips; this
- * slice ships only the surface + scope routing.
+ * larger layout, so a parallel sidebar would just show the same conversation twice.
  */
 @Component({
   selector: 'cf-assistant-sidebar',
@@ -57,7 +54,11 @@ import { ThemeService } from '../core/theme.service';
             <cf-icon name="panelL"></cf-icon>
           </button>
           <div class="sidebar-body">
-            <cf-chat-panel [scope]="resolvedScope" [pageContext]="pageContext.current()" />
+            <cf-chat-panel
+              [scope]="resolvedScope"
+              [pageContext]="pageContext.current()"
+              [conversationIdOverride]="selectedConversationId()"
+            />
           </div>
         }
       </aside>
@@ -139,6 +140,7 @@ import { ThemeService } from '../core/theme.service';
       flex-direction: column;
     }
     .sidebar-body cf-chat-panel {
+      --chat-panel-head-padding-right: 44px;
       flex: 1 1 auto;
       display: flex;
       flex-direction: column;
@@ -150,11 +152,26 @@ import { ThemeService } from '../core/theme.service';
 export class AssistantSidebarComponent {
   protected readonly pageContext = inject(PageContextService);
   protected readonly theme = inject(ThemeService);
+  private readonly router = inject(Router);
+  private readonly url = toSignal(
+    this.router.events.pipe(
+      filter((e): e is NavigationEnd => e instanceof NavigationEnd),
+      map(e => e.urlAfterRedirects),
+      startWith(this.router.url),
+    ),
+    { initialValue: this.router.url },
+  );
 
-  // Resolved scope; null suppresses the entire sidebar (e.g. on /, where the home page's main
-  // pane already shows the assistant chat — no point duplicating it).
-  protected readonly scope = computed(() => pageContextToScope(this.pageContext.current()));
+  // The sidebar shares the home page's assistant conversation across all non-home pages; page
+  // context travels separately through the chat panel's per-turn PageContext input.
+  protected readonly scope = computed(() =>
+    this.pageContext.current().kind === 'home' ? null : { kind: 'homepage' as const },
+  );
   protected readonly collapsed = computed(() => this.theme.assistantSidebarCollapsed());
+  protected readonly selectedConversationId = computed(() => {
+    const value = this.router.parseUrl(this.url()).queryParams['assistantConversation'];
+    return typeof value === 'string' && value ? value : null;
+  });
 
   protected readonly scopeLabel = computed(() => {
     const ctx = this.pageContext.current();

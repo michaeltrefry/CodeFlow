@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260429115740_PreserveAssistantConversationHistory")]
+    partial class PreserveAssistantConversationHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -275,18 +278,6 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("varchar(64)")
                         .HasColumnName("entity_type");
 
-                    b.Property<long>("InputTokensTotal")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("input_tokens_total");
-
-                    b.Property<long>("OutputTokensTotal")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("output_tokens_total");
-
                     b.Property<string>("ScopeKey")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -366,41 +357,6 @@ namespace CodeFlow.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("assistant_messages", (string)null);
-                });
-
-            modelBuilder.Entity("CodeFlow.Persistence.AssistantSettingsEntity", b =>
-                {
-                    b.Property<string>("Key")
-                        .HasMaxLength(32)
-                        .HasColumnType("varchar(32)")
-                        .HasColumnName("key");
-
-                    b.Property<long?>("MaxTokensPerConversation")
-                        .HasColumnType("bigint")
-                        .HasColumnName("max_tokens_per_conversation");
-
-                    b.Property<string>("Model")
-                        .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
-                        .HasColumnName("model");
-
-                    b.Property<string>("Provider")
-                        .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
-                        .HasColumnName("provider");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("updated_at");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Key");
-
-                    b.ToTable("assistant_settings", (string)null);
                 });
 
             modelBuilder.Entity("CodeFlow.Persistence.GitHostSettingsEntity", b =>

@@ -69,6 +69,7 @@ import { ChipComponent } from '../../ui/chip.component';
               <a
                 class="rail-link"
                 [routerLink]="conversationRouteFor(c)"
+                [queryParams]="conversationQueryParamsFor(c)"
                 [attr.data-testid]="'rail-resume-' + c.id">
                 <span class="rail-link-label">{{ conversationLabelFor(c) }}</span>
                 <span class="rail-link-meta mono xs">{{ scopeBadgeFor(c) }} · {{ relativeTime(c.updatedAtUtc) }}</span>
@@ -376,6 +377,10 @@ export class HomeRailComponent implements OnInit {
       default:
         return ['/'];
     }
+  }
+
+  protected conversationQueryParamsFor(c: AssistantConversationSummary): Record<string, string> {
+    return { assistantConversation: c.id };
   }
 
   protected stateVariantFor(state: string): 'ok' | 'warn' | 'err' | 'running' {

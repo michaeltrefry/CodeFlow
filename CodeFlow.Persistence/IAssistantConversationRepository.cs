@@ -7,6 +7,14 @@ public interface IAssistantConversationRepository
         AssistantConversationScope scope,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Creates a fresh conversation for the user and scope even when older conversations exist.
+    /// </summary>
+    Task<AssistantConversation> CreateAsync(
+        string userId,
+        AssistantConversationScope scope,
+        CancellationToken cancellationToken = default);
+
     Task<AssistantConversation?> GetByIdAsync(
         Guid conversationId,
         CancellationToken cancellationToken = default);
@@ -43,4 +51,18 @@ public interface IAssistantConversationRepository
         string userId,
         int limit,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// HAA-17 — Atomically increment the conversation's cumulative input/output token totals
+    /// and return the new totals. Called once per captured <c>TokenUsageRecord</c> so the live
+    /// chip + the per-conversation cap have a cheap, persisted source of truth without
+    /// re-aggregating every turn. Negative deltas are clamped to zero.
+    /// </summary>
+    Task<AssistantConversationTokenTotals> AddTokenUsageAsync(
+        Guid conversationId,
+        long inputTokensDelta,
+        long outputTokensDelta,
+        CancellationToken cancellationToken = default);
 }
+
+public sealed record AssistantConversationTokenTotals(long InputTokensTotal, long OutputTokensTotal);

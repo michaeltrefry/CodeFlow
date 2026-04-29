@@ -34,6 +34,108 @@ describe('labelFor', () => {
 });
 
 describe('serializeEditor', () => {
+  it('round-trips Sequential Swarm config and suppresses coordinator fields', () => {
+    const sequentialSwarm = editorNode({
+      id: 'rete-swarm-seq',
+      nodeId: 'swarm-seq',
+      kind: 'Swarm',
+      outputPortNames: ['Synthesized', IMPLICIT_FAILED_PORT],
+      swarmProtocol: 'Sequential',
+      swarmN: 4,
+      contributorAgentKey: 'contrib',
+      contributorAgentVersion: 2,
+      synthesizerAgentKey: 'synth',
+      synthesizerAgentVersion: 1,
+      // Set on the editor model — serializer must drop these on Sequential
+      // because the validator rejects coordinator fields outside the Coordinator protocol.
+      coordinatorAgentKey: 'leftover-coord',
+      coordinatorAgentVersion: 9,
+      swarmTokenBudget: 5000,
+    });
+    const editor = fakeEditor([sequentialSwarm], []);
+    const area = fakeArea([['rete-swarm-seq', { x: 100, y: 100 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'swarm-flow', name: 'Swarm Flow', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      id: 'swarm-seq',
+      kind: 'Swarm',
+      swarmProtocol: 'Sequential',
+      swarmN: 4,
+      contributorAgentKey: 'contrib',
+      contributorAgentVersion: 2,
+      synthesizerAgentKey: 'synth',
+      synthesizerAgentVersion: 1,
+      coordinatorAgentKey: null,
+      coordinatorAgentVersion: null,
+      swarmTokenBudget: 5000,
+      outputPorts: ['Synthesized'],
+    }));
+  });
+
+  it('round-trips Coordinator Swarm config including coordinator fields', () => {
+    const coordinatorSwarm = editorNode({
+      id: 'rete-swarm-coord',
+      nodeId: 'swarm-coord',
+      kind: 'Swarm',
+      outputPortNames: ['Synthesized', IMPLICIT_FAILED_PORT],
+      swarmProtocol: 'Coordinator',
+      swarmN: 6,
+      contributorAgentKey: 'contrib',
+      contributorAgentVersion: 3,
+      synthesizerAgentKey: 'synth',
+      synthesizerAgentVersion: 2,
+      coordinatorAgentKey: 'coord',
+      coordinatorAgentVersion: 4,
+      swarmTokenBudget: null,
+    });
+    const editor = fakeEditor([coordinatorSwarm], []);
+    const area = fakeArea([['rete-swarm-coord', { x: 0, y: 0 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'swarm-flow', name: 'Swarm Flow', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      kind: 'Swarm',
+      swarmProtocol: 'Coordinator',
+      swarmN: 6,
+      coordinatorAgentKey: 'coord',
+      coordinatorAgentVersion: 4,
+      swarmTokenBudget: null,
+    }));
+  });
+
+  it('does not emit swarm fields on non-Swarm node kinds', () => {
+    const agentNode = editorNode({
+      id: 'rete-agent',
+      nodeId: 'agent-1',
+      kind: 'Agent',
+      outputPortNames: ['Approved', IMPLICIT_FAILED_PORT],
+    });
+    const editor = fakeEditor([agentNode], []);
+    const area = fakeArea([['rete-agent', { x: 0, y: 0 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'k', name: 'n', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      kind: 'Agent',
+      swarmProtocol: null,
+      swarmN: null,
+      contributorAgentKey: null,
+      synthesizerAgentKey: null,
+      coordinatorAgentKey: null,
+      swarmTokenBudget: null,
+    }));
+  });
+
   it('filters implicit failed ports and preserves canvas/connection metadata', () => {
     const agentNode = editorNode({
       id: 'rete-agent',
@@ -151,6 +253,15 @@ function editorNode(overrides: Partial<WorkflowEditorNode> & {
     loopDecision: null,
     template: null,
     outputType: 'string',
+    swarmProtocol: null,
+    swarmN: null,
+    contributorAgentKey: null,
+    contributorAgentVersion: null,
+    synthesizerAgentKey: null,
+    synthesizerAgentVersion: null,
+    coordinatorAgentKey: null,
+    coordinatorAgentVersion: null,
+    swarmTokenBudget: null,
     ...overrides,
   } as WorkflowEditorNode;
 }

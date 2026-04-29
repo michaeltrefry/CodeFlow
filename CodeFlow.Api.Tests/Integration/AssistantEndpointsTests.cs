@@ -319,6 +319,67 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task PostNewConversation_PreservesOldThread_AndMakesSameScopeLoadNewest()
+    {
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ok"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "new-chat-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "hello" })
+        };
+        using (var streamResponse = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead))
+        {
+            await streamResponse.Content.ReadAsStringAsync();
+        }
+
+        var replacementResponse = await client.PostAsJsonAsync("/api/assistant/conversations/new", new
+        {
+            scope = new
+            {
+                kind = "entity",
+                entityType = conversation.Scope.EntityType,
+                entityId = conversation.Scope.EntityId
+            }
+        });
+        replacementResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var replacement = await replacementResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        replacement!.Conversation.Id.Should().NotBe(conversation.Id);
+        replacement.Messages.Should().BeEmpty();
+        replacement.Conversation.Scope.EntityType.Should().Be(conversation.Scope.EntityType);
+        replacement.Conversation.Scope.EntityId.Should().Be(conversation.Scope.EntityId);
+
+        var oldFetch = await client.GetAsync($"/api/assistant/conversations/{conversation.Id}");
+        oldFetch.StatusCode.Should().Be(HttpStatusCode.OK);
+        var oldPayload = await oldFetch.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        oldPayload!.Messages.Should().NotBeEmpty();
+
+        var latestResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new
+            {
+                kind = "entity",
+                entityType = conversation.Scope.EntityType,
+                entityId = conversation.Scope.EntityId
+            }
+        });
+        var latest = await latestResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        latest!.Conversation.Id.Should().Be(replacement.Conversation.Id);
+    }
+
+    [Fact]
     public async Task PostMessage_WithPageContext_FlowsPageContextToAssistant()
     {
         // HAA-8: clients send a per-turn PageContext snapshot describing what the user is
@@ -586,15 +647,25 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         /// </summary>
         public AssistantPageContext? LastPageContext { get; private set; }
 
+        /// <summary>HAA-16 — captures the per-call provider override so tests can assert plumbing.</summary>
+        public string? LastOverrideProvider { get; private set; }
+
+        /// <summary>HAA-16 — captures the per-call model override so tests can assert plumbing.</summary>
+        public string? LastOverrideModel { get; private set; }
+
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
             CodeFlow.Runtime.ToolAccessPolicy? toolPolicy = null,
             AssistantPageContext? pageContext = null,
+            string? overrideProvider = null,
+            string? overrideModel = null,
             CancellationToken cancellationToken = default)
         {
             LastToolPolicy = toolPolicy;
             LastPageContext = pageContext;
+            LastOverrideProvider = overrideProvider;
+            LastOverrideModel = overrideModel;
             foreach (var item in reply)
             {
                 yield return item;
