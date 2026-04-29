@@ -157,18 +157,39 @@ type ThreadEntry =
         [disabled]="!conversationId() || !!loadFailed()"
         (send)="sendMessage($event)"
         (cancel)="cancelTurn()"
-      />
+      >
+        @if (layout() === 'wide') {
+          <cf-chat-toolbar
+            class="composer-inline-selectors"
+            displayMode="selectors-only"
+            chromeless
+            [models]="availableModels()"
+            [provider]="selectedProvider()"
+            [model]="selectedModel()"
+            [disabled]="streaming() || loading() || !conversationId()"
+            (selectionChanged)="onSelectionChanged($event)"
+          />
+        }
+        <cf-chat-toolbar
+          class="composer-inline-tokens"
+          displayMode="tokens-only"
+          chromeless
+          [inputTokens]="conversationInputTokens()"
+          [outputTokens]="conversationOutputTokens()"
+          [cap]="conversationCap()"
+        />
+      </cf-chat-composer>
 
-      <cf-chat-toolbar
-        [models]="availableModels()"
-        [provider]="selectedProvider()"
-        [model]="selectedModel()"
-        [inputTokens]="conversationInputTokens()"
-        [outputTokens]="conversationOutputTokens()"
-        [cap]="conversationCap()"
-        [disabled]="streaming() || loading() || !conversationId()"
-        (selectionChanged)="onSelectionChanged($event)"
-      />
+      @if (layout() === 'compact') {
+        <cf-chat-toolbar
+          displayMode="selectors-only"
+          [models]="availableModels()"
+          [provider]="selectedProvider()"
+          [model]="selectedModel()"
+          [disabled]="streaming() || loading() || !conversationId()"
+          (selectionChanged)="onSelectionChanged($event)"
+        />
+      }
     </section>
   `,
   styles: [`
@@ -341,6 +362,16 @@ type ThreadEntry =
     cf-chat-composer {
       flex: 0 0 auto;
     }
+    .composer-inline-selectors {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: block;
+    }
+    .composer-inline-tokens {
+      flex: 0 0 auto;
+      margin-left: auto;
+      display: block;
+    }
     .chat-chip {
       appearance: none;
       background: var(--surface, #131519);
@@ -408,6 +439,14 @@ export class ChatPanelComponent {
 
   /** Optional explicit conversation to load instead of the latest conversation for the scope. */
   readonly conversationIdOverride = input<string | null>(null);
+
+  /**
+   * Layout flavor. 'wide' inlines the provider/model selectors and the live token chip into the
+   * composer's send-button row (used by the homepage main pane where horizontal space is plenty).
+   * 'compact' (the default) keeps the selectors in a dedicated strip below the composer and only
+   * inlines the token chip — fits the right-rail sidebar width without wrapping.
+   */
+  readonly layout = input<'wide' | 'compact'>('compact');
 
   @ViewChild('threadEl') private threadRef?: ElementRef<HTMLDivElement>;
 

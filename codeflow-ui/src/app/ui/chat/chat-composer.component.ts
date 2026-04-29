@@ -20,6 +20,7 @@ import { ButtonComponent } from '../button.component';
         aria-label="Chat input"
       ></textarea>
       <div class="composer-actions">
+        <span class="composer-actions-extras"><ng-content></ng-content></span>
         @if (busy) {
           <cf-button variant="ghost" size="sm" type="button" (click)="cancel.emit()">
             Cancel
@@ -64,8 +65,15 @@ import { ButtonComponent } from '../button.component';
     }
     .composer-actions {
       display: flex;
-      justify-content: flex-end;
+      align-items: center;
       gap: 6px;
+    }
+    .composer-actions-extras {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
     }
   `],
 })

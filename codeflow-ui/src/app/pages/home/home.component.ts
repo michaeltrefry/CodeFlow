@@ -33,6 +33,7 @@ import { HomeRailComponent } from './home-rail.component';
         <cf-chat-panel
           [scope]="{ kind: 'homepage' }"
           [conversationIdOverride]="selectedConversationId()"
+          layout="wide"
         />
       </section>
       <aside class="home-rail" aria-label="Homepage rail">
