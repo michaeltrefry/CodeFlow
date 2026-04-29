@@ -9,7 +9,7 @@ import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { TracesApi } from '../../core/traces.api';
-import { CreateTraceRequest } from '../../core/models';
+import { CreateTraceRequest, ReplayRequest } from '../../core/models';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
@@ -19,6 +19,9 @@ const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
 
 /** HAA-11: name of the assistant tool whose preview-ok result triggers a Run confirmation chip. */
 const RUN_WORKFLOW_TOOL = 'run_workflow';
+
+/** HAA-13: name of the assistant tool whose preview-ok result triggers a Replay confirmation chip. */
+const PROPOSE_REPLAY_WITH_EDIT_TOOL = 'propose_replay_with_edit';
 
 interface PendingAssistantTurn {
   /** The assistant message-id assigned by the server once it persists; null while streaming. */
@@ -204,6 +207,13 @@ export class ChatPanelComponent {
    */
   private readonly pendingRuns = new Map<string, CreateTraceRequest>();
 
+  /**
+   * HAA-13: per-tool-call cache of the replay-with-edit request the LLM proposed via
+   * `propose_replay_with_edit`. Carries both the original trace id (for the URL) and the
+   * `ReplayRequest` body the chat-panel POSTs to /api/traces/{id}/replay on confirm.
+   */
+  private readonly pendingReplays = new Map<string, { originalTraceId: string; request: ReplayRequest }>();
+
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
 
@@ -343,6 +353,7 @@ export class ChatPanelComponent {
     this.toolCalls.set([]);
     this.pendingSaves.clear();
     this.pendingRuns.clear();
+    this.pendingReplays.clear();
   }
 
   /**
@@ -357,6 +368,8 @@ export class ChatPanelComponent {
       this.applySaveConfirmation(toolCallId);
     } else if (kind === 'run_workflow') {
       this.applyRunConfirmation(toolCallId);
+    } else if (kind === 'propose_replay_with_edit') {
+      this.applyReplayConfirmation(toolCallId);
     }
   }
 
@@ -364,6 +377,7 @@ export class ChatPanelComponent {
   protected onCancelToolCall(toolCallId: string): void {
     this.pendingSaves.delete(toolCallId);
     this.pendingRuns.delete(toolCallId);
+    this.pendingReplays.delete(toolCallId);
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'cancelled' }));
   }
 
@@ -389,6 +403,50 @@ export class ChatPanelComponent {
           ...c,
           state: 'success',
           applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
+        }));
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: formatError(err),
+        }));
+      },
+    });
+  }
+
+  /**
+   * HAA-13: POSTs the cached replay request to /api/traces/{id}/replay (TracesRead under the
+   * logged-in user; the replay is read-only on the original saga). Surfaces the replay's
+   * terminal state + a deep link to the trace inspector's Replay-with-Edit panel.
+   */
+  private applyReplayConfirmation(toolCallId: string): void {
+    const cached = this.pendingReplays.get(toolCallId);
+    if (!cached) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Replay request payload missing — ask the assistant to propose the replay again.',
+      }));
+      return;
+    }
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.tracesApi.replay(cached.originalTraceId, cached.request).subscribe({
+      next: result => {
+        this.pendingReplays.delete(toolCallId);
+        // The replay endpoint returns 200 even when the replay finished as Failed / DriftRefused
+        // / StepLimitExceeded — those are *replay outcomes*, not HTTP errors. Surface them on
+        // the success banner with the right verbiage; the deep link is always usable so the
+        // user can review the timeline regardless.
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'success',
+          applied: {
+            kind: 'replay',
+            originalTraceId: result.originalTraceId,
+            replayState: result.replayState,
+            replayTerminalPort: result.replayTerminalPort,
+          },
         }));
       },
       error: err => {
@@ -487,6 +545,11 @@ export class ChatPanelComponent {
             if (req) {
               this.pendingRuns.set(evt.id, req);
             }
+          } else if (evt.name === PROPOSE_REPLAY_WITH_EDIT_TOOL) {
+            const cached = toReplayRequestCached(evt.arguments as Record<string, unknown>);
+            if (cached) {
+              this.pendingReplays.set(evt.id, cached);
+            }
           }
         }
         this.toolCalls.update(list => [...list, {
@@ -507,6 +570,8 @@ export class ChatPanelComponent {
             confirmation = buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id));
           } else if (evt.name === RUN_WORKFLOW_TOOL) {
             confirmation = buildRunConfirmationView(evt.result, this.pendingRuns.get(evt.id));
+          } else if (evt.name === PROPOSE_REPLAY_WITH_EDIT_TOOL) {
+            confirmation = buildReplayConfirmationView(evt.result, this.pendingReplays.get(evt.id));
           }
         }
         this.toolCalls.update(list => list.map(card =>
@@ -680,6 +745,83 @@ function toCreateTraceRequest(args: Record<string, unknown>): CreateTraceRequest
     req.inputs = args['inputs'] as Record<string, unknown>;
   }
   return req;
+}
+
+/**
+ * HAA-13: when the assistant's `propose_replay_with_edit` tool returns `preview_ok`, build the
+ * chip view-model. The chip prompt names the trace + edit count + an opt-in to "force replay
+ * past hard drift" hint when the call args set `force: true`. The replay itself happens when
+ * the user confirms (POST /api/traces/{id}/replay) using the cached `ReplayRequest`.
+ */
+function buildReplayConfirmationView(
+  resultJson: string,
+  cached: { originalTraceId: string; request: ReplayRequest } | undefined,
+): ChatToolCallView['confirmation'] | undefined {
+  let parsed: {
+    status?: unknown;
+    workflowKey?: unknown;
+    edits?: Array<{ agentKey?: unknown; ordinal?: unknown }>;
+    force?: unknown;
+  } | null = null;
+  try {
+    parsed = JSON.parse(resultJson);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || parsed.status !== 'preview_ok' || !cached) {
+    return undefined;
+  }
+
+  const editCount = Array.isArray(parsed.edits) ? parsed.edits.length : 0;
+  const workflowPart = typeof parsed.workflowKey === 'string' ? ` ${parsed.workflowKey}` : '';
+  const editsPart = editCount === 1 ? '1 edit' : `${editCount} edits`;
+  const forcePart = parsed.force === true ? ' (force past drift)' : '';
+  const prompt = `Replay${workflowPart} with ${editsPart}${forcePart}?`;
+
+  return {
+    kind: 'propose_replay_with_edit',
+    prompt,
+    confirmLabel: 'Replay',
+    cancelLabel: 'Cancel',
+    state: 'idle',
+  };
+}
+
+/**
+ * HAA-13: parse a `propose_replay_with_edit` tool-call's structured arguments into the cached
+ * `ReplayRequest` shape `TracesApi.replay()` expects, paired with the original trace id (used
+ * for the URL). Returns null if `traceId` / `edits` aren't present.
+ */
+function toReplayRequestCached(
+  args: Record<string, unknown>,
+): { originalTraceId: string; request: ReplayRequest } | null {
+  const traceId = typeof args['traceId'] === 'string' ? (args['traceId'] as string) : '';
+  const edits = Array.isArray(args['edits']) ? (args['edits'] as Array<Record<string, unknown>>) : [];
+  if (!traceId || edits.length === 0) {
+    return null;
+  }
+
+  const mapped = edits.map(e => ({
+    agentKey: typeof e['agentKey'] === 'string' ? (e['agentKey'] as string) : '',
+    ordinal: typeof e['ordinal'] === 'number' ? (e['ordinal'] as number) : 0,
+    decision: typeof e['decision'] === 'string' ? (e['decision'] as string) : null,
+    output: typeof e['output'] === 'string' ? (e['output'] as string) : null,
+    payload: e['payload'] ?? null,
+  }));
+
+  const request: ReplayRequest = {
+    edits: mapped.filter(e => e.agentKey && e.ordinal > 0),
+  };
+  if (args['force'] === true) request.force = true;
+  if (typeof args['workflowVersionOverride'] === 'number') {
+    request.workflowVersionOverride = args['workflowVersionOverride'] as number;
+  }
+  if (request.edits!.length === 0) {
+    return null;
+  }
+
+  return { originalTraceId: traceId, request };
 }
 
 function stringifyArgs(args: unknown): string {

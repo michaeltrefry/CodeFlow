@@ -137,6 +137,10 @@ public static class ApiServiceCollectionExtensions
         // with anomaly heuristics applied server-side. Read-only; no chip.
         services.AddScoped<IAssistantTool, DiagnoseTraceTool>();
 
+        // HAA-13: confirmation-gated Replay-with-Edit bridge. Validation-only tool; the UI POSTs
+        // to /api/traces/{id}/replay (DryRunExecutor v4) when the user clicks the Replay chip.
+        services.AddScoped<IAssistantTool, ProposeReplayWithEditTool>();
+
         services.AddScoped<AssistantToolDispatcher>();
 
         return services;

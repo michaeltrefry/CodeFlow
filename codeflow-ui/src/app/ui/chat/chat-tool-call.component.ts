@@ -14,7 +14,7 @@ export type ChatToolCallStatus = 'pending' | 'success' | 'error';
  * domain into the chip primitive.
  */
 export interface ChatToolCallConfirmation {
-  kind: 'save_workflow_package' | 'run_workflow';
+  kind: 'save_workflow_package' | 'run_workflow' | 'propose_replay_with_edit';
   prompt: string;
   confirmLabel?: string;
   cancelLabel?: string;
@@ -27,10 +27,12 @@ export interface ChatToolCallConfirmation {
   /**
    * When state === 'success', the per-tool result payload used to render the success banner.
    * Save: `{ kind: 'workflow', key, version }`. Run: `{ kind: 'trace', traceId }`.
+   * Replay (HAA-13): `{ kind: 'replay', originalTraceId, replayState, replayTerminalPort? }`.
    */
   applied?:
     | { kind: 'workflow'; key: string; version: number }
-    | { kind: 'trace'; traceId: string };
+    | { kind: 'trace'; traceId: string }
+    | { kind: 'replay'; originalTraceId: string; replayState: string; replayTerminalPort?: string | null };
   /** When state === 'error', a human-readable error message. */
   errorMessage?: string;
 }
@@ -103,6 +105,15 @@ export interface ChatToolCallView {
                   @case ('trace') {
                     Started trace
                     <a [href]="'/traces/' + applied.traceId">{{ applied.traceId.slice(0, 8) }}…</a>.
+                  }
+                  @case ('replay') {
+                    Replay {{ replayStateLabel(applied.replayState) }}
+                    @if (applied.replayTerminalPort) {
+                      via <code>{{ applied.replayTerminalPort }}</code>
+                    }
+                    — open the
+                    <a [href]="'/traces/' + applied.originalTraceId">trace inspector</a>
+                    to review or refine in Replay-with-Edit.
                   }
                 }
               </p>
@@ -204,6 +215,21 @@ export class ChatToolCallComponent {
       case 'pending': return 'Running';
       case 'success': return 'Success';
       case 'error':   return 'Error';
+    }
+  }
+
+  /**
+   * HAA-13: humanize the dry-run executor's terminal-state strings for the replay success
+   * banner. Falls through to the raw value if the server adds a state we haven't surfaced yet.
+   */
+  protected replayStateLabel(state: string): string {
+    switch (state) {
+      case 'Completed':           return 'completed';
+      case 'Failed':              return 'failed';
+      case 'HitlReached':         return 'paused at HITL';
+      case 'StepLimitExceeded':   return 'hit the step limit';
+      case 'DriftRefused':        return 'refused due to drift';
+      default:                    return state.toLowerCase();
     }
   }
 
