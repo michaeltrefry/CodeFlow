@@ -66,7 +66,7 @@ public static class AgentsEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         // Resolve partial bodies first so we can both pass them to the renderer and surface any
@@ -377,7 +377,7 @@ public static class AgentsEndpoints
 
         if (exists)
         {
-            return Results.Conflict(new { error = $"Agent with key '{normalizedKey}' already exists. Use PUT to add a new version." });
+            return ApiResults.Conflict($"Agent with key '{normalizedKey}' already exists. Use PUT to add a new version.");
         }
 
         var configJson = request.Config!.Value.GetRawText();
@@ -428,12 +428,12 @@ public static class AgentsEndpoints
 
         if (latest is null)
         {
-            return Results.NotFound(new { error = $"Agent with key '{normalizedKey}' does not exist. Use POST to create it." });
+            return ApiResults.NotFound($"Agent with key '{normalizedKey}' does not exist. Use POST to create it.");
         }
 
         if (latest.IsRetired)
         {
-            return Results.Conflict(new { error = $"Agent with key '{normalizedKey}' is retired. Create a new agent with a different key." });
+            return ApiResults.Conflict($"Agent with key '{normalizedKey}' is retired. Create a new agent with a different key.");
         }
 
         var configJson = request.Config!.Value.GetRawText();
@@ -459,7 +459,7 @@ public static class AgentsEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         if (string.IsNullOrWhiteSpace(request.SourceKey))
@@ -504,12 +504,12 @@ public static class AgentsEndpoints
 
         if (sourceEntity is null)
         {
-            return Results.NotFound(new { error = $"Agent '{normalizedSourceKey}' v{request.SourceVersion} does not exist." });
+            return ApiResults.NotFound($"Agent '{normalizedSourceKey}' v{request.SourceVersion} does not exist.");
         }
 
         if (sourceEntity.IsRetired)
         {
-            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedSourceKey}' is retired; forking is not allowed." });
+            return ApiResults.UnprocessableEntity($"Agent '{normalizedSourceKey}' is retired; forking is not allowed.");
         }
 
         var configJson = request.Config!.Value.GetRawText();
@@ -546,12 +546,12 @@ public static class AgentsEndpoints
 
         if (fork is null)
         {
-            return Results.NotFound(new { error = $"Agent '{normalizedKey}' does not exist." });
+            return ApiResults.NotFound($"Agent '{normalizedKey}' does not exist.");
         }
 
         if (string.IsNullOrEmpty(fork.ForkedFromKey) || fork.ForkedFromVersion is null)
         {
-            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedKey}' is not a fork." });
+            return ApiResults.UnprocessableEntity($"Agent '{normalizedKey}' is not a fork.");
         }
 
         var originalLatest = await dbContext.Agents
@@ -580,7 +580,7 @@ public static class AgentsEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         var mode = (request.Mode ?? string.Empty).Trim().ToLowerInvariant();
@@ -601,12 +601,12 @@ public static class AgentsEndpoints
 
         if (fork is null)
         {
-            return Results.NotFound(new { error = $"Agent '{normalizedForkKey}' does not exist." });
+            return ApiResults.NotFound($"Agent '{normalizedForkKey}' does not exist.");
         }
 
         if (string.IsNullOrEmpty(fork.ForkedFromKey) || fork.ForkedFromVersion is null)
         {
-            return Results.UnprocessableEntity(new { error = $"Agent '{normalizedForkKey}' is not a fork." });
+            return ApiResults.UnprocessableEntity($"Agent '{normalizedForkKey}' is not a fork.");
         }
 
         string targetKey;
@@ -649,7 +649,7 @@ public static class AgentsEndpoints
 
             if (conflict)
             {
-                return Results.Conflict(new { error = $"Agent with key '{targetKey}' already exists." });
+                return ApiResults.Conflict($"Agent with key '{targetKey}' already exists.");
             }
         }
 
@@ -686,7 +686,7 @@ public static class AgentsEndpoints
         var found = await repository.RetireAsync(normalizedKey, cancellationToken);
         if (!found)
         {
-            return Results.NotFound(new { error = $"Agent with key '{normalizedKey}' does not exist." });
+            return ApiResults.NotFound($"Agent with key '{normalizedKey}' does not exist.");
         }
 
         return Results.Ok(new { key = normalizedKey, isRetired = true });

@@ -89,7 +89,7 @@ public static class SkillsEndpoints
         var existing = await repository.GetByNameAsync(request.Name!, cancellationToken);
         if (existing is not null)
         {
-            return Results.Conflict(new { error = $"Skill with name '{request.Name}' already exists." });
+            return ApiResults.Conflict($"Skill with name '{request.Name}' already exists.");
         }
 
         var id = await repository.CreateAsync(new SkillCreate(
@@ -125,7 +125,7 @@ public static class SkillsEndpoints
         var existing = await repository.GetByNameAsync(request!.Name!, cancellationToken);
         if (existing is not null && existing.Id != id)
         {
-            return Results.Conflict(new { error = $"Skill with name '{request.Name}' already exists." });
+            return ApiResults.Conflict($"Skill with name '{request.Name}' already exists.");
         }
 
         try

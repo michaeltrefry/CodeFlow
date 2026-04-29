@@ -76,7 +76,7 @@ public static class LlmProvidersEndpoints
     {
         if (!LlmProviderKeys.IsKnown(provider))
         {
-            return Results.NotFound(new { error = $"Unknown provider '{provider}'." });
+            return ApiResults.NotFound($"Unknown provider '{provider}'.");
         }
 
         var canonical = LlmProviderKeys.Canonicalize(provider);

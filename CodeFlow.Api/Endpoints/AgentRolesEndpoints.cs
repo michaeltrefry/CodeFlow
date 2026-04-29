@@ -115,7 +115,7 @@ public static class AgentRolesEndpoints
         var existing = await repository.GetByKeyAsync(request.Key!, cancellationToken);
         if (existing is not null)
         {
-            return Results.Conflict(new { error = $"Agent role with key '{request.Key}' already exists." });
+            return ApiResults.Conflict($"Agent role with key '{request.Key}' already exists.");
         }
 
         var id = await repository.CreateAsync(new AgentRoleCreate(

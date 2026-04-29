@@ -87,7 +87,7 @@ public static class WorkflowTemplatesEndpoints
         }
         catch (WorkflowTemplateNotFoundException ex)
         {
-            return Results.NotFound(new { error = ex.Message });
+            return ApiResults.NotFound(ex.Message);
         }
         catch (ArgumentException ex)
         {
