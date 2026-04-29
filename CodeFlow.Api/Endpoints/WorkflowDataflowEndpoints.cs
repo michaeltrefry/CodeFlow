@@ -32,12 +32,8 @@ public static class WorkflowDataflowEndpoints
         IWorkflowDataflowAnalyzer analyzer,
         CancellationToken cancellationToken)
     {
-        Workflow workflow;
-        try
-        {
-            workflow = await workflowRepository.GetAsync(key, version, cancellationToken);
-        }
-        catch (WorkflowNotFoundException)
+        var workflow = await workflowRepository.TryGetAsync(key, version, cancellationToken);
+        if (workflow is null)
         {
             return Results.NotFound();
         }

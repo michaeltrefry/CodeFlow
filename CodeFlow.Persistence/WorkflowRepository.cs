@@ -24,6 +24,19 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         int version,
         CancellationToken cancellationToken = default)
     {
+        var result = await TryGetAsync(key, version, cancellationToken);
+        if (result is null)
+        {
+            throw new WorkflowNotFoundException(NormalizeKey(key), version);
+        }
+        return result;
+    }
+
+    public async Task<Workflow?> TryGetAsync(
+        string key,
+        int version,
+        CancellationToken cancellationToken = default)
+    {
         var normalizedKey = NormalizeKey(key);
         var cacheKey = WorkflowCacheKey.Create(normalizedKey, version);
 
@@ -39,7 +52,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
 
         if (entity is null)
         {
-            throw new WorkflowNotFoundException(normalizedKey, version);
+            return null;
         }
 
         var mapped = Map(entity);

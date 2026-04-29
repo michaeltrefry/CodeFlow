@@ -2,7 +2,33 @@ namespace CodeFlow.Persistence;
 
 public interface IWorkflowRepository
 {
+    /// <summary>
+    /// Get a specific workflow version. Throws <see cref="WorkflowNotFoundException"/>
+    /// when absent — use this overload only when the absence is genuinely an exceptional condition
+    /// (e.g. saga routing for a previously-resolved version). For "absence is expected and the
+    /// caller wants to react to it" lookups, prefer <see cref="TryGetAsync"/>
+    /// (F-015 in the 2026-04-28 backend review).
+    /// </summary>
     Task<Workflow> GetAsync(string key, int version, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Get a specific workflow version, returning <c>null</c> when absent. Avoids the
+    /// exception-as-flow cost on the request hot path for endpoints that treat "not found"
+    /// as an ordinary 404. The default implementation falls back to the exception-throwing
+    /// <see cref="GetAsync"/> so existing test fakes don't have to be updated; production
+    /// implementations override it for the perf win.
+    /// </summary>
+    async Task<Workflow?> TryGetAsync(string key, int version, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await GetAsync(key, version, cancellationToken);
+        }
+        catch (WorkflowNotFoundException)
+        {
+            return null;
+        }
+    }
 
     Task<Workflow?> GetLatestAsync(string key, CancellationToken cancellationToken = default);
 
