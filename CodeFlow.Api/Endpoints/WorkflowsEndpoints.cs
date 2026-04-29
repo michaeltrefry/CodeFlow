@@ -483,7 +483,7 @@ public static class WorkflowsEndpoints
 
         if (existing)
         {
-            return Results.Conflict(new { error = $"Workflow '{normalizedKey}' already exists. Use PUT to add a version." });
+            return ApiResults.Conflict($"Workflow '{normalizedKey}' already exists. Use PUT to add a version.");
         }
 
         var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
@@ -563,7 +563,7 @@ public static class WorkflowsEndpoints
 
         if (!existing)
         {
-            return Results.NotFound(new { error = $"Workflow '{normalizedKey}' does not exist. Use POST to create." });
+            return ApiResults.NotFound($"Workflow '{normalizedKey}' does not exist. Use POST to create.");
         }
 
         var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
@@ -665,7 +665,7 @@ public static class WorkflowsEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         var context = new WorkflowValidationContext(

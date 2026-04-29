@@ -119,13 +119,13 @@ public static class GitHostEndpoints
         var settings = await repository.GetAsync(cancellationToken);
         if (settings is null || !settings.HasToken)
         {
-            return Results.BadRequest(new { error = "Git host settings are not configured." });
+            return ApiResults.BadRequest("Git host settings are not configured.");
         }
 
         var token = await repository.GetDecryptedTokenAsync(cancellationToken);
         if (string.IsNullOrEmpty(token))
         {
-            return Results.BadRequest(new { error = "Git host token is not configured." });
+            return ApiResults.BadRequest("Git host token is not configured.");
         }
 
         var result = await verifier.VerifyAsync(settings.Mode, settings.BaseUrl, token, cancellationToken);
