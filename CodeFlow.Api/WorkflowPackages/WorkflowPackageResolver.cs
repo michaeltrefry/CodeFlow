@@ -130,6 +130,28 @@ public sealed class WorkflowPackageResolver(
                 await AddWorkflowAsync(node.SubflowKey!, concreteSubflowVersion, nodeOrigin, state, cancellationToken);
             }
 
+            // Swarm-node agents (sc-43 / sc-46): the contributor, synthesizer, and (Coordinator-only)
+            // coordinator agents are referenced via dedicated fields, not the generic AgentKey. Pull
+            // each into the package so the export is self-contained.
+            if (node.Kind == WorkflowNodeKind.Swarm)
+            {
+                if (!string.IsNullOrWhiteSpace(node.ContributorAgentKey)
+                    && node.ContributorAgentVersion is int contributorVersion)
+                {
+                    await AddAgentAsync(node.ContributorAgentKey!, contributorVersion, nodeOrigin, state, cancellationToken);
+                }
+                if (!string.IsNullOrWhiteSpace(node.SynthesizerAgentKey)
+                    && node.SynthesizerAgentVersion is int synthesizerVersion)
+                {
+                    await AddAgentAsync(node.SynthesizerAgentKey!, synthesizerVersion, nodeOrigin, state, cancellationToken);
+                }
+                if (!string.IsNullOrWhiteSpace(node.CoordinatorAgentKey)
+                    && node.CoordinatorAgentVersion is int coordinatorVersion)
+                {
+                    await AddAgentAsync(node.CoordinatorAgentKey!, coordinatorVersion, nodeOrigin, state, cancellationToken);
+                }
+            }
+
             nodes.Add(new WorkflowPackageWorkflowNode(
                 Id: node.Id,
                 Kind: node.Kind,
@@ -149,7 +171,16 @@ public sealed class WorkflowPackageResolver(
                 MirrorOutputToWorkflowVar: NormalizeOptional(node.MirrorOutputToWorkflowVar),
                 OutputPortReplacements: node.OutputPortReplacements,
                 Template: node.Template,
-                OutputType: node.OutputType));
+                OutputType: node.OutputType,
+                SwarmProtocol: NormalizeOptional(node.SwarmProtocol),
+                SwarmN: node.SwarmN,
+                ContributorAgentKey: NormalizeOptional(node.ContributorAgentKey),
+                ContributorAgentVersion: node.ContributorAgentVersion,
+                SynthesizerAgentKey: NormalizeOptional(node.SynthesizerAgentKey),
+                SynthesizerAgentVersion: node.SynthesizerAgentVersion,
+                CoordinatorAgentKey: NormalizeOptional(node.CoordinatorAgentKey),
+                CoordinatorAgentVersion: node.CoordinatorAgentVersion,
+                SwarmTokenBudget: node.SwarmTokenBudget));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

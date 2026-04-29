@@ -1,0 +1,311 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-04-28T20:00:00Z",
+    "migrationNotes": "sc-45 — Candidate workflow exercising the runtime Swarm node (sc-43 Sequential / sc-46 Coordinator). Shape: Intake (Start, captures the original mission into workflow.originalMission) → ReviewLoop wrapping a 3-node Subflow (Expander → Swarm → Reviewer) with rejectionHistory enabled. The expander reads the original mission + any prior reviewer critiques and produces a denser brief; the Swarm node (Sequential, n=3) runs three contributors who self-select roles per the V2 ROLE protocol, and a synthesizer integrates; the reviewer compares the synthesis to the original mission and decides Approved / Rejected. On Rejected the loop iterates (max 3 rounds) and the next iteration's expander sees the prior rejection-history. On Approved or Exhausted the workflow terminates. Self-contained per the workflow-package contract: bundles five fresh agents (`swarm-candidate-intake`, `swarm-candidate-expander`, `swarm-candidate-contributor`, `swarm-candidate-synthesizer`, `swarm-candidate-reviewer`) at v1 plus the top-level `swarm-candidate-flow` and the inner `swarm-candidate-loop` subflow. Authored at the library default (openai/gpt-5.4); to flip models, edit each agent and bump versions before re-saving the package. Two design choices worth flagging for sc-44 (head-to-head bench) when it picks this up: (1) the Swarm node lives INSIDE the ReviewLoop body, so each rejected round re-runs the swarm fresh — non-replayability of the Swarm kind is what makes that meaningful (replay-with-edit always re-executes the swarm even within a loop iteration); (2) the original mission is preserved in workflow.originalMission across the swarm's mission-lifecycle (the Swarm node sets and clears workflow.swarmMission to its input artifact internally, so the reviewer needs the side-channel to compare against the user's original ask)."
+  },
+  "entryPoint": {
+    "key": "swarm-candidate-flow",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "swarm-candidate-loop",
+      "version": 1,
+      "name": "Swarm Candidate — Review Loop Body",
+      "maxRoundsPerRound": 5,
+      "category": "Loop",
+      "tags": ["swarm", "candidate", "review-loop", "sc-45"],
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "workflowVarsReads": ["originalMission", "refinedBrief"],
+      "workflowVarsWrites": ["refinedBrief"],
+      "nodes": [
+        {
+          "id": "5ca45000-0002-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "swarm-candidate-expander",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "mirrorOutputToWorkflowVar": "refinedBrief"
+        },
+        {
+          "id": "5ca45000-0002-0001-0001-000000000002",
+          "kind": "Swarm",
+          "outputPorts": ["Synthesized"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "swarmProtocol": "Sequential",
+          "swarmN": 3,
+          "contributorAgentKey": "swarm-candidate-contributor",
+          "contributorAgentVersion": 1,
+          "synthesizerAgentKey": "swarm-candidate-synthesizer",
+          "synthesizerAgentVersion": 1
+        },
+        {
+          "id": "5ca45000-0002-0001-0001-000000000003",
+          "kind": "Agent",
+          "agentKey": "swarm-candidate-reviewer",
+          "agentVersion": 1,
+          "outputPorts": ["Approved", "Rejected"],
+          "layoutX": 700,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "5ca45000-0002-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "5ca45000-0002-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "5ca45000-0002-0001-0001-000000000002",
+          "fromPort": "Synthesized",
+          "toNodeId": "5ca45000-0002-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Mission (passthrough)",
+          "kind": "Text",
+          "required": false,
+          "description": "Pass-through. The expander reads workflow.originalMission and rejectionHistory to produce its refined brief; the input artifact is not used directly.",
+          "ordinal": 0
+        }
+      ]
+    },
+    {
+      "key": "swarm-candidate-flow",
+      "version": 1,
+      "name": "Swarm Candidate — Intake → Expand → Swarm → Review",
+      "maxRoundsPerRound": 5,
+      "category": "Workflow",
+      "tags": ["swarm", "candidate", "sc-45"],
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "workflowVarsReads": ["originalMission"],
+      "workflowVarsWrites": ["originalMission", "refinedBrief"],
+      "nodes": [
+        {
+          "id": "5ca45000-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "swarm-candidate-intake",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "setWorkflow('originalMission', input.text);"
+        },
+        {
+          "id": "5ca45000-0001-0001-0001-000000000002",
+          "kind": "ReviewLoop",
+          "outputPorts": ["Approved", "Exhausted"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "subflowKey": "swarm-candidate-loop",
+          "subflowVersion": 1,
+          "reviewMaxRounds": 3,
+          "loopDecision": "Rejected",
+          "rejectionHistory": {
+            "enabled": true,
+            "maxBytes": 32768,
+            "format": "Markdown"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "5ca45000-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "5ca45000-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Mission",
+          "kind": "Text",
+          "required": true,
+          "description": "The user's mission — what the swarm should produce a synthesized answer for. Sparse briefs work well; the expander densifies and the swarm thesis is that emergent role differentiation produces broader coverage than a single-shot agent.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "swarm-candidate-intake",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Candidate Intake",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the intake agent for a swarm-driven design workflow. The user's raw mission has already been seeded into workflow state (`workflow.originalMission`). Your only job: write a 1-2 sentence acknowledgment of what you understand the mission to be (so the trace is readable), then submit on `Continue`. Do not embellish, do not interview — the expander downstream will handle densification.",
+        "promptTemplate": "## Mission\n\n{{ workflow.originalMission }}\n\nAcknowledge briefly (1-2 sentences). Submit on `Continue`.",
+        "maxTokens": 400,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands off to the review loop. The mission is in `workflow.originalMission`; this agent only acknowledges so the trace shows entry."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands off to the review loop."
+        }
+      ]
+    },
+    {
+      "key": "swarm-candidate-expander",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Candidate Expander",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a design-brief expander. Take a possibly-sparse mission and produce a denser brief that gives a panel of agents enough context to contribute meaningfully. Add bullet-point goals, constraints, success criteria, and any non-obvious context the panel might need — but do NOT over-constrain: leave room for the panel to bring perspective.\n\n## Hard rules\n\n1. Write the brief itself as your message content — no preamble, no commentary, no headings like \"Refined brief\". Treat your output as the document the panel will read.\n2. If reviewer feedback from prior rounds is provided, incorporate it: tighten the parts they flagged. Do NOT just append their words; rewrite the brief so the next swarm round produces a synthesis that addresses the gap.\n3. Submit on `Continue`.",
+        "promptTemplate": "## Original mission\n\n{{ workflow.originalMission }}\n\n{{ if rejectionHistory }}\n## Prior reviewer critiques (use these to tighten the brief)\n\n{{ rejectionHistory }}\n\n{{ end }}\nProduce the expanded brief. Submit on `Continue`.",
+        "maxTokens": 4000,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "The expanded design brief. Mirrored into `workflow.refinedBrief` and flowed as the Swarm node's input artifact."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Densified brief that the swarm panel will read."
+        }
+      ]
+    },
+    {
+      "key": "swarm-candidate-contributor",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Candidate Contributor",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a member of a small panel of LLM agents working on the same design brief, one after another. Each agent examines what prior panelists have produced and contributes whatever role would most advance the work — there are no pre-assigned roles.\n\n## Hard rules\n\n1. The first line of your output is exactly `ROLE: <your-role>` (e.g. `ROLE: analyst`, `ROLE: gap-finder`, `ROLE: devil's advocate`, `ROLE: structurer`). The role is your own choice, in your own words, picked to complement what's already there.\n2. If after reading the brief and prior contributions you genuinely believe nothing useful remains for you to add, the first line is `ROLE: abstain` followed on the next line by a single sentence explaining why. Then submit. Abstaining is a valid choice — do not pad with filler.\n3. Otherwise, after the role line, contribute substantively in the role you chose. Aim for the right size for the contribution; do not pad.\n4. Submit on `Contributed` regardless of whether you contributed or abstained.\n\n## Why this protocol\n\nSelf-organization is the point: the panel's quality comes from agents distributing work without a central coordinator. Pick a role that complements what's already there. Abstain when there's nothing useful for you to add — passing is a contribution.",
+        "promptTemplate": "## Design brief\n\n{{ workflow.swarmMission }}\n\n{{ if workflow.swarmContributions }}\n## Prior contributions in this round\n\n{{ for c in workflow.swarmContributions }}\n### Position {{ c.position }} — {{ if c.role }}{{ c.role }}{{ else }}unstated{{ end }}\n{{ if c.abstained }}*(abstained)*{{ else }}{{ c.text }}{{ end }}\n\n{{ end }}\n{{ end }}\n{{ if rejectionHistory }}\n## Prior reviewer feedback (from earlier swarm rounds)\n\n{{ rejectionHistory }}\n\n{{ end }}\nDecide what role best advances the work right now. State that role on the first line as `ROLE: <role>`, then make your contribution. Submit on `Contributed`.",
+        "maxTokens": 4000,
+        "temperature": 0.6,
+        "outputs": [
+          {
+            "kind": "Contributed",
+            "description": "The agent's contribution, with `ROLE: <role>` (or `ROLE: abstain`) as the first line. The runtime parses the role line and appends an entry to `workflow.swarmContributions` automatically."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Contributed",
+          "description": "Single contribution from one panelist. First line declares the self-selected role."
+        }
+      ]
+    },
+    {
+      "key": "swarm-candidate-synthesizer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Candidate Synthesizer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the synthesizer for a panel of LLM agents who each contributed to the same design brief. Your job is to read the brief and all contributions, then produce a single coherent answer.\n\n## Hard rules\n\n1. Write the answer to the mission, not commentary on the panel. Do not list contributors, do not narrate the synthesis process, do not include a `Synthesis` or `Final answer` heading — just write the answer as if it were the only thing the requester sees.\n2. Integrate the strongest elements from the contributions; ignore weak or contradictory parts.\n3. If a contributor abstained (their text begins with `ROLE: abstain`), simply skip their contribution.\n4. If `swarmEarlyTerminated` is true, the panel was cut short by the token budget — produce the best answer you can from what you have and note the partial input briefly at the end.\n5. Submit on `Synthesized`.",
+        "promptTemplate": "## Design brief\n\n{{ workflow.swarmMission }}\n\n## Panel contributions in order\n\n{{ for c in workflow.swarmContributions }}\n### Position {{ c.position }} — {{ if c.role }}{{ c.role }}{{ else }}unstated{{ end }}\n{{ if c.abstained }}*(abstained)*{{ else }}{{ c.text }}{{ end }}\n\n{{ end }}\n{{ if swarmEarlyTerminated }}\n_Note: the panel was cut short by the token budget — work with what's above._\n{{ end }}\n\nProduce the synthesized answer. Submit on `Synthesized`.",
+        "maxTokens": 6000,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Synthesized",
+            "description": "The final synthesized answer. The Swarm node's terminal artifact; flows as the reviewer's input."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Synthesized",
+          "description": "The synthesized terminal output of the Swarm node. Flows to the reviewer."
+        }
+      ]
+    },
+    {
+      "key": "swarm-candidate-reviewer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Swarm Candidate Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a design reviewer. The user gave a mission; a panel of LLM agents synthesized an answer. Your job is to decide whether the synthesis adequately addresses the user's mission, and route on `Approved` or `Rejected`.\n\n## Hard rules\n\n1. Approve any synthesis that genuinely meets the user's intent, even if you would have written it differently. Stylistic preferences are not grounds for rejection.\n2. Reject only when there is a substantive gap the next iteration could plausibly fix — a missing requirement, a wrong assumption about the mission, an unaddressed constraint. Be specific: name the gap and what would close it.\n3. If you are at the last round (`isLastRound`), prefer Approved unless the synthesis is materially unusable; the next round won't run.\n4. Don't re-raise critiques from prior rounds that the synthesis has already addressed. Read the prior critiques carefully — the expander may have responded to them.\n5. Write your decision rationale as the message content (1-3 short paragraphs); submit on `Approved` or `Rejected`. The rationale rides up as the workflow's terminal artifact when the loop exits.",
+        "promptTemplate": "## Original mission (the user's actual ask)\n\n{{ workflow.originalMission }}\n\n## Synthesized response from the panel\n\n{{ input }}\n\n## Round\n\n{{ round }} of {{ maxRounds }}\n\n{{ if rejectionHistory }}\n## Prior critiques in this loop (DO NOT REPEAT — issues may have been addressed)\n\n{{ rejectionHistory }}\n\n{{ end }}\nDecide `Approved` or `Rejected`. If `Rejected`, name the specific substantive gap and what would close it.",
+        "maxTokens": 2000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Approved",
+            "description": "The synthesis adequately addresses the user's mission. The loop exits Approved; the rationale is the workflow's terminal artifact."
+          },
+          {
+            "kind": "Rejected",
+            "description": "The synthesis has a substantive gap. The loop iterates with this rationale captured into rejectionHistory for the next round."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-04-28T20:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Approved",
+          "description": "Synthesis is good enough; the loop exits cleanly."
+        },
+        {
+          "kind": "Rejected",
+          "description": "Synthesis has a substantive gap; the loop iterates."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "swarm-candidate-intake", "roleKeys": [] },
+    { "agentKey": "swarm-candidate-expander", "roleKeys": [] },
+    { "agentKey": "swarm-candidate-contributor", "roleKeys": [] },
+    { "agentKey": "swarm-candidate-synthesizer", "roleKeys": [] },
+    { "agentKey": "swarm-candidate-reviewer", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

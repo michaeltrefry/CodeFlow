@@ -716,6 +716,87 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         baselineEdges[0].GetProperty("rotatesRound").GetBoolean().Should().BeFalse();
     }
 
+    [Fact]
+    public async Task ApplyPackageImport_SwarmCandidateFlowV1_RoundTripsParentAndLoopWithSwarmNode()
+    {
+        // sc-45 — Candidate workflow exercising the runtime Swarm node (sc-43 Sequential).
+        // Top-level: Start → ReviewLoop wrapping a 3-node Subflow (Expander → Swarm → Reviewer)
+        // with rejectionHistory enabled. End-to-end import sanity: deserialize, resolve references
+        // through the importer, query both workflows back and check the Swarm node config + the
+        // ReviewLoop's loopDecision wiring.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("swarm-candidate-flow-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(7,
+            "package contains 2 workflows + 5 agents");
+
+        // Parent: Start (with originalMission-seeding inputScript) → ReviewLoop pointing at the
+        // candidate-loop subflow. The ReviewLoop's loopDecision must match the reviewer's Rejected
+        // port name; rejectionHistory enabled so reviewer feedback feeds the next round's expander.
+        var parentJson = await client.GetStringAsync("/api/workflows/swarm-candidate-flow/1");
+        using var parentDoc = JsonDocument.Parse(parentJson);
+        var parentNodes = parentDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        parentNodes.Should().HaveCount(2);
+
+        var startNode = parentNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        startNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('originalMission'",
+            "the parent's Start node preserves the user's original mission outside the swarm's mission lifecycle");
+
+        var loopNode = parentNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "ReviewLoop", StringComparison.Ordinal));
+        loopNode.GetProperty("subflowKey").GetString().Should().Be("swarm-candidate-loop");
+        loopNode.GetProperty("subflowVersion").GetInt32().Should().Be(1);
+        loopNode.GetProperty("reviewMaxRounds").GetInt32().Should().Be(3);
+        loopNode.GetProperty("loopDecision").GetString().Should().Be("Rejected");
+        loopNode.GetProperty("rejectionHistory").GetProperty("enabled").GetBoolean().Should().BeTrue();
+
+        // Loop body: Expander (Start) → Swarm (Sequential, n=3) → Reviewer (Approved | Rejected).
+        // The Swarm node carries the runtime fields the saga's PublishSwarmEntryAsync reads on entry.
+        var loopJson = await client.GetStringAsync("/api/workflows/swarm-candidate-loop/1");
+        using var loopDoc = JsonDocument.Parse(loopJson);
+        var loopNodes = loopDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        loopNodes.Should().HaveCount(3);
+
+        var expanderNode = loopNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        expanderNode.GetProperty("agentKey").GetString().Should().Be("swarm-candidate-expander");
+        expanderNode.GetProperty("mirrorOutputToWorkflowVar").GetString().Should().Be("refinedBrief");
+
+        var swarmNode = loopNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Swarm", StringComparison.Ordinal));
+        swarmNode.GetProperty("swarmProtocol").GetString().Should().Be("Sequential");
+        swarmNode.GetProperty("swarmN").GetInt32().Should().Be(3);
+        swarmNode.GetProperty("contributorAgentKey").GetString().Should().Be("swarm-candidate-contributor");
+        swarmNode.GetProperty("contributorAgentVersion").GetInt32().Should().Be(1);
+        swarmNode.GetProperty("synthesizerAgentKey").GetString().Should().Be("swarm-candidate-synthesizer");
+        swarmNode.GetProperty("synthesizerAgentVersion").GetInt32().Should().Be(1);
+        swarmNode.GetProperty("outputPorts").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "Synthesized" });
+
+        var reviewerNode = loopNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
+        reviewerNode.GetProperty("agentKey").GetString().Should().Be("swarm-candidate-reviewer");
+        reviewerNode.GetProperty("outputPorts").EnumerateArray().Select(e => e.GetString()).Should()
+            .BeEquivalentTo(new[] { "Approved", "Rejected" },
+                "reviewer's Rejected port name must match the parent ReviewLoop's loopDecision so the loop iterates on Rejected");
+
+        // Edges form a strict chain Expander → Swarm → Reviewer. The reviewer's two ports are
+        // unwired so they bubble up as the subflow's terminal port names — the parent ReviewLoop
+        // routes Approved (clean exit) and iterates on Rejected (per loopDecision).
+        var loopEdges = loopDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        loopEdges.Should().HaveCount(2);
+    }
+
     private static string LocateLibraryPackage(string fileName)
     {
         var dir = AppContext.BaseDirectory;
