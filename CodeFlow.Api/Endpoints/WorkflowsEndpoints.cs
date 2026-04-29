@@ -20,6 +20,14 @@ namespace CodeFlow.Api.Endpoints;
 public static class WorkflowsEndpoints
 {
     private static readonly Regex PackageFileNameUnsafeChars = new("[^A-Za-z0-9_.-]+", RegexOptions.Compiled);
+    private static readonly string[] PackageImportWritePolicies =
+    [
+        CodeFlowApiDefaults.Policies.WorkflowsWrite,
+        CodeFlowApiDefaults.Policies.AgentsWrite,
+        CodeFlowApiDefaults.Policies.AgentRolesWrite,
+        CodeFlowApiDefaults.Policies.SkillsWrite,
+        CodeFlowApiDefaults.Policies.McpServersWrite,
+    ];
 
     public static IEndpointRouteBuilder MapWorkflowsEndpoints(this IEndpointRouteBuilder routes)
     {
@@ -53,10 +61,10 @@ public static class WorkflowsEndpoints
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
         group.MapPost("/package/preview", PreviewPackageImportAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+            .RequireAuthorization(PackageImportWritePolicies);
 
         group.MapPost("/package/apply", ApplyPackageImportAsync)
-            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+            .RequireAuthorization(PackageImportWritePolicies);
 
         group.MapGet("/{key}", GetLatestAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);

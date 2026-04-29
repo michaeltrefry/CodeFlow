@@ -43,12 +43,11 @@ public static class SystemAgentRoles
         new SystemAgentRole(
             Key: ReadOnlyShellKey,
             DisplayName: "Read-only shell",
-            Description: "Read filesystem and execute shell commands. Use for inspector / "
+            Description: "Read filesystem and non-mutating host helpers. Use for inspector / "
                 + "reporter agents that should never mutate the workspace.",
             Grants: new[]
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
             }),

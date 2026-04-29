@@ -48,8 +48,8 @@ public sealed class HostToolProvider : IToolProvider
             "read_file" => workspaceTools.ReadFileAsync(toolCall, context, cancellationToken),
             "apply_patch" => workspaceTools.ApplyPatchAsync(toolCall, context, cancellationToken),
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
-            "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, cancellationToken),
-            "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, cancellationToken),
+            "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
+            "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
 

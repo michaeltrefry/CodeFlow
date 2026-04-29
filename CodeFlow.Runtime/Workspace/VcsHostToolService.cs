@@ -20,6 +20,7 @@ public sealed class VcsHostToolService
 
     public async Task<ToolResult> OpenPullRequestAsync(
         ToolCall toolCall,
+        ToolExecutionContext? context = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
@@ -30,6 +31,10 @@ public sealed class VcsHostToolService
         var baseRef = GetRequiredString(toolCall.Arguments, "base");
         var title = GetRequiredString(toolCall.Arguments, "title");
         var body = GetOptionalString(toolCall.Arguments, "body") ?? string.Empty;
+        if (!IsAllowedRepository(context, owner, name))
+        {
+            return BuildRepoNotAllowed(toolCall.Id, owner, name);
+        }
 
         try
         {
@@ -53,12 +58,17 @@ public sealed class VcsHostToolService
 
     public async Task<ToolResult> GetRepoMetadataAsync(
         ToolCall toolCall,
+        ToolExecutionContext? context = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
 
         var owner = GetRequiredString(toolCall.Arguments, "owner");
         var name = GetRequiredString(toolCall.Arguments, "name");
+        if (!IsAllowedRepository(context, owner, name))
+        {
+            return BuildRepoNotAllowed(toolCall.Id, owner, name);
+        }
 
         try
         {
@@ -78,6 +88,43 @@ public sealed class VcsHostToolService
         {
             return BuildError(toolCall.Id, ex);
         }
+    }
+
+    private static bool IsAllowedRepository(ToolExecutionContext? context, string owner, string name)
+    {
+        if (context?.Repositories is { Count: > 0 } repositories
+            && repositories.Any(repo =>
+                string.Equals(repo.Owner, owner, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(repo.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(context?.Workspace?.RepoUrl))
+        {
+            try
+            {
+                var repo = RepoReference.Parse(context.Workspace.RepoUrl);
+                return string.Equals(repo.Owner, owner, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(repo.Name, name, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static ToolResult BuildRepoNotAllowed(string callId, string owner, string name)
+    {
+        var payload = new JsonObject
+        {
+            ["error"] = "repo_not_allowed",
+            ["message"] = $"Repository '{owner}/{name}' is not declared for this trace.",
+        };
+        return new ToolResult(callId, payload.ToJsonString(), IsError: true);
     }
 
     private static ToolResult BuildError(string callId, Exception ex)

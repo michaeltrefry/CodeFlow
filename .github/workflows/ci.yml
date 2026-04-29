@@ -28,11 +28,16 @@ jobs:
       - name: Build .NET solution (Release)
         run: dotnet build CodeFlow.slnx --configuration Release --no-restore
 
-      # The full integration suite needs Testcontainers (MariaDB + RabbitMQ) and has known
-      # pre-existing failures from the Port Model Redesign tracked separately. Run the unit-level
-      # Auth tests as a regression guard for the OIDC fail-fast added in Slice 1.
-      - name: Run Auth unit tests
-        run: dotnet test CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~AuthServiceCollectionExtensionsTests"
+      - name: Run Runtime tests
+        run: dotnet test CodeFlow.Runtime.Tests/CodeFlow.Runtime.Tests.csproj --no-build --configuration Release
+
+      - name: Run Contracts tests
+        run: dotnet test CodeFlow.Contracts.Tests/CodeFlow.Contracts.Tests.csproj --no-build --configuration Release
+
+      # Keep Testcontainers-backed API end-to-end tests quarantined from PR CI, but run the
+      # broader API unit/component slice instead of a single auth fixture.
+      - name: Run API non-E2E tests
+        run: dotnet test CodeFlow.Api.Tests/CodeFlow.Api.Tests.csproj --no-build --configuration Release --filter "Category!=EndToEnd&FullyQualifiedName!~RabbitMqDlqRetryTransportIntegrationTests"
 
       - name: Set up Node 24
         uses: actions/setup-node@v5
