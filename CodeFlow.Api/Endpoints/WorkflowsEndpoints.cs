@@ -271,12 +271,21 @@ public static class WorkflowsEndpoints
             var emptyJson = JsonDocument.Parse("{}").RootElement;
             var emptyContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
+            // When the caller supplied DeclaredPorts, thread them through so
+            // setNodePath/setOutput referencing a port the node doesn't declare surfaces as
+            // an UnknownPort error. When omitted, fall back to empty and silently allow port
+            // mismatches — useful in the script editor before the script is wired up.
+            var declaredPorts = request.DeclaredPorts is { Count: > 0 } ports
+                ? ports
+                : Array.Empty<string>();
+            var portValidationActive = declaredPorts.Count > 0;
+
             var eval = scriptHost.Evaluate(
                 workflowKey: "__validate__",
                 workflowVersion: 0,
                 nodeId: Guid.NewGuid(),
                 script: request.Script!,
-                declaredPorts: Array.Empty<string>(),
+                declaredPorts: declaredPorts,
                 input: emptyJson,
                 context: emptyContext,
                 allowOutputOverride: allowOutput,
@@ -284,7 +293,8 @@ public static class WorkflowsEndpoints
                 inputVariableName: variableName,
                 requireSetNodePath: false);
 
-            if (eval.Failure is not null && eval.Failure != LogicNodeFailureKind.UnknownPort)
+            if (eval.Failure is not null
+                && (portValidationActive || eval.Failure != LogicNodeFailureKind.UnknownPort))
             {
                 return Results.Ok(new ValidateScriptResponse(
                     Ok: false,

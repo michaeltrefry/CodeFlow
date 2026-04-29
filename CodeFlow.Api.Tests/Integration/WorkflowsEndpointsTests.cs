@@ -1331,6 +1331,63 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task ValidateScript_DeclaredPortsOmitted_AllowsUnknownPort()
+    {
+        // F-021: when DeclaredPorts is omitted the validator silently ignores port mismatches
+        // — used by the script editor before the script is wired to a node.
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setNodePath('NotADeclaredPort');",
+            direction = "output"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body!.Ok.Should().BeTrue();
+        body.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ValidateScript_DeclaredPortsSupplied_RejectsUnknownPort()
+    {
+        // F-021: when DeclaredPorts is supplied the validator surfaces UnknownPort failures so
+        // the editor can flag setNodePath/setOutput targeting a port the node doesn't declare.
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setNodePath('NotADeclaredPort');",
+            direction = "output",
+            declaredPorts = new[] { "Approved", "Rejected", "Failed" }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body!.Ok.Should().BeFalse();
+        body.Errors.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task ValidateScript_DeclaredPortsSupplied_AcceptsKnownPort()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows/validate-script", new
+        {
+            script = "setNodePath('Approved');",
+            direction = "output",
+            declaredPorts = new[] { "Approved", "Rejected", "Failed" }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<ValidateScriptResponseShape>();
+        body!.Ok.Should().BeTrue();
+        body.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Post_Rejects_WhenSubflowKeyIsMissing()
     {
         // S10: Subflow node must reference a SubflowKey.

@@ -110,7 +110,12 @@ public sealed record UpdateWorkflowRequest(
 
 public sealed record ValidateScriptRequest(
     string? Script,
-    ValidateScriptDirection? Direction = null);
+    ValidateScriptDirection? Direction = null,
+    // Optional. When supplied (and Direction is Output), the validator surfaces
+    // setNodePath/setOutput calls that target a port not in this list as an UnknownPort
+    // error. When null/empty, port mismatches are silently allowed — useful from the
+    // script editor before the script is wired to a node with declared ports.
+    IReadOnlyList<string>? DeclaredPorts = null);
 
 public enum ValidateScriptDirection
 {
