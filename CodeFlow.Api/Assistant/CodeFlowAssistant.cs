@@ -91,7 +91,14 @@ public sealed class CodeFlowAssistant(
         // HAA-19 — Resolve the host-tool workspace based on the per-turn override. Detect a switch
         // versus the previously-persisted signature and prepend a one-shot notice to the system
         // prompt so the model can re-orient (different repos / files visible).
-        var resolvedWorkspace = ResolveWorkspace(workspaceOverride, conversationId);
+        //
+        // Gate the resolution on actual need: a workspace is only meaningful when (a) an agent role
+        // is assigned (its host tools operate against the dir) or (b) the user explicitly switched
+        // to a trace workdir. Plain conversations don't need a workspace, and creating one
+        // unconditionally would fail on dev environments where the configured root isn't writable.
+        var workspaceNeeded = workspaceOverride is not null
+            || (config.AssignedAgentRoleId is { } needRoleId && needRoleId > 0);
+        var resolvedWorkspace = workspaceNeeded ? ResolveWorkspace(workspaceOverride, conversationId) : null;
         if (conversationId != Guid.Empty && resolvedWorkspace is { } rw)
         {
             var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
@@ -190,8 +197,24 @@ public sealed class CodeFlowAssistant(
             }
         }
 
-        var conversationCtx = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
-        return new ResolvedWorkspace(conversationCtx, "conversation", null);
+        // Wrap conversation-workspace creation so a non-writable root (typically a dev environment
+        // where the default `/app/codeflow/assistant` container path doesn't exist) doesn't crash
+        // the turn. Log a clear warning pointing at the env-var override and degrade to no host
+        // tools — the LLM still answers, just without per-conversation file access.
+        try
+        {
+            var conversationCtx = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+            return new ResolvedWorkspace(conversationCtx, "conversation", null);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            logger.LogWarning(ex,
+                "Could not create the per-conversation workspace for assistant conversation {ConversationId}. "
+                + "Set the Workspace__AssistantWorkspaceRoot environment variable to a writable directory (default '/app/codeflow/assistant' is a container path). "
+                + "Continuing without host tools for this turn.",
+                conversationId);
+            return null;
+        }
     }
 
     private static string BuildWorkspaceSwitchNotice(string? previousSignature, ResolvedWorkspace next)

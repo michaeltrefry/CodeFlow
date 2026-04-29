@@ -279,6 +279,7 @@ jobs:
           CODEFLOW_UI_HOST_PORT: ${{ vars.CODEFLOW_UI_HOST_PORT || '4280' }}
           CODEFLOW_ARTIFACTS_DIR: ${{ vars.CODEFLOW_ARTIFACTS_DIR || '/opt/codeflow/artifacts' }}
           CODEFLOW_WORKDIRS_DIR: ${{ vars.CODEFLOW_WORKDIRS_DIR || '/opt/codeflow/workdirs' }}
+          CODEFLOW_ASSISTANT_DIR: ${{ vars.CODEFLOW_ASSISTANT_DIR || '/opt/codeflow/assistant' }}
         run: |
           set -eu
           owner_lc="$(echo "${IMAGE_OWNER_LC}" | tr '[:upper:]' '[:lower:]')"
@@ -310,6 +311,7 @@ jobs:
             q CODEFLOW_UI_HOST_PORT "${CODEFLOW_UI_HOST_PORT}"
             q CODEFLOW_ARTIFACTS_DIR "${CODEFLOW_ARTIFACTS_DIR}"
             q CODEFLOW_WORKDIRS_DIR "${CODEFLOW_WORKDIRS_DIR}"
+            q CODEFLOW_ASSISTANT_DIR "${CODEFLOW_ASSISTANT_DIR}"
           } > .env.release
           chmod 600 .env.release
           echo "Generated .env.release ($(wc -l < .env.release) lines)"
@@ -324,7 +326,15 @@ jobs:
           set -eu
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
-              "mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs'"
+              "set -eu; \
+               mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'; \
+               # Container app uid is 1654 (see CodeFlow.Api/Dockerfile). Bind-mount targets must be \
+               # owned by that uid so the assistant can create per-conversation subdirs. sudo is \
+               # gated to chown via the LINODE_USER's sudoers entry; falls back to a soft chmod when \
+               # sudo isn't permitted (the dir is created by the deploy user and may already be \
+               # writable group-wise on a single-tenant box). \
+               sudo -n chown -R 1654:1654 '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant' 2>/dev/null || \
+               chmod -R u+rwX '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               deploy/docker-compose.prod.yml \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/deploy/docker-compose.prod.yml"
