@@ -64,6 +64,12 @@ services:
       # WorkspaceOptions.WorkingDirectoryRoot's default — overridable via
       # Workspace__WorkingDirectoryRoot if a deployment needs a different mount target.
       - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/codeflow/workdir
+      # Per-conversation assistant workspace (HAA-19). API-only — the worker doesn't host the
+      # assistant chat loop. Persists conversation file content across container recreations;
+      # without this mount the dir is image-baked and contents are lost on `docker compose up`.
+      # Container path is locked to WorkspaceOptions.AssistantWorkspaceRoot's default — override
+      # via Workspace__AssistantWorkspaceRoot if a deployment needs a different mount target.
+      - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/app/codeflow/assistant
     networks:
       - default
       - trefry-network
