@@ -48,12 +48,14 @@ public sealed class DryRunExecutor
     private readonly LogicNodeScriptHost logicScriptHost;
     private readonly IAgentConfigRepository? agentConfigRepository;
     private readonly IScribanTemplateRenderer? templateRenderer;
+    private readonly IDecisionTemplateRenderer? decisionTemplateRenderer;
 
     public DryRunExecutor(
         IWorkflowRepository workflowRepository,
         LogicNodeScriptHost logicScriptHost,
         IAgentConfigRepository? agentConfigRepository = null,
-        IScribanTemplateRenderer? templateRenderer = null)
+        IScribanTemplateRenderer? templateRenderer = null,
+        IDecisionTemplateRenderer? decisionTemplateRenderer = null)
     {
         this.workflowRepository = workflowRepository ?? throw new ArgumentNullException(nameof(workflowRepository));
         this.logicScriptHost = logicScriptHost ?? throw new ArgumentNullException(nameof(logicScriptHost));
@@ -68,6 +70,10 @@ public sealed class DryRunExecutor
         }
         this.agentConfigRepository = agentConfigRepository;
         this.templateRenderer = templateRenderer;
+        // Construct a default decision-template renderer over the supplied scriban renderer when
+        // the caller didn't pass one — keeps test wiring simple and matches saga DI behavior.
+        this.decisionTemplateRenderer = decisionTemplateRenderer
+            ?? (templateRenderer is null ? null : new DecisionTemplateRenderer(templateRenderer));
     }
 
     public async Task<DryRunResult> ExecuteAsync(
@@ -1392,9 +1398,10 @@ public sealed class DryRunExecutor
     /// <summary>
     /// v3: render the agent's <c>decisionOutputTemplates[port]</c> entry (or the wildcard <c>*</c>
     /// fallback) against the saga's <c>{ decision, outputPortName, output, input, context, workflow }</c>
-    /// scope. Mirrors <c>WorkflowSagaStateMachine.TryApplyDecisionOutputTemplateAsync</c>. Skipped
-    /// silently when the agent has no templates or the agent config can't be loaded — the dry-run
-    /// is best-effort by design and a missing agent config in the dry-run repo is not a fatal
+    /// scope. Delegates resolution + rendering to the shared <see cref="IDecisionTemplateRenderer"/>
+    /// so saga and dry-run can't drift on Scriban semantics or fallback rules. Skipped silently
+    /// when the agent has no templates or the agent config can't be loaded — the dry-run is
+    /// best-effort by design and a missing agent config in the dry-run repo is not a fatal
     /// authoring error.
     /// </summary>
     private async Task<DecisionOutputTemplateOutcome> TryApplyDecisionOutputTemplateAsync(
@@ -1433,79 +1440,46 @@ public sealed class DryRunExecutor
             return DecisionOutputTemplateOutcome.None;
         }
 
-        var templates = agentConfig.Configuration.DecisionOutputTemplates;
-        var template = ResolveTemplate(templates, effectivePort);
-        if (template is null)
+        var inputs = new DecisionTemplateInputs(
+            DecisionName: mockDecision,
+            EffectivePortName: effectivePort,
+            OutputText: effectiveOutput,
+            OutputJson: ParseArtifactAsJsonElement(effectiveOutput),
+            InputJson: currentInput is null ? null : ParseArtifactAsJsonElement(currentInput),
+            ContextInputs: contextVars,
+            WorkflowInputs: workflowVars);
+
+        var result = decisionTemplateRenderer!.Render(agentConfig, inputs, cancellationToken);
+        switch (result)
         {
-            return DecisionOutputTemplateOutcome.None;
+            case DecisionTemplateRenderResult.Skipped:
+                return DecisionOutputTemplateOutcome.None;
+            case DecisionTemplateRenderResult.Failed failed:
+                return new DecisionOutputTemplateOutcome(
+                    null,
+                    $"Decision output template for node {node.Id} (port '{effectivePort}') failed: {failed.Reason}");
+            case DecisionTemplateRenderResult.Rendered rendered:
+                state.RecordEvent(new DryRunEvent(
+                    Ordinal: state.NextOrdinal(),
+                    Kind: DryRunEventKind.BuiltinApplied,
+                    NodeId: node.Id,
+                    NodeKind: node.Kind.ToString(),
+                    AgentKey: node.AgentKey,
+                    PortName: effectivePort,
+                    Message: $"Decision-output template applied on '{effectivePort}' ({rendered.Text.Length} chars).",
+                    InputPreview: null,
+                    OutputPreview: Preview(rendered.Text),
+                    ReviewRound: reviewRound,
+                    MaxRounds: maxRounds,
+                    SubflowDepth: depth,
+                    SubflowKey: null,
+                    SubflowVersion: null,
+                    Logs: null,
+                    DecisionPayload: null));
+                return new DecisionOutputTemplateOutcome(rendered.Text, null);
+            default:
+                throw new InvalidOperationException($"Unexpected render result: {result.GetType()}");
         }
-
-        var outputJson = ParseArtifactAsJsonElement(effectiveOutput);
-        var inputJson = currentInput is null ? (JsonElement?)null : ParseArtifactAsJsonElement(currentInput);
-        var scope = DecisionOutputTemplateContext.Build(
-            decision: mockDecision,
-            outputPortName: effectivePort,
-            outputText: effectiveOutput,
-            outputJson: outputJson.ValueKind is JsonValueKind.Object or JsonValueKind.Array ? outputJson : null,
-            inputJson: inputJson,
-            contextInputs: contextVars,
-            workflowInputs: workflowVars);
-
-        string rendered;
-        try
-        {
-            rendered = templateRenderer!.Render(template, scope, cancellationToken);
-        }
-        catch (PromptTemplateException ex)
-        {
-            return new DecisionOutputTemplateOutcome(
-                null,
-                $"Decision output template for node {node.Id} (port '{effectivePort}') failed: {ex.Message}");
-        }
-
-        state.RecordEvent(new DryRunEvent(
-            Ordinal: state.NextOrdinal(),
-            Kind: DryRunEventKind.BuiltinApplied,
-            NodeId: node.Id,
-            NodeKind: node.Kind.ToString(),
-            AgentKey: node.AgentKey,
-            PortName: effectivePort,
-            Message: $"Decision-output template applied on '{effectivePort}' ({rendered.Length} chars).",
-            InputPreview: null,
-            OutputPreview: Preview(rendered),
-            ReviewRound: reviewRound,
-            MaxRounds: maxRounds,
-            SubflowDepth: depth,
-            SubflowKey: null,
-            SubflowVersion: null,
-            Logs: null,
-            DecisionPayload: null));
-
-        return new DecisionOutputTemplateOutcome(rendered, null);
-    }
-
-    /// <summary>
-    /// Resolve a per-port decision-output template, falling back to the wildcard <c>*</c> entry.
-    /// Mirrors <c>WorkflowSagaStateMachine.ResolveDecisionOutputTemplate</c>.
-    /// </summary>
-    private static string? ResolveTemplate(
-        IReadOnlyDictionary<string, string>? templates,
-        string portName)
-    {
-        if (templates is null || templates.Count == 0)
-        {
-            return null;
-        }
-
-        foreach (var entry in templates)
-        {
-            if (string.Equals(entry.Key, portName, StringComparison.OrdinalIgnoreCase))
-            {
-                return entry.Value;
-            }
-        }
-
-        return templates.TryGetValue("*", out var wildcard) ? wildcard : null;
     }
 
     /// <summary>
@@ -1563,7 +1537,7 @@ public sealed class DryRunExecutor
         var renderPort = node.OutputPorts.FirstOrDefault() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(renderTemplate) && decisionOutputTemplates is { Count: > 0 })
         {
-            renderTemplate = ResolveTemplate(decisionOutputTemplates, renderPort);
+            renderTemplate = DecisionTemplateRenderer.ResolveTemplate(decisionOutputTemplates, renderPort);
         }
 
         string? renderedPreview = null;

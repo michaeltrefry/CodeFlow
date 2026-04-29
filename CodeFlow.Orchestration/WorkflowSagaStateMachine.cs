@@ -807,12 +807,12 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             && effectiveOutputRef is not null
             && !string.IsNullOrWhiteSpace(message.AgentKey))
         {
-            var templateRenderer = services.GetRequiredService<Runtime.IScribanTemplateRenderer>();
+            var decisionRenderer = services.GetRequiredService<IDecisionTemplateRenderer>();
             var templateOutcome = await TryApplyDecisionOutputTemplateAsync(
                 context,
                 agentConfigRepo,
                 artifactStore,
-                templateRenderer,
+                decisionRenderer,
                 saga,
                 message,
                 effectivePortName,
@@ -1372,7 +1372,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         IAgentConfigRepository agentConfigRepo,
         IArtifactStore artifactStore,
-        Runtime.IScribanTemplateRenderer templateRenderer,
+        IDecisionTemplateRenderer decisionRenderer,
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message,
         string effectivePortName,
@@ -1387,15 +1387,6 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 context.CancellationToken);
         }
         catch (AgentConfigNotFoundException)
-        {
-            return DecisionOutputTemplateOutcome.None;
-        }
-
-        var template = ResolveDecisionOutputTemplate(
-            agentConfig.Configuration.DecisionOutputTemplates,
-            effectivePortName);
-
-        if (template is null)
         {
             return DecisionOutputTemplateOutcome.None;
         }
@@ -1416,67 +1407,33 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 context.CancellationToken);
         }
 
-        var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
-        var decisionName = message.OutputPortName ?? string.Empty;
+        var inputs = new DecisionTemplateInputs(
+            DecisionName: message.OutputPortName ?? string.Empty,
+            EffectivePortName: effectivePortName,
+            OutputText: outputText,
+            OutputJson: outputJson,
+            InputJson: inputJson,
+            ContextInputs: DeserializeContextInputs(saga.InputsJson),
+            WorkflowInputs: DeserializeContextInputs(saga.WorkflowInputsJson));
 
-        var scope = DecisionOutputTemplateContext.Build(
-            decision: decisionName,
-            outputPortName: effectivePortName,
-            outputText: outputText,
-            outputJson: IsStructured(outputJson) ? outputJson : null,
-            inputJson: inputJson,
-            contextInputs: contextInputs,
-            workflowInputs: workflowInputs);
-
-        string rendered;
-        try
+        var result = decisionRenderer.Render(agentConfig, inputs, context.CancellationToken);
+        switch (result)
         {
-            rendered = templateRenderer.Render(template, scope, context.CancellationToken);
+            case DecisionTemplateRenderResult.Skipped:
+                return DecisionOutputTemplateOutcome.None;
+            case DecisionTemplateRenderResult.Failed failed:
+                return new DecisionOutputTemplateOutcome(null, $"Decision output template failed: {failed.Reason}");
+            case DecisionTemplateRenderResult.Rendered rendered:
+                var overrideRef = await WriteOverrideArtifactAsync(
+                    artifactStore,
+                    saga,
+                    message.AgentKey,
+                    rendered.Text,
+                    context.CancellationToken);
+                return new DecisionOutputTemplateOutcome(overrideRef, null);
+            default:
+                throw new InvalidOperationException($"Unexpected render result: {result.GetType()}");
         }
-        catch (Runtime.PromptTemplateException ex)
-        {
-            return new DecisionOutputTemplateOutcome(null, $"Decision output template failed: {ex.Message}");
-        }
-
-        var overrideRef = await WriteOverrideArtifactAsync(
-            artifactStore,
-            saga,
-            message.AgentKey,
-            rendered,
-            context.CancellationToken);
-
-        return new DecisionOutputTemplateOutcome(overrideRef, null);
-    }
-
-    private static string? ResolveDecisionOutputTemplate(
-        IReadOnlyDictionary<string, string>? templates,
-        string portName)
-    {
-        if (templates is null || templates.Count == 0)
-        {
-            return null;
-        }
-
-        foreach (var entry in templates)
-        {
-            if (string.Equals(entry.Key, portName, StringComparison.OrdinalIgnoreCase))
-            {
-                return entry.Value;
-            }
-        }
-
-        if (templates.TryGetValue("*", out var wildcard))
-        {
-            return wildcard;
-        }
-
-        return null;
-    }
-
-    private static bool IsStructured(JsonElement element)
-    {
-        return element.ValueKind is JsonValueKind.Object or JsonValueKind.Array;
     }
 
     private static string TryReadOutputText(JsonElement element)
