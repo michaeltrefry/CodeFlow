@@ -141,6 +141,7 @@ public static class HostExtensions
 
         services.AddSingleton<ModelClientRegistry>(provider => BuildModelClientRegistry(provider));
         services.AddSingleton<IScribanTemplateRenderer, ScribanTemplateRenderer>();
+        services.AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>();
         services.AddSingleton<IRetryContextBuilder, RetryContextBuilder>();
         services.AddSingleton<ContextAssembler>();
         services.AddSingleton<HostToolProvider>(sp =>

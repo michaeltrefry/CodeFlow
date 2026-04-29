@@ -16,10 +16,10 @@ using Testcontainers.RabbitMq;
 namespace CodeFlow.Orchestration.Tests;
 
 /// <summary>
-/// End-to-end coverage for sc-43: <see cref="WorkflowNodeKind.Swarm"/> with the Sequential
-/// protocol. Each test seeds a workflow Start → Swarm → Sink, scripts the swarm-contributor and
-/// swarm-synthesizer agents through a fake invoker, and asserts the saga's terminal state +
-/// decision ledger reflect the expected per-contributor / synthesizer rows.
+/// End-to-end coverage for sc-43 (Sequential) and sc-46 (Coordinator) protocols on
+/// <see cref="WorkflowNodeKind.Swarm"/>. Each test seeds a workflow Start → Swarm → Sink, scripts
+/// the configured swarm agents through a fake invoker, and asserts the saga's terminal state +
+/// decision ledger reflect the expected per-step rows.
 /// </summary>
 [Collection("Bus integration")]
 [Trait("Category", "EndToEnd")]
@@ -197,6 +197,173 @@ public sealed class WorkflowSagaSwarmEndToEndTests : IAsyncLifetime
         synthesizerInvocation.SwarmContext?.EarlyTerminated.Should().Be(true);
     }
 
+    [Fact]
+    public async Task SwarmNode_Coordinator_DispatchesParallelWorkersAndSynthesizes_HappyPath()
+    {
+        // Workflow: Start (kickoff) → Swarm (n=3, Coordinator) → Sink.
+        // The coordinator emits a JSON array of three assignments. The runtime fans out three
+        // parallel workers, each receiving its own assignment via the SwarmContext.Assignment
+        // template variable. Each worker contributes; the synthesizer sees all three.
+        var invoker = new RecordingScriptedAgentInvoker();
+        invoker.Queue("kickoff", new AgentDecision("Completed"), output: "the mission text");
+        invoker.Queue("swarm-coordinator", new AgentDecision("Completed"),
+            output: """["analyst: structural critique","critic: assumption check","historian: precedent search"]""");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: analyst\nFirst worker contribution.");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: critic\nSecond worker contribution.");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: historian\nThird worker contribution.");
+        invoker.Queue("swarm-synthesizer", new AgentDecision("Synthesized"), output: "synthesis-output");
+        invoker.Queue("sink", new AgentDecision("Completed"), output: "sink-done");
+
+        await using var harness = await SetupAsync(invoker);
+        var workflowKey = await SeedCoordinatorHappyPathWorkflowAsync(harness.Services, n: 3);
+        await harness.StartAsync();
+
+        var traceId = Guid.NewGuid();
+        await PublishKickoffAsync(harness, workflowKey, traceId);
+        var saga = await WaitForTerminalStateAsync(harness.Services, traceId, TimeSpan.FromSeconds(120));
+
+        saga.CurrentState.Should().Be(
+            nameof(WorkflowSagaStateMachine.Completed),
+            because: $"saga should reach Completed; FailureReason: {saga.FailureReason ?? "<none>"}");
+
+        // Decision ledger: kickoff, coordinator, three contributors, synthesizer, sink.
+        var decisions = saga.Decisions.OrderBy(d => d.Ordinal).ToArray();
+        var decisionSummary = string.Join(
+            "; ",
+            decisions.Select(d => $"{d.Ordinal}:{d.AgentKey}={d.Decision}"));
+        decisions.Select(d => d.AgentKey).Should().ContainInOrder(
+            new[] { "kickoff", "swarm-coordinator", "swarm-contributor", "swarm-contributor", "swarm-contributor", "swarm-synthesizer", "sink" },
+            because: $"actual: [{decisionSummary}]; coordinator calls: {invoker.CallsFor("swarm-coordinator")}, "
+                + $"worker calls: {invoker.CallsFor("swarm-contributor")}, "
+                + $"synthesizer calls: {invoker.CallsFor("swarm-synthesizer")}");
+
+        // Each worker received its 1-indexed Position + the configured MaxN of 3 + its assignment.
+        var workerInvocations = invoker.AllInvocationsFor("swarm-contributor");
+        workerInvocations.Should().HaveCount(3);
+        workerInvocations.Select(i => i.SwarmContext?.Position).Should().BeEquivalentTo(new int?[] { 1, 2, 3 });
+        workerInvocations.Should().OnlyContain(i => i.SwarmContext != null && i.SwarmContext.MaxN == 3);
+
+        var assignmentsByPosition = workerInvocations
+            .ToDictionary(i => i.SwarmContext!.Position!.Value, i => i.SwarmContext!.Assignment);
+        assignmentsByPosition[1].Should().Be("analyst: structural critique");
+        assignmentsByPosition[2].Should().Be("critic: assumption check");
+        assignmentsByPosition[3].Should().Be("historian: precedent search");
+
+        // The coordinator's own dispatch carried MaxN but no Position / Assignment.
+        var coordinatorInvocation = invoker.LastInvocationFor("swarm-coordinator")!;
+        coordinatorInvocation.SwarmContext?.Position.Should().BeNull();
+        coordinatorInvocation.SwarmContext?.MaxN.Should().Be(3);
+        coordinatorInvocation.SwarmContext?.Assignment.Should().BeNull();
+
+        // The synthesizer saw three contributions on workflow.swarmContributions.
+        var synthesizerInput = invoker.LastInvocationFor("swarm-synthesizer")!;
+        synthesizerInput.WorkflowContext.Should().ContainKey("swarmContributions");
+        synthesizerInput.WorkflowContext["swarmContributions"].GetArrayLength().Should().Be(3);
+        synthesizerInput.SwarmContext?.EarlyTerminated.Should().Be(false);
+
+        // After the swarm exits, swarm-* keys are scrubbed from the workflow bag the sink sees.
+        var sinkInvocation = invoker.LastInvocationFor("sink");
+        sinkInvocation!.WorkflowContext.Should().NotContainKey("swarmMission");
+        sinkInvocation.WorkflowContext.Should().NotContainKey("swarmContributions");
+    }
+
+    [Fact]
+    public async Task SwarmNode_Coordinator_ReturnsFewerThanN_DispatchesOnlyAssigned()
+    {
+        // n=4 max, but the coordinator chooses to use only 2 workers. The runtime caps to the
+        // coordinator's actual count and dispatches 2 — not 4.
+        var invoker = new RecordingScriptedAgentInvoker();
+        invoker.Queue("kickoff", new AgentDecision("Completed"), output: "the mission text");
+        invoker.Queue("swarm-coordinator", new AgentDecision("Completed"),
+            output: """["only-needed-1","only-needed-2"]""");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: analyst\nFirst.");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: critic\nSecond.");
+        invoker.Queue("swarm-synthesizer", new AgentDecision("Synthesized"), output: "synthesis-output");
+        invoker.Queue("sink", new AgentDecision("Completed"), output: "sink-done");
+
+        await using var harness = await SetupAsync(invoker);
+        var workflowKey = await SeedCoordinatorHappyPathWorkflowAsync(harness.Services, n: 4);
+        await harness.StartAsync();
+
+        var traceId = Guid.NewGuid();
+        await PublishKickoffAsync(harness, workflowKey, traceId);
+        var saga = await WaitForTerminalStateAsync(harness.Services, traceId, TimeSpan.FromSeconds(120));
+
+        saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Completed));
+        invoker.CallsFor("swarm-contributor").Should().Be(2);
+        invoker.CallsFor("swarm-synthesizer").Should().Be(1);
+
+        // Workers carried MaxN = 4 (the configured cap), not 2 (the coordinator's actual count).
+        var workerInvocations = invoker.AllInvocationsFor("swarm-contributor");
+        workerInvocations.Should().OnlyContain(i => i.SwarmContext != null && i.SwarmContext.MaxN == 4);
+
+        // Synthesizer saw 2 contributions, not 4.
+        var synthesizerInput = invoker.LastInvocationFor("swarm-synthesizer")!;
+        synthesizerInput.WorkflowContext["swarmContributions"].GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task SwarmNode_Coordinator_TokenBudgetOver10Pct_FailsBeforeSynthesizer()
+    {
+        // Budget = 4 tokens. Coordinator + 3 workers each spend 2 tokens (token usage is per
+        // ScriptedStep: input=1, output=1 → 2 per call). Cumulative after coordinator + 3 workers
+        // = 8 tokens — exactly 100% over. Hard cap is budget * 1.10 = 4.4; 8 > 4.4 so synthesizer
+        // is skipped and the saga terminates Failed with a budget-exceeded reason.
+        var invoker = new RecordingScriptedAgentInvoker();
+        invoker.Queue("kickoff", new AgentDecision("Completed"), output: "the mission text");
+        invoker.Queue("swarm-coordinator", new AgentDecision("Completed"),
+            output: """["a","b","c"]""");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: a\none.");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: b\ntwo.");
+        invoker.Queue("swarm-contributor", new AgentDecision("Contributed"),
+            output: "ROLE: c\nthree.");
+
+        await using var harness = await SetupAsync(invoker);
+        var workflowKey = await SeedCoordinatorBudgetWorkflowAsync(harness.Services, n: 3, tokenBudget: 4);
+        await harness.StartAsync();
+
+        var traceId = Guid.NewGuid();
+        await PublishKickoffAsync(harness, workflowKey, traceId);
+        var saga = await WaitForTerminalStateAsync(harness.Services, traceId, TimeSpan.FromSeconds(120));
+
+        saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Failed));
+        saga.FailureReason.Should().Contain("budget exceeded");
+        invoker.CallsFor("swarm-synthesizer").Should().Be(
+            0,
+            because: "all three workers ran but the synthesizer was skipped because budget > 10% over.");
+    }
+
+    [Fact]
+    public async Task SwarmNode_Coordinator_ReturnsMalformedAssignments_TerminatesFailed()
+    {
+        // Coordinator returns invalid JSON. Saga records the coordinator's decision row, then the
+        // assignment-parser flags the malformed payload and the saga terminates Failed without
+        // dispatching any workers.
+        var invoker = new RecordingScriptedAgentInvoker();
+        invoker.Queue("kickoff", new AgentDecision("Completed"), output: "the mission text");
+        invoker.Queue("swarm-coordinator", new AgentDecision("Completed"), output: "not even close to JSON");
+
+        await using var harness = await SetupAsync(invoker);
+        var workflowKey = await SeedCoordinatorHappyPathWorkflowAsync(harness.Services, n: 2);
+        await harness.StartAsync();
+
+        var traceId = Guid.NewGuid();
+        await PublishKickoffAsync(harness, workflowKey, traceId);
+        var saga = await WaitForTerminalStateAsync(harness.Services, traceId, TimeSpan.FromSeconds(120));
+
+        saga.CurrentState.Should().Be(nameof(WorkflowSagaStateMachine.Failed));
+        saga.FailureReason.Should().Contain("malformed assignments");
+        invoker.CallsFor("swarm-contributor").Should().Be(0);
+        invoker.CallsFor("swarm-synthesizer").Should().Be(0);
+    }
+
     private async Task<TestHarness> SetupAsync(IAgentInvoker invoker)
     {
         var configuration = BuildConfiguration();
@@ -212,7 +379,13 @@ public sealed class WorkflowSagaSwarmEndToEndTests : IAsyncLifetime
 
         var host = builder.Build();
         await host.ApplyDatabaseMigrationsAsync();
-        await SeedAgentsAsync(host.Services, "kickoff", "swarm-contributor", "swarm-synthesizer", "sink");
+        await SeedAgentsAsync(
+            host.Services,
+            "kickoff",
+            "swarm-contributor",
+            "swarm-synthesizer",
+            "swarm-coordinator",
+            "sink");
         return new TestHarness(host, endpointsReady);
     }
 
@@ -278,11 +451,31 @@ public sealed class WorkflowSagaSwarmEndToEndTests : IAsyncLifetime
     private static async Task<string> SeedSwarmTinyBudgetWorkflowAsync(IServiceProvider services)
         => await SeedSwarmWorkflowAsync(services, key: $"swarm-tiny-budget-{Guid.NewGuid():N}", n: 4, tokenBudget: 1);
 
+    private static async Task<string> SeedCoordinatorHappyPathWorkflowAsync(IServiceProvider services, int n)
+        => await SeedSwarmWorkflowAsync(
+            services,
+            key: $"swarm-coord-happy-{Guid.NewGuid():N}",
+            n: n,
+            tokenBudget: null,
+            protocol: "Coordinator");
+
+    private static async Task<string> SeedCoordinatorBudgetWorkflowAsync(
+        IServiceProvider services,
+        int n,
+        int tokenBudget)
+        => await SeedSwarmWorkflowAsync(
+            services,
+            key: $"swarm-coord-budget-{Guid.NewGuid():N}",
+            n: n,
+            tokenBudget: tokenBudget,
+            protocol: "Coordinator");
+
     private static async Task<string> SeedSwarmWorkflowAsync(
         IServiceProvider services,
         string key,
         int n,
-        int? tokenBudget)
+        int? tokenBudget,
+        string protocol = "Sequential")
     {
         await using var scope = services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
@@ -316,12 +509,14 @@ public sealed class WorkflowSagaSwarmEndToEndTests : IAsyncLifetime
                     NodeId = swarmNode,
                     Kind = WorkflowNodeKind.Swarm,
                     OutputPortsJson = swarmPortsJson,
-                    SwarmProtocol = "Sequential",
+                    SwarmProtocol = protocol,
                     SwarmN = n,
                     ContributorAgentKey = "swarm-contributor",
                     ContributorAgentVersion = 1,
                     SynthesizerAgentKey = "swarm-synthesizer",
                     SynthesizerAgentVersion = 1,
+                    CoordinatorAgentKey = protocol == "Coordinator" ? "swarm-coordinator" : null,
+                    CoordinatorAgentVersion = protocol == "Coordinator" ? 1 : null,
                     SwarmTokenBudget = tokenBudget,
                 },
                 new WorkflowNodeEntity

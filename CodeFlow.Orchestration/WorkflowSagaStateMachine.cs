@@ -725,8 +725,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
 
         // Reject completions from stale or duplicate rounds. Correlation by TraceId alone is
         // not enough — a delayed redelivery or a duplicate publish from an earlier round could
-        // otherwise mutate the saga and route to the wrong node.
-        if (message.RoundId != saga.CurrentRoundId)
+        // otherwise mutate the saga and route to the wrong node. Coordinator-protocol Swarm
+        // dispatch (sc-46) carves out a narrow exception: parallel worker rounds tracked in the
+        // saga's pending set are accepted even when CurrentRoundId points at a sibling worker.
+        if (message.RoundId != saga.CurrentRoundId
+            && !IsAcceptablePendingParallelRound(saga, message))
         {
             activity?.SetTag(CodeFlowActivity.TagNames.SagaState, "StaleRound_Ignored");
             activity?.SetTag("codeflow.saga.message_round_id", message.RoundId);
@@ -746,45 +749,79 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             saga.WorkflowVersion,
             context.CancellationToken);
 
-        // sc-43: when the saga is inside a Swarm node and the completion is from a contributor
-        // that succeeded (output port != Failed), append the contribution, dispatch the next
-        // contributor or the synthesizer, and return — the swarm-internal flow handles its own
-        // decision-row writes and dispatch. The synthesizer's completion (and contributor-Failed
-        // completions) fall through to the normal port-routing flow below: the saga state gets
-        // cleared so the swarm node looks like any other agent-bearing node from there on.
+        // sc-43 / sc-46: when the saga is inside a Swarm node, route the completion through the
+        // swarm-internal flow. Sequential contributors advance position-by-position; the
+        // Coordinator's coordinator agent dispatches N parallel workers; parallel workers fold
+        // back into the contributions array as they complete. Any of those return early (the
+        // dispatched message has been handled internally). The synthesizer's completion (and any
+        // Failed-port completion from a contributor / coordinator / worker) falls through to the
+        // normal port-routing flow below: the saga's swarm state gets cleared so the swarm node
+        // looks like any other agent-bearing node from there on.
         if (saga.CurrentSwarmNodeId is Guid swarmNodeId
             && swarmNodeId == message.FromNodeId)
         {
             var swarmNode = workflow.FindNode(swarmNodeId);
-            var isContributor = swarmNode is { Kind: WorkflowNodeKind.Swarm }
-                && IsSwarmContributorCompletion(swarmNode, message);
             var isFailedPort = string.Equals(message.OutputPortName, ImplicitFailedPort, StringComparison.Ordinal);
 
-            if (isContributor && !isFailedPort)
+            if (swarmNode is { Kind: WorkflowNodeKind.Swarm } && !isFailedPort)
             {
-                var swarmFailureReason = await HandleSwarmContributorCompletionAsync(
-                    context,
-                    agentConfigRepo,
-                    artifactStore,
-                    saga,
-                    workflow,
-                    swarmNode!,
-                    message);
+                var isCoordinator = IsSwarmCoordinatorCompletion(swarmNode, message);
+                var isContributor = IsSwarmContributorCompletion(swarmNode, message);
+                var isParallelDispatchActive = IsCoordinatorParallelDispatchActive(saga);
 
-                if (swarmFailureReason is not null)
+                string? swarmFailureReason = null;
+
+                if (isCoordinator)
                 {
-                    saga.PendingTransition = PendingTransitionFailed;
-                    saga.FailureReason = swarmFailureReason;
-                    saga.UpdatedAtUtc = DateTime.UtcNow;
+                    swarmFailureReason = await HandleSwarmCoordinatorCompletionAsync(
+                        context,
+                        agentConfigRepo,
+                        artifactStore,
+                        saga,
+                        workflow,
+                        swarmNode,
+                        message);
+                }
+                else if (isContributor && isParallelDispatchActive)
+                {
+                    swarmFailureReason = await HandleSwarmWorkerCompletionAsync(
+                        context,
+                        agentConfigRepo,
+                        artifactStore,
+                        saga,
+                        workflow,
+                        swarmNode,
+                        message);
+                }
+                else if (isContributor)
+                {
+                    swarmFailureReason = await HandleSwarmContributorCompletionAsync(
+                        context,
+                        agentConfigRepo,
+                        artifactStore,
+                        saga,
+                        workflow,
+                        swarmNode,
+                        message);
                 }
 
-                return;
+                if (isCoordinator || isContributor)
+                {
+                    if (swarmFailureReason is not null)
+                    {
+                        saga.PendingTransition = PendingTransitionFailed;
+                        saga.FailureReason = swarmFailureReason;
+                        saga.UpdatedAtUtc = DateTime.UtcNow;
+                        ClearSwarmState(saga);
+                    }
+                    return;
+                }
             }
 
-            // Synthesizer completion or contributor-Failed completion: clear swarm state so the
+            // Synthesizer completion or any Failed-port completion: clear swarm state so the
             // normal flow below routes the swarm node's outgoing edges based on the message's
-            // port name. For synthesizers that's the synthesized port; for failed contributors
-            // it's the Failed port the swarm node terminates on.
+            // port name. For synthesizers that's the synthesized port; for failed coordinators /
+            // contributors / workers it's the Failed port the swarm node terminates on.
             ClearSwarmState(saga);
         }
 
@@ -807,12 +844,12 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             && effectiveOutputRef is not null
             && !string.IsNullOrWhiteSpace(message.AgentKey))
         {
-            var templateRenderer = services.GetRequiredService<Runtime.IScribanTemplateRenderer>();
+            var decisionRenderer = services.GetRequiredService<IDecisionTemplateRenderer>();
             var templateOutcome = await TryApplyDecisionOutputTemplateAsync(
                 context,
                 agentConfigRepo,
                 artifactStore,
-                templateRenderer,
+                decisionRenderer,
                 saga,
                 message,
                 effectivePortName,
@@ -1373,7 +1410,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         BehaviorContext<WorkflowSagaStateEntity, AgentInvocationCompleted> context,
         IAgentConfigRepository agentConfigRepo,
         IArtifactStore artifactStore,
-        Runtime.IScribanTemplateRenderer templateRenderer,
+        IDecisionTemplateRenderer decisionRenderer,
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message,
         string effectivePortName,
@@ -1388,15 +1425,6 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 context.CancellationToken);
         }
         catch (AgentConfigNotFoundException)
-        {
-            return DecisionOutputTemplateOutcome.None;
-        }
-
-        var template = ResolveDecisionOutputTemplate(
-            agentConfig.Configuration.DecisionOutputTemplates,
-            effectivePortName);
-
-        if (template is null)
         {
             return DecisionOutputTemplateOutcome.None;
         }
@@ -1417,67 +1445,33 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 context.CancellationToken);
         }
 
-        var contextInputs = DeserializeContextInputs(saga.InputsJson);
-        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
-        var decisionName = message.OutputPortName ?? string.Empty;
+        var inputs = new DecisionTemplateInputs(
+            DecisionName: message.OutputPortName ?? string.Empty,
+            EffectivePortName: effectivePortName,
+            OutputText: outputText,
+            OutputJson: outputJson,
+            InputJson: inputJson,
+            ContextInputs: DeserializeContextInputs(saga.InputsJson),
+            WorkflowInputs: DeserializeContextInputs(saga.WorkflowInputsJson));
 
-        var scope = DecisionOutputTemplateContext.Build(
-            decision: decisionName,
-            outputPortName: effectivePortName,
-            outputText: outputText,
-            outputJson: IsStructured(outputJson) ? outputJson : null,
-            inputJson: inputJson,
-            contextInputs: contextInputs,
-            workflowInputs: workflowInputs);
-
-        string rendered;
-        try
+        var result = decisionRenderer.Render(agentConfig, inputs, context.CancellationToken);
+        switch (result)
         {
-            rendered = templateRenderer.Render(template, scope, context.CancellationToken);
+            case DecisionTemplateRenderResult.Skipped:
+                return DecisionOutputTemplateOutcome.None;
+            case DecisionTemplateRenderResult.Failed failed:
+                return new DecisionOutputTemplateOutcome(null, $"Decision output template failed: {failed.Reason}");
+            case DecisionTemplateRenderResult.Rendered rendered:
+                var overrideRef = await WriteOverrideArtifactAsync(
+                    artifactStore,
+                    saga,
+                    message.AgentKey,
+                    rendered.Text,
+                    context.CancellationToken);
+                return new DecisionOutputTemplateOutcome(overrideRef, null);
+            default:
+                throw new InvalidOperationException($"Unexpected render result: {result.GetType()}");
         }
-        catch (Runtime.PromptTemplateException ex)
-        {
-            return new DecisionOutputTemplateOutcome(null, $"Decision output template failed: {ex.Message}");
-        }
-
-        var overrideRef = await WriteOverrideArtifactAsync(
-            artifactStore,
-            saga,
-            message.AgentKey,
-            rendered,
-            context.CancellationToken);
-
-        return new DecisionOutputTemplateOutcome(overrideRef, null);
-    }
-
-    private static string? ResolveDecisionOutputTemplate(
-        IReadOnlyDictionary<string, string>? templates,
-        string portName)
-    {
-        if (templates is null || templates.Count == 0)
-        {
-            return null;
-        }
-
-        foreach (var entry in templates)
-        {
-            if (string.Equals(entry.Key, portName, StringComparison.OrdinalIgnoreCase))
-            {
-                return entry.Value;
-            }
-        }
-
-        if (templates.TryGetValue("*", out var wildcard))
-        {
-            return wildcard;
-        }
-
-        return null;
-    }
-
-    private static bool IsStructured(JsonElement element)
-    {
-        return element.ValueKind is JsonValueKind.Object or JsonValueKind.Array;
     }
 
     private static string TryReadOutputText(JsonElement element)

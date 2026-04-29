@@ -8,9 +8,11 @@ using System.Text.Json;
 namespace CodeFlow.Orchestration;
 
 /// <summary>
-/// Swarm-node dispatch helpers (sc-43, Sequential protocol). Coordinator dispatch lands in sc-46
-/// on top of this scaffolding. Lives in its own partial-class file so the swarm flow doesn't bury
-/// the existing single-step routing in <c>WorkflowSagaStateMachine.cs</c>.
+/// Swarm-node dispatch helpers. sc-43 shipped Sequential; sc-46 added Coordinator on top of the
+/// same scaffolding (parallel dispatch, stale-round guard extension, position-tracking via the
+/// pending-parallel set, Coordinator-specific token-budget cases). Lives in its own partial-class
+/// file so the swarm flow doesn't bury the existing single-step routing in
+/// <c>WorkflowSagaStateMachine.cs</c>.
 /// </summary>
 public sealed partial class WorkflowSagaStateMachine
 {
@@ -58,19 +60,6 @@ public sealed partial class WorkflowSagaStateMachine
                 + $"unknown protocol '{protocol}'. Validator should have rejected this on save.");
         }
 
-        // sc-43 ships Sequential only; sc-46 lights up Coordinator. Until then, refuse the
-        // dispatch with a clear failure rather than silently treating Coordinator as Sequential.
-        if (string.Equals(protocol, SwarmProtocolCoordinator, StringComparison.Ordinal))
-        {
-            saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason =
-                $"Swarm node {swarmNode.Id} configured with protocol 'Coordinator' is not yet "
-                + "dispatchable. Coordinator runtime ships in sc-46 — re-save the workflow with "
-                + "protocol 'Sequential' to run it now.";
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
         if (swarmNode.SwarmN is not int n || n < 1)
         {
             throw new InvalidOperationException(
@@ -84,11 +73,34 @@ public sealed partial class WorkflowSagaStateMachine
                 $"Swarm node {swarmNode.Id} is missing pinned contributor agent. Validator should have rejected this on save.");
         }
 
+        var isCoordinator = string.Equals(protocol, SwarmProtocolCoordinator, StringComparison.Ordinal);
+        if (isCoordinator
+            && (string.IsNullOrWhiteSpace(swarmNode.CoordinatorAgentKey)
+                || swarmNode.CoordinatorAgentVersion is not int))
+        {
+            throw new InvalidOperationException(
+                $"Swarm node {swarmNode.Id} (Coordinator) is missing pinned coordinator agent. Validator should have rejected this on save.");
+        }
+
         var missionText = await ReadArtifactAsTextAsync(artifactStore, inputRef, context.CancellationToken);
 
         SeedSwarmWorkflowContext(saga, missionText);
         saga.CurrentSwarmNodeId = swarmNode.Id;
         saga.CurrentInputRef = inputRef.ToString();
+
+        if (isCoordinator)
+        {
+            await PublishSwarmCoordinatorAsync(
+                context,
+                agentConfigRepo,
+                saga,
+                workflow,
+                swarmNode,
+                inputRef,
+                roundId,
+                n: n);
+            return;
+        }
 
         await PublishSwarmContributorAsync(
             context,
@@ -104,10 +116,11 @@ public sealed partial class WorkflowSagaStateMachine
 
     /// <summary>
     /// Returns true iff <paramref name="message"/> is a contributor completion for the given
-    /// Swarm node — i.e. the agent key matches the configured contributor and the swarm has not
-    /// yet reached the synthesizer's slot. Coordinator's coordinator-step also routes through
-    /// here in sc-46; for sc-43 the only non-contributor swarm-internal completion is the
-    /// synthesizer.
+    /// Swarm node — i.e. the agent key matches the configured contributor. In Sequential mode
+    /// every contributor flows through the position-by-position dispatch path; in Coordinator
+    /// mode the same agent key powers the parallel workers, distinguished by the round being
+    /// in the saga's <c>PendingParallelRoundIdsJson</c> set (see
+    /// <see cref="IsSwarmWorkerCompletion"/>).
     /// </summary>
     private static bool IsSwarmContributorCompletion(
         WorkflowNode swarmNode,
@@ -119,6 +132,71 @@ public sealed partial class WorkflowSagaStateMachine
         }
 
         return string.Equals(message.AgentKey, swarmNode.ContributorAgentKey, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns true iff <paramref name="message"/> is the coordinator agent's completion for the
+    /// given Coordinator-protocol Swarm node. Sequential nodes don't have a coordinator agent
+    /// configured, so this always returns false in that mode.
+    /// </summary>
+    private static bool IsSwarmCoordinatorCompletion(
+        WorkflowNode swarmNode,
+        AgentInvocationCompleted message)
+    {
+        if (string.IsNullOrWhiteSpace(swarmNode.CoordinatorAgentKey))
+        {
+            return false;
+        }
+
+        return string.Equals(message.AgentKey, swarmNode.CoordinatorAgentKey, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns true iff the saga is currently inside a Coordinator-protocol parallel dispatch — i.e.
+    /// <see cref="WorkflowSagaStateEntity.PendingParallelRoundIdsJson"/> holds a non-empty array of
+    /// pending round IDs the saga is awaiting. Worker completions route through
+    /// <see cref="HandleSwarmWorkerCompletionAsync"/>, contributor completions route through
+    /// <see cref="HandleSwarmContributorCompletionAsync"/>, and the runtime distinguishes them by
+    /// this flag.
+    /// </summary>
+    internal static bool IsCoordinatorParallelDispatchActive(WorkflowSagaStateEntity saga)
+    {
+        if (string.IsNullOrEmpty(saga.PendingParallelRoundIdsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(saga.PendingParallelRoundIdsJson);
+            return doc.RootElement.ValueKind == JsonValueKind.Array
+                && doc.RootElement.GetArrayLength() > 0;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stale-round guard extension for the Coordinator protocol: returns true iff the message's
+    /// round id appears in the saga's <see cref="WorkflowSagaStateEntity.PendingParallelRoundIdsJson"/>
+    /// pending set, AND the message's source node matches the saga's current swarm node. Used by
+    /// the saga's <c>RouteCompletionAsync</c> to accept out-of-order parallel-worker completions
+    /// without removing the per-message <c>RoundId == CurrentRoundId</c> check that protects
+    /// every other dispatch path from delayed redeliveries.
+    /// </summary>
+    internal static bool IsAcceptablePendingParallelRound(
+        WorkflowSagaStateEntity saga,
+        AgentInvocationCompleted message)
+    {
+        if (saga.CurrentSwarmNodeId is not Guid swarmNodeId
+            || swarmNodeId != message.FromNodeId)
+        {
+            return false;
+        }
+
+        return TryFindPendingParallelEntry(saga, message.RoundId, out _);
     }
 
     /// <summary>
@@ -517,4 +595,485 @@ public sealed partial class WorkflowSagaStateMachine
         return JsonDocument.Parse(stream.ToArray()).RootElement.Clone();
     }
 
+    /// <summary>
+    /// Coordinator-protocol entry: dispatches the configured coordinator agent for a single round.
+    /// The coordinator's output (an assignments payload — see <see cref="ParseCoordinatorAssignments"/>)
+    /// is parsed by <see cref="HandleSwarmCoordinatorCompletionAsync"/> when the completion arrives;
+    /// that handler then fans out N parallel workers.
+    /// </summary>
+    private static async Task PublishSwarmCoordinatorAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        IAgentConfigRepository agentConfigRepo,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode swarmNode,
+        Uri inputRef,
+        Guid roundId,
+        int n)
+    {
+        var coordinatorKey = swarmNode.CoordinatorAgentKey!;
+        var pinnedVersion = saga.GetPinnedVersion(coordinatorKey)
+            ?? swarmNode.CoordinatorAgentVersion
+            ?? await agentConfigRepo.GetLatestVersionAsync(coordinatorKey, context.CancellationToken);
+
+        if (saga.GetPinnedVersion(coordinatorKey) is null)
+        {
+            saga.PinAgentVersion(coordinatorKey, pinnedVersion);
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        saga.CurrentNodeId = swarmNode.Id;
+        saga.CurrentAgentKey = coordinatorKey;
+        saga.CurrentRoundId = roundId;
+        saga.CurrentRoundEnteredAtUtc = nowUtc;
+        saga.UpdatedAtUtc = nowUtc;
+
+        await context.Publish(new AgentInvokeRequested(
+            TraceId: saga.TraceId,
+            RoundId: roundId,
+            WorkflowKey: saga.WorkflowKey,
+            WorkflowVersion: saga.WorkflowVersion,
+            NodeId: swarmNode.Id,
+            AgentKey: coordinatorKey,
+            AgentVersion: pinnedVersion,
+            InputRef: inputRef,
+            ContextInputs: DeserializeContextInputs(saga.InputsJson),
+            CorrelationHeaders: null,
+            RetryContext: null,
+            ToolExecutionContext: null,
+            WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
+            ReviewRound: saga.ParentReviewRound,
+            ReviewMaxRounds: saga.ParentReviewMaxRounds,
+            OptOutLastRoundReminder: swarmNode.OptOutLastRoundReminder,
+            SwarmContext: new SwarmInvocationContext(
+                Position: null,
+                MaxN: n,
+                Assignment: null,
+                EarlyTerminated: false)));
+    }
+
+    /// <summary>
+    /// Handles the coordinator's completion: appends the coordinator's decision row, parses its
+    /// assignments payload, generates K = min(parsed, n) round IDs, persists the pending set on
+    /// the saga, and dispatches the K workers in parallel. Returns a non-null failure reason on
+    /// unrecoverable parsing errors (malformed JSON, empty assignment list, or read failure on the
+    /// artifact).
+    /// </summary>
+    private static async Task<string?> HandleSwarmCoordinatorCompletionAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        IAgentConfigRepository agentConfigRepo,
+        IArtifactStore artifactStore,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode swarmNode,
+        AgentInvocationCompleted message)
+    {
+        if (swarmNode.SwarmN is not int n || n < 1)
+        {
+            return $"Swarm node {swarmNode.Id} has no valid n at runtime — internal error.";
+        }
+
+        string artifactText;
+        try
+        {
+            artifactText = message.OutputRef is null
+                ? string.Empty
+                : await ReadArtifactAsTextAsync(artifactStore, message.OutputRef, context.CancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Swarm node {swarmNode.Id}: failed to read coordinator output artifact: {ex.Message}";
+        }
+
+        if (!ParseCoordinatorAssignments(artifactText, out var assignments, out var parseError))
+        {
+            return $"Swarm node {swarmNode.Id}: coordinator returned malformed assignments — {parseError}";
+        }
+
+        // The coordinator may pick fewer than n. Cap at n; reject empty (the design says an empty
+        // list is a hard failure, not "swarm produced no output").
+        if (assignments.Count == 0)
+        {
+            return $"Swarm node {swarmNode.Id}: coordinator returned no assignments. Treat as Failed rather than dispatching zero workers.";
+        }
+
+        if (assignments.Count > n)
+        {
+            assignments = assignments.GetRange(0, n);
+        }
+
+        // Token tracking for the coordinator call. Same cumulative counter Sequential uses.
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+        var tokensUsed = ReadSwarmTokensUsed(workflowBag);
+        tokensUsed += message.TokenUsage.InputTokens + message.TokenUsage.OutputTokens;
+        workflowBag[WorkflowVarSwarmTokensUsed] = JsonSerializer.SerializeToElement(tokensUsed);
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
+
+        // Coordinator gets its own decision row. Trace inspector renders it before the workers.
+        saga.AppendDecision(new DecisionRecord(
+            AgentKey: message.AgentKey,
+            AgentVersion: message.AgentVersion,
+            Decision: message.OutputPortName,
+            DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
+            RoundId: saga.CurrentRoundId,
+            RecordedAtUtc: DateTime.UtcNow,
+            NodeId: swarmNode.Id,
+            OutputPortName: message.OutputPortName,
+            InputRef: saga.CurrentInputRef,
+            OutputRef: message.OutputRef?.ToString(),
+            NodeEnteredAtUtc: saga.CurrentRoundEnteredAtUtc));
+
+        if (saga.CurrentInputRef is null
+            || !Uri.TryCreate(saga.CurrentInputRef, UriKind.Absolute, out var missionRef))
+        {
+            return $"Swarm node {swarmNode.Id}: missing mission input ref at coordinator dispatch.";
+        }
+
+        // Generate one round id per assignment, persist the pending set, dispatch all workers.
+        var pendingEntries = new List<PendingParallelEntry>(assignments.Count);
+        for (var i = 0; i < assignments.Count; i++)
+        {
+            pendingEntries.Add(new PendingParallelEntry(
+                RoundId: Guid.NewGuid(),
+                Position: i + 1));
+        }
+        WritePendingParallelEntries(saga, pendingEntries);
+
+        // CurrentRoundId after dispatch points at the most-recently-published worker's id; the
+        // stale-round guard's standard equality check will accept that worker's completion, and
+        // the IsAcceptablePendingParallelRound extension covers the others.
+        Guid lastRoundId = pendingEntries[^1].RoundId;
+        var dispatchedAtUtc = DateTime.UtcNow;
+        saga.CurrentRoundId = lastRoundId;
+        saga.CurrentRoundEnteredAtUtc = dispatchedAtUtc;
+        saga.CurrentAgentKey = swarmNode.ContributorAgentKey!;
+        saga.UpdatedAtUtc = dispatchedAtUtc;
+
+        var contributorKey = swarmNode.ContributorAgentKey!;
+        var contributorPinnedVersion = saga.GetPinnedVersion(contributorKey)
+            ?? swarmNode.ContributorAgentVersion
+            ?? await agentConfigRepo.GetLatestVersionAsync(contributorKey, context.CancellationToken);
+        if (saga.GetPinnedVersion(contributorKey) is null)
+        {
+            saga.PinAgentVersion(contributorKey, contributorPinnedVersion);
+        }
+
+        for (var i = 0; i < pendingEntries.Count; i++)
+        {
+            var entry = pendingEntries[i];
+            var assignment = assignments[i];
+
+            await context.Publish(new AgentInvokeRequested(
+                TraceId: saga.TraceId,
+                RoundId: entry.RoundId,
+                WorkflowKey: saga.WorkflowKey,
+                WorkflowVersion: saga.WorkflowVersion,
+                NodeId: swarmNode.Id,
+                AgentKey: contributorKey,
+                AgentVersion: contributorPinnedVersion,
+                InputRef: missionRef,
+                ContextInputs: DeserializeContextInputs(saga.InputsJson),
+                CorrelationHeaders: null,
+                RetryContext: null,
+                ToolExecutionContext: null,
+                WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
+                ReviewRound: saga.ParentReviewRound,
+                ReviewMaxRounds: saga.ParentReviewMaxRounds,
+                OptOutLastRoundReminder: swarmNode.OptOutLastRoundReminder,
+                SwarmContext: new SwarmInvocationContext(
+                    Position: entry.Position,
+                    MaxN: n,
+                    Assignment: assignment,
+                    EarlyTerminated: false)));
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Worker completion in Coordinator mode: looks the round id up in the pending set to recover
+    /// its 1-indexed position, appends a contribution row at that position, removes the entry from
+    /// the pending set. When the pending set drains, evaluates the token budget per
+    /// docs/swarm-node.md §"Token budget" Coordinator cases and either fails the swarm or
+    /// dispatches the synthesizer (with <c>EarlyTerminated</c> set when budget is over by &lt; 10%).
+    /// </summary>
+    private static async Task<string?> HandleSwarmWorkerCompletionAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        IAgentConfigRepository agentConfigRepo,
+        IArtifactStore artifactStore,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode swarmNode,
+        AgentInvocationCompleted message)
+    {
+        if (swarmNode.SwarmN is not int n || n < 1)
+        {
+            return $"Swarm node {swarmNode.Id} has no valid n at runtime — internal error.";
+        }
+
+        if (!TryFindPendingParallelEntry(saga, message.RoundId, out var pendingEntry))
+        {
+            // Defensive: caller (saga state machine) only routes here when the round is in the
+            // pending set, but if state was concurrently mutated this branch keeps the saga
+            // recoverable rather than throwing into the message-bus retry loop.
+            return $"Swarm node {swarmNode.Id}: worker completion for round {message.RoundId} arrived but the round is not in the pending parallel set.";
+        }
+
+        string artifactText;
+        try
+        {
+            artifactText = message.OutputRef is null
+                ? string.Empty
+                : await ReadArtifactAsTextAsync(artifactStore, message.OutputRef, context.CancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Swarm node {swarmNode.Id}: failed to read worker #{pendingEntry.Position} output artifact: {ex.Message}";
+        }
+
+        var (role, abstained) = ParseRoleLine(artifactText);
+
+        var workflowBag = new Dictionary<string, JsonElement>(
+            DeserializeContextInputs(saga.WorkflowInputsJson),
+            StringComparer.Ordinal);
+
+        var contributions = ReadSwarmContributionsArray(workflowBag);
+        contributions.Add(BuildContributionEntry(
+            position: pendingEntry.Position,
+            role: role,
+            abstained: abstained,
+            text: artifactText,
+            agentKey: message.AgentKey,
+            agentVersion: message.AgentVersion));
+        workflowBag[WorkflowVarSwarmContributions] = SerializeJsonArray(contributions);
+
+        var tokensUsed = ReadSwarmTokensUsed(workflowBag);
+        tokensUsed += message.TokenUsage.InputTokens + message.TokenUsage.OutputTokens;
+        workflowBag[WorkflowVarSwarmTokensUsed] = JsonSerializer.SerializeToElement(tokensUsed);
+        saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
+
+        // Append decision row at the worker's actual round id (not saga.CurrentRoundId, which
+        // points at the last-dispatched worker and would mis-attribute parallel rows on the trace).
+        // NodeEnteredAtUtc is the saga's CurrentRoundEnteredAtUtc (= the dispatch instant of the
+        // whole parallel batch), so the trace inspector can render workers as overlapping rows.
+        saga.AppendDecision(new DecisionRecord(
+            AgentKey: message.AgentKey,
+            AgentVersion: message.AgentVersion,
+            Decision: message.OutputPortName,
+            DecisionPayload: CloneDecisionPayload(message.DecisionPayload),
+            RoundId: message.RoundId,
+            RecordedAtUtc: DateTime.UtcNow,
+            NodeId: swarmNode.Id,
+            OutputPortName: message.OutputPortName,
+            InputRef: saga.CurrentInputRef,
+            OutputRef: message.OutputRef?.ToString(),
+            NodeEnteredAtUtc: saga.CurrentRoundEnteredAtUtc));
+
+        // Remove this worker from the pending set; if any are still in flight, just wait.
+        var remaining = ReadPendingParallelEntries(saga);
+        remaining.RemoveAll(e => e.RoundId == message.RoundId);
+        if (remaining.Count > 0)
+        {
+            WritePendingParallelEntries(saga, remaining);
+            return null;
+        }
+
+        // Pending set drained — evaluate the token budget per docs/swarm-node.md §"Token budget"
+        // Coordinator cases. Budget == null means unbounded; > 10% over → Failed; > 0% over →
+        // synthesizer with EarlyTerminated; otherwise normal synthesizer dispatch.
+        WritePendingParallelEntries(saga, []);
+
+        if (saga.CurrentInputRef is null
+            || !Uri.TryCreate(saga.CurrentInputRef, UriKind.Absolute, out var missionRef))
+        {
+            return $"Swarm node {swarmNode.Id}: missing mission input ref at synthesizer dispatch.";
+        }
+
+        var earlyTerminated = false;
+        if (swarmNode.SwarmTokenBudget is int budget && budget > 0)
+        {
+            // Threshold: budget * 1.10. Compare on long math to avoid double rounding around the
+            // boundary. budget is bounded to [1, int.MaxValue / 2] in practice (validator caps it
+            // implicitly via int). budget * 11 / 10 is safe for any int budget.
+            var hardCap = (long)budget * 11 / 10;
+            if (tokensUsed > hardCap)
+            {
+                var overPct = budget == 0 ? 0 : (tokensUsed - budget) * 100 / budget;
+                return $"Swarm token budget exceeded by {overPct}% before synthesizer dispatch (used {tokensUsed} of {budget}).";
+            }
+            if (tokensUsed > budget)
+            {
+                earlyTerminated = true;
+            }
+        }
+
+        await PublishSwarmSynthesizerAsync(
+            context,
+            agentConfigRepo,
+            saga,
+            workflow,
+            swarmNode,
+            missionRef,
+            earlyTerminated: earlyTerminated);
+        return null;
+    }
+
+    /// <summary>
+    /// Parses the coordinator agent's output text as a JSON array of assignments. Accepts:
+    /// <list type="bullet">
+    /// <item>An array of strings: <c>["assignment 1", "assignment 2"]</c> — each becomes the
+    /// matching worker's <c>swarmAssignment</c> verbatim.</item>
+    /// <item>An array of objects: <c>[{"role": "x", "subTask": "y"}, ...]</c> — each object is
+    /// JSON-stringified and passed as the assignment text. The contributor's prompt template
+    /// can re-parse if it wants to read individual fields.</item>
+    /// </list>
+    /// Anything else (top-level non-array, mixed primitive types in array, etc.) is treated as
+    /// malformed and returns false with a diagnostic in <paramref name="error"/>.
+    /// </summary>
+    internal static bool ParseCoordinatorAssignments(
+        string artifactText,
+        out List<string> assignments,
+        out string error)
+    {
+        assignments = new List<string>();
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(artifactText))
+        {
+            error = "coordinator output was empty.";
+            return false;
+        }
+
+        // Strip a leading ROLE: line if the coordinator agent's prompt happens to follow the same
+        // convention contributors do; the assignments JSON is whatever follows.
+        var jsonText = StripLeadingRoleLine(artifactText.Trim());
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonText);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                error = $"expected a JSON array at the top level, got {doc.RootElement.ValueKind}.";
+                return false;
+            }
+
+            foreach (var element in doc.RootElement.EnumerateArray())
+            {
+                switch (element.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        var stringValue = element.GetString();
+                        if (string.IsNullOrWhiteSpace(stringValue))
+                        {
+                            error = "an assignment string was empty or whitespace.";
+                            return false;
+                        }
+                        assignments.Add(stringValue);
+                        break;
+                    case JsonValueKind.Object:
+                        assignments.Add(element.GetRawText());
+                        break;
+                    default:
+                        error = $"assignment entries must be strings or objects, got {element.ValueKind}.";
+                        return false;
+                }
+            }
+        }
+        catch (JsonException ex)
+        {
+            error = $"could not parse coordinator output as JSON: {ex.Message}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string StripLeadingRoleLine(string artifactText)
+    {
+        if (string.IsNullOrEmpty(artifactText))
+        {
+            return artifactText;
+        }
+        if (!artifactText.StartsWith("ROLE:", StringComparison.Ordinal))
+        {
+            return artifactText;
+        }
+        var newlineAt = artifactText.IndexOf('\n');
+        return newlineAt < 0 ? string.Empty : artifactText[(newlineAt + 1)..].TrimStart();
+    }
+
+    /// <summary>
+    /// Pending-parallel-set entry: pairs a worker's round id with its 1-indexed assignment
+    /// position. Persisted as a JSON array on
+    /// <see cref="WorkflowSagaStateEntity.PendingParallelRoundIdsJson"/>.
+    /// </summary>
+    private readonly record struct PendingParallelEntry(Guid RoundId, int Position);
+
+    private static List<PendingParallelEntry> ReadPendingParallelEntries(WorkflowSagaStateEntity saga)
+    {
+        if (string.IsNullOrEmpty(saga.PendingParallelRoundIdsJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(saga.PendingParallelRoundIdsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            var entries = new List<PendingParallelEntry>();
+            foreach (var element in doc.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.Object) continue;
+                if (!element.TryGetProperty("r", out var roundEl)
+                    || roundEl.ValueKind != JsonValueKind.String
+                    || !Guid.TryParse(roundEl.GetString(), out var roundId)) continue;
+                if (!element.TryGetProperty("p", out var posEl)
+                    || posEl.ValueKind != JsonValueKind.Number
+                    || !posEl.TryGetInt32(out var position)) continue;
+                entries.Add(new PendingParallelEntry(roundId, position));
+            }
+            return entries;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static void WritePendingParallelEntries(
+        WorkflowSagaStateEntity saga,
+        IReadOnlyList<PendingParallelEntry> entries)
+    {
+        if (entries.Count == 0)
+        {
+            saga.PendingParallelRoundIdsJson = null;
+            return;
+        }
+
+        var arr = entries.Select(e => new { r = e.RoundId.ToString("D"), p = e.Position });
+        saga.PendingParallelRoundIdsJson = JsonSerializer.Serialize(arr);
+    }
+
+    private static bool TryFindPendingParallelEntry(
+        WorkflowSagaStateEntity saga,
+        Guid roundId,
+        out PendingParallelEntry entry)
+    {
+        foreach (var candidate in ReadPendingParallelEntries(saga))
+        {
+            if (candidate.RoundId == roundId)
+            {
+                entry = candidate;
+                return true;
+            }
+        }
+        entry = default;
+        return false;
+    }
 }
