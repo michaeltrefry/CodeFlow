@@ -89,6 +89,7 @@ public sealed class AssistantChatService(
                 pageContext,
                 overrideProvider,
                 overrideModel,
+                conversationId,
                 cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 

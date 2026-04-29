@@ -27,6 +27,9 @@ public sealed class AssistantSettingsEntityConfiguration : IEntityTypeConfigurat
         builder.Property(e => e.MaxTokensPerConversation)
             .HasColumnName("max_tokens_per_conversation");
 
+        builder.Property(e => e.AssignedAgentRoleId)
+            .HasColumnName("assigned_agent_role_id");
+
         builder.Property(e => e.UpdatedBy)
             .HasColumnName("updated_by")
             .HasMaxLength(256);
@@ -35,5 +38,12 @@ public sealed class AssistantSettingsEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("updated_at")
             .HasColumnType("datetime(6)")
             .IsRequired();
+
+        // FK to agent_roles with ON DELETE SET NULL: deleting an assigned role detaches the
+        // assistant from it rather than wiping the singleton settings row.
+        builder.HasOne<AgentRoleEntity>()
+            .WithMany()
+            .HasForeignKey(e => e.AssignedAgentRoleId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -28,6 +28,7 @@ public interface ICodeFlowAssistant
         AssistantPageContext? pageContext = null,
         string? overrideProvider = null,
         string? overrideModel = null,
+        Guid conversationId = default,
         CancellationToken cancellationToken = default);
 }
 
@@ -52,6 +53,8 @@ public sealed class CodeFlowAssistant(
     IAssistantSystemPromptProvider systemPromptProvider,
     AssistantToolDispatcher toolDispatcher,
     IAnthropicClient anthropicClient,
+    IRoleResolutionService roleResolution,
+    AgentRoleToolFactory roleToolFactory,
     ILogger<CodeFlowAssistant> logger) : ICodeFlowAssistant
 {
     public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
@@ -61,6 +64,7 @@ public sealed class CodeFlowAssistant(
         AssistantPageContext? pageContext = null,
         string? overrideProvider = null,
         string? overrideModel = null,
+        Guid conversationId = default,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
@@ -78,12 +82,38 @@ public sealed class CodeFlowAssistant(
                 ? contextBlock
                 : contextBlock + "\n\n" + systemPrompt;
         }
-        var allowedTools = FilterTools(toolDispatcher.Tools, toolPolicy);
+
+        // Merge the built-in IAssistantTool registry with adapters for the assigned agent role's
+        // host + MCP grants (if any). Demo policy still wins — if NoTools is in effect the merge
+        // is filtered down to nothing.
+        var dispatcher = toolDispatcher;
+        if (config.AssignedAgentRoleId is { } roleId && roleId > 0 && conversationId != Guid.Empty)
+        {
+            try
+            {
+                var resolved = await roleResolution.ResolveByRoleAsync(roleId, cancellationToken);
+                var roleTools = roleToolFactory.Build(conversationId, resolved);
+                if (roleTools.Count > 0)
+                {
+                    dispatcher = MergeDispatcher(toolDispatcher, roleTools);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Role resolution failures shouldn't crash the turn — log and fall back to the
+                // built-in registry so the user still gets an assistant response.
+                logger.LogWarning(ex,
+                    "Failed to resolve agent role {RoleId} for assistant conversation {ConversationId}; falling back to built-in tools only.",
+                    roleId, conversationId);
+            }
+        }
+
+        var allowedTools = FilterTools(dispatcher.Tools, toolPolicy);
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch
         {
-            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
-            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, allowedTools, cancellationToken),
+            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
+            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
             _ => throw new InvalidOperationException(
                 $"Assistant provider '{config.Provider}' is not supported. Expected one of: anthropic, openai, lmstudio.")
         };
@@ -107,12 +137,34 @@ public sealed class CodeFlowAssistant(
         return filtered;
     }
 
+    /// <summary>
+    /// Returns a per-turn dispatcher that contains the built-in IAssistantTool registrations plus
+    /// the role-granted adapters. Built-ins win on name collisions — a misconfigured role can't
+    /// shadow CodeFlow domain tools (e.g. <c>list_workflows</c>).
+    /// </summary>
+    private static AssistantToolDispatcher MergeDispatcher(
+        AssistantToolDispatcher builtIn,
+        IReadOnlyList<IAssistantTool> roleTools)
+    {
+        var merged = new List<IAssistantTool>(builtIn.Tools);
+        var existing = new HashSet<string>(merged.Select(t => t.Name), StringComparer.Ordinal);
+        foreach (var tool in roleTools)
+        {
+            if (existing.Add(tool.Name))
+            {
+                merged.Add(tool);
+            }
+        }
+        return new AssistantToolDispatcher(merged);
+    }
+
     private async IAsyncEnumerable<AssistantStreamItem> AskAnthropicAsync(
         AssistantRuntimeConfig config,
         string systemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         IReadOnlyCollection<IAssistantTool> allowedTools,
+        AssistantToolDispatcher dispatcher,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(LlmProviderKeys.Anthropic, cancellationToken)
@@ -233,7 +285,7 @@ public sealed class CodeFlowAssistant(
             {
                 var args = ParseToolArguments(pending.JsonBuffer.ToString());
                 yield return new AssistantToolCallStarted(pending.Id, pending.Name, args);
-                var result = await toolDispatcher.InvokeAsync(pending.Name, args, cancellationToken);
+                var result = await dispatcher.InvokeAsync(pending.Name, args, cancellationToken);
                 yield return new AssistantToolCallCompleted(pending.Id, pending.Name, result.ResultJson, result.IsError);
 
                 resultBlocks.Add((ToolResultBlockParam)new ToolResultBlockParam
@@ -302,6 +354,7 @@ public sealed class CodeFlowAssistant(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         IReadOnlyCollection<IAssistantTool> allowedTools,
+        AssistantToolDispatcher dispatcher,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var apiKey = await providerSettings.GetDecryptedApiKeyAsync(config.Provider, cancellationToken)
@@ -450,7 +503,7 @@ public sealed class CodeFlowAssistant(
                 var id = pending.Id ?? string.Empty;
                 var name = pending.Name ?? string.Empty;
                 yield return new AssistantToolCallStarted(id, name, args);
-                var result = await toolDispatcher.InvokeAsync(name, args, cancellationToken);
+                var result = await dispatcher.InvokeAsync(name, args, cancellationToken);
                 yield return new AssistantToolCallCompleted(id, name, result.ResultJson, result.IsError);
 
                 chatMessages.Add(new ToolChatMessage(id, result.ResultJson));

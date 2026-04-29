@@ -11,6 +11,7 @@ public sealed record AssistantSettings(
     string? Provider,
     string? Model,
     long? MaxTokensPerConversation,
+    long? AssignedAgentRoleId,
     string? UpdatedBy,
     DateTime? UpdatedAtUtc);
 
@@ -18,4 +19,5 @@ public sealed record AssistantSettingsWrite(
     string? Provider,
     string? Model,
     long? MaxTokensPerConversation,
+    long? AssignedAgentRoleId,
     string? UpdatedBy);

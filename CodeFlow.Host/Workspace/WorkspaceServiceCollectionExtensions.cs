@@ -59,6 +59,9 @@ public static class WorkspaceServiceCollectionExtensions
                 sp.GetRequiredService<IRepoUrlHostGuard>(),
                 sp.GetRequiredService<ILogger<WorkspaceService>>()));
 
+        services.AddSingleton<IAssistantWorkspaceProvider>(sp =>
+            new AssistantWorkspaceProvider(sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value));
+
         services.AddHostedService<WorkspaceRootInitializer>();
 
         return services;

@@ -47,6 +47,7 @@ public static class LlmProvidersEndpoints
             Provider: settings?.Provider,
             Model: settings?.Model,
             MaxTokensPerConversation: settings?.MaxTokensPerConversation,
+            AssignedAgentRoleId: settings?.AssignedAgentRoleId,
             UpdatedBy: settings?.UpdatedBy,
             UpdatedAtUtc: settings?.UpdatedAtUtc));
     }
@@ -54,6 +55,7 @@ public static class LlmProvidersEndpoints
     private static async Task<IResult> PutAssistantSettingsAsync(
         AssistantSettingsWriteRequest request,
         IAssistantSettingsRepository repository,
+        IAgentRoleRepository agentRoleRepository,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
@@ -71,6 +73,21 @@ public static class LlmProvidersEndpoints
         {
             errors["maxTokensPerConversation"] = new[] { "Cap must be zero (uncapped) or positive." };
         }
+        if (request.AssignedAgentRoleId is { } roleId)
+        {
+            if (roleId <= 0)
+            {
+                errors["assignedAgentRoleId"] = new[] { "Role id must be positive." };
+            }
+            else
+            {
+                var role = await agentRoleRepository.GetAsync(roleId, cancellationToken);
+                if (role is null || role.IsArchived)
+                {
+                    errors["assignedAgentRoleId"] = new[] { $"Agent role {roleId} is not available." };
+                }
+            }
+        }
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
@@ -80,12 +97,14 @@ public static class LlmProvidersEndpoints
             Provider: request.Provider,
             Model: request.Model,
             MaxTokensPerConversation: request.MaxTokensPerConversation,
+            AssignedAgentRoleId: request.AssignedAgentRoleId,
             UpdatedBy: currentUser.Id), cancellationToken);
 
         return Results.Ok(new AssistantSettingsResponse(
             Provider: saved.Provider,
             Model: saved.Model,
             MaxTokensPerConversation: saved.MaxTokensPerConversation,
+            AssignedAgentRoleId: saved.AssignedAgentRoleId,
             UpdatedBy: saved.UpdatedBy,
             UpdatedAtUtc: saved.UpdatedAtUtc));
     }

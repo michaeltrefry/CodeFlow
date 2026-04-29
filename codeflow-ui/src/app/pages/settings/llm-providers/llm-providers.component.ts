@@ -1,8 +1,11 @@
 import { Component, computed, inject, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { LlmProvidersApi } from '../../../core/llm-providers.api';
+import { AgentRolesApi } from '../../../core/agent-roles.api';
 import {
+  AgentRole,
   AssistantSettingsResponse,
   LLM_PROVIDER_KEYS,
   LlmProviderKey,
@@ -21,6 +24,7 @@ interface AssistantSettingsState {
   provider: LlmProviderKey | '';
   model: string;
   maxTokensPerConversation: number | null;
+  assignedAgentRoleId: number | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
@@ -67,7 +71,7 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
   selector: 'cf-llm-providers',
   standalone: true,
   imports: [
-    FormsModule, DatePipe,
+    FormsModule, DatePipe, RouterLink,
     PageHeaderComponent, ButtonComponent, ChipComponent, CardComponent,
   ],
   template: `
@@ -131,6 +135,29 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
                 <span class="field-hint">
                   Cumulative input + output tokens captured against a single conversation. When
                   exceeded, the assistant refuses further turns until the user starts a new conversation.
+                </span>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">
+                  Assigned agent role
+                  <span class="muted small">(optional — extends the assistant's tools)</span>
+                </span>
+                <select class="input"
+                        [ngModel]="assistant().assignedAgentRoleId ?? ''"
+                        (ngModelChange)="patchAssistant({ assignedAgentRoleId: parseRoleId($event) })"
+                        name="assistant_role"
+                        [disabled]="rolesLoading()">
+                  <option value="">— No role (built-in tools only) —</option>
+                  @for (role of agentRoles(); track role.id) {
+                    <option [value]="role.id">{{ role.displayName }} <span class="muted">({{ role.key }})</span></option>
+                  }
+                </select>
+                <span class="field-hint">
+                  When set, the assistant gains every host + MCP tool granted to that role. Host
+                  tools (read_file, apply_patch, run_command) operate against
+                  <span class="mono">/app/codeflow/assistant/&#123;conversationId&#125;</span>,
+                  created on first use. Edit a role's grants on the
+                  <a routerLink="/settings/roles">Agent roles</a> page.
                 </span>
               </label>
             </div>
@@ -274,6 +301,7 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
 })
 export class LlmProvidersComponent implements OnInit {
   private readonly api = inject(LlmProvidersApi);
+  private readonly rolesApi = inject(AgentRolesApi);
 
   protected readonly providers = signal<ProviderFormState[]>([]);
   protected readonly loading = signal(true);
@@ -287,9 +315,13 @@ export class LlmProvidersComponent implements OnInit {
     provider: '',
     model: '',
     maxTokensPerConversation: null,
+    assignedAgentRoleId: null,
     updatedBy: null,
     updatedAtUtc: null,
   });
+  // HAA-18 — agent roles loaded for the "Assigned agent role" dropdown.
+  protected readonly agentRoles = signal<AgentRole[]>([]);
+  protected readonly rolesLoading = signal(true);
   protected readonly LLM_PROVIDER_KEYS = LLM_PROVIDER_KEYS;
   protected readonly assistantModelOptions = computed<string[]>(() => {
     const providerKey = this.assistant().provider;
@@ -301,6 +333,7 @@ export class LlmProvidersComponent implements OnInit {
   ngOnInit(): void {
     this.load();
     this.loadAssistantSettings();
+    this.loadAgentRoles();
   }
 
   protected providerDisplayName(key: LlmProviderKey): string {
@@ -318,6 +351,13 @@ export class LlmProvidersComponent implements OnInit {
     return Math.floor(n);
   }
 
+  protected parseRoleId(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.floor(n);
+  }
+
   protected saveAssistantSettings(event: Event): void {
     event.preventDefault();
     const current = this.assistant();
@@ -327,9 +367,28 @@ export class LlmProvidersComponent implements OnInit {
       provider: current.provider || null,
       model: current.model || null,
       maxTokensPerConversation: current.maxTokensPerConversation,
+      assignedAgentRoleId: current.assignedAgentRoleId,
     }).subscribe({
       next: response => this.applyAssistantResponse(response),
       error: err => this.patchAssistant({ saving: false, error: this.formatError(err) }),
+    });
+  }
+
+  private loadAgentRoles(): void {
+    this.rolesLoading.set(true);
+    this.rolesApi.list(false).subscribe({
+      next: roles => {
+        // Keep the dropdown order stable and human-friendly: alphabetical by display name.
+        const sorted = [...roles].sort((a, b) => a.displayName.localeCompare(b.displayName));
+        this.agentRoles.set(sorted);
+        this.rolesLoading.set(false);
+      },
+      error: () => {
+        // Soft-fail: leave the dropdown empty (it still has the "no role" option) so the rest
+        // of the assistant defaults form remains usable.
+        this.agentRoles.set([]);
+        this.rolesLoading.set(false);
+      },
     });
   }
 
@@ -351,6 +410,7 @@ export class LlmProvidersComponent implements OnInit {
       provider: (response.provider ?? '') as LlmProviderKey | '',
       model: response.model ?? '',
       maxTokensPerConversation: response.maxTokensPerConversation ?? null,
+      assignedAgentRoleId: response.assignedAgentRoleId ?? null,
       updatedBy: response.updatedBy ?? null,
       updatedAtUtc: response.updatedAtUtc ?? null,
     });

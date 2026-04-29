@@ -324,6 +324,11 @@ export interface AssistantSettingsResponse {
   provider: LlmProviderKey | null;
   model: string | null;
   maxTokensPerConversation: number | null;
+  /**
+   * HAA-18 — optional agent role whose host + MCP tool grants are merged into the homepage
+   * assistant's tool surface. Null means "built-in tools only".
+   */
+  assignedAgentRoleId: number | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
@@ -332,6 +337,7 @@ export interface AssistantSettingsWriteRequest {
   provider: LlmProviderKey | null;
   model: string | null;
   maxTokensPerConversation: number | null;
+  assignedAgentRoleId: number | null;
 }
 
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';

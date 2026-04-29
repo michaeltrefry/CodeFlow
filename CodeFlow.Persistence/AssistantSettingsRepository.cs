@@ -24,6 +24,7 @@ public sealed class AssistantSettingsRepository(CodeFlowDbContext dbContext) : I
         var provider = NormalizeProvider(write.Provider);
         var model = NormalizeString(write.Model);
         var cap = write.MaxTokensPerConversation is { } v && v > 0 ? v : (long?)null;
+        var roleId = write.AssignedAgentRoleId is { } r && r > 0 ? r : (long?)null;
 
         if (entity is null)
         {
@@ -33,6 +34,7 @@ public sealed class AssistantSettingsRepository(CodeFlowDbContext dbContext) : I
                 Provider = provider,
                 Model = model,
                 MaxTokensPerConversation = cap,
+                AssignedAgentRoleId = roleId,
                 UpdatedBy = NormalizeString(write.UpdatedBy),
                 UpdatedAtUtc = now,
             };
@@ -43,6 +45,7 @@ public sealed class AssistantSettingsRepository(CodeFlowDbContext dbContext) : I
             entity.Provider = provider;
             entity.Model = model;
             entity.MaxTokensPerConversation = cap;
+            entity.AssignedAgentRoleId = roleId;
             entity.UpdatedBy = NormalizeString(write.UpdatedBy);
             entity.UpdatedAtUtc = now;
         }
@@ -55,6 +58,7 @@ public sealed class AssistantSettingsRepository(CodeFlowDbContext dbContext) : I
         Provider: entity.Provider,
         Model: entity.Model,
         MaxTokensPerConversation: entity.MaxTokensPerConversation,
+        AssignedAgentRoleId: entity.AssignedAgentRoleId,
         UpdatedBy: entity.UpdatedBy,
         UpdatedAtUtc: entity.UpdatedAtUtc == default
             ? null
