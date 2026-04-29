@@ -375,7 +375,7 @@ public sealed partial class WorkflowSagaStateMachine
                 Position: position,
                 MaxN: n,
                 Assignment: null,
-                EarlyTerminated: false)));
+                EarlyTerminated: null)));
     }
 
     /// <summary>
@@ -649,7 +649,7 @@ public sealed partial class WorkflowSagaStateMachine
                 Position: null,
                 MaxN: n,
                 Assignment: null,
-                EarlyTerminated: false)));
+                EarlyTerminated: null)));
     }
 
     /// <summary>
@@ -786,7 +786,7 @@ public sealed partial class WorkflowSagaStateMachine
                     Position: entry.Position,
                     MaxN: n,
                     Assignment: assignment,
-                    EarlyTerminated: false)));
+                    EarlyTerminated: null)));
         }
 
         return null;
