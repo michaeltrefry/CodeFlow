@@ -3455,6 +3455,7 @@ public sealed class WorkflowSagaStateMachineTests
             .AddSingleton<LogicNodeScriptHost>()
             .AddSingleton<Runtime.IScribanTemplateRenderer, Runtime.ScribanTemplateRenderer>()
             .AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>()
+            .AddSingleton<IRetryContextBuilder, RetryContextBuilder>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();

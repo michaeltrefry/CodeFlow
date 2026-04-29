@@ -981,7 +981,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         var targetNode = resolution.TerminalNode!;
         var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
-        var retryContext = BuildRetryContextForHandoff(saga, message);
+        var retryContextBuilder = services.GetRequiredService<IRetryContextBuilder>();
+        var retryContext = BuildRetryContextForHandoff(retryContextBuilder, saga, message);
 
         if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
         {
@@ -2349,6 +2350,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
+        IRetryContextBuilder retryContextBuilder,
         WorkflowSagaStateEntity saga,
         AgentInvocationCompleted message)
     {
@@ -2358,12 +2360,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         }
 
         var attemptNumber = CountPriorFailedAttempts(saga) + 1;
-        var (reason, summary) = ExtractFailureContext(message.DecisionPayload);
-
-        return new CodeFlow.Contracts.RetryContext(
-            AttemptNumber: attemptNumber,
-            PriorFailureReason: reason,
-            PriorAttemptSummary: summary);
+        var snapshot = retryContextBuilder.Build(attemptNumber, message.DecisionPayload);
+        return RetryContextBuilder.ToContract(snapshot);
     }
 
     private static int CountPriorFailedAttempts(WorkflowSagaStateEntity saga)
@@ -2374,82 +2372,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             && string.Equals(record.Decision, "Failed", StringComparison.Ordinal));
     }
 
-    private static (string? Reason, string? Summary) ExtractFailureContext(JsonElement? payload)
-    {
-        if (payload is null || payload.Value.ValueKind != JsonValueKind.Object)
-        {
-            return (null, null);
-        }
-
-        // The decision payload published by AgentInvocationConsumer wraps the agent's submitted
-        // payload under "payload" and adds a sibling "failure_context" object whose own "reason"
-        // mirrors the agent's. Older code paths and tests sometimes emit reason at the top level,
-        // so check all three locations and prefer the most-specific available source.
-        string? reason = null;
-        if (payload.Value.TryGetProperty("failure_context", out var failureContextProbe)
-            && failureContextProbe.ValueKind == JsonValueKind.Object
-            && failureContextProbe.TryGetProperty("reason", out var fcReasonProperty)
-            && fcReasonProperty.ValueKind == JsonValueKind.String)
-        {
-            reason = fcReasonProperty.GetString();
-        }
-
-        if (string.IsNullOrWhiteSpace(reason)
-            && payload.Value.TryGetProperty("payload", out var nestedPayload)
-            && nestedPayload.ValueKind == JsonValueKind.Object
-            && nestedPayload.TryGetProperty("reason", out var nestedReasonProperty)
-            && nestedReasonProperty.ValueKind == JsonValueKind.String)
-        {
-            reason = nestedReasonProperty.GetString();
-        }
-
-        if (string.IsNullOrWhiteSpace(reason)
-            && payload.Value.TryGetProperty("reason", out var reasonProperty)
-            && reasonProperty.ValueKind == JsonValueKind.String)
-        {
-            reason = reasonProperty.GetString();
-        }
-
-        if (!payload.Value.TryGetProperty("failure_context", out var failureContext)
-            || failureContext.ValueKind != JsonValueKind.Object)
-        {
-            return (reason, null);
-        }
-
-        string? lastOutput = null;
-        if (failureContext.TryGetProperty("last_output", out var lastOutputProperty)
-            && lastOutputProperty.ValueKind == JsonValueKind.String)
-        {
-            lastOutput = lastOutputProperty.GetString();
-        }
-
-        int? toolCallsExecuted = null;
-        if (failureContext.TryGetProperty("tool_calls_executed", out var toolCallsProperty)
-            && toolCallsProperty.ValueKind == JsonValueKind.Number
-            && toolCallsProperty.TryGetInt32(out var toolCalls))
-        {
-            toolCallsExecuted = toolCalls;
-        }
-
-        var summaryBuilder = new System.Text.StringBuilder();
-        if (!string.IsNullOrWhiteSpace(lastOutput))
-        {
-            summaryBuilder.Append("Last output: ").Append(lastOutput!.Trim());
-        }
-
-        if (toolCallsExecuted is { } calls)
-        {
-            if (summaryBuilder.Length > 0)
-            {
-                summaryBuilder.Append(Environment.NewLine);
-            }
-
-            summaryBuilder.Append("Tool calls executed: ").Append(calls);
-        }
-
-        var summary = summaryBuilder.Length == 0 ? null : summaryBuilder.ToString();
-        return (reason, summary);
-    }
+    private static (string? Reason, string? Summary) ExtractFailureContext(JsonElement? payload) =>
+        RetryContextBuilder.ExtractFailureContext(payload);
 
     private static JsonElement? CloneDecisionPayload(JsonElement? payload)
     {

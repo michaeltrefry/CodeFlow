@@ -399,6 +399,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             .AddSingleton<LogicNodeScriptHost>()
             .AddSingleton<CodeFlow.Runtime.IScribanTemplateRenderer, CodeFlow.Runtime.ScribanTemplateRenderer>()
             .AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>()
+            .AddSingleton<IRetryContextBuilder, RetryContextBuilder>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
