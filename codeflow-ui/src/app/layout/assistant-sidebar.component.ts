@@ -70,13 +70,18 @@ import { ThemeService } from '../core/theme.service';
     .sidebar {
       display: flex;
       flex-direction: column;
+      flex: 0 0 360px;
       min-height: 0;
+      height: 100%;
+      max-height: 100%;
+      overflow: hidden;
       background: var(--surface, #131519);
       border-left: 1px solid var(--border, rgba(255,255,255,0.08));
       width: 360px;
       transition: width 120ms ease;
     }
     .sidebar[data-collapsed='true'] {
+      flex-basis: 44px;
       width: 44px;
     }
     .sidebar-rail {
@@ -129,6 +134,7 @@ import { ThemeService } from '../core/theme.service';
     .sidebar-body {
       flex: 1 1 auto;
       min-height: 0;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
     }
@@ -137,6 +143,7 @@ import { ThemeService } from '../core/theme.service';
       display: flex;
       flex-direction: column;
       min-height: 0;
+      height: 100%;
     }
   `],
 })
