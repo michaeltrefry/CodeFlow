@@ -63,6 +63,16 @@ public interface IAssistantConversationRepository
         long inputTokensDelta,
         long outputTokensDelta,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// HAA-19 — Persists the workspace signature the assistant just used for this conversation.
+    /// On the next turn, the chat service compares the new resolved signature against this value
+    /// to decide whether to inject a one-shot "workspace switched" notice into the system prompt.
+    /// </summary>
+    Task SetActiveWorkspaceSignatureAsync(
+        Guid conversationId,
+        string? signature,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record AssistantConversationTokenTotals(long InputTokensTotal, long OutputTokensTotal);

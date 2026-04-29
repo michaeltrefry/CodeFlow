@@ -656,6 +656,9 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         /// <summary>HAA-18 — captures the conversation id passed to AskAsync so role-tool tests can assert plumbing.</summary>
         public Guid LastConversationId { get; private set; }
 
+        /// <summary>HAA-19 — captures the per-turn workspace override so workspace-switch tests can assert plumbing.</summary>
+        public AssistantWorkspaceTarget? LastWorkspaceOverride { get; private set; }
+
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
@@ -664,6 +667,7 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
             string? overrideProvider = null,
             string? overrideModel = null,
             Guid conversationId = default,
+            AssistantWorkspaceTarget? workspaceOverride = null,
             CancellationToken cancellationToken = default)
         {
             LastToolPolicy = toolPolicy;
@@ -671,6 +675,7 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
             LastOverrideProvider = overrideProvider;
             LastOverrideModel = overrideModel;
             LastConversationId = conversationId;
+            LastWorkspaceOverride = workspaceOverride;
             foreach (var item in reply)
             {
                 yield return item;

@@ -10,6 +10,7 @@ public sealed record AssistantConversation(
     Guid SyntheticTraceId,
     long InputTokensTotal,
     long OutputTokensTotal,
+    string? ActiveWorkspaceSignature,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc)
 {

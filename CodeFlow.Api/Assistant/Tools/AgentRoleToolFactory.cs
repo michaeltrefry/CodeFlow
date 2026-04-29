@@ -6,37 +6,34 @@ namespace CodeFlow.Api.Assistant.Tools;
 /// <summary>
 /// Turns a <see cref="ResolvedAgentTools"/> bundle (host-tool flags + MCP tool definitions)
 /// into a flat list of <see cref="IAssistantTool"/> adapters that the homepage assistant can
-/// dispatch alongside its built-in registry. The factory builds adapters lazily per conversation
-/// so the workspace context is bound to the right per-chat directory.
+/// dispatch alongside its built-in registry. Host-tool adapters bind to a caller-supplied
+/// <see cref="ToolWorkspaceContext"/> so the assistant can switch workspaces (default
+/// per-conversation dir vs. trace workdir) without rebuilding the registry.
 /// </summary>
 public sealed class AgentRoleToolFactory
 {
     private readonly HostToolProvider hostProvider;
     private readonly IMcpClient mcpClient;
-    private readonly IAssistantWorkspaceProvider workspaceProvider;
 
     public AgentRoleToolFactory(
         HostToolProvider hostProvider,
-        IMcpClient mcpClient,
-        IAssistantWorkspaceProvider workspaceProvider)
+        IMcpClient mcpClient)
     {
         ArgumentNullException.ThrowIfNull(hostProvider);
         ArgumentNullException.ThrowIfNull(mcpClient);
-        ArgumentNullException.ThrowIfNull(workspaceProvider);
 
         this.hostProvider = hostProvider;
         this.mcpClient = mcpClient;
-        this.workspaceProvider = workspaceProvider;
     }
 
     /// <summary>
-    /// Build adapters for every tool the role grants. Host-tool adapters lazily resolve a
-    /// <see cref="ToolWorkspaceContext"/> rooted at <c>{AssistantWorkspaceRoot}/{conversationId:N}</c>;
-    /// the directory is created on first invocation, not at adapter construction, so role-less
-    /// conversations never hit disk.
+    /// Build adapters for every tool the role grants. Host-tool adapters share a single
+    /// <see cref="ToolExecutionContext"/> wrapping the supplied workspace. MCP-tool adapters
+    /// don't need workspace context (the MCP server runs the work) so they get null.
     /// </summary>
-    public IReadOnlyList<IAssistantTool> Build(Guid conversationId, ResolvedAgentTools resolved)
+    public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext hostWorkspace, ResolvedAgentTools resolved)
     {
+        ArgumentNullException.ThrowIfNull(hostWorkspace);
         ArgumentNullException.ThrowIfNull(resolved);
 
         if ((!resolved.EnableHostTools || resolved.AllowedToolNames.Count == 0)
@@ -51,18 +48,7 @@ public sealed class AgentRoleToolFactory
 
         if (resolved.EnableHostTools)
         {
-            // Lazy workspace creation: the directory is only built when a host tool actually runs.
-            // Using a closure means every host adapter shares one workspace context per turn.
-            ToolExecutionContext? cachedContext = null;
-            ToolExecutionContext ContextFactory()
-            {
-                if (cachedContext is null)
-                {
-                    var workspace = workspaceProvider.GetOrCreateWorkspace(conversationId);
-                    cachedContext = new ToolExecutionContext(Workspace: workspace);
-                }
-                return cachedContext;
-            }
+            var hostContext = new ToolExecutionContext(Workspace: hostWorkspace);
 
             foreach (var toolName in resolved.AllowedToolNames)
             {
@@ -74,7 +60,7 @@ public sealed class AgentRoleToolFactory
                     continue;
                 }
 
-                tools.Add(new AgentRoleAssistantTool(schema, hostProvider, ContextFactory));
+                tools.Add(new AgentRoleAssistantTool(schema, hostProvider, () => hostContext));
             }
         }
 

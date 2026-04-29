@@ -209,6 +209,25 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
             conversation.OutputTokensTotal);
     }
 
+    public async Task SetActiveWorkspaceSignatureAsync(
+        Guid conversationId,
+        string? signature,
+        CancellationToken cancellationToken = default)
+    {
+        var conversation = await dbContext.AssistantConversations
+            .SingleOrDefaultAsync(c => c.Id == conversationId, cancellationToken)
+            ?? throw new InvalidOperationException($"Assistant conversation '{conversationId}' does not exist.");
+
+        var trimmed = string.IsNullOrWhiteSpace(signature) ? null : signature.Trim();
+        if (string.Equals(conversation.ActiveWorkspaceSignature, trimmed, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        conversation.ActiveWorkspaceSignature = trimmed;
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     private const int PreviewCharLimit = 120;
 
     private static string? TruncatePreview(string? content)
@@ -236,6 +255,7 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         SyntheticTraceId: entity.SyntheticTraceId,
         InputTokensTotal: entity.InputTokensTotal,
         OutputTokensTotal: entity.OutputTokensTotal,
+        ActiveWorkspaceSignature: entity.ActiveWorkspaceSignature,
         CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc));
 

@@ -11,7 +11,7 @@ import {
   ConversationResponse,
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
-import { AssistantStreamEvent, streamAssistantTurn } from '../../core/assistant-stream';
+import { AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowsApi } from '../../core/workflows.api';
@@ -125,6 +125,30 @@ type ThreadEntry =
               (click)="sendMessage(c.prompt)"
             >{{ c.label }}</button>
           }
+        </div>
+      }
+
+      @if (workspacePrompt(); as ws) {
+        <div class="ws-prompt" data-testid="workspace-switch-prompt">
+          <div class="ws-prompt-title">Use this trace’s workspace?</div>
+          <div class="ws-prompt-hint">
+            Host tools (<span class="mono">read_file</span>, <span class="mono">run_command</span>)
+            will operate on the trace’s files instead of your conversation’s.
+          </div>
+          <div class="ws-prompt-actions">
+            <button
+              type="button"
+              class="ws-prompt-btn ghost"
+              [disabled]="streaming()"
+              (click)="onDeclineWorkspaceSwitch('workspace:' + ws.traceId)"
+            >Keep mine</button>
+            <button
+              type="button"
+              class="ws-prompt-btn primary"
+              [disabled]="streaming()"
+              (click)="onAcceptWorkspaceSwitch('workspace:' + ws.traceId)"
+            >Switch</button>
+          </div>
         </div>
       }
 
@@ -242,6 +266,77 @@ type ThreadEntry =
       gap: 6px;
       padding: 8px 12px 4px;
       border-top: 1px solid var(--border, rgba(255,255,255,0.06));
+    }
+    .ws-prompt {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 8px 12px 0;
+      padding: 10px 12px;
+      border-top: none;
+      border: 1px solid var(--accent, #5765ff);
+      border-radius: var(--radius-md, 8px);
+      background: color-mix(in oklab, var(--accent, #5765ff) 8%, var(--surface, #131519));
+      box-sizing: border-box;
+      max-width: calc(100% - 24px);
+      overflow: hidden;
+      animation: workspace-prompt-slide-up 180ms ease-out;
+    }
+    @keyframes workspace-prompt-slide-up {
+      from { transform: translateY(8px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    .ws-prompt-title {
+      font-size: var(--fs-md, 13px);
+      font-weight: 600;
+      color: var(--text, #E7E9EE);
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .ws-prompt-hint {
+      font-size: var(--fs-sm, 12px);
+      color: var(--text-muted, #9aa3b2);
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .ws-prompt-hint .mono {
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+      font-size: 11px;
+      color: var(--text, #E7E9EE);
+    }
+    .ws-prompt-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      margin-top: 2px;
+      flex-wrap: wrap;
+    }
+    .ws-prompt-btn {
+      appearance: none;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border, rgba(255,255,255,0.16));
+      background: transparent;
+      color: var(--text, #E7E9EE);
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .ws-prompt-btn:hover:not(:disabled) {
+      background: var(--surface-2, rgba(255,255,255,0.06));
+    }
+    .ws-prompt-btn.primary {
+      background: var(--accent, #5765ff);
+      border-color: var(--accent, #5765ff);
+      color: #fff;
+    }
+    .ws-prompt-btn.primary:hover:not(:disabled) {
+      filter: brightness(1.1);
+    }
+    .ws-prompt-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     cf-chat-composer {
       flex: 0 0 auto;
@@ -365,6 +460,32 @@ export class ChatPanelComponent {
     () => this.defaults()?.models ?? [],
   );
 
+  /**
+   * HAA-19 — current workspace selection for this conversation. Defaults to 'conversation' (the
+   * assistant's own per-chat dir). Set to a trace id by user confirmation when navigating to a
+   * trace page; auto-reverts to 'conversation' when navigating away. The next outgoing turn
+   * carries the selection as a `workspaceOverride`.
+   */
+  private readonly activeWorkspace = signal<{ kind: 'conversation' } | { kind: 'trace'; traceId: string }>(
+    { kind: 'conversation' },
+  );
+
+  /**
+   * HAA-19 — pending confirmation prompt when the user lands on a trace page and we haven't yet
+   * asked / they haven't decided for that trace this visit. Resolves to null on Yes/No or on
+   * navigation away from the trace.
+   */
+  protected readonly workspacePrompt = signal<{ traceId: string } | null>(null);
+
+  /**
+   * HAA-19 — set of trace ids the user has explicitly declined for the current navigation cycle.
+   * Cleared on every page change so re-visiting a previously-declined trace re-prompts. Tracking
+   * acceptance state in {@link activeWorkspace} instead would mean "yes once, yes forever";
+   * separating decline state lets the user revisit the choice on each new trace visit.
+   */
+  private readonly declinedTraceIds = new Set<string>();
+
+
   private streamSub: Subscription | null = null;
 
   protected readonly thread = computed<ThreadEntry[]>(() => {
@@ -438,6 +559,39 @@ export class ChatPanelComponent {
       });
     });
 
+    // HAA-19 — observe the page context to drive the workspace prompt + auto-revert. On entry to
+    // a trace page that we haven't already accepted/declined, surface a confirmation chip. On
+    // leaving a trace page, snap the active workspace back to 'conversation' so the next turn
+    // carries the conversation override (and the chat service emits a switch-back notice).
+    effect(() => {
+      const ctx = this.pageContext();
+      untracked(() => {
+        if (ctx?.kind === 'trace' && ctx.traceId) {
+          const traceId = ctx.traceId;
+          const active = this.activeWorkspace();
+          if (active.kind === 'trace' && active.traceId === traceId) {
+            // Already on this trace's workspace; nothing to prompt.
+            this.workspacePrompt.set(null);
+            return;
+          }
+          if (this.declinedTraceIds.has(traceId)) {
+            // User declined for this trace this navigation cycle; don't badger them.
+            this.workspacePrompt.set(null);
+            return;
+          }
+          this.workspacePrompt.set({ traceId });
+        } else {
+          // Off the trace page: clear any pending prompt + revert to conversation workspace so
+          // the next turn signals the switch-back to the backend.
+          this.workspacePrompt.set(null);
+          this.declinedTraceIds.clear();
+          if (this.activeWorkspace().kind !== 'conversation') {
+            this.activeWorkspace.set({ kind: 'conversation' });
+          }
+        }
+      });
+    });
+
     // HAA-15/16 — load the admin-configured defaults + available models once per mount and seed
     // the cap. Selection preference is layered on top so a user's stored choice survives reloads
     // and only falls back to server defaults when nothing is stored.
@@ -462,6 +616,34 @@ export class ChatPanelComponent {
     this.selectedProvider.set(selection.provider);
     this.selectedModel.set(selection.model);
     this.preferences.save(selection);
+  }
+
+  /** HAA-19 — user accepted the workspace switch for the trace currently in pageContext. */
+  protected onAcceptWorkspaceSwitch(id: string): void {
+    const traceId = id.startsWith('workspace:') ? id.slice('workspace:'.length) : id;
+    if (!traceId) {
+      return;
+    }
+    this.activeWorkspace.set({ kind: 'trace', traceId });
+    this.workspacePrompt.set(null);
+  }
+
+  /** HAA-19 — user declined; stash the trace id so we don't re-prompt while they remain on it. */
+  protected onDeclineWorkspaceSwitch(id: string): void {
+    const traceId = id.startsWith('workspace:') ? id.slice('workspace:'.length) : id;
+    if (traceId) {
+      this.declinedTraceIds.add(traceId);
+    }
+    this.workspacePrompt.set(null);
+  }
+
+  /** HAA-19 — translate the active workspace into the wire DTO for the next turn. */
+  private buildWorkspaceOverride(): AssistantWorkspaceTargetDto | undefined {
+    const active = this.activeWorkspace();
+    if (active.kind === 'trace') {
+      return { kind: 'Trace', traceId: active.traceId };
+    }
+    return { kind: 'Conversation' };
   }
 
   /**
@@ -514,10 +696,12 @@ export class ChatPanelComponent {
     const dto = ctx ? pageContextToDto(ctx, window.location.pathname) : undefined;
     const provider = this.selectedProvider() ?? undefined;
     const model = this.selectedModel() ?? undefined;
+    const workspaceOverride = this.buildWorkspaceOverride();
     this.streamSub = streamAssistantTurn(conversationId, content, this.auth, {
       pageContext: dto,
       provider,
       model,
+      workspaceOverride,
     }).subscribe({
       next: evt => this.handleStreamEvent(evt),
       error: err => {

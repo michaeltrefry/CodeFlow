@@ -52,6 +52,10 @@ public sealed class AssistantConversationEntityConfiguration : IEntityTypeConfig
             .IsRequired()
             .HasDefaultValue(0L);
 
+        builder.Property(c => c.ActiveWorkspaceSignature)
+            .HasColumnName("active_workspace_signature")
+            .HasMaxLength(128);
+
         builder.Property(c => c.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")

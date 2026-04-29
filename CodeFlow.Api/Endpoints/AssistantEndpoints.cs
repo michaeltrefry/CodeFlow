@@ -385,6 +385,7 @@ public static class AssistantEndpoints
             request.PageContext,
             request.Provider,
             request.Model,
+            request.WorkspaceOverride,
             cancellationToken))
         {
             await WriteEventAsync(httpContext, evt, cancellationToken);
@@ -509,4 +510,5 @@ public sealed record SendMessageRequest(
     string Content,
     AssistantPageContext? PageContext = null,
     string? Provider = null,
-    string? Model = null);
+    string? Model = null,
+    AssistantWorkspaceTarget? WorkspaceOverride = null);
