@@ -65,25 +65,8 @@ export interface ChatToolCallView {
         <span class="tool-call-status-label">{{ statusLabel() }}</span>
       </summary>
       <div class="tool-call-body">
-        @if (view().argsPreview) {
-          <section class="tool-call-section">
-            <h4>Arguments</h4>
-            <pre>{{ view().argsPreview }}</pre>
-          </section>
-        }
-        @if (view().status === 'error' && view().errorMessage) {
-          <section class="tool-call-section">
-            <h4>Error</h4>
-            <pre class="tool-call-error">{{ view().errorMessage }}</pre>
-          </section>
-        } @else if (view().resultPreview) {
-          <section class="tool-call-section">
-            <h4>Result</h4>
-            <pre>{{ view().resultPreview }}</pre>
-          </section>
-        }
         @if (view().confirmation; as confirmation) {
-          <section class="tool-call-section" data-testid="tool-confirmation">
+          <section class="tool-call-section tool-call-confirm-section" data-testid="tool-confirmation">
             <cf-chat-confirmation-chip
               [view]="chipView()"
               [disabled]="confirmation.state === 'applying'"
@@ -124,6 +107,23 @@ export interface ChatToolCallView {
             @if (confirmation.state === 'cancelled') {
               <p class="tool-confirmation-status">Cancelled.</p>
             }
+          </section>
+        }
+        @if (view().argsPreview) {
+          <section class="tool-call-section">
+            <h4>Arguments</h4>
+            <pre>{{ view().argsPreview }}</pre>
+          </section>
+        }
+        @if (view().status === 'error' && view().errorMessage) {
+          <section class="tool-call-section">
+            <h4>Error</h4>
+            <pre class="tool-call-error">{{ view().errorMessage }}</pre>
+          </section>
+        } @else if (view().resultPreview) {
+          <section class="tool-call-section">
+            <h4>Result</h4>
+            <pre>{{ view().resultPreview }}</pre>
           </section>
         }
       </div>
@@ -190,6 +190,13 @@ export interface ChatToolCallView {
     }
     .tool-call-error {
       color: var(--sem-red, #f85149);
+    }
+    /* When a confirmation chip is present, give it the room a 2px-bordered + glowing chip needs
+       and put a hairline underneath so the Arguments/Result sections below visually separate. */
+    .tool-call-confirm-section {
+      padding: 4px 0 12px;
+      margin-bottom: 4px;
+      border-bottom: 1px dashed var(--border, rgba(255,255,255,0.08));
     }
     .tool-confirmation-status {
       margin: 6px 0 0 0;
