@@ -61,7 +61,7 @@ public static class AssistantEndpoints
         }
         catch (ArgumentException ex)
         {
-            return Results.BadRequest(new { error = ex.Message });
+            return ApiResults.BadRequest(ex.Message);
         }
 
         // Demo mode is homepage-only. Entity-scoped conversations require a real user because
@@ -258,8 +258,16 @@ public static class AssistantEndpoints
 
         if (request is null || string.IsNullOrWhiteSpace(request.Content))
         {
+            // F-005: SSE endpoint can't return IResult here (the handler has already taken
+            // ownership of the response). Mirrors ApiResults.BadRequest's ProblemDetails shape.
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await httpContext.Response.WriteAsJsonAsync(new { error = "content is required." }, cancellationToken);
+            await httpContext.Response.WriteAsJsonAsync(
+                new Microsoft.AspNetCore.Mvc.ProblemDetails
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Detail = "content is required.",
+                },
+                cancellationToken);
             return;
         }
 

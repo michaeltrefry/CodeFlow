@@ -35,7 +35,7 @@ public static class CascadeBumpEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         try
@@ -52,7 +52,7 @@ public static class CascadeBumpEndpoints
         }
         catch (CascadeBumpRootNotFoundException ex)
         {
-            return Results.NotFound(new { error = ex.Message });
+            return ApiResults.NotFound(ex.Message);
         }
     }
 
@@ -63,7 +63,7 @@ public static class CascadeBumpEndpoints
     {
         if (request is null)
         {
-            return Results.BadRequest(new { error = "Request body is required." });
+            return ApiResults.BadRequest("Request body is required.");
         }
 
         try
@@ -80,7 +80,7 @@ public static class CascadeBumpEndpoints
         }
         catch (CascadeBumpRootNotFoundException ex)
         {
-            return Results.NotFound(new { error = ex.Message });
+            return ApiResults.NotFound(ex.Message);
         }
     }
 }

@@ -225,7 +225,7 @@ public static class TracesEndpoints
             var resolved = await workflowRepository.TryGetAsync(request.WorkflowKey, version, cancellationToken);
             if (resolved is null)
             {
-                return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' version {request.WorkflowVersion} not found." });
+                return ApiResults.NotFound($"Workflow '{request.WorkflowKey}' version {request.WorkflowVersion} not found.");
             }
             workflow = resolved;
         }
@@ -234,7 +234,7 @@ public static class TracesEndpoints
             var latest = await workflowRepository.GetLatestAsync(request.WorkflowKey, cancellationToken);
             if (latest is null)
             {
-                return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' not found." });
+                return ApiResults.NotFound($"Workflow '{request.WorkflowKey}' not found.");
             }
             workflow = latest;
         }
@@ -579,7 +579,7 @@ public static class TracesEndpoints
     {
         if (string.IsNullOrWhiteSpace(uri) || !Uri.TryCreate(uri, UriKind.Absolute, out var artifactUri))
         {
-            return Results.BadRequest(new { error = "A valid artifact URI is required." });
+            return ApiResults.BadRequest("A valid artifact URI is required.");
         }
 
         ArtifactMetadata metadata;
@@ -593,7 +593,7 @@ public static class TracesEndpoints
         }
         catch (ArgumentException)
         {
-            return Results.BadRequest(new { error = "The artifact URI is not valid for this store." });
+            return ApiResults.BadRequest("The artifact URI is not valid for this store.");
         }
 
         // The authoritative owner is the trace whose saga wrote the artifact (metadata.TraceId).
@@ -719,14 +719,14 @@ public static class TracesEndpoints
 
         if (task is null)
         {
-            return Results.NotFound(new { error = "No pending HITL task for this trace." });
+            return ApiResults.NotFound("No pending HITL task for this trace.");
         }
 
         var startedAt = DateTimeOffset.UtcNow;
 
         if (string.IsNullOrWhiteSpace(request.OutputPortName))
         {
-            return Results.BadRequest(new { error = "OutputPortName is required." });
+            return ApiResults.BadRequest("OutputPortName is required.");
         }
 
         var outputPortName = request.OutputPortName.Trim();
@@ -746,7 +746,7 @@ public static class TracesEndpoints
 
         if (renderedOutput.Failure is not null)
         {
-            return Results.UnprocessableEntity(new { error = renderedOutput.Failure });
+            return ApiResults.UnprocessableEntity(renderedOutput.Failure);
         }
 
         var outputText = renderedOutput.Text

@@ -13,32 +13,29 @@ public sealed class RoleBasedPermissionChecker : IPermissionChecker
         rolePermissions = BuildRolePermissions(options.Value);
     }
 
-    public bool HasPermission(ICurrentUser user, string permission)
+    public Task<bool> HasPermissionAsync(ICurrentUser user, string permission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentException.ThrowIfNullOrWhiteSpace(permission);
 
         if (!user.IsAuthenticated)
         {
-            return false;
+            return Task.FromResult(false);
         }
 
+        // Role lookup is a pure in-memory check; we satisfy the async contract synchronously
+        // via Task.FromResult. The async signature stays so downstream code can swap implementations
+        // (e.g. CompanyPermissionChecker, which makes a remote call) without source-level changes.
         foreach (var role in user.Roles)
         {
             if (rolePermissions.TryGetValue(role, out var permissions) &&
                 permissions.Contains(permission))
             {
-                return true;
+                return Task.FromResult(true);
             }
         }
 
-        return false;
-    }
-
-    public Task<bool> HasPermissionAsync(ICurrentUser user, string permission, CancellationToken cancellationToken = default)
-    {
-        // Role lookup is a pure in-memory check; no need to go async.
-        return Task.FromResult(HasPermission(user, permission));
+        return Task.FromResult(false);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlySet<string>> BuildRolePermissions(AuthOptions options)
