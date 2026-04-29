@@ -41,9 +41,11 @@ public sealed record AgentInvokeRequested(
 /// null on synthesizer.</param>
 /// <param name="Assignment">Coordinator-mode worker assignment payload (free-form string the
 /// coordinator emitted for this position). Null in Sequential mode and on non-worker dispatches.</param>
-/// <param name="EarlyTerminated">True when the synthesizer is being dispatched after the token
-/// budget was exceeded mid-swarm; the synthesizer's prompt can branch on this to flag the
-/// partial input. False (or null) on every other dispatch.</param>
+/// <param name="EarlyTerminated">Synthesizer-only signal. True when the synthesizer is being
+/// dispatched after the token budget was exceeded mid-swarm; the synthesizer's prompt can branch
+/// on this to flag the partial input. False on a normal full-budget synthesizer dispatch.
+/// Null on contributor / worker / coordinator dispatches — the flag is meaningless there and
+/// is omitted from the prompt scope (F-024 cleanup).</param>
 public sealed record SwarmInvocationContext(
     int? Position,
     int? MaxN,
