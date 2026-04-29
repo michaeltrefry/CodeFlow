@@ -24,6 +24,17 @@ public interface IAssistantConversationRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Like <see cref="ListMessagesAsync"/> but excludes any messages already covered by a prior
+    /// auto-compaction (sequence ≤ <see cref="AssistantConversation.CompactedThroughSequence"/>).
+    /// The persisted <see cref="AssistantMessageRole.Summary"/> message lands above the watermark
+    /// and is included so the model still has the synthesized context. Used by the chat service
+    /// when shaping the outgoing LLM history.
+    /// </summary>
+    Task<IReadOnlyList<AssistantMessage>> ListMessagesForLlmAsync(
+        Guid conversationId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Appends a single message to the conversation. The repository assigns the next monotonic
     /// sequence number atomically and bumps <c>UpdatedAtUtc</c> on the parent conversation. Caller
     /// is responsible for ordering its own writes (one append at a time per conversation).
@@ -73,6 +84,27 @@ public interface IAssistantConversationRepository
         Guid conversationId,
         string? signature,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomic compaction commit: appends a <see cref="AssistantMessageRole.Summary"/> message at
+    /// the next sequence, advances <see cref="AssistantConversation.CompactedThroughSequence"/>
+    /// to the previous max sequence (so all prior messages are excluded from outgoing history),
+    /// and resets the cumulative input/output token totals so the next turn has a fresh budget.
+    /// Caller is responsible for generating <paramref name="summaryContent"/> via the configured
+    /// LLM before invoking this method.
+    /// </summary>
+    Task<AssistantCompactionResult> CompactAsync(
+        Guid conversationId,
+        string summaryContent,
+        string? provider,
+        string? model,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record AssistantConversationTokenTotals(long InputTokensTotal, long OutputTokensTotal);
+
+public sealed record AssistantCompactionResult(
+    AssistantMessage SummaryMessage,
+    int CompactedThroughSequence,
+    long InputTokensTotal,
+    long OutputTokensTotal);

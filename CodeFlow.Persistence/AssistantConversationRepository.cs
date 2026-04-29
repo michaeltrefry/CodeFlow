@@ -84,6 +84,30 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         return entities.Select(Map).ToArray();
     }
 
+    public async Task<IReadOnlyList<AssistantMessage>> ListMessagesForLlmAsync(
+        Guid conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        var watermark = await dbContext.AssistantConversations
+            .AsNoTracking()
+            .Where(c => c.Id == conversationId)
+            .Select(c => (int?)c.CompactedThroughSequence)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (watermark is null)
+        {
+            return Array.Empty<AssistantMessage>();
+        }
+
+        var entities = await dbContext.AssistantMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == conversationId && m.Sequence > watermark)
+            .OrderBy(m => m.Sequence)
+            .ToListAsync(cancellationToken);
+
+        return entities.Select(Map).ToArray();
+    }
+
     public async Task<AssistantMessage> AppendMessageAsync(
         Guid conversationId,
         AssistantMessageRole role,
@@ -209,6 +233,57 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
             conversation.OutputTokensTotal);
     }
 
+    public async Task<AssistantCompactionResult> CompactAsync(
+        Guid conversationId,
+        string summaryContent,
+        string? provider,
+        string? model,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(summaryContent);
+
+        var conversation = await dbContext.AssistantConversations
+            .SingleOrDefaultAsync(c => c.Id == conversationId, cancellationToken)
+            ?? throw new InvalidOperationException($"Assistant conversation '{conversationId}' does not exist.");
+
+        // Snapshot the highest-existing sequence as the watermark before we append the summary
+        // itself — the summary needs to live ABOVE the watermark so it survives history filtering.
+        var maxExistingSequence = await dbContext.AssistantMessages
+            .Where(m => m.ConversationId == conversationId)
+            .Select(m => (int?)m.Sequence)
+            .MaxAsync(cancellationToken) ?? 0;
+
+        var nextSequence = maxExistingSequence + 1;
+        var now = DateTime.UtcNow;
+
+        var summary = new AssistantMessageEntity
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversationId,
+            Sequence = nextSequence,
+            Role = AssistantMessageRole.Summary,
+            Content = summaryContent,
+            Provider = provider,
+            Model = model,
+            InvocationId = null,
+            CreatedAtUtc = now,
+        };
+        dbContext.AssistantMessages.Add(summary);
+
+        conversation.CompactedThroughSequence = maxExistingSequence;
+        conversation.InputTokensTotal = 0;
+        conversation.OutputTokensTotal = 0;
+        conversation.UpdatedAtUtc = now;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return new AssistantCompactionResult(
+            SummaryMessage: Map(summary),
+            CompactedThroughSequence: maxExistingSequence,
+            InputTokensTotal: 0,
+            OutputTokensTotal: 0);
+    }
+
     public async Task SetActiveWorkspaceSignatureAsync(
         Guid conversationId,
         string? signature,
@@ -256,6 +331,7 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         InputTokensTotal: entity.InputTokensTotal,
         OutputTokensTotal: entity.OutputTokensTotal,
         ActiveWorkspaceSignature: entity.ActiveWorkspaceSignature,
+        CompactedThroughSequence: entity.CompactedThroughSequence,
         CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc));
 

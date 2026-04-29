@@ -410,6 +410,13 @@ public static class AssistantEndpoints
                 conversationOutputTokensTotal = u.ConversationOutputTokensTotal,
             }, JsonOptions)),
             AssistantMessagePersisted m => ("assistant-message-persisted", JsonSerializer.Serialize(MapMessage(m.Message), JsonOptions)),
+            ConversationCompacted c => ("conversation-compacted", JsonSerializer.Serialize(new
+            {
+                summary = MapMessage(c.Summary),
+                compactedThroughSequence = c.CompactedThroughSequence,
+                conversationInputTokensTotal = c.ResetInputTokensTotal,
+                conversationOutputTokensTotal = c.ResetOutputTokensTotal,
+            }, JsonOptions)),
             ToolCallStarted tcs => ("tool-call", JsonSerializer.Serialize(new
             {
                 id = tcs.Id,

@@ -197,6 +197,63 @@ public sealed class AssistantConversationRepositoryTests : IAsyncLifetime
         (await repo.GetByIdAsync(traceOriginal.Id)).Should().NotBeNull("the original trace thread must be preserved");
     }
 
+    [Fact]
+    public async Task CompactAsync_appends_summary_advances_watermark_and_resets_token_totals()
+    {
+        var userId = $"user-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantConversationRepository(context);
+
+        var conv = await repo.GetOrCreateAsync(userId, AssistantConversationScope.Homepage());
+        await repo.AppendMessageAsync(conv.Id, AssistantMessageRole.User, "first user msg", null, null, null);
+        await repo.AppendMessageAsync(conv.Id, AssistantMessageRole.Assistant, "first assistant msg", "anthropic", "claude", Guid.NewGuid());
+        await repo.AppendMessageAsync(conv.Id, AssistantMessageRole.User, "second user msg", null, null, null);
+        await repo.AddTokenUsageAsync(conv.Id, inputTokensDelta: 800, outputTokensDelta: 200);
+
+        var result = await repo.CompactAsync(conv.Id, "synthesized summary", "anthropic", "claude");
+
+        result.CompactedThroughSequence.Should().Be(3, "the previous max sequence becomes the watermark");
+        result.InputTokensTotal.Should().Be(0);
+        result.OutputTokensTotal.Should().Be(0);
+        result.SummaryMessage.Role.Should().Be(AssistantMessageRole.Summary);
+        result.SummaryMessage.Sequence.Should().Be(4, "the summary lands above the watermark so it survives history filtering");
+        result.SummaryMessage.Content.Should().Be("synthesized summary");
+
+        // Persisted state matches the result.
+        var refreshed = await repo.GetByIdAsync(conv.Id);
+        refreshed!.CompactedThroughSequence.Should().Be(3);
+        refreshed.InputTokensTotal.Should().Be(0);
+        refreshed.OutputTokensTotal.Should().Be(0);
+
+        // Display history retains everything for the UI…
+        var allMessages = await repo.ListMessagesAsync(conv.Id);
+        allMessages.Should().HaveCount(4);
+
+        // …but the LLM-facing view drops the pre-watermark messages and keeps the summary.
+        var llmMessages = await repo.ListMessagesForLlmAsync(conv.Id);
+        llmMessages.Should().ContainSingle();
+        llmMessages[0].Role.Should().Be(AssistantMessageRole.Summary);
+        llmMessages[0].Content.Should().Be("synthesized summary");
+    }
+
+    [Fact]
+    public async Task ListMessagesForLlmAsync_when_uncompacted_returns_full_history()
+    {
+        var userId = $"user-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantConversationRepository(context);
+
+        var conv = await repo.GetOrCreateAsync(userId, AssistantConversationScope.Homepage());
+        await repo.AppendMessageAsync(conv.Id, AssistantMessageRole.User, "u1", null, null, null);
+        await repo.AppendMessageAsync(conv.Id, AssistantMessageRole.Assistant, "a1", "openai", "gpt", Guid.NewGuid());
+
+        var llm = await repo.ListMessagesForLlmAsync(conv.Id);
+        llm.Should().HaveCount(2);
+        llm.Select(m => m.Role).Should().Equal(new[] { AssistantMessageRole.User, AssistantMessageRole.Assistant });
+    }
+
     private async Task ForceUpdatedAtUtcAsync(Guid conversationId, DateTime updatedAtUtc)
     {
         await using var context = CreateDbContext();

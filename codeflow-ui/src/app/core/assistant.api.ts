@@ -11,7 +11,7 @@ export interface AssistantScope {
   entityId?: string;
 }
 
-export type AssistantMessageRole = 'system' | 'user' | 'assistant';
+export type AssistantMessageRole = 'system' | 'user' | 'assistant' | 'summary';
 
 export interface AssistantMessage {
   id: string;

@@ -88,6 +88,19 @@ public sealed class CodeFlowAssistant(
                 : contextBlock + "\n\n" + systemPrompt;
         }
 
+        // Auto-compaction: if a Summary-role message exists in history, hoist its content into
+        // the system prompt so both providers see it identically. The last summary wins (a
+        // conversation can have been compacted multiple times if it ran very long). Filtered
+        // history is what we actually send as messages.
+        var (summaryBlock, historyWithoutSummary) = ExtractSummary(history);
+        if (!string.IsNullOrEmpty(summaryBlock))
+        {
+            systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                ? summaryBlock
+                : summaryBlock + "\n\n" + systemPrompt;
+        }
+        history = historyWithoutSummary;
+
         // HAA-19 — Resolve the host-tool workspace based on the per-turn override. Detect a switch
         // versus the previously-persisted signature and prepend a one-shot notice to the system
         // prompt so the model can re-orient (different repos / files visible).
@@ -146,6 +159,38 @@ public sealed class CodeFlowAssistant(
         {
             yield return item;
         }
+    }
+
+    private static (string SummaryBlock, IReadOnlyList<AssistantMessage> Filtered) ExtractSummary(
+        IReadOnlyList<AssistantMessage> history)
+    {
+        if (history.Count == 0)
+        {
+            return (string.Empty, history);
+        }
+
+        AssistantMessage? latestSummary = null;
+        foreach (var msg in history)
+        {
+            if (msg.Role == AssistantMessageRole.Summary)
+            {
+                latestSummary = msg;
+            }
+        }
+
+        if (latestSummary is null)
+        {
+            return (string.Empty, history);
+        }
+
+        var filtered = history.Where(m => m.Role != AssistantMessageRole.Summary).ToArray();
+        var sb = new StringBuilder();
+        sb.AppendLine("<conversation-summary>");
+        sb.AppendLine("The earlier portion of this conversation was auto-compacted to fit the token budget. Treat the following synthesis as established context — do not ask the user to repeat themselves.");
+        sb.AppendLine();
+        sb.AppendLine(latestSummary.Content);
+        sb.Append("</conversation-summary>");
+        return (sb.ToString(), filtered);
     }
 
     private static IReadOnlyCollection<IAssistantTool> FilterTools(

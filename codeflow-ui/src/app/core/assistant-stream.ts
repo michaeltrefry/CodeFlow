@@ -33,6 +33,20 @@ export type AssistantStreamEvent =
   | { kind: 'tool-call'; id: string; name: string; arguments: unknown }
   | { kind: 'tool-result'; id: string; name: string; result: string; isError: boolean }
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
+  /**
+   * Auto-compaction emitted before the user's turn runs when the conversation has hit 95% of
+   * its per-conversation token cap. The server has just persisted `summary` (a `summary`-role
+   * message) and reset the cumulative input/output totals to zero. Renderers should swap the
+   * pre-watermark transcript for a divider tied to `summary` and rebase any running token
+   * tally on the reset values.
+   */
+  | {
+      kind: 'conversation-compacted';
+      summary: AssistantMessage;
+      compactedThroughSequence: number;
+      conversationInputTokensTotal: number;
+      conversationOutputTokensTotal: number;
+    }
   | { kind: 'done' }
   | { kind: 'error'; message: string };
 
@@ -212,6 +226,21 @@ function parseSseFrame(raw: string): AssistantStreamEvent | null {
     }
     case 'assistant-message-persisted':
       return { kind: 'assistant-message-persisted', message: payload as AssistantMessage };
+    case 'conversation-compacted': {
+      const c = payload as {
+        summary: AssistantMessage;
+        compactedThroughSequence?: number;
+        conversationInputTokensTotal?: number;
+        conversationOutputTokensTotal?: number;
+      };
+      return {
+        kind: 'conversation-compacted',
+        summary: c.summary,
+        compactedThroughSequence: c.compactedThroughSequence ?? 0,
+        conversationInputTokensTotal: c.conversationInputTokensTotal ?? 0,
+        conversationOutputTokensTotal: c.conversationOutputTokensTotal ?? 0,
+      };
+    }
     case 'tool-call': {
       const c = payload as { id: string; name: string; arguments: unknown };
       return { kind: 'tool-call', id: c.id, name: c.name, arguments: c.arguments };

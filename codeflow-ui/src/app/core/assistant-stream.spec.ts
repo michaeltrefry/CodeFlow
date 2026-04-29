@@ -79,6 +79,44 @@ describe('streamAssistantTurn', () => {
     ]);
   });
 
+  it('parses conversation-compacted frames with the persisted summary message and reset totals', async () => {
+    const summary: AssistantMessage = {
+      id: 'summary-1',
+      sequence: 5,
+      role: 'summary',
+      content: 'Earlier turns synthesized into one paragraph.',
+      provider: 'anthropic',
+      model: 'claude',
+      invocationId: null,
+      createdAtUtc: '2026-04-29T16:00:00Z',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([
+          `event: conversation-compacted\ndata: ${JSON.stringify({
+            summary,
+            compactedThroughSequence: 4,
+            conversationInputTokensTotal: 0,
+            conversationOutputTokensTotal: 0,
+          })}\n\n`,
+        ]),
+      ),
+    );
+
+    const events = await collect(streamAssistantTurn('conversation-1', 'Hello', authWithToken(null)));
+
+    expect(events).toEqual<AssistantStreamEvent[]>([
+      {
+        kind: 'conversation-compacted',
+        summary,
+        compactedThroughSequence: 4,
+        conversationInputTokensTotal: 0,
+        conversationOutputTokensTotal: 0,
+      },
+    ]);
+  });
+
   it('surfaces non-ok responses as observable errors', async () => {
     vi.stubGlobal(
       'fetch',

@@ -530,7 +530,10 @@ export class ChatPanelComponent {
   protected readonly thread = computed<ThreadEntry[]>(() => {
     const out: ThreadEntry[] = [];
     for (const m of this.history()) {
-      if (m.role === 'system') continue;
+      // Skip system + summary roles: system-role messages are internal scaffolding, and
+      // summary-role messages are auto-compaction synthesis hoisted into the model's system
+      // prompt server-side — neither belongs in the user-facing transcript.
+      if (m.role === 'system' || m.role === 'summary') continue;
       out.push({
         kind: 'message',
         id: m.id,

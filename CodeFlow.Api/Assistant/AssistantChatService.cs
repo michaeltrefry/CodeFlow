@@ -22,6 +22,7 @@ public sealed class AssistantChatService(
     ITokenUsageRecordRepository tokenUsageRepository,
     IPublishEndpoint publishEndpoint,
     IAssistantUserResolver userResolver,
+    IAssistantConversationCompactor compactor,
     ILogger<AssistantChatService> logger)
 {
     public async IAsyncEnumerable<AssistantTurnEvent> SendMessageAsync(
@@ -44,6 +45,43 @@ public sealed class AssistantChatService(
         // and a real configuration error will surface in <see cref="ICodeFlowAssistant.AskAsync"/>
         // below with the actual provider name in the message.
         var cap = await TryReadConversationCapAsync(overrideProvider, overrideModel, cancellationToken);
+
+        // Auto-compaction: at 95% of the cap, summarize history and reset cumulative totals so
+        // the next turn has a fresh budget. If compaction succeeds we re-fetch the conversation
+        // (totals are now zero) and continue normally. If it fails we fall through to the hard
+        // cap check below — the user will still get a clear refusal rather than a half-broken
+        // turn.
+        if (compactor.ShouldCompact(conversation, cap))
+        {
+            AssistantCompactionResult? compaction = null;
+            try
+            {
+                compaction = await compactor.CompactAsync(conversation, overrideProvider, overrideModel, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "Auto-compaction failed for conversation {ConversationId}; user will see the hard-cap refusal.",
+                    conversationId);
+            }
+
+            if (compaction is not null)
+            {
+                yield return new ConversationCompacted(
+                    compaction.SummaryMessage,
+                    compaction.CompactedThroughSequence,
+                    compaction.InputTokensTotal,
+                    compaction.OutputTokensTotal);
+
+                conversation = await conversations.GetByIdAsync(conversationId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Assistant conversation '{conversationId}' disappeared mid-turn.");
+            }
+        }
+
         if (cap is { } capValue
             && conversation.InputTokensTotal + conversation.OutputTokensTotal >= capValue)
         {
@@ -63,9 +101,10 @@ public sealed class AssistantChatService(
 
         yield return new UserMessagePersisted(userMessage);
 
-        var history = await conversations.ListMessagesAsync(conversationId, cancellationToken);
+        var history = await conversations.ListMessagesForLlmAsync(conversationId, cancellationToken);
         // Exclude the just-appended user message from history; assistant.AskAsync re-adds it as
-        // the current turn's prompt.
+        // the current turn's prompt. The repository already filtered messages below the
+        // compaction watermark.
         var historyForLlm = history
             .Where(m => m.Id != userMessage.Id)
             .OrderBy(m => m.Sequence)
@@ -270,6 +309,19 @@ public sealed record TokenUsageEmitted(
     long ConversationOutputTokensTotal) : AssistantTurnEvent;
 
 public sealed record AssistantMessagePersisted(AssistantMessage Message) : AssistantTurnEvent;
+
+/// <summary>
+/// Emitted when auto-compaction has just synthesized and persisted a summary message in place
+/// of older history. The frontend renders a divider tied to <see cref="Summary"/> and resets
+/// its running token tally to <see cref="ResetInputTokensTotal"/> /
+/// <see cref="ResetOutputTokensTotal"/>. Always precedes <see cref="UserMessagePersisted"/>
+/// for the current turn.
+/// </summary>
+public sealed record ConversationCompacted(
+    AssistantMessage Summary,
+    int CompactedThroughSequence,
+    long ResetInputTokensTotal,
+    long ResetOutputTokensTotal) : AssistantTurnEvent;
 
 public sealed record TurnFailed(string Message) : AssistantTurnEvent;
 

@@ -56,6 +56,11 @@ public sealed class AssistantConversationEntityConfiguration : IEntityTypeConfig
             .HasColumnName("active_workspace_signature")
             .HasMaxLength(128);
 
+        builder.Property(c => c.CompactedThroughSequence)
+            .HasColumnName("compacted_through_sequence")
+            .IsRequired()
+            .HasDefaultValue(0);
+
         builder.Property(c => c.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")

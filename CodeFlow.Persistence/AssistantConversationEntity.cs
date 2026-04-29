@@ -44,6 +44,14 @@ public sealed class AssistantConversationEntity
     /// </summary>
     public string? ActiveWorkspaceSignature { get; set; }
 
+    /// <summary>
+    /// Auto-compaction watermark. Messages with <c>Sequence ≤ CompactedThroughSequence</c> have
+    /// been replaced by a synthesized <see cref="AssistantMessageRole.Summary"/> message and are
+    /// excluded from the outgoing LLM history; they remain in the table for transcript display
+    /// and audit. Zero means "no compaction has happened yet".
+    /// </summary>
+    public int CompactedThroughSequence { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }

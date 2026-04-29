@@ -11,6 +11,7 @@ public sealed record AssistantConversation(
     long InputTokensTotal,
     long OutputTokensTotal,
     string? ActiveWorkspaceSignature,
+    int CompactedThroughSequence,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc)
 {

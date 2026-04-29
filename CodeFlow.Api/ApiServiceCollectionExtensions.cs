@@ -100,6 +100,7 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
         services.AddSingleton<IAssistantSystemPromptProvider, DefaultAssistantSystemPromptProvider>();
         services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
+        services.AddScoped<IAssistantConversationCompactor, AssistantConversationCompactor>();
         services.AddScoped<AssistantChatService>();
         services.AddScoped<IAssistantUserResolver, AssistantUserResolver>();
 
