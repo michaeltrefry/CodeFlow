@@ -1104,7 +1104,11 @@ export class ChatPanelComponent {
     this.conversationInputTokens.set(payload.conversation.inputTokensTotal ?? 0);
     this.conversationOutputTokens.set(payload.conversation.outputTokensTotal ?? 0);
     this.loading.set(false);
-    queueMicrotask(() => this.scrollToBottom());
+    // Initial-load scroll: the thread DOM isn't laid out yet when applyConversationPayload runs,
+    // so a microtask fires before scrollHeight is meaningful. Defer to the next animation frame
+    // so layout has settled. {force: true} routes through rAF; subsequent stream-event scrolls
+    // (mid-turn) keep the cheap microtask path.
+    this.scrollToBottom({ force: true });
   }
 
   private syncConversationOverrideInUrl(conversationId: string): void {
@@ -1120,13 +1124,20 @@ export class ChatPanelComponent {
     });
   }
 
-  private scrollToBottom(): void {
-    queueMicrotask(() => {
+  private scrollToBottom(options?: { force?: boolean }): void {
+    const apply = () => {
       const el = this.threadRef?.nativeElement;
       if (el) {
         el.scrollTop = el.scrollHeight;
       }
-    });
+    };
+    queueMicrotask(apply);
+    if (options?.force) {
+      // Initial conversation load: layout hasn't run yet on the just-rendered thread, so the
+      // microtask sees scrollHeight === clientHeight. A second pass after the next frame
+      // catches up once Angular has painted the new messages.
+      requestAnimationFrame(apply);
+    }
   }
 }
 
