@@ -1,23 +1,16 @@
 using CodeFlow.Runtime;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using System.Data;
 
 namespace CodeFlow.Persistence;
 
 public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentConfigRepository
 {
-    // Process-wide cache for immutable agent-config versions. Bounded by size and sliding
-    // expiration so long-lived processes don't retain every version ever touched.
-    private const int CacheSizeLimit = 1024;
-    private static readonly TimeSpan CacheSlidingExpiration = TimeSpan.FromMinutes(15);
-    private static readonly MemoryCache Cache = new(new MemoryCacheOptions
-    {
-        SizeLimit = CacheSizeLimit,
-    });
-    private static readonly MemoryCacheEntryOptions CacheEntryOptions = new MemoryCacheEntryOptions()
-        .SetSize(1)
-        .SetSlidingExpiration(CacheSlidingExpiration);
+    // Process-wide cache for immutable agent-config versions. Backed by the shared
+    // VersionedEntityCache helper (F-006) so the bounded-size + sliding-expiration policy is
+    // declared once for every version-pinned repository.
+    private static readonly VersionedEntityCache<AgentConfigCacheKey, AgentConfig> Cache =
+        new(sizeLimit: 1024, slidingExpiration: TimeSpan.FromMinutes(15));
 
     /// <summary>
     /// Test-only escape hatch: drop every cached <see cref="AgentConfig"/>. Required because the
@@ -34,7 +27,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         var normalizedKey = NormalizeKey(key);
         var cacheKey = AgentConfigCacheKey.Create(normalizedKey, version);
 
-        if (Cache.TryGetValue<AgentConfig>(cacheKey, out var cachedConfig) && cachedConfig is not null)
+        if (Cache.Get(cacheKey) is { } cachedConfig)
         {
             return cachedConfig;
         }
@@ -51,7 +44,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         }
 
         var mapped = Map(entity);
-        Cache.Set(cacheKey, mapped, CacheEntryOptions);
+        Cache.Set(cacheKey, mapped);
         return mapped;
     }
 
@@ -104,7 +97,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
-            Cache.Set(AgentConfigCacheKey.Create(normalizedKey, nextVersion), Map(entity, configuration), CacheEntryOptions);
+            Cache.Set(AgentConfigCacheKey.Create(normalizedKey, nextVersion), Map(entity, configuration));
 
             return nextVersion;
         });
@@ -183,7 +176,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             await transaction.CommitAsync(cancellationToken);
 
             var mapped = Map(entity);
-            Cache.Set(AgentConfigCacheKey.Create(forkKey, 1), mapped, CacheEntryOptions);
+            Cache.Set(AgentConfigCacheKey.Create(forkKey, 1), mapped);
             return mapped;
         });
     }
@@ -241,7 +234,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
-            Cache.Set(AgentConfigCacheKey.Create(normalizedTarget, nextVersion), Map(entity), CacheEntryOptions);
+            Cache.Set(AgentConfigCacheKey.Create(normalizedTarget, nextVersion), Map(entity));
             return nextVersion;
         });
     }

@@ -1,23 +1,15 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using System.Data;
 
 namespace CodeFlow.Persistence;
 
 public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowRepository
 {
-    // Process-wide cache for immutable workflow versions. Bounded by size (up to ~512 entries —
-    // workflow objects are small) and sliding expiration so long-lived processes don't retain
-    // every version they ever touched.
-    private const int CacheSizeLimit = 512;
-    private static readonly TimeSpan CacheSlidingExpiration = TimeSpan.FromMinutes(15);
-    private static readonly MemoryCache Cache = new(new MemoryCacheOptions
-    {
-        SizeLimit = CacheSizeLimit,
-    });
-    private static readonly MemoryCacheEntryOptions CacheEntryOptions = new MemoryCacheEntryOptions()
-        .SetSize(1)
-        .SetSlidingExpiration(CacheSlidingExpiration);
+    // Process-wide cache for immutable workflow versions. Backed by the shared
+    // VersionedEntityCache helper (F-006) so the bounded-size + sliding-expiration policy is
+    // declared once for every version-pinned repository.
+    private static readonly VersionedEntityCache<WorkflowCacheKey, Workflow> Cache =
+        new(sizeLimit: 512, slidingExpiration: TimeSpan.FromMinutes(15));
 
     public async Task<Workflow> GetAsync(
         string key,
@@ -27,7 +19,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         var normalizedKey = NormalizeKey(key);
         var cacheKey = WorkflowCacheKey.Create(normalizedKey, version);
 
-        if (Cache.TryGetValue<Workflow>(cacheKey, out var cachedWorkflow) && cachedWorkflow is not null)
+        if (Cache.Get(cacheKey) is { } cachedWorkflow)
         {
             return cachedWorkflow;
         }
@@ -43,7 +35,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         }
 
         var mapped = Map(entity);
-        Cache.Set(cacheKey, mapped, CacheEntryOptions);
+        Cache.Set(cacheKey, mapped);
         return mapped;
     }
 
@@ -62,7 +54,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
         }
 
         var mapped = Map(entity);
-        Cache.Set(WorkflowCacheKey.Create(normalizedKey, entity.Version), mapped, CacheEntryOptions);
+        Cache.Set(WorkflowCacheKey.Create(normalizedKey, entity.Version), mapped);
         return mapped;
     }
 
@@ -211,7 +203,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             await transaction.CommitAsync(cancellationToken);
 
             var mapped = Map(entity);
-            Cache.Set(WorkflowCacheKey.Create(normalizedKey, nextVersion), mapped, CacheEntryOptions);
+            Cache.Set(WorkflowCacheKey.Create(normalizedKey, nextVersion), mapped);
 
             return nextVersion;
         });
