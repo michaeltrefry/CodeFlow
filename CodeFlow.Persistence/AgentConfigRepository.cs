@@ -31,6 +31,19 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         int version,
         CancellationToken cancellationToken = default)
     {
+        var result = await TryGetAsync(key, version, cancellationToken);
+        if (result is null)
+        {
+            throw new AgentConfigNotFoundException(NormalizeKey(key), version);
+        }
+        return result;
+    }
+
+    public async Task<AgentConfig?> TryGetAsync(
+        string key,
+        int version,
+        CancellationToken cancellationToken = default)
+    {
         var normalizedKey = NormalizeKey(key);
         var cacheKey = AgentConfigCacheKey.Create(normalizedKey, version);
 
@@ -47,7 +60,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
 
         if (entity is null)
         {
-            throw new AgentConfigNotFoundException(normalizedKey, version);
+            return null;
         }
 
         var mapped = Map(entity);

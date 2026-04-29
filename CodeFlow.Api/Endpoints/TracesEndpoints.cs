@@ -220,25 +220,23 @@ public static class TracesEndpoints
         }
 
         Workflow workflow;
-        try
+        if (request.WorkflowVersion is int version)
         {
-            if (request.WorkflowVersion is int version)
+            var resolved = await workflowRepository.TryGetAsync(request.WorkflowKey, version, cancellationToken);
+            if (resolved is null)
             {
-                workflow = await workflowRepository.GetAsync(request.WorkflowKey, version, cancellationToken);
+                return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' version {request.WorkflowVersion} not found." });
             }
-            else
-            {
-                var latest = await workflowRepository.GetLatestAsync(request.WorkflowKey, cancellationToken);
-                if (latest is null)
-                {
-                    return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' not found." });
-                }
-                workflow = latest;
-            }
+            workflow = resolved;
         }
-        catch (WorkflowNotFoundException)
+        else
         {
-            return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' version {request.WorkflowVersion} not found." });
+            var latest = await workflowRepository.GetLatestAsync(request.WorkflowKey, cancellationToken);
+            if (latest is null)
+            {
+                return Results.NotFound(new { error = $"Workflow '{request.WorkflowKey}' not found." });
+            }
+            workflow = latest;
         }
 
         var startNode = workflow.StartNode;
@@ -802,12 +800,8 @@ public static class TracesEndpoints
         string outputPortName,
         CancellationToken cancellationToken)
     {
-        CodeFlow.Persistence.AgentConfig agentConfig;
-        try
-        {
-            agentConfig = await agentConfigRepo.GetAsync(task.AgentKey, task.AgentVersion, cancellationToken);
-        }
-        catch (AgentConfigNotFoundException)
+        var agentConfig = await agentConfigRepo.TryGetAsync(task.AgentKey, task.AgentVersion, cancellationToken);
+        if (agentConfig is null)
         {
             return new HitlRenderResult(null, null);
         }

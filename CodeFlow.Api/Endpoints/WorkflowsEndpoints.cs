@@ -374,15 +374,8 @@ public static class WorkflowsEndpoints
         IWorkflowRepository repository,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var workflow = await repository.GetAsync(key, version, cancellationToken);
-            return Results.Ok(MapDetail(workflow));
-        }
-        catch (WorkflowNotFoundException)
-        {
-            return Results.NotFound();
-        }
+        var workflow = await repository.TryGetAsync(key, version, cancellationToken);
+        return workflow is null ? Results.NotFound() : Results.Ok(MapDetail(workflow));
     }
 
     private static async Task<IResult> GetLatestAsync(
@@ -400,15 +393,8 @@ public static class WorkflowsEndpoints
         IWorkflowRepository repository,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var ports = await repository.GetTerminalPortsAsync(key, version, cancellationToken);
-            return Results.Ok(ports);
-        }
-        catch (WorkflowNotFoundException)
-        {
-            return Results.NotFound();
-        }
+        var workflow = await repository.TryGetAsync(key, version, cancellationToken);
+        return workflow is null ? Results.NotFound() : Results.Ok(workflow.TerminalPorts);
     }
 
     private static async Task<IResult> GetLatestTerminalPortsAsync(

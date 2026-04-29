@@ -143,16 +143,19 @@ public sealed class WorkflowPackageImporter(
                     continue;
                 }
 
-                try
+                var existing = await agentConfigRepository.TryGetAsync(agent.Key, agent.Version, cancellationToken);
+                if (existing is null)
                 {
-                    var existing = await agentConfigRepository.GetAsync(agent.Key, agent.Version, cancellationToken);
-                    if (Equivalent(agent, existing))
-                    {
-                        versionMap[key] = agent.Version;
-                        items.Add(Reuse(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
-                        continue;
-                    }
-
+                    versionMap[key] = agent.Version;
+                    items.Add(Create(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
+                }
+                else if (Equivalent(agent, existing))
+                {
+                    versionMap[key] = agent.Version;
+                    items.Add(Reuse(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
+                }
+                else
+                {
                     var targetVersion = nextVersion++;
                     versionMap[key] = targetVersion;
                     items.Add(CreateVersionBump(
@@ -161,11 +164,6 @@ public sealed class WorkflowPackageImporter(
                         agent.Version,
                         targetVersion,
                         "configuration or outputs"));
-                }
-                catch (AgentConfigNotFoundException)
-                {
-                    versionMap[key] = agent.Version;
-                    items.Add(Create(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
                 }
             }
         }
@@ -236,16 +234,19 @@ public sealed class WorkflowPackageImporter(
                     continue;
                 }
 
-                try
+                var existing = await workflowRepository.TryGetAsync(workflow.Key, workflow.Version, cancellationToken);
+                if (existing is null)
                 {
-                    var existing = await workflowRepository.GetAsync(workflow.Key, workflow.Version, cancellationToken);
-                    if (!referencesRemapped && Equivalent(remappedWorkflow, existing))
-                    {
-                        nextWorkflowVersionMap[key] = workflow.Version;
-                        items.Add(Reuse(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
-                        continue;
-                    }
-
+                    nextWorkflowVersionMap[key] = workflow.Version;
+                    items.Add(Create(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
+                }
+                else if (!referencesRemapped && Equivalent(remappedWorkflow, existing))
+                {
+                    nextWorkflowVersionMap[key] = workflow.Version;
+                    items.Add(Reuse(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
+                }
+                else
+                {
                     var targetVersion = nextVersion++;
                     nextWorkflowVersionMap[key] = targetVersion;
                     items.Add(CreateVersionBump(
@@ -254,11 +255,6 @@ public sealed class WorkflowPackageImporter(
                         workflow.Version,
                         targetVersion,
                         "graph metadata"));
-                }
-                catch (WorkflowNotFoundException)
-                {
-                    nextWorkflowVersionMap[key] = workflow.Version;
-                    items.Add(Create(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
                 }
             }
         }

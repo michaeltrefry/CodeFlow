@@ -53,13 +53,9 @@ public static class AgentTestEndpoints
         }
 
         var agentKey = request.AgentKey.Trim();
-        AgentConfig agentConfig;
-        try
-        {
-            var version = request.AgentVersion ?? await agentRepository.GetLatestVersionAsync(agentKey, cancellationToken);
-            agentConfig = await agentRepository.GetAsync(agentKey, version, cancellationToken);
-        }
-        catch (AgentConfigNotFoundException)
+        var version = request.AgentVersion ?? await agentRepository.GetLatestVersionAsync(agentKey, cancellationToken);
+        var agentConfig = await agentRepository.TryGetAsync(agentKey, version, cancellationToken);
+        if (agentConfig is null)
         {
             await WriteEventAsync(
                 httpContext,
