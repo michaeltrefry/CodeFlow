@@ -44,9 +44,6 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
         this.authorityHash = ComputeAuthorityHash(auth.Authority, auth.Audience);
     }
 
-    public bool HasPermission(ICurrentUser user, string permission)
-        => HasPermissionAsync(user, permission, CancellationToken.None).GetAwaiter().GetResult();
-
     public async Task<bool> HasPermissionAsync(ICurrentUser user, string permission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -61,7 +58,7 @@ public sealed class CompanyPermissionChecker : IPermissionChecker
         // the only source of permissions. This is the only code path that may use the fallback.
         if (string.IsNullOrWhiteSpace(companyOptions.PermissionsApiBaseUrl))
         {
-            return fallback.HasPermission(user, permission);
+            return await fallback.HasPermissionAsync(user, permission, cancellationToken);
         }
 
         var permissions = await GetOrFetchPermissionsAsync(user, cancellationToken);

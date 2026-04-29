@@ -10,7 +10,7 @@ namespace CodeFlow.Api.Tests.Auth;
 public sealed class CompanyPermissionCheckerTests
 {
     [Fact]
-    public void HasPermission_ReturnsTrue_WhenPermissionsApiGrantsPermission()
+    public async Task HasPermissionAsync_ReturnsTrue_WhenPermissionsApiGrantsPermission()
     {
         var checker = BuildChecker(
             new FakePermissionsApi
@@ -23,7 +23,7 @@ public sealed class CompanyPermissionCheckerTests
             baseUrl: "https://permissions.internal/",
             roles: ["viewer"]);
 
-        var granted = checker.HasPermission(
+        var granted = await checker.HasPermissionAsync(
             new FakeCurrentUser("user-42", ["viewer"]),
             "agents:read");
 
@@ -31,14 +31,14 @@ public sealed class CompanyPermissionCheckerTests
     }
 
     [Fact]
-    public void HasPermission_FallsBackToRoleMap_WhenPermissionsApiIsNotConfigured()
+    public async Task HasPermissionAsync_FallsBackToRoleMap_WhenPermissionsApiIsNotConfigured()
     {
         var checker = BuildChecker(
             new FakePermissionsApi(),
             baseUrl: null,
             roles: [CodeFlowApiDefaults.Roles.Admin]);
 
-        var granted = checker.HasPermission(
+        var granted = await checker.HasPermissionAsync(
             new FakeCurrentUser("admin-1", [CodeFlowApiDefaults.Roles.Admin]),
             CodeFlowApiDefaults.Permissions.OpsWrite);
 
@@ -46,7 +46,7 @@ public sealed class CompanyPermissionCheckerTests
     }
 
     [Fact]
-    public void HasPermission_CachesResults_AndOnlyCallsPermissionsApiOncePerUser()
+    public async Task HasPermissionAsync_CachesResults_AndOnlyCallsPermissionsApiOncePerUser()
     {
         var fake = new FakePermissionsApi
         {
@@ -55,15 +55,15 @@ public sealed class CompanyPermissionCheckerTests
         var checker = BuildChecker(fake, baseUrl: "https://permissions.internal/", roles: ["viewer"]);
         var user = new FakeCurrentUser("user-42", ["viewer"]);
 
-        checker.HasPermission(user, "agents:read").Should().BeTrue();
-        checker.HasPermission(user, "traces:read").Should().BeFalse();
-        checker.HasPermission(user, "agents:read").Should().BeTrue();
+        (await checker.HasPermissionAsync(user, "agents:read")).Should().BeTrue();
+        (await checker.HasPermissionAsync(user, "traces:read")).Should().BeFalse();
+        (await checker.HasPermissionAsync(user, "agents:read")).Should().BeTrue();
 
         fake.CallCountForUser("user-42").Should().Be(1);
     }
 
     [Fact]
-    public void HasPermission_Denies_WhenPermissionsApiReturnsEmpty()
+    public async Task HasPermissionAsync_Denies_WhenPermissionsApiReturnsEmpty()
     {
         // Fail-closed: PermissionsApi is configured, so an empty result must deny rather than
         // silently widen access through the role map fallback.
@@ -72,7 +72,7 @@ public sealed class CompanyPermissionCheckerTests
             baseUrl: "https://permissions.internal/",
             roles: [CodeFlowApiDefaults.Roles.Operator]);
 
-        var granted = checker.HasPermission(
+        var granted = await checker.HasPermissionAsync(
             new FakeCurrentUser("op-1", [CodeFlowApiDefaults.Roles.Operator]),
             CodeFlowApiDefaults.Permissions.OpsRead);
 
@@ -80,7 +80,7 @@ public sealed class CompanyPermissionCheckerTests
     }
 
     [Fact]
-    public void HasPermission_Denies_WhenPermissionsApiThrows()
+    public async Task HasPermissionAsync_Denies_WhenPermissionsApiThrows()
     {
         // Fail-closed on backend error. Must also not cache the failure.
         var api = new ThrowingPermissionsApi();
@@ -91,10 +91,30 @@ public sealed class CompanyPermissionCheckerTests
 
         var user = new FakeCurrentUser("admin-1", [CodeFlowApiDefaults.Roles.Admin]);
 
-        checker.HasPermission(user, CodeFlowApiDefaults.Permissions.OpsRead).Should().BeFalse();
-        checker.HasPermission(user, CodeFlowApiDefaults.Permissions.OpsRead).Should().BeFalse();
+        (await checker.HasPermissionAsync(user, CodeFlowApiDefaults.Permissions.OpsRead)).Should().BeFalse();
+        (await checker.HasPermissionAsync(user, CodeFlowApiDefaults.Permissions.OpsRead)).Should().BeFalse();
 
         api.CallCount.Should().Be(2, "errors must not be cached so the next request retries the backend");
+    }
+
+    [Fact]
+    public async Task HasPermissionAsync_HonorsCancellationToken()
+    {
+        // F-019: prove the async path actually plumbs the cancellation token. The previous
+        // sync HasPermission(...) used .GetAwaiter().GetResult() which silently dropped cts.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var checker = BuildChecker(
+            new CancellationTrackingPermissionsApi(),
+            baseUrl: "https://permissions.internal/",
+            roles: ["viewer"]);
+
+        var act = async () => await checker.HasPermissionAsync(
+            new FakeCurrentUser("user-42", ["viewer"]),
+            "agents:read",
+            cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     private static CompanyPermissionChecker BuildChecker(
@@ -134,6 +154,17 @@ public sealed class CompanyPermissionCheckerTests
         {
             CallCount++;
             throw new HttpRequestException("simulated backend failure");
+        }
+    }
+
+    private sealed class CancellationTrackingPermissionsApi : IPermissionsApiClient
+    {
+        public Task<IReadOnlyList<string>> GetPermissionsAsync(
+            string userId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
         }
     }
 
