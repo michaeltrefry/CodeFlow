@@ -1,13 +1,21 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodeFlow.Api.Assistant.Tools;
 
 internal static class AssistantToolJson
 {
+    // Enum handling must match the global API JsonOptions (ApiServiceCollectionExtensions:42)
+    // so an LLM can round-trip enum values it sees in one tool's output back into another tool's
+    // input. Without the string converter, the dispatcher would deserialize integers only — but
+    // every tool that emits enums calls .ToString(), so the model has no path to learn integer
+    // values exist. Keeping the two paths aligned avoids the model retrying random fields when
+    // a deserializer rejects perfectly canonical input.
     public static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented = false,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     public static JsonElement Schema(string json)

@@ -125,6 +125,9 @@ public static class ApiServiceCollectionExtensions
 
         // HAA-10: confirmation-gated workflow package save. The tool itself is read-only
         // (preview); the UI completes the mutation by posting to the existing apply endpoint.
+        // GetWorkflowPackageTool is the read-only companion that hands the LLM a canonical
+        // package shape exemplar so it can mirror field names and enum casing exactly.
+        services.AddScoped<IAssistantTool, GetWorkflowPackageTool>();
         services.AddScoped<IAssistantTool, SaveWorkflowPackageTool>();
 
         // HAA-11: confirmation-gated workflow run. Same split — the tool validates the run
