@@ -4,6 +4,7 @@ import {
   EventEmitter,
   Input,
   Output,
+  booleanAttribute,
   computed,
   signal,
 } from '@angular/core';
@@ -27,56 +28,60 @@ import { LlmProviderKey, LlmProviderModelOption } from '../../core/models';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CommonModule, FormsModule],
   template: `
-    <div class="toolbar">
-      <div class="selectors">
-        <label class="select-wrap" [title]="'Provider'">
-          <span class="select-label">Provider</span>
-          <select
-            class="select"
-            [disabled]="disabled || providerOptions().length === 0"
-            [ngModel]="provider ?? ''"
-            (ngModelChange)="onProviderChange($event)"
-            aria-label="Assistant provider"
-          >
-            <option value="">— default —</option>
-            @for (p of providerOptions(); track p) {
-              <option [value]="p">{{ providerDisplayName(p) }}</option>
-            }
-          </select>
-        </label>
-        <label class="select-wrap" [title]="'Model'">
-          <span class="select-label">Model</span>
-          <select
-            class="select mono"
-            [disabled]="disabled || modelOptions().length === 0"
-            [ngModel]="model ?? ''"
-            (ngModelChange)="onModelChange($event)"
-            aria-label="Assistant model"
-          >
-            <option value="">— default —</option>
-            @for (m of modelOptions(); track m) {
-              <option [value]="m">{{ m }}</option>
-            }
-          </select>
-        </label>
-      </div>
-      <div class="tokens" [attr.data-state]="tokenState()" [attr.aria-label]="tokenAriaLabel()">
-        <span class="token-chip" title="Input tokens (this conversation)">
-          <span class="token-arrow">↑</span>
-          <span class="token-num">{{ formatNum(inputTokens) }}</span>
-          <span class="token-suffix">in</span>
-        </span>
-        <span class="token-chip" title="Output tokens (this conversation)">
-          <span class="token-arrow">↓</span>
-          <span class="token-num">{{ formatNum(outputTokens) }}</span>
-          <span class="token-suffix">out</span>
-        </span>
-        @if (capDisplay()) {
-          <span class="token-cap" [title]="capTitle()">
-            / {{ capDisplay() }}
+    <div class="toolbar" [attr.data-chromeless]="chromeless ? 'true' : null">
+      @if (showSelectors()) {
+        <div class="selectors">
+          <label class="select-wrap" [title]="'Provider'">
+            <span class="select-label">Provider</span>
+            <select
+              class="select"
+              [disabled]="disabled || providerOptions().length === 0"
+              [ngModel]="provider ?? ''"
+              (ngModelChange)="onProviderChange($event)"
+              aria-label="Assistant provider"
+            >
+              <option value="">— default —</option>
+              @for (p of providerOptions(); track p) {
+                <option [value]="p">{{ providerDisplayName(p) }}</option>
+              }
+            </select>
+          </label>
+          <label class="select-wrap" [title]="'Model'">
+            <span class="select-label">Model</span>
+            <select
+              class="select mono"
+              [disabled]="disabled || modelOptions().length === 0"
+              [ngModel]="model ?? ''"
+              (ngModelChange)="onModelChange($event)"
+              aria-label="Assistant model"
+            >
+              <option value="">— default —</option>
+              @for (m of modelOptions(); track m) {
+                <option [value]="m">{{ m }}</option>
+              }
+            </select>
+          </label>
+        </div>
+      }
+      @if (showTokens()) {
+        <div class="tokens" [attr.data-state]="tokenState()" [attr.aria-label]="tokenAriaLabel()">
+          <span class="token-chip" title="Input tokens (this conversation)">
+            <span class="token-arrow">↑</span>
+            <span class="token-num">{{ formatNum(inputTokens) }}</span>
+            <span class="token-suffix">in</span>
           </span>
-        }
-      </div>
+          <span class="token-chip" title="Output tokens (this conversation)">
+            <span class="token-arrow">↓</span>
+            <span class="token-num">{{ formatNum(outputTokens) }}</span>
+            <span class="token-suffix">out</span>
+          </span>
+          @if (capDisplay()) {
+            <span class="token-cap" [title]="capTitle()">
+              / {{ capDisplay() }}
+            </span>
+          }
+        </div>
+      }
     </div>
   `,
   styles: [`
@@ -92,6 +97,13 @@ import { LlmProviderKey, LlmProviderModelOption } from '../../core/models';
       font-size: 11px;
       color: var(--text-muted, #9aa3b2);
       flex-wrap: wrap;
+    }
+    .toolbar[data-chromeless='true'] {
+      padding: 0;
+      border-top: 0;
+      background: transparent;
+      gap: 8px;
+      flex-wrap: nowrap;
     }
     .selectors {
       display: flex;
@@ -193,10 +205,31 @@ export class ChatToolbarComponent {
   /** Disables the dropdowns (e.g. while a turn is streaming or while loading defaults). */
   @Input() disabled = false;
 
+  /**
+   * Which parts of the toolbar to render. Lets the chat-panel render the selectors and the
+   * token chip in different surfaces depending on layout (e.g. tokens inline next to the send
+   * button, selectors in a separate strip below).
+   */
+  @Input() displayMode: 'all' | 'selectors-only' | 'tokens-only' = 'all';
+
+  /**
+   * Drop the toolbar's own border/background/padding so it can be projected inline (e.g. inside
+   * the composer's actions row) without a duplicate chrome.
+   */
+  @Input({ transform: booleanAttribute }) chromeless = false;
+
   @Output() readonly selectionChanged = new EventEmitter<{
     provider: LlmProviderKey | null;
     model: string | null;
   }>();
+
+  protected showSelectors(): boolean {
+    return this.displayMode === 'all' || this.displayMode === 'selectors-only';
+  }
+
+  protected showTokens(): boolean {
+    return this.displayMode === 'all' || this.displayMode === 'tokens-only';
+  }
 
   private readonly modelsSig = signal<ReadonlyArray<LlmProviderModelOption>>([]);
 
