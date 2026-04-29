@@ -111,9 +111,9 @@ public static class WorkflowsEndpoints
             });
         }
 
-        var inputJson = request.Input ?? EmptyInputElement;
-        var contextInputs = request.Context ?? EmptyJsonElementDictionary;
-        var workflowInputs = request.Workflow ?? EmptyJsonElementDictionary;
+        var inputJson = request.Input ?? EndpointDefaults.EmptyJsonObject;
+        var contextInputs = request.Context ?? EndpointDefaults.EmptyJsonElementMap;
+        var workflowInputs = request.Workflow ?? EndpointDefaults.EmptyJsonElementMap;
 
         var scope = CodeFlow.Orchestration.TransformNodeContext.Build(
             inputJson,
@@ -146,11 +146,6 @@ public static class WorkflowsEndpoints
             return Results.Ok(new TransformPreviewResponse(rendered, null, ex.Message));
         }
     }
-
-    private static readonly JsonElement EmptyInputElement = JsonDocument.Parse("{}").RootElement.Clone();
-
-    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyJsonElementDictionary =
-        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
     private static async Task<IResult> ExportPackageAsync(
         string key,

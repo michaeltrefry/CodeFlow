@@ -180,13 +180,13 @@ public static class AgentsEndpoints
         var mode = request.Mode ?? DecisionOutputTemplateMode.Hitl;
         var decision = request.Decision ?? string.Empty;
         var outputPortName = request.OutputPortName ?? decision;
-        var context = request.Context ?? EmptyJsonElementDictionary;
-        var workflow = request.Workflow ?? EmptyJsonElementDictionary;
+        var context = request.Context ?? EndpointDefaults.EmptyJsonElementMap;
+        var workflow = request.Workflow ?? EndpointDefaults.EmptyJsonElementMap;
 
         Scriban.Runtime.ScriptObject scope;
         if (mode == DecisionOutputTemplateMode.Hitl)
         {
-            var fields = request.FieldValues ?? EmptyJsonElementDictionary;
+            var fields = request.FieldValues ?? EndpointDefaults.EmptyJsonElementMap;
             scope = CodeFlow.Orchestration.DecisionOutputTemplateContext.BuildForHitl(
                 decision: decision,
                 outputPortName: outputPortName,
@@ -221,9 +221,6 @@ public static class AgentsEndpoints
 
         return Results.Ok(new DecisionOutputTemplatePreviewResponse(rendered));
     }
-
-    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyJsonElementDictionary =
-        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
     private static JsonElement? ParseOutputAsStructuredJson(string? output)
     {
