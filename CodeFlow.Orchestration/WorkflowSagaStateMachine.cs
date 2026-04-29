@@ -1,5 +1,6 @@
 using CodeFlow.Contracts;
 using CodeFlow.Orchestration.Scripting;
+using System.Diagnostics;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
 using CodeFlow.Runtime.Workspace;
@@ -1053,10 +1054,18 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     {
         var fallbackPort = message.OutputPortName;
         var fromNode = workflow.FindNode(message.FromNodeId);
-        if (fromNode is null || fromNode.Kind == WorkflowNodeKind.Logic)
+        if (fromNode is null)
         {
             return new SourcePortResolution(fallbackPort, null);
         }
+
+        // Logic nodes are resolved through ResolveTargetThroughLogicChainAsync before any
+        // AgentInvokeRequested is published, so a Logic node's id should never reach this
+        // method as the source of an AgentInvocationCompleted. The defensive branch was
+        // removed in F-023; a debug assertion preserves the belt-and-braces signal.
+        Debug.Assert(
+            fromNode.Kind != WorkflowNodeKind.Logic,
+            $"AgentInvocationCompleted carried Logic node {fromNode.Id} as FromNodeId — Logic nodes should be resolved before publish.");
 
         // P4: mirror the agent's output text into the configured workflow variable BEFORE the
         // output script runs so the script can read `workflow[mirrorKey]`. Even if the node has
