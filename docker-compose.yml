@@ -61,6 +61,20 @@ services:
     volumes:
       - codeflow-workdir:/app/codeflow/workdir
 
+  # HAA-18 — homepage assistant's per-conversation workspace root. Mounted at the same path the
+  # AssistantWorkspaceProvider writes to, owned by the api container's `app` user (uid 1654) so
+  # Directory.CreateDirectory succeeds when the user assigns a role with host-tool grants.
+  codeflow-assistant-workspace-init:
+    image: alpine:3.20
+    container_name: codeflow-assistant-workspace-init
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - mkdir -p /app/codeflow/assistant && chown -R 1654:1654 /app/codeflow/assistant
+    volumes:
+      - codeflow-assistant-workspace:/app/codeflow/assistant
+
   codeflow-api:
     build:
       context: .
@@ -73,6 +87,8 @@ services:
       codeflow-artifacts-init:
         condition: service_completed_successfully
       codeflow-workdir-init:
+        condition: service_completed_successfully
+      codeflow-assistant-workspace-init:
         condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -106,6 +122,7 @@ services:
     volumes:
       - codeflow-artifacts:/app/artifacts
       - codeflow-workdir:/app/codeflow/workdir
+      - codeflow-assistant-workspace:/app/codeflow/assistant
     networks:
       - default
       - mcp-shared
@@ -171,3 +188,4 @@ volumes:
   codeflow-rabbitmq-data:
   codeflow-artifacts:
   codeflow-workdir:
+  codeflow-assistant-workspace:

@@ -98,7 +98,28 @@ public sealed class CodeFlowAssistant(
         // unconditionally would fail on dev environments where the configured root isn't writable.
         var workspaceNeeded = workspaceOverride is not null
             || (config.AssignedAgentRoleId is { } needRoleId && needRoleId > 0);
-        var resolvedWorkspace = workspaceNeeded ? ResolveWorkspace(workspaceOverride, conversationId) : null;
+        ResolvedWorkspace? resolvedWorkspace = null;
+        if (workspaceNeeded)
+        {
+            try
+            {
+                resolvedWorkspace = ResolveWorkspace(workspaceOverride, conversationId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The host-tool workspace couldn't be created (e.g. AssistantWorkspaceRoot isn't a
+                // writable mount in this deployment). Don't fail the turn — degrade to built-in
+                // tools and tell the model why so it can explain to the user instead of pretending
+                // it has tools it can't run.
+                logger.LogWarning(ex,
+                    "Failed to resolve assistant workspace for conversation {ConversationId}; role host tools will be unavailable for this turn.",
+                    conversationId);
+                var degradationNotice = BuildWorkspaceUnavailableNotice(ex.Message);
+                systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                    ? degradationNotice
+                    : degradationNotice + "\n\n" + systemPrompt;
+            }
+        }
         if (conversationId != Guid.Empty && resolvedWorkspace is { } rw)
         {
             var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
@@ -215,6 +236,18 @@ public sealed class CodeFlowAssistant(
                 conversationId);
             return null;
         }
+    }
+
+    private static string BuildWorkspaceUnavailableNotice(string reason)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<workspace-unavailable>");
+        sb.AppendLine("The host-tool workspace could not be created for this turn:");
+        sb.Append("Reason: ").AppendLine(reason);
+        sb.AppendLine("Host tools (read_file, apply_patch, run_command, vcs.*) are NOT available right now.");
+        sb.AppendLine("If the user asks you to use one, explain that the assistant workspace isn't writable and ask them to confirm with the operator that AssistantWorkspaceRoot is mounted as a writable volume.");
+        sb.Append("</workspace-unavailable>");
+        return sb.ToString();
     }
 
     private static string BuildWorkspaceSwitchNotice(string? previousSignature, ResolvedWorkspace next)
