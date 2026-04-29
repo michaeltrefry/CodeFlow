@@ -13,8 +13,8 @@ public sealed class AssistantConversationEntity
     public string? EntityId { get; set; }
 
     /// <summary>
-    /// Derived from (ScopeKind, EntityType, EntityId). Non-null so the unique index against
-    /// (user_id, scope_key) gives us at-most-one conversation per scope per user.
+    /// Derived from (ScopeKind, EntityType, EntityId). Used to find the most recent
+    /// conversation for a user + scope while still allowing older threads to be preserved.
     /// </summary>
     public string ScopeKey { get; set; } = string.Empty;
 
@@ -24,6 +24,17 @@ public sealed class AssistantConversationEntity
     /// aggregation infrastructure as workflow saga traces.
     /// </summary>
     public Guid SyntheticTraceId { get; set; }
+
+    /// <summary>
+    /// HAA-17 — Cumulative input tokens captured against this conversation across every assistant
+    /// turn. Updated alongside <see cref="TokenUsageRecordEntity"/> writes so the UI can render
+    /// a live total without re-aggregating per turn, and so the
+    /// <see cref="AssistantSettingsEntity.MaxTokensPerConversation"/> cap can be enforced cheaply.
+    /// </summary>
+    public long InputTokensTotal { get; set; }
+
+    /// <summary>HAA-17 — Cumulative output tokens; mirrors <see cref="InputTokensTotal"/>.</summary>
+    public long OutputTokensTotal { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
 

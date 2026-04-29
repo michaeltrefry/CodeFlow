@@ -42,6 +42,16 @@ public sealed class AssistantConversationEntityConfiguration : IEntityTypeConfig
             .HasColumnName("synthetic_trace_id")
             .IsRequired();
 
+        builder.Property(c => c.InputTokensTotal)
+            .HasColumnName("input_tokens_total")
+            .IsRequired()
+            .HasDefaultValue(0L);
+
+        builder.Property(c => c.OutputTokensTotal)
+            .HasColumnName("output_tokens_total")
+            .IsRequired()
+            .HasDefaultValue(0L);
+
         builder.Property(c => c.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")
@@ -52,7 +62,7 @@ public sealed class AssistantConversationEntityConfiguration : IEntityTypeConfig
             .HasColumnType("datetime(6)")
             .IsRequired();
 
-        builder.HasIndex(c => new { c.UserId, c.ScopeKey }).IsUnique();
+        builder.HasIndex(c => new { c.UserId, c.ScopeKey, c.UpdatedAtUtc });
     }
 }
 

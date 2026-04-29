@@ -8,6 +8,8 @@ public sealed record AssistantConversation(
     string? EntityId,
     string ScopeKey,
     Guid SyntheticTraceId,
+    long InputTokensTotal,
+    long OutputTokensTotal,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc)
 {

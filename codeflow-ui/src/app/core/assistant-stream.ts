@@ -19,7 +19,17 @@ import type { PageContextDto } from './page-context';
 export type AssistantStreamEvent =
   | { kind: 'user-message-persisted'; message: AssistantMessage }
   | { kind: 'text-delta'; delta: string }
-  | { kind: 'token-usage'; recordId: string; provider: string; model: string; usage: unknown }
+  | {
+      kind: 'token-usage';
+      recordId: string;
+      provider: string;
+      model: string;
+      usage: unknown;
+      /** HAA-17 — cumulative input tokens captured against this conversation after the turn. */
+      conversationInputTokensTotal: number;
+      /** HAA-17 — cumulative output tokens; mirrors `conversationInputTokensTotal`. */
+      conversationOutputTokensTotal: number;
+    }
   | { kind: 'tool-call'; id: string; name: string; arguments: unknown }
   | { kind: 'tool-result'; id: string; name: string; result: string; isError: boolean }
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
@@ -32,11 +42,19 @@ export type AssistantStreamEvent =
  * header can be attached (EventSource cannot set custom headers and bypasses the auth
  * interceptor).
  */
+export interface SendTurnOptions {
+  pageContext?: PageContextDto;
+  /** HAA-16 — per-turn provider override (lower-cased canonical key). Falls back to admin default. */
+  provider?: string;
+  /** HAA-16 — per-turn model override. Falls back to admin default's model for the provider. */
+  model?: string;
+}
+
 export function streamAssistantTurn(
   conversationId: string,
   content: string,
   auth: AuthService,
-  pageContext?: PageContextDto,
+  options?: SendTurnOptions,
 ): Observable<AssistantStreamEvent> {
   return new Observable<AssistantStreamEvent>(subscriber => {
     const controller = new AbortController();
@@ -52,9 +70,20 @@ export function streamAssistantTurn(
           headers['Authorization'] = `Bearer ${token}`;
         }
 
-        const body: { content: string; pageContext?: PageContextDto } = { content };
-        if (pageContext) {
-          body.pageContext = pageContext;
+        const body: {
+          content: string;
+          pageContext?: PageContextDto;
+          provider?: string;
+          model?: string;
+        } = { content };
+        if (options?.pageContext) {
+          body.pageContext = options.pageContext;
+        }
+        if (options?.provider) {
+          body.provider = options.provider;
+        }
+        if (options?.model) {
+          body.model = options.model;
         }
 
         const response = await fetch(
@@ -147,8 +176,23 @@ function parseSseFrame(raw: string): AssistantStreamEvent | null {
     case 'text-delta':
       return { kind: 'text-delta', delta: (payload as { delta: string }).delta ?? '' };
     case 'token-usage': {
-      const u = payload as { recordId: string; provider: string; model: string; usage: unknown };
-      return { kind: 'token-usage', recordId: u.recordId, provider: u.provider, model: u.model, usage: u.usage };
+      const u = payload as {
+        recordId: string;
+        provider: string;
+        model: string;
+        usage: unknown;
+        conversationInputTokensTotal?: number;
+        conversationOutputTokensTotal?: number;
+      };
+      return {
+        kind: 'token-usage',
+        recordId: u.recordId,
+        provider: u.provider,
+        model: u.model,
+        usage: u.usage,
+        conversationInputTokensTotal: u.conversationInputTokensTotal ?? 0,
+        conversationOutputTokensTotal: u.conversationOutputTokensTotal ?? 0,
+      };
     }
     case 'assistant-message-persisted':
       return { kind: 'assistant-message-persisted', message: payload as AssistantMessage };

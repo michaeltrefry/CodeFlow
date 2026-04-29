@@ -314,6 +314,26 @@ export interface LlmProviderModelOption {
   model: string;
 }
 
+/**
+ * HAA-15 — DB-backed admin defaults for the homepage AI assistant. Selects which configured
+ * LLM provider/model the assistant uses on a fresh conversation; caps cumulative tokens per
+ * conversation. Fields are nullable because each layer falls back to the previous: per-call
+ * override → these admin defaults → appsettings → first listed model.
+ */
+export interface AssistantSettingsResponse {
+  provider: LlmProviderKey | null;
+  model: string | null;
+  maxTokensPerConversation: number | null;
+  updatedBy: string | null;
+  updatedAtUtc: string | null;
+}
+
+export interface AssistantSettingsWriteRequest {
+  provider: LlmProviderKey | null;
+  model: string | null;
+  maxTokensPerConversation: number | null;
+}
+
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
 
 export type WorkflowInputKind = 'Text' | 'Json';

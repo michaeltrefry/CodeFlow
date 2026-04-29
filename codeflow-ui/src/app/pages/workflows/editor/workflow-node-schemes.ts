@@ -1,6 +1,6 @@
 import { ClassicPreset, GetSchemes } from 'rete';
 import { AreaExtra } from './workflow-area-extra';
-import { WorkflowNodeKind, WorkflowTransformOutputType } from '../../../core/models';
+import { WorkflowNodeKind, WorkflowSwarmProtocol, WorkflowTransformOutputType } from '../../../core/models';
 
 export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
 
@@ -46,6 +46,18 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   // when the node is a Transform; null on every other kind.
   template: string | null = null;
   outputType: WorkflowTransformOutputType = 'string';
+  // Swarm nodes only. Validator (CodeFlow.Api/Validation/WorkflowValidator.cs) requires
+  // protocol + n + contributor + synthesizer; coordinator is exclusive to the Coordinator
+  // protocol; token budget is optional (>0 when set). Null on every other kind.
+  swarmProtocol: WorkflowSwarmProtocol | null = null;
+  swarmN: number | null = null;
+  contributorAgentKey: string | null = null;
+  contributorAgentVersion: number | null = null;
+  synthesizerAgentKey: string | null = null;
+  synthesizerAgentVersion: number | null = null;
+  coordinatorAgentKey: string | null = null;
+  coordinatorAgentVersion: number | null = null;
+  swarmTokenBudget: number | null = null;
   traceState: WorkflowNodeTraceState = null;
   /**
    * Token Usage Tracking [Slice 7]: optional per-node overlay populated by the
@@ -80,6 +92,15 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     loopDecision?: string | null;
     template?: string | null;
     outputType?: WorkflowTransformOutputType;
+    swarmProtocol?: WorkflowSwarmProtocol | null;
+    swarmN?: number | null;
+    contributorAgentKey?: string | null;
+    contributorAgentVersion?: number | null;
+    synthesizerAgentKey?: string | null;
+    synthesizerAgentVersion?: number | null;
+    coordinatorAgentKey?: string | null;
+    coordinatorAgentVersion?: number | null;
+    swarmTokenBudget?: number | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -94,6 +115,15 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.loopDecision = params.loopDecision ?? null;
     this.template = params.template ?? null;
     this.outputType = params.outputType ?? 'string';
+    this.swarmProtocol = params.swarmProtocol ?? null;
+    this.swarmN = params.swarmN ?? null;
+    this.contributorAgentKey = params.contributorAgentKey ?? null;
+    this.contributorAgentVersion = params.contributorAgentVersion ?? null;
+    this.synthesizerAgentKey = params.synthesizerAgentKey ?? null;
+    this.synthesizerAgentVersion = params.synthesizerAgentVersion ?? null;
+    this.coordinatorAgentKey = params.coordinatorAgentKey ?? null;
+    this.coordinatorAgentVersion = params.coordinatorAgentVersion ?? null;
+    this.swarmTokenBudget = params.swarmTokenBudget ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));

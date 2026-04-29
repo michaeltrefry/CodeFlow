@@ -24,6 +24,7 @@ public static class AssistantEndpoints
         var group = routes.MapGroup("/api/assistant");
 
         group.MapPost("/conversations", GetOrCreateConversationAsync);
+        group.MapPost("/conversations/new", CreateConversationAsync);
         group.MapGet("/conversations", ListConversationsAsync);
         group.MapGet("/conversations/{id:guid}", GetConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
@@ -33,7 +34,72 @@ public static class AssistantEndpoints
         // per-user, unlike trace-scoped token usage which lives under /api/traces.
         group.MapGet("/token-usage/summary", GetTokenUsageSummaryAsync);
 
+        // HAA-15/16: defaults + available models for the chat composer's per-conversation
+        // provider/model selector. Mirrors the no-auth posture of the rest of /api/assistant —
+        // demo-mode users see the same options as authenticated users. Returns only model ids;
+        // api keys / endpoints stay behind LlmProvidersRead.
+        group.MapGet("/defaults", GetAssistantDefaultsAsync);
+
         return routes;
+    }
+
+    /// <summary>
+    /// HAA-15/16 — Reports the admin-configured default provider+model for the assistant plus
+    /// every (provider, model) pair the operators have configured in
+    /// <see cref="ILlmProviderSettingsRepository"/>. The chat composer uses the defaults as the
+    /// initial selection and the model list as the available choices for per-conversation
+    /// overrides.
+    /// </summary>
+    private static async Task<IResult> GetAssistantDefaultsAsync(
+        IAssistantSettingsRepository assistantSettings,
+        ILlmProviderSettingsRepository providerSettings,
+        Microsoft.Extensions.Options.IOptions<CodeFlow.Api.Assistant.AssistantOptions> assistantOptions,
+        CancellationToken cancellationToken)
+    {
+        var dbDefaults = await assistantSettings.GetAsync(cancellationToken);
+        var allProviders = await providerSettings.GetAllAsync(cancellationToken);
+
+        // Resolve effective defaults: DB admin row → appsettings → first configured (provider+model)
+        // pair. We don't throw on a missing api key here — the chat endpoint surfaces that as a
+        // turn failure with the actual provider name; the composer just shows "no default yet".
+        var options = assistantOptions.Value;
+        var defaultProvider = !string.IsNullOrWhiteSpace(dbDefaults?.Provider)
+            ? dbDefaults!.Provider
+            : !string.IsNullOrWhiteSpace(options.Provider) ? options.Provider : null;
+        if (!string.IsNullOrWhiteSpace(defaultProvider) && LlmProviderKeys.IsKnown(defaultProvider))
+        {
+            defaultProvider = LlmProviderKeys.Canonicalize(defaultProvider);
+        }
+
+        var defaultModel = !string.IsNullOrWhiteSpace(dbDefaults?.Model)
+            ? dbDefaults!.Model
+            : !string.IsNullOrWhiteSpace(options.Model) ? options.Model : null;
+
+        // If no model explicitly configured, fall back to the first listed model on the resolved
+        // provider so the composer always has something to display.
+        if (string.IsNullOrWhiteSpace(defaultModel) && !string.IsNullOrWhiteSpace(defaultProvider))
+        {
+            var providerRow = allProviders.FirstOrDefault(p => string.Equals(p.Provider, defaultProvider, StringComparison.OrdinalIgnoreCase));
+            defaultModel = providerRow?.Models.FirstOrDefault();
+        }
+
+        // Flatten the (provider, model) pairs the operator has configured. Composer renders this
+        // as the dropdown options; same shape as the existing /api/llm-providers/models endpoint
+        // (which is gated by AgentsRead and not reachable in demo mode).
+        var models = allProviders
+            .SelectMany(p => p.Models.Select(m => new LlmProviderModelOption(p.Provider, m)))
+            .ToArray();
+
+        return Results.Ok(new
+        {
+            defaultProvider,
+            defaultModel,
+            // HAA-15/17 — surface the per-conversation cap so the chat composer's token chip can
+            // engage its warning + full states. The cap is not sensitive — exceeding it is
+            // already user-visible via the turn-refused error message.
+            maxTokensPerConversation = dbDefaults?.MaxTokensPerConversation,
+            models,
+        });
     }
 
     /// <summary>
@@ -110,6 +176,40 @@ public static class AssistantEndpoints
         {
             conversation = MapConversation(conversation),
             messages = messages.Select(MapMessage).ToArray()
+        });
+    }
+
+    private static async Task<IResult> CreateConversationAsync(
+        ConversationScopeRequest request,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository repository,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        AssistantConversationScope scope;
+        try
+        {
+            scope = ParseScope(request);
+        }
+        catch (ArgumentException ex)
+        {
+            return ApiResults.BadRequest(ex.Message);
+        }
+
+        var allowAnonymous = scope.Kind == AssistantConversationScopeKind.Homepage;
+        var userId = userResolver.Resolve(httpContext, allowAnonymous);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var conversation = await repository.CreateAsync(userId, scope, cancellationToken);
+        return Results.Ok(new
+        {
+            conversation = MapConversation(conversation),
+            messages = Array.Empty<object>()
         });
     }
 
@@ -279,7 +379,13 @@ public static class AssistantEndpoints
         await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
 
-        await foreach (var evt in chatService.SendMessageAsync(id, request.Content, request.PageContext, cancellationToken))
+        await foreach (var evt in chatService.SendMessageAsync(
+            id,
+            request.Content,
+            request.PageContext,
+            request.Provider,
+            request.Model,
+            cancellationToken))
         {
             await WriteEventAsync(httpContext, evt, cancellationToken);
         }
@@ -298,7 +404,9 @@ public static class AssistantEndpoints
                 recordId = u.Record.Id,
                 provider = u.Record.Provider,
                 model = u.Record.Model,
-                usage = u.Record.Usage
+                usage = u.Record.Usage,
+                conversationInputTokensTotal = u.ConversationInputTokensTotal,
+                conversationOutputTokensTotal = u.ConversationOutputTokensTotal,
             }, JsonOptions)),
             AssistantMessagePersisted m => ("assistant-message-persisted", JsonSerializer.Serialize(MapMessage(m.Message), JsonOptions)),
             ToolCallStarted tcs => ("tool-call", JsonSerializer.Serialize(new
@@ -351,6 +459,8 @@ public static class AssistantEndpoints
             entityId = conversation.EntityId
         },
         syntheticTraceId = conversation.SyntheticTraceId,
+        inputTokensTotal = conversation.InputTokensTotal,
+        outputTokensTotal = conversation.OutputTokensTotal,
         createdAtUtc = conversation.CreatedAtUtc,
         updatedAtUtc = conversation.UpdatedAtUtc
     };
@@ -395,4 +505,8 @@ public sealed record ConversationScopeRequest(ScopeRequest? Scope);
 
 public sealed record ScopeRequest(string? Kind, string? EntityType, string? EntityId);
 
-public sealed record SendMessageRequest(string Content, AssistantPageContext? PageContext = null);
+public sealed record SendMessageRequest(
+    string Content,
+    AssistantPageContext? PageContext = null,
+    string? Provider = null,
+    string? Model = null);

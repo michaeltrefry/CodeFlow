@@ -1,18 +1,28 @@
-import { ChangeDetectionStrategy, Component, ElementRef, ViewChild, computed, effect, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, ViewChild, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
+import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
-import { AssistantApi, AssistantMessage, AssistantScope } from '../../core/assistant.api';
+import {
+  AssistantApi,
+  AssistantDefaultsResponse,
+  AssistantMessage,
+  AssistantScope,
+  ConversationResponse,
+} from '../../core/assistant.api';
+import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
 import { AssistantStreamEvent, streamAssistantTurn } from '../../core/assistant-stream';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowsApi } from '../../core/workflows.api';
 import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { TracesApi } from '../../core/traces.api';
-import { CreateTraceRequest, ReplayRequest } from '../../core/models';
+import { CreateTraceRequest, LlmProviderKey, LlmProviderModelOption, ReplayRequest } from '../../core/models';
+import { IconComponent } from '../icon.component';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
+import { ChatToolbarComponent } from './chat-toolbar.component';
 
 /** HAA-10: name of the assistant tool whose preview-ok result triggers a Save confirmation chip. */
 const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
@@ -51,14 +61,32 @@ type ThreadEntry =
   selector: 'cf-chat-panel',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChatMessageComponent, ChatComposerComponent, ChatToolCallComponent],
+  imports: [
+    ChatMessageComponent,
+    ChatComposerComponent,
+    ChatToolCallComponent,
+    ChatToolbarComponent,
+    IconComponent,
+  ],
   template: `
-    <section class="chat-panel" [attr.data-scope-kind]="scope().kind">
+    <section class="chat-panel" [attr.data-scope-kind]="effectiveScope().kind">
       <header class="chat-panel-head">
         <span class="chat-panel-title">{{ titleText() }}</span>
-        @if (conversationId()) {
-          <span class="chat-panel-id" [title]="conversationId()!">conv {{ shortId() }}</span>
-        }
+        <div class="chat-panel-actions">
+          @if (conversationId()) {
+            <span class="chat-panel-id" [title]="conversationId()!">conv {{ shortId() }}</span>
+          }
+          <button
+            type="button"
+            class="chat-panel-new"
+            title="Start new conversation"
+            aria-label="Start new conversation"
+            [disabled]="loading() || streaming()"
+            (click)="startNewConversation()"
+          >
+            <cf-icon name="plus"></cf-icon>
+          </button>
+        </div>
       </header>
 
       <div class="chat-panel-thread" #threadEl role="log" aria-live="polite">
@@ -106,6 +134,17 @@ type ThreadEntry =
         (send)="sendMessage($event)"
         (cancel)="cancelTurn()"
       />
+
+      <cf-chat-toolbar
+        [models]="availableModels()"
+        [provider]="selectedProvider()"
+        [model]="selectedModel()"
+        [inputTokens]="conversationInputTokens()"
+        [outputTokens]="conversationOutputTokens()"
+        [cap]="conversationCap()"
+        [disabled]="streaming() || loading() || !conversationId()"
+        (selectionChanged)="onSelectionChanged($event)"
+      />
     </section>
   `,
   styles: [`
@@ -128,12 +167,13 @@ type ThreadEntry =
     }
     .chat-panel-head {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
       flex: 0 0 auto;
-      padding: 8px 12px;
+      padding: 8px var(--chat-panel-head-padding-right, 12px) 8px 12px;
       border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
       background: var(--surface, #131519);
+      gap: 10px;
     }
     .chat-panel-title {
       font-size: var(--fs-sm, 12px);
@@ -141,10 +181,39 @@ type ThreadEntry =
       letter-spacing: 0.06em;
       color: var(--text-muted, #9aa3b2);
     }
+    .chat-panel-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
     .chat-panel-id {
       font-size: 11px;
       font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
       color: var(--text-muted, #9aa3b2);
+    }
+    .chat-panel-new {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--border, rgba(255,255,255,0.08));
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted, #9aa3b2);
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .chat-panel-new:hover:not(:disabled) {
+      background: var(--surface-2, rgba(255,255,255,0.04));
+      border-color: var(--border-2, rgba(255,255,255,0.16));
+      color: var(--text, #E7E9EE);
+    }
+    .chat-panel-new:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
     .chat-panel-thread {
       flex: 1 1 auto;
@@ -203,6 +272,9 @@ export class ChatPanelComponent {
   private readonly auth = inject(AuthService);
   private readonly workflowsApi = inject(WorkflowsApi);
   private readonly tracesApi = inject(TracesApi);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+  private readonly preferences = inject(AssistantPreferencesService);
 
   /**
    * HAA-10: per-tool-call cache of the structured `package` argument the LLM passed to
@@ -239,6 +311,9 @@ export class ChatPanelComponent {
    */
   readonly pageContext = input<PageContext | null>(null);
 
+  /** Optional explicit conversation to load instead of the latest conversation for the scope. */
+  readonly conversationIdOverride = input<string | null>(null);
+
   @ViewChild('threadEl') private threadRef?: ElementRef<HTMLDivElement>;
 
   protected readonly conversationId = signal<string | null>(null);
@@ -246,6 +321,13 @@ export class ChatPanelComponent {
   protected readonly streaming = signal(false);
   protected readonly loadFailed = signal<string | null>(null);
   protected readonly turnError = signal<string | null>(null);
+  /**
+   * The scope returned by the server for the conversation that's actually loaded. Drives the
+   * panel's header text + scope attribute so an entity-scoped thread surfaced in the homepage
+   * sidebar (via `?assistantConversation=<id>`) titles itself correctly instead of inheriting
+   * the sidebar's mount-time `homepage` scope.
+   */
+  private readonly loadedScope = signal<AssistantScope | null>(null);
   /** Persisted history rows. */
   private readonly history = signal<AssistantMessage[]>([]);
   /** The in-flight assistant turn (rendered on top of history while streaming). */
@@ -259,6 +341,29 @@ export class ChatPanelComponent {
    * current exchange).
    */
   private readonly toolCalls = signal<ChatToolCallView[]>([]);
+
+  /** HAA-15/16 — server defaults snapshot. Loaded once per mount; refreshed on demand. */
+  private readonly defaults = signal<AssistantDefaultsResponse | null>(null);
+
+  /** HAA-17 — cumulative input tokens for the loaded conversation. Updated live during a turn. */
+  protected readonly conversationInputTokens = signal(0);
+
+  /** HAA-17 — cumulative output tokens; mirrors {@link conversationInputTokens}. */
+  protected readonly conversationOutputTokens = signal(0);
+
+  /** HAA-15 — admin-configured per-conversation cap from {@link AssistantSettingsResponse}. */
+  protected readonly conversationCap = signal<number | null>(null);
+
+  /** HAA-16 — currently-selected provider override (null = use server default). */
+  protected readonly selectedProvider = signal<LlmProviderKey | null>(null);
+
+  /** HAA-16 — currently-selected model override (null = use server default for provider). */
+  protected readonly selectedModel = signal<string | null>(null);
+
+  /** HAA-16 — flat list of (provider, model) pairs the operator has configured. */
+  protected readonly availableModels = computed<LlmProviderModelOption[]>(
+    () => this.defaults()?.models ?? [],
+  );
 
   private streamSub: Subscription | null = null;
 
@@ -302,23 +407,92 @@ export class ChatPanelComponent {
     return id ? id.slice(0, 8) : '';
   });
 
+  /** Loaded scope (from the server payload) takes precedence so the title reflects the actual
+   *  conversation rather than the mount-time `scope` input. */
+  protected readonly effectiveScope = computed<AssistantScope>(() => this.loadedScope() ?? this.scope());
+
   protected readonly chips = computed(() => {
     const ctx = this.pageContext();
     return ctx ? suggestionChipsFor(ctx) : [];
   });
 
   constructor() {
-    // Resolve the conversation whenever the scope input changes. effect() runs once on mount
-    // and again on each scope rebind.
+    // Resolve the conversation whenever the scope or override input changes. The body runs
+    // through `untracked` so reads/writes against panel state don't re-arm the effect — only
+    // the input reads above are tracked. Skips the load when the override already matches the
+    // currently-loaded conversation (e.g. just-created threads where startNewConversation
+    // already populated state and is now reflecting the id back into the URL).
     effect(() => {
       const scope = this.scope();
-      this.resetForScope();
-      this.loadConversation(scope);
+      const override = this.conversationIdOverride();
+      untracked(() => {
+        if (override && override === this.conversationId()) {
+          return;
+        }
+        this.resetForScope();
+        if (override) {
+          this.loadConversationById(override);
+        } else {
+          this.loadConversation(scope);
+        }
+      });
+    });
+
+    // HAA-15/16 — load the admin-configured defaults + available models once per mount and seed
+    // the cap. Selection preference is layered on top so a user's stored choice survives reloads
+    // and only falls back to server defaults when nothing is stored.
+    this.api.getDefaults().subscribe({
+      next: defaults => {
+        this.defaults.set(defaults);
+        this.conversationCap.set(
+          defaults.maxTokensPerConversation && defaults.maxTokensPerConversation > 0
+            ? defaults.maxTokensPerConversation
+            : null,
+        );
+        this.applySelectionFromStorage();
+      },
+      // Defaults loading is best-effort — the composer still works (selectors stay disabled
+      // until configuration appears). Don't surface a banner: the assistant turn itself will
+      // surface a clear error if the provider isn't configured.
+      error: () => undefined,
     });
   }
 
+  protected onSelectionChanged(selection: { provider: LlmProviderKey | null; model: string | null }): void {
+    this.selectedProvider.set(selection.provider);
+    this.selectedModel.set(selection.model);
+    this.preferences.save(selection);
+  }
+
+  /**
+   * Read the user's stored selection (HAA-16). If the stored selection isn't valid against the
+   * current models list (e.g. the operator removed a model), fall back to the server defaults so
+   * the composer never shows a stale dropdown value.
+   */
+  private applySelectionFromStorage(): void {
+    const stored = this.preferences.current();
+    const list = this.defaults()?.models ?? [];
+    const validProvider = stored.provider && list.some(m => m.provider === stored.provider)
+      ? stored.provider
+      : null;
+    const validModel = stored.model && list.some(m => m.model === stored.model && (!validProvider || m.provider === validProvider))
+      ? stored.model
+      : null;
+
+    if (validProvider) {
+      this.selectedProvider.set(validProvider);
+      this.selectedModel.set(validModel ?? null);
+      return;
+    }
+
+    // No valid stored choice — clear the selection so the toolbar shows "— default —" and the
+    // backend uses the admin-configured default for the next turn.
+    this.selectedProvider.set(null);
+    this.selectedModel.set(null);
+  }
+
   protected titleText(): string {
-    const scope = this.scope();
+    const scope = this.effectiveScope();
     if (scope.kind === 'homepage') {
       return 'CodeFlow assistant';
     }
@@ -338,7 +512,13 @@ export class ChatPanelComponent {
 
     const ctx = this.pageContext();
     const dto = ctx ? pageContextToDto(ctx, window.location.pathname) : undefined;
-    this.streamSub = streamAssistantTurn(conversationId, content, this.auth, dto).subscribe({
+    const provider = this.selectedProvider() ?? undefined;
+    const model = this.selectedModel() ?? undefined;
+    this.streamSub = streamAssistantTurn(conversationId, content, this.auth, {
+      pageContext: dto,
+      provider,
+      model,
+    }).subscribe({
       next: evt => this.handleStreamEvent(evt),
       error: err => {
         this.streaming.set(false);
@@ -367,6 +547,43 @@ export class ChatPanelComponent {
     this.pendingSaves.clear();
     this.pendingRuns.clear();
     this.pendingReplays.clear();
+  }
+
+  protected startNewConversation(): void {
+    if (this.loading() || this.streaming()) {
+      return;
+    }
+
+    // Use the loaded conversation's scope when available — for entity-scoped threads opened via
+    // `?assistantConversation=<id>` from a homepage-mounted sidebar, the input scope is wrong.
+    // Falls back to the input scope when no conversation is currently loaded (recovery path
+    // after a failed load).
+    const scope = this.effectiveScope();
+    const previousId = this.conversationId();
+    this.cancelTurn();
+    this.loading.set(true);
+    this.loadFailed.set(null);
+    this.turnError.set(null);
+    this.history.set([]);
+    this.conversationId.set(null);
+    this.loadedScope.set(null);
+    this.conversationInputTokens.set(0);
+    this.conversationOutputTokens.set(0);
+
+    this.api.create(scope).subscribe({
+      next: payload => {
+        this.applyConversationPayload(payload);
+        // Reflect the new id into the URL so reload preserves the same thread. The effect's
+        // override-vs-currentId guard suppresses the redundant fetch the URL change would
+        // otherwise trigger.
+        this.syncConversationOverrideInUrl(payload.conversation.id);
+      },
+      error: err => {
+        this.loading.set(false);
+        this.conversationId.set(previousId);
+        this.loadFailed.set(formatError(err));
+      },
+    });
   }
 
   /**
@@ -540,6 +757,9 @@ export class ChatPanelComponent {
         if (cur) {
           this.pending.set({ ...cur, provider: evt.provider, model: evt.model });
         }
+        // HAA-17 — refresh the live token chip totals.
+        this.conversationInputTokens.set(evt.conversationInputTokensTotal);
+        this.conversationOutputTokens.set(evt.conversationOutputTokensTotal);
         break;
       }
       case 'tool-call': {
@@ -621,25 +841,59 @@ export class ChatPanelComponent {
   private resetForScope(): void {
     this.cancelTurn();
     this.conversationId.set(null);
+    this.loadedScope.set(null);
     this.history.set([]);
     this.loadFailed.set(null);
     this.turnError.set(null);
     this.toolCalls.set([]);
+    this.conversationInputTokens.set(0);
+    this.conversationOutputTokens.set(0);
   }
 
   private loadConversation(scope: AssistantScope): void {
     this.loading.set(true);
     this.api.getOrCreate(scope).subscribe({
-      next: payload => {
-        this.conversationId.set(payload.conversation.id);
-        this.history.set(payload.messages);
-        this.loading.set(false);
-        queueMicrotask(() => this.scrollToBottom());
-      },
+      next: payload => this.applyConversationPayload(payload),
       error: err => {
         this.loading.set(false);
         this.loadFailed.set(formatError(err));
       },
+    });
+  }
+
+  private loadConversationById(conversationId: string): void {
+    this.loading.set(true);
+    this.api.get(conversationId).subscribe({
+      next: payload => this.applyConversationPayload(payload),
+      error: err => {
+        this.loading.set(false);
+        this.loadFailed.set(formatError(err));
+      },
+    });
+  }
+
+  private applyConversationPayload(payload: ConversationResponse): void {
+    this.conversationId.set(payload.conversation.id);
+    this.loadedScope.set(payload.conversation.scope);
+    this.history.set(payload.messages);
+    // HAA-17 — seed the live token chip with the persisted totals so reload-then-resume shows
+    // the same numbers without waiting for the next streamed turn.
+    this.conversationInputTokens.set(payload.conversation.inputTokensTotal ?? 0);
+    this.conversationOutputTokens.set(payload.conversation.outputTokensTotal ?? 0);
+    this.loading.set(false);
+    queueMicrotask(() => this.scrollToBottom());
+  }
+
+  private syncConversationOverrideInUrl(conversationId: string): void {
+    if (this.route.snapshot.queryParamMap.get('assistantConversation') === conversationId) {
+      return;
+    }
+
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { assistantConversation: conversationId },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
     });
   }
 

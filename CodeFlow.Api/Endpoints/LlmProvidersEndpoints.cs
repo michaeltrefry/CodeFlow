@@ -27,7 +27,67 @@ public static class LlmProvidersEndpoints
         routes.MapGet("/api/llm-providers/models", ListModelsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
+        // HAA-15: assistant defaults piggy-back on the LLM providers admin auth — same operators,
+        // same surface, just the assistant-specific selection within the configured providers.
+        var assistantGroup = routes.MapGroup("/api/admin/assistant-settings");
+        assistantGroup.MapGet("/", GetAssistantSettingsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.LlmProvidersRead);
+        assistantGroup.MapPut("/", PutAssistantSettingsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.LlmProvidersWrite);
+
         return routes;
+    }
+
+    private static async Task<IResult> GetAssistantSettingsAsync(
+        IAssistantSettingsRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var settings = await repository.GetAsync(cancellationToken);
+        return Results.Ok(new AssistantSettingsResponse(
+            Provider: settings?.Provider,
+            Model: settings?.Model,
+            MaxTokensPerConversation: settings?.MaxTokensPerConversation,
+            UpdatedBy: settings?.UpdatedBy,
+            UpdatedAtUtc: settings?.UpdatedAtUtc));
+    }
+
+    private static async Task<IResult> PutAssistantSettingsAsync(
+        AssistantSettingsWriteRequest request,
+        IAssistantSettingsRepository repository,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return ApiResults.BadRequest("Request body is required.");
+        }
+
+        var errors = new Dictionary<string, string[]>();
+        if (!string.IsNullOrWhiteSpace(request.Provider) && !LlmProviderKeys.IsKnown(request.Provider))
+        {
+            errors["provider"] = new[] { $"Unknown provider '{request.Provider}'." };
+        }
+        if (request.MaxTokensPerConversation is { } cap && cap < 0)
+        {
+            errors["maxTokensPerConversation"] = new[] { "Cap must be zero (uncapped) or positive." };
+        }
+        if (errors.Count > 0)
+        {
+            return Results.ValidationProblem(errors);
+        }
+
+        var saved = await repository.SetAsync(new AssistantSettingsWrite(
+            Provider: request.Provider,
+            Model: request.Model,
+            MaxTokensPerConversation: request.MaxTokensPerConversation,
+            UpdatedBy: currentUser.Id), cancellationToken);
+
+        return Results.Ok(new AssistantSettingsResponse(
+            Provider: saved.Provider,
+            Model: saved.Model,
+            MaxTokensPerConversation: saved.MaxTokensPerConversation,
+            UpdatedBy: saved.UpdatedBy,
+            UpdatedAtUtc: saved.UpdatedAtUtc));
     }
 
     private static async Task<IResult> ListAsync(

@@ -144,6 +144,59 @@ public sealed class AssistantConversationRepositoryTests : IAsyncLifetime
         summaries.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task CreateAsync_preserves_old_thread_and_GetOrCreateAsync_returns_newest_for_scope()
+    {
+        var userId = $"user-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantConversationRepository(context);
+
+        var oldConversation = await repo.GetOrCreateAsync(userId, AssistantConversationScope.Homepage());
+        await repo.AppendMessageAsync(oldConversation.Id, AssistantMessageRole.User, "hello", null, null, null);
+
+        var newConversation = await repo.CreateAsync(userId, AssistantConversationScope.Homepage());
+        var latest = await repo.GetOrCreateAsync(userId, AssistantConversationScope.Homepage());
+        var summaries = await repo.ListByUserAsync(userId, limit: 10);
+
+        newConversation.Id.Should().NotBe(oldConversation.Id);
+        latest.Id.Should().Be(newConversation.Id);
+        (await repo.GetByIdAsync(oldConversation.Id)).Should().NotBeNull();
+        (await repo.ListMessagesAsync(oldConversation.Id)).Should().ContainSingle(m => m.Content == "hello");
+        summaries.Select(s => s.Id).Should().Contain(new[] { oldConversation.Id, newConversation.Id });
+    }
+
+    [Fact]
+    public async Task CreateAsync_preserves_entity_scoped_threads_per_scope_key()
+    {
+        // Two distinct entity scopes must each track their own latest conversation. Threads
+        // created with CreateAsync against scope A must not influence GetOrCreateAsync for
+        // scope B.
+        var userId = $"user-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantConversationRepository(context);
+
+        var traceId = Guid.NewGuid().ToString();
+        var workflowId = Guid.NewGuid().ToString();
+        var traceScope = AssistantConversationScope.Entity("trace", traceId);
+        var workflowScope = AssistantConversationScope.Entity("workflow", workflowId);
+
+        var traceOriginal = await repo.GetOrCreateAsync(userId, traceScope);
+        await repo.AppendMessageAsync(traceOriginal.Id, AssistantMessageRole.User, "trace-1", null, null, null);
+
+        var traceFresh = await repo.CreateAsync(userId, traceScope);
+        var workflowOriginal = await repo.GetOrCreateAsync(userId, workflowScope);
+
+        var traceLatest = await repo.GetOrCreateAsync(userId, traceScope);
+        var workflowLatest = await repo.GetOrCreateAsync(userId, workflowScope);
+
+        traceFresh.Id.Should().NotBe(traceOriginal.Id);
+        traceLatest.Id.Should().Be(traceFresh.Id, "the freshly-created trace thread is the newest for the trace scope");
+        workflowLatest.Id.Should().Be(workflowOriginal.Id, "the workflow scope is independent from the trace scope");
+        (await repo.GetByIdAsync(traceOriginal.Id)).Should().NotBeNull("the original trace thread must be preserved");
+    }
+
     private async Task ForceUpdatedAtUtcAsync(Guid conversationId, DateTime updatedAtUtc)
     {
         await using var context = CreateDbContext();

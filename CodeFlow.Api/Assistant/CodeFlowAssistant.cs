@@ -15,11 +15,19 @@ namespace CodeFlow.Api.Assistant;
 
 public interface ICodeFlowAssistant
 {
+    /// <summary>
+    /// Stream a single assistant turn. <paramref name="overrideProvider"/> and
+    /// <paramref name="overrideModel"/> (HAA-16) let the caller pin a non-default
+    /// provider/model for this turn — null falls back to the DB-backed admin defaults
+    /// (HAA-15) and finally to <see cref="AssistantOptions"/>.
+    /// </summary>
     IAsyncEnumerable<AssistantStreamItem> AskAsync(
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         ToolAccessPolicy? toolPolicy = null,
         AssistantPageContext? pageContext = null,
+        string? overrideProvider = null,
+        string? overrideModel = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -51,12 +59,14 @@ public sealed class CodeFlowAssistant(
         IReadOnlyList<AssistantMessage> history,
         ToolAccessPolicy? toolPolicy = null,
         AssistantPageContext? pageContext = null,
+        string? overrideProvider = null,
+        string? overrideModel = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
         ArgumentNullException.ThrowIfNull(history);
 
-        var config = await settingsResolver.ResolveAsync(cancellationToken);
+        var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
         // HAA-8: prepend a structured page-context block so the model can resolve "this trace",
         // "this node", etc. without the user pasting IDs. The block is per-turn (it changes as

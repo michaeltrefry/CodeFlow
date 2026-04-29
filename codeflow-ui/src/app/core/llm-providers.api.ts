@@ -2,6 +2,8 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
+  AssistantSettingsResponse,
+  AssistantSettingsWriteRequest,
   LlmProviderKey,
   LlmProviderModelOption,
   LlmProviderResponse,
@@ -22,5 +24,14 @@ export class LlmProvidersApi {
 
   listModels(): Observable<LlmProviderModelOption[]> {
     return this.http.get<LlmProviderModelOption[]>('/api/llm-providers/models');
+  }
+
+  /** HAA-15 — DB-backed admin defaults for the homepage AI assistant. */
+  getAssistantSettings(): Observable<AssistantSettingsResponse> {
+    return this.http.get<AssistantSettingsResponse>('/api/admin/assistant-settings');
+  }
+
+  setAssistantSettings(request: AssistantSettingsWriteRequest): Observable<AssistantSettingsResponse> {
+    return this.http.put<AssistantSettingsResponse>('/api/admin/assistant-settings', request);
   }
 }

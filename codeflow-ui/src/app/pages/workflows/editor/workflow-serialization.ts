@@ -106,7 +106,16 @@ export async function loadIntoEditor(
       reviewMaxRounds: node.reviewMaxRounds,
       loopDecision: node.loopDecision,
       template: node.template,
-      outputType: node.outputType
+      outputType: node.outputType,
+      swarmProtocol: node.swarmProtocol,
+      swarmN: node.swarmN,
+      contributorAgentKey: node.contributorAgentKey,
+      contributorAgentVersion: node.contributorAgentVersion,
+      synthesizerAgentKey: node.synthesizerAgentKey,
+      synthesizerAgentVersion: node.synthesizerAgentVersion,
+      coordinatorAgentKey: node.coordinatorAgentKey,
+      coordinatorAgentVersion: node.coordinatorAgentVersion,
+      swarmTokenBudget: node.swarmTokenBudget
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -163,6 +172,10 @@ export function serializeEditor(
     // The implicit Failed port is excluded from the serialized declaration — the API rejects
     // declaring it. `outputPortNames` already filters it; this filter is defensive.
     const declaredPorts = node.outputPortNames.filter(p => p !== IMPLICIT_FAILED_PORT);
+    const isSwarm = node.kind === 'Swarm';
+    // Validator rejects CoordinatorAgent* on Sequential, so suppress them unless the
+    // configured protocol is Coordinator.
+    const isCoordinator = isSwarm && node.swarmProtocol === 'Coordinator';
     return {
       id: node.nodeId,
       kind: node.kind,
@@ -178,7 +191,16 @@ export function serializeEditor(
       reviewMaxRounds: node.reviewMaxRounds,
       loopDecision: node.loopDecision,
       template: node.kind === 'Transform' ? node.template : null,
-      outputType: node.kind === 'Transform' ? node.outputType : undefined
+      outputType: node.kind === 'Transform' ? node.outputType : undefined,
+      swarmProtocol: isSwarm ? node.swarmProtocol : null,
+      swarmN: isSwarm ? node.swarmN : null,
+      contributorAgentKey: isSwarm ? node.contributorAgentKey : null,
+      contributorAgentVersion: isSwarm ? node.contributorAgentVersion : null,
+      synthesizerAgentKey: isSwarm ? node.synthesizerAgentKey : null,
+      synthesizerAgentVersion: isSwarm ? node.synthesizerAgentVersion : null,
+      coordinatorAgentKey: isCoordinator ? node.coordinatorAgentKey : null,
+      coordinatorAgentVersion: isCoordinator ? node.coordinatorAgentVersion : null,
+      swarmTokenBudget: isSwarm ? node.swarmTokenBudget : null
     };
   });
 

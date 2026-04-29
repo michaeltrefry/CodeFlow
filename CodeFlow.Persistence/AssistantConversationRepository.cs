@@ -17,13 +17,30 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
 
         var existing = await dbContext.AssistantConversations
             .AsNoTracking()
-            .SingleOrDefaultAsync(c => c.UserId == trimmedUserId && c.ScopeKey == scopeKey, cancellationToken);
+            .Where(c => c.UserId == trimmedUserId && c.ScopeKey == scopeKey)
+            .OrderByDescending(c => c.UpdatedAtUtc)
+            .ThenByDescending(c => c.CreatedAtUtc)
+            .ThenByDescending(c => c.Id)
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (existing is not null)
         {
             return Map(existing);
         }
 
+        return await CreateAsync(trimmedUserId, scope, cancellationToken);
+    }
+
+    public async Task<AssistantConversation> CreateAsync(
+        string userId,
+        AssistantConversationScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentNullException.ThrowIfNull(scope);
+
+        var trimmedUserId = userId.Trim();
+        var scopeKey = scope.ToScopeKey();
         var now = DateTime.UtcNow;
         var entity = new AssistantConversationEntity
         {
@@ -39,22 +56,7 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         };
 
         dbContext.AssistantConversations.Add(entity);
-
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException)
-        {
-            // Concurrent get-or-create race: another request inserted the same (user, scope_key)
-            // between our SELECT and INSERT. Re-read and return the winner.
-            dbContext.AssistantConversations.Remove(entity);
-            var winner = await dbContext.AssistantConversations
-                .AsNoTracking()
-                .SingleAsync(c => c.UserId == trimmedUserId && c.ScopeKey == scopeKey, cancellationToken);
-            return Map(winner);
-        }
-
+        await dbContext.SaveChangesAsync(cancellationToken);
         return Map(entity);
     }
 
@@ -183,6 +185,30 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         return result;
     }
 
+    public async Task<AssistantConversationTokenTotals> AddTokenUsageAsync(
+        Guid conversationId,
+        long inputTokensDelta,
+        long outputTokensDelta,
+        CancellationToken cancellationToken = default)
+    {
+        if (inputTokensDelta < 0) inputTokensDelta = 0;
+        if (outputTokensDelta < 0) outputTokensDelta = 0;
+
+        var conversation = await dbContext.AssistantConversations
+            .SingleOrDefaultAsync(c => c.Id == conversationId, cancellationToken)
+            ?? throw new InvalidOperationException($"Assistant conversation '{conversationId}' does not exist.");
+
+        conversation.InputTokensTotal += inputTokensDelta;
+        conversation.OutputTokensTotal += outputTokensDelta;
+        conversation.UpdatedAtUtc = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return new AssistantConversationTokenTotals(
+            conversation.InputTokensTotal,
+            conversation.OutputTokensTotal);
+    }
+
     private const int PreviewCharLimit = 120;
 
     private static string? TruncatePreview(string? content)
@@ -208,6 +234,8 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
         EntityId: entity.EntityId,
         ScopeKey: entity.ScopeKey,
         SyntheticTraceId: entity.SyntheticTraceId,
+        InputTokensTotal: entity.InputTokensTotal,
+        OutputTokensTotal: entity.OutputTokensTotal,
         CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc));
 

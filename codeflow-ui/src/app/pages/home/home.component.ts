@@ -1,4 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute } from '@angular/router';
 import { ChatPanelComponent } from '../../ui/chat';
 import { AuthService } from '../../auth/auth.service';
 import { HomeRailComponent } from './home-rail.component';
@@ -28,7 +30,10 @@ import { HomeRailComponent } from './home-rail.component';
   template: `
     <main class="home" data-testid="home-page">
       <section class="home-chat">
-        <cf-chat-panel [scope]="{ kind: 'homepage' }" />
+        <cf-chat-panel
+          [scope]="{ kind: 'homepage' }"
+          [conversationIdOverride]="selectedConversationId()"
+        />
       </section>
       <aside class="home-rail" aria-label="Homepage rail">
         <header class="rail-head">
@@ -160,9 +165,14 @@ import { HomeRailComponent } from './home-rail.component';
 })
 export class HomeComponent {
   private readonly auth = inject(AuthService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly queryParamMap = toSignal(this.route.queryParamMap, {
+    initialValue: this.route.snapshot.queryParamMap,
+  });
 
   // True iff bootstrap completed and we resolved no current user. We deliberately key off
   // currentUser() rather than tokenAcceptedByApi(): the chat backend's cookie-driven anon
   // identity makes "no real user resolved" the right gate for demo-mode rail copy.
   protected readonly isDemo = computed(() => !this.auth.loading() && this.auth.currentUser() === null);
+  protected readonly selectedConversationId = computed(() => this.queryParamMap().get('assistantConversation'));
 }

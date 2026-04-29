@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import { TokenUsageRollup } from './models';
+import { LlmProviderKey, LlmProviderModelOption, TokenUsageRollup } from './models';
 
 export type AssistantScopeKind = 'homepage' | 'entity';
 
@@ -28,6 +28,10 @@ export interface AssistantConversation {
   id: string;
   scope: AssistantScope;
   syntheticTraceId: string;
+  /** HAA-17 — cumulative input tokens captured across every turn on this conversation. */
+  inputTokensTotal: number;
+  /** HAA-17 — cumulative output tokens; mirror of {@link inputTokensTotal}. */
+  outputTokensTotal: number;
   createdAtUtc: string;
   updatedAtUtc: string;
 }
@@ -75,6 +79,20 @@ export interface AssistantTokenUsageSummary {
   perConversation: AssistantConversationTokenUsage[];
 }
 
+/**
+ * HAA-15/16 — Public assistant defaults + available provider/model pairs for the chat composer's
+ * per-conversation selector. Admin keys/endpoints stay behind LlmProvidersRead; this surface only
+ * exposes the same opaque ids the assistant endpoint already reports back through
+ * `assistant-message-persisted` events.
+ */
+export interface AssistantDefaultsResponse {
+  defaultProvider: LlmProviderKey | null;
+  defaultModel: string | null;
+  /** HAA-15 — admin-configured per-conversation cumulative-token cap, or null if uncapped. */
+  maxTokensPerConversation: number | null;
+  models: LlmProviderModelOption[];
+}
+
 @Injectable({ providedIn: 'root' })
 export class AssistantApi {
   private readonly http = inject(HttpClient);
@@ -85,6 +103,10 @@ export class AssistantApi {
    */
   getOrCreate(scope: AssistantScope): Observable<ConversationResponse> {
     return this.http.post<ConversationResponse>('/api/assistant/conversations', { scope });
+  }
+
+  create(scope: AssistantScope): Observable<ConversationResponse> {
+    return this.http.post<ConversationResponse>('/api/assistant/conversations/new', { scope });
   }
 
   get(conversationId: string): Observable<ConversationResponse> {
@@ -109,5 +131,13 @@ export class AssistantApi {
    */
   getTokenUsageSummary(): Observable<AssistantTokenUsageSummary> {
     return this.http.get<AssistantTokenUsageSummary>('/api/assistant/token-usage/summary');
+  }
+
+  /**
+   * HAA-15/16 — Public defaults endpoint used by the chat composer to seed the per-conversation
+   * provider/model selector. No auth required so demo-mode users see the same dropdown.
+   */
+  getDefaults(): Observable<AssistantDefaultsResponse> {
+    return this.http.get<AssistantDefaultsResponse>('/api/assistant/defaults');
   }
 }

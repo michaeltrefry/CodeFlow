@@ -4,4 +4,5 @@ public sealed record AssistantRuntimeConfig(
     string Provider,
     string Model,
     int MaxTokens,
-    int MaxTurns);
+    int MaxTurns,
+    long? MaxTokensPerConversation);

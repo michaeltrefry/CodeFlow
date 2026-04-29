@@ -4,22 +4,33 @@ using Microsoft.Extensions.Options;
 namespace CodeFlow.Api.Assistant;
 
 /// <summary>
-/// Default resolver: takes <see cref="AssistantOptions"/> as the baseline, falls back to the first
-/// model listed in <see cref="LlmProviderSettings"/> for the chosen provider when
-/// <see cref="AssistantOptions.Model"/> is unset. Throws when the chosen provider has no API key
-/// configured — surfacing the configuration gap to the caller is preferable to a silent default.
+/// Three-layer resolver:
+/// <list type="number">
+///   <item>Per-call override (HAA-16) — the user picked a provider/model for this turn.</item>
+///   <item>DB-backed admin defaults from <see cref="IAssistantSettingsRepository"/> (HAA-15).</item>
+///   <item>Appsettings <see cref="AssistantOptions"/> baseline.</item>
+/// </list>
+/// At each layer a non-null/non-blank value wins. The chosen provider must have an api key
+/// configured in <see cref="ILlmProviderSettingsRepository"/>; the chosen model must be either
+/// supplied explicitly or be present in that provider's listed models. Configuration gaps throw
+/// so callers see a clear error rather than a silent fallback to a wrong provider.
 /// </summary>
 public sealed class AssistantSettingsResolver(
     IOptions<AssistantOptions> optionsAccessor,
+    IAssistantSettingsRepository assistantSettings,
     ILlmProviderSettingsRepository providerSettings)
     : IAssistantSettingsResolver
 {
-    public async Task<AssistantRuntimeConfig> ResolveAsync(CancellationToken cancellationToken = default)
+    public async Task<AssistantRuntimeConfig> ResolveAsync(
+        string? overrideProvider = null,
+        string? overrideModel = null,
+        CancellationToken cancellationToken = default)
     {
         var options = optionsAccessor.Value;
-        var provider = string.IsNullOrWhiteSpace(options.Provider)
-            ? LlmProviderKeys.Anthropic
-            : LlmProviderKeys.Canonicalize(options.Provider.Trim());
+        var dbDefaults = await assistantSettings.GetAsync(cancellationToken);
+
+        var providerCandidate = FirstNonBlank(overrideProvider, dbDefaults?.Provider, options.Provider, LlmProviderKeys.Anthropic);
+        var provider = LlmProviderKeys.Canonicalize(providerCandidate.Trim());
 
         var settings = await providerSettings.GetAsync(provider, cancellationToken)
             ?? throw new InvalidOperationException(
@@ -31,16 +42,37 @@ public sealed class AssistantSettingsResolver(
                 $"Assistant provider '{provider}' has no API key configured.");
         }
 
-        var model = !string.IsNullOrWhiteSpace(options.Model)
-            ? options.Model.Trim()
+        var modelCandidate = FirstNonBlank(overrideModel, dbDefaults?.Model, options.Model);
+        var model = !string.IsNullOrWhiteSpace(modelCandidate)
+            ? modelCandidate!.Trim()
             : settings.Models.FirstOrDefault()
                 ?? throw new InvalidOperationException(
-                    $"Assistant provider '{provider}' has no models listed and no default Model set in AssistantOptions.");
+                    $"Assistant provider '{provider}' has no models listed and no default model is set.");
+
+        // Conversation-level cap: DB admin defaults win over options. Zero/null means uncapped.
+        var maxPerConversation = dbDefaults?.MaxTokensPerConversation;
+        if (maxPerConversation is { } v && v <= 0)
+        {
+            maxPerConversation = null;
+        }
 
         return new AssistantRuntimeConfig(
             Provider: provider,
             Model: model,
             MaxTokens: options.MaxTokens > 0 ? options.MaxTokens : 4096,
-            MaxTurns: options.MaxTurns > 0 ? options.MaxTurns : 10);
+            MaxTurns: options.MaxTurns > 0 ? options.MaxTurns : 10,
+            MaxTokensPerConversation: maxPerConversation);
+    }
+
+    private static string FirstNonBlank(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+            {
+                return v;
+            }
+        }
+        return string.Empty;
     }
 }
