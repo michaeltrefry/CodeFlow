@@ -240,6 +240,84 @@ The Monaco-based script and prompt editor (`MonacoScriptEditorComponent`) underp
 
 Right-click a workflow node → "Edit agent" opens a modal that **forks** the agent into a workflow-scoped copy (key prefix `__fork_<shortGuid>`, hidden from the agent list). Save updates the fork; "Publish back" creates a new version on the original key (or a fresh agent) and re-pins the workflow node to the published target. Drift detection compares the fork's `ForkedFromVersion` to the original's current latest; publishing is gated behind `acknowledgeDrift` when they differ. See [docs/agent-in-place-edit.md](./docs/agent-in-place-edit.md).
 
+## Assistant
+
+CodeFlow ships a conversational assistant on every page. It's a CodeFlow domain expert: it knows the platform's primitives, can query the live system through tool calls, can author + run workflows on your behalf, and can diagnose failed traces and propose replay-with-edit substitutions. Every mutating action is gated by an in-chat confirmation chip — the model never silently changes state.
+
+The assistant lives in two surfaces — a chat-first **homepage** (`/`) for open-ended conversations, and a collapsible **sidebar** that opens on every other page scoped to the current entity (`/traces/{id}`, `/workflows/{key}`, etc.) so returning to the same page resumes the prior debugging thread. Conversations persist per `(user, scope)` and stream over Server-Sent Events. Authenticated callers get full tool access; anonymous visitors get a cookie-backed demo-mode chat with knowledge-only access (system-prompt answers, no live queries).
+
+### What the assistant can do
+
+#### Knowledge
+
+The assistant's curated system prompt covers every authoring + runtime concept in this README — ports, scripting, subflows, ReviewLoops, swarms, transforms, HITL, traces, replay-with-edit, drift detection, token tracking, in-place agent edit, code-aware workflows, working-directory model — so concept questions are answered without a tool call.
+
+#### Live discovery and inspection (read-only tools)
+
+| Tool | What it returns |
+|---|---|
+| `list_workflows` / `get_workflow` / `list_workflow_versions` | Library browse + per-version detail |
+| `list_agents` / `get_agent` / `list_agent_versions` | Agent registry + version history |
+| `list_agent_roles` | Roles + tool/skill grants |
+| `find_workflows_using_agent` | Reverse lookup — which workflows pin agent X |
+| `search_prompts` | Substring search across agent prompts + Scriban templates |
+| `list_traces` / `get_trace` | Trace browse + saga summary |
+| `get_trace_timeline` | Decision + logic-evaluation history with port names |
+| `get_trace_token_usage` | Per-call / per-node / per-scope rollups |
+| `get_node_io` | Input + output artifacts for a specific node invocation |
+
+The trace inspector tools share the same aggregation code path that powers the per-trace UI panel, so "what does the inspector see for this trace" and "what did the assistant tell me about this trace" never diverge.
+
+#### Authoring + execution (chip-gated mutations)
+
+| Tool | Confirmation chip → action |
+|---|---|
+| `save_workflow_package` | "Save to library" → POST `/api/workflows/package/apply` |
+| `run_workflow` | "Run" → POST `/api/traces` |
+| `propose_replay_with_edit` | "Replay" → POST `/api/traces/{id}/replay` (DryRunExecutor v4) |
+
+Each mutating tool returns a `preview_ok` verdict only — no side effects. The chat panel attaches a confirmation chip carrying the validated payload; only the user clicking the chip triggers the actual mutation, and only under the user's own auth policy (`WorkflowsWrite` / `TracesWrite` / `TracesRead` respectively). Unauthenticated demo-mode users can still draft packages + propose replays, but the chips never reach a real endpoint.
+
+For drafting, the assistant emits a complete workflow package — schema-version-pinned, self-contained (every referenced agent, role, MCP server, skill, and subflow), recursively resolved — in a single fenced JSON block (` ```cf-workflow-package ` language hint). The chat UI parses the block, surfaces a collapsible preview with byte estimates and a self-containment chip, and only saves on chip confirmation.
+
+For replay-with-edit, the assistant proposes substitution edits keyed by `(agentKey, ordinal)` against the trace's recorded decisions. The tool validates each edit against the saga subtree's recorded decisions and the substitution kinds DryRunExecutor supports (Swarm nodes are explicitly non-replayable; synthetic subflow markers are rejected with a clear message). On confirm, the chat panel POSTs the edits to the existing replay endpoint; the success banner deep-links to the trace inspector's Replay-with-Edit panel for further refinement.
+
+#### Diagnosis
+
+`diagnose_trace` composes saga + decisions + logic evaluations + token usage into a structured verdict with anomaly heuristics applied server-side (`long_duration`, `token_spike`, `logic_failure`). The output names the failing node, cites evidence by anomaly id, and suggests next actions as deep-linked URLs (trace inspector, agent editor, replay-with-edit candidates). Works on completed traces too — those report empty `failingNodes` but may still surface anomalies.
+
+#### Page-aware context
+
+When the sidebar opens on a trace, workflow, or node, the chat backend injects a `<current-page-context>` system message describing the active entity (`{ kind, route, entityType, entityId, selectedNodeId, selectedScriptSlot }`). The assistant resolves "this trace", "this node", "this script" implicitly without asking — say "why did this fail?" on a trace page and `diagnose_trace` runs against the active id.
+
+The same context drives **suggestion chips** above the composer: contextually-relevant quick prompts ("Explain what this node does", "Help me write this output script", "Suggest a Scriban template for…") that the user can click instead of typing.
+
+### Homepage rail
+
+The homepage's right-side rail shows three live sections plus an assistant-token chip:
+
+- **Resume conversations** — your recent threads (homepage + entity-scoped) ordered by most-recent activity, with first-user-message previews.
+- **Recent traces** — last N traces with quick-link state badges.
+- **Recently used workflows** — workflows ordered by most recent saga activity (no separate "pinned" concept; recency is implicit).
+- **Assistant tokens · today** — input / output rollup for the user's assistant conversations, plus an all-time call count.
+
+The trace token panel (`GET /api/traces/{id}/token-usage`) labels assistant-conversation synthetic traces as **"Assistant token usage"** with an `Assistant` chip, distinguishing them from workflow saga runs in the same UI.
+
+### Implementation surface
+
+- **Backend**: `CodeFlow.Api/Assistant/` hosts the chat loop (`CodeFlowAssistant`), tool dispatcher (`AssistantToolDispatcher`), provider mappers (`AnthropicToolMapper`, `OpenAiToolMapper`), and the `IAssistantTool` registry. Tools are scoped per-request and registered via single-line DI; adding a new tool is one `services.AddScoped<IAssistantTool, FooTool>()` line.
+- **Persistence**: `AssistantConversationEntity` + `AssistantMessageEntity` hold conversations and the message log. Each conversation owns a `SyntheticTraceId` so token usage flows through the same `TokenUsageRecord` table as workflow runs and shows up in the existing token panels.
+- **LLM backend**: shared with the rest of the platform via the CodeGraph LLM Configuration admin (anthropic / openai / lmstudio). No parallel assistant-specific provider config.
+- **Frontend**: `codeflow-ui/src/app/ui/chat/` ships an embeddable `cf-chat-panel` mounted both as the homepage main pane and as the page sidebar. SSE stream parsing (`assistant-stream.ts`), tool-call rendering (`chat-tool-call.component.ts`), confirmation chips (`chat-confirmation-chip.component.ts`), and the homepage rail (`pages/home/home-rail.component.ts`) live in their own focused files.
+
+### Endpoints
+
+- `POST /api/assistant/conversations` — get-or-create a conversation by `(user, scope)`.
+- `GET /api/assistant/conversations` — recent conversations for the caller (HAA-14 resume-list rail).
+- `GET /api/assistant/conversations/{id}` — conversation + message history.
+- `POST /api/assistant/conversations/{id}/messages` — SSE-streaming chat turn (deltas, tool calls, tool results, token usage, terminal `done` event).
+- `GET /api/assistant/token-usage/summary` — today / all-time / per-conversation token rollup for the rail's assistant-token chip.
+
 ## Production deployment
 
 CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted by host-managed Caddy, authenticated against Keycloak at `https://identity.trefry.net`, and connected to the shared MariaDB on `trefry-network` and the shared RabbitMQ at `mqapps.trefry.net`.
@@ -273,6 +351,10 @@ CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted b
 
 - [Agent in-place editing](./docs/agent-in-place-edit.md)
 - [Replay-with-edit on past traces](./docs/replay-with-edit.md)
+
+### Assistant
+
+- See the [Assistant](#assistant) section above for the full capability surface — tools, confirmation-chip flow, page-aware context, homepage rail, and endpoints.
 
 ### Operations
 

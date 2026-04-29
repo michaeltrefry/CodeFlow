@@ -109,8 +109,8 @@ public sealed class AssistantSystemPromptTests
             because: "HAA-11 wired the run tool; the prompt must teach the model to invoke it");
         prompt.Should().Contain("diagnose_trace",
             because: "HAA-12 wired the diagnosis tool; the prompt must teach the model to invoke it");
-        prompt.Should().Contain("HAA-13",
-            because: "the prompt should still call out replay-with-edit as future");
+        prompt.Should().Contain("propose_replay_with_edit",
+            because: "HAA-13 wired the replay-with-edit bridge; the prompt must teach the model to invoke it");
     }
 
     [Theory]
