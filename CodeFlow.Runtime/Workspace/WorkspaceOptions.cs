@@ -18,6 +18,15 @@ public sealed class WorkspaceOptions
     /// </summary>
     public const string DefaultWorkingDirectoryRoot = "/app/codeflow/workdir";
 
+    /// <summary>
+    /// Default container path for per-conversation working directories used by the homepage
+    /// assistant when an agent role is assigned (so its host tools — read_file, apply_patch,
+    /// run_command — have a workspace to operate against). Each conversation gets
+    /// <c>{root}/{conversationId:N}/</c> on first tool call. Override via
+    /// <c>Workspace__AssistantWorkspaceRoot</c> for non-standard layouts.
+    /// </summary>
+    public const string DefaultAssistantWorkspaceRoot = "/app/codeflow/assistant";
+
     public string Root { get; set; } = string.Empty;
 
     /// <summary>
@@ -27,6 +36,13 @@ public sealed class WorkspaceOptions
     /// volume mount that the operator manages out-of-band.
     /// </summary>
     public string WorkingDirectoryRoot { get; set; } = DefaultWorkingDirectoryRoot;
+
+    /// <summary>
+    /// Per-conversation working-directory root for the homepage assistant. Same out-of-band
+    /// volume-mount considerations as <see cref="WorkingDirectoryRoot"/>; not editable via the
+    /// admin UI for the same reason.
+    /// </summary>
+    public string AssistantWorkspaceRoot { get; set; } = DefaultAssistantWorkspaceRoot;
 
     public TimeSpan WorktreeTtl { get; set; } = TimeSpan.FromHours(24);
 

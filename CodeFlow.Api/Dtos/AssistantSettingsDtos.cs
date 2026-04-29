@@ -10,10 +10,12 @@ public sealed record AssistantSettingsResponse(
     string? Provider,
     string? Model,
     long? MaxTokensPerConversation,
+    long? AssignedAgentRoleId,
     string? UpdatedBy,
     DateTime? UpdatedAtUtc);
 
 public sealed record AssistantSettingsWriteRequest(
     string? Provider,
     string? Model,
-    long? MaxTokensPerConversation);
+    long? MaxTokensPerConversation,
+    long? AssignedAgentRoleId);

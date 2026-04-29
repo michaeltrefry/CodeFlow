@@ -653,6 +653,9 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         /// <summary>HAA-16 — captures the per-call model override so tests can assert plumbing.</summary>
         public string? LastOverrideModel { get; private set; }
 
+        /// <summary>HAA-18 — captures the conversation id passed to AskAsync so role-tool tests can assert plumbing.</summary>
+        public Guid LastConversationId { get; private set; }
+
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
             IReadOnlyList<AssistantMessage> history,
@@ -660,12 +663,14 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
             AssistantPageContext? pageContext = null,
             string? overrideProvider = null,
             string? overrideModel = null,
+            Guid conversationId = default,
             CancellationToken cancellationToken = default)
         {
             LastToolPolicy = toolPolicy;
             LastPageContext = pageContext;
             LastOverrideProvider = overrideProvider;
             LastOverrideModel = overrideModel;
+            LastConversationId = conversationId;
             foreach (var item in reply)
             {
                 yield return item;

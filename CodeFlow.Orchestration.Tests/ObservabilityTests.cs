@@ -155,6 +155,9 @@ public sealed class ObservabilityTests
     {
         public Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
             => Task.FromResult(ResolvedAgentTools.Empty);
+
+        public Task<ResolvedAgentTools> ResolveByRoleAsync(long roleId, CancellationToken cancellationToken = default)
+            => Task.FromResult(ResolvedAgentTools.Empty);
     }
 
     private sealed class RecordingArtifactStore(string content) : IArtifactStore

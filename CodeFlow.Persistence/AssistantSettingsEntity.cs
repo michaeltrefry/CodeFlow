@@ -28,6 +28,14 @@ public sealed class AssistantSettingsEntity
     /// </summary>
     public long? MaxTokensPerConversation { get; set; }
 
+    /// <summary>
+    /// Optional agent role whose tool grants are merged into the homepage assistant's tool surface
+    /// alongside the built-in <c>IAssistantTool</c> registry. Null means "built-in tools only".
+    /// FK to <see cref="AgentRoleEntity.Id"/>; ON DELETE SET NULL so deleting a role detaches it
+    /// from the assistant rather than wiping the settings row.
+    /// </summary>
+    public long? AssignedAgentRoleId { get; set; }
+
     public string? UpdatedBy { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }

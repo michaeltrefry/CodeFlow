@@ -37,7 +37,51 @@ public sealed class RoleResolutionService : IRoleResolutionService
             .ToListAsync(cancellationToken);
 
         var skills = await ResolveSkillsAsync(normalized, cancellationToken);
+        return await BuildResolvedToolsAsync(grants, skills, cancellationToken);
+    }
 
+    public async Task<ResolvedAgentTools> ResolveByRoleAsync(long roleId, CancellationToken cancellationToken = default)
+    {
+        if (roleId <= 0)
+        {
+            return ResolvedAgentTools.Empty;
+        }
+
+        var grants = await (
+            from role in dbContext.AgentRoles.AsNoTracking()
+            join grant in dbContext.AgentRoleToolGrants.AsNoTracking()
+                on role.Id equals grant.RoleId
+            where role.Id == roleId && !role.IsArchived
+            select new GrantView(role.Key, grant.Category, grant.ToolIdentifier))
+            .ToListAsync(cancellationToken);
+
+        var skills = await (
+            from role in dbContext.AgentRoles.AsNoTracking()
+            join grant in dbContext.AgentRoleSkillGrants.AsNoTracking()
+                on role.Id equals grant.RoleId
+            where role.Id == roleId
+                && !role.IsArchived
+                && !grant.Skill.IsArchived
+            select new { grant.Skill.Id, grant.Skill.Name, grant.Skill.Body })
+            .ToListAsync(cancellationToken);
+
+        var resolvedSkills = skills.Count == 0
+            ? Array.Empty<ResolvedSkill>()
+            : skills
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(s => new ResolvedSkill(s.Name, s.Body))
+                .ToArray();
+
+        return await BuildResolvedToolsAsync(grants, resolvedSkills, cancellationToken);
+    }
+
+    private async Task<ResolvedAgentTools> BuildResolvedToolsAsync(
+        IReadOnlyList<GrantView> grants,
+        IReadOnlyList<ResolvedSkill> skills,
+        CancellationToken cancellationToken)
+    {
         if (grants.Count == 0 && skills.Count == 0)
         {
             return ResolvedAgentTools.Empty;

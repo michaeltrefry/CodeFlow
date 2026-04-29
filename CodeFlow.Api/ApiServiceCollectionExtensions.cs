@@ -143,6 +143,12 @@ public static class ApiServiceCollectionExtensions
 
         services.AddScoped<AssistantToolDispatcher>();
 
+        // HAA-18 — admin can assign an agent role to the homepage assistant; the role's host +
+        // MCP tool grants are merged into the assistant's tool surface per turn. The factory is
+        // singleton because it has no per-request state; per-conversation workspace context is
+        // resolved inside Build(conversationId, ...) at call time.
+        services.AddSingleton<AgentRoleToolFactory>();
+
         return services;
     }
 
