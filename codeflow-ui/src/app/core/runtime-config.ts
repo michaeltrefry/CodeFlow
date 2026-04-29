@@ -28,6 +28,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     });
     if (!response.ok) {
       console.warn(`[runtime-config] fetch failed: ${response.status}; using defaults`);
+      loaded = DEFAULT_CONFIG;
       return DEFAULT_CONFIG;
     }
     const parsed = await response.json() as Partial<RuntimeConfig>;

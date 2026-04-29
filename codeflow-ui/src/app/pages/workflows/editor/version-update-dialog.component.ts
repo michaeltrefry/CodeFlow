@@ -88,13 +88,14 @@ export interface VersionUpdateResult {
           </div>
         }
 
-        <div dialog-footer>
-          <button type="button" cf-button variant="ghost" (click)="onCancel()">Cancel</button>
-          <button type="button" cf-button variant="primary" (click)="onConfirm()">
-            Update to v{{ t.toVersion }}
-          </button>
-        </div>
       }
+
+      <div dialog-footer>
+        <button type="button" cf-button variant="ghost" (click)="onCancel()">Cancel</button>
+        <button type="button" cf-button variant="primary" (click)="onConfirm()">
+          Update to v{{ target?.toVersion }}
+        </button>
+      </div>
     </cf-dialog>
   `,
   styles: [`
