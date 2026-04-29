@@ -32,7 +32,14 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
 
         var toolNameMap = ProviderToolNameMap.Create(request.Tools);
         using var httpRequest = BuildHttpRequest(request, runtimeOptions, toolNameMap);
-        using var response = await SendWithRetryAsync(httpRequest, runtimeOptions, cancellationToken);
+        using var response = await ChatModelHttpRetry.SendWithRetryAsync(
+            httpClient,
+            httpRequest,
+            maxRetryAttempts: runtimeOptions.MaxRetryAttempts,
+            initialRetryDelay: runtimeOptions.InitialRetryDelay,
+            extraRetryStatusCheck: null,
+            extraRetryAfterExtractor: null,
+            cancellationToken);
 
         await ModelClientHttpErrorHelper.EnsureSuccessStatusCodeAsync(httpRequest, response, cancellationToken);
 
@@ -88,97 +95,6 @@ public abstract class OpenAiCompatibleResponsesModelClientBase : IModelClient
 
         ApplyHeaders(httpRequest, runtimeOptions);
         return httpRequest;
-    }
-
-    private async Task<HttpResponseMessage> SendWithRetryAsync(
-        HttpRequestMessage request,
-        OpenAiCompatibleResponsesRuntimeOptions runtimeOptions,
-        CancellationToken cancellationToken)
-    {
-        var attempt = 0;
-        var maxRetryAttempts = runtimeOptions.MaxRetryAttempts;
-
-        while (true)
-        {
-            attempt++;
-
-            var requestClone = await CloneRequestAsync(request, cancellationToken);
-
-            try
-            {
-                var response = await httpClient.SendAsync(requestClone, cancellationToken);
-
-                if (!ShouldRetry(response.StatusCode) || attempt >= maxRetryAttempts)
-                {
-                    return response;
-                }
-
-                var delay = GetRetryDelay(response, runtimeOptions, attempt);
-                response.Dispose();
-                await Task.Delay(delay, cancellationToken);
-            }
-            catch (HttpRequestException) when (attempt < maxRetryAttempts)
-            {
-                await Task.Delay(GetRetryDelay(response: null, runtimeOptions, attempt), cancellationToken);
-            }
-        }
-    }
-
-    private static bool ShouldRetry(HttpStatusCode statusCode)
-    {
-        return statusCode == HttpStatusCode.TooManyRequests
-            || statusCode == HttpStatusCode.RequestTimeout
-            || statusCode == HttpStatusCode.BadGateway
-            || statusCode == HttpStatusCode.ServiceUnavailable
-            || statusCode == HttpStatusCode.GatewayTimeout
-            || (int)statusCode >= 500;
-    }
-
-    private static TimeSpan GetRetryDelay(
-        HttpResponseMessage? response,
-        OpenAiCompatibleResponsesRuntimeOptions runtimeOptions,
-        int attempt)
-    {
-        if (response?.Headers.RetryAfter?.Delta is TimeSpan retryAfterDelta)
-        {
-            return retryAfterDelta;
-        }
-
-        if (response?.Headers.RetryAfter?.Date is DateTimeOffset retryAfterDate)
-        {
-            var delta = retryAfterDate - DateTimeOffset.UtcNow;
-            return delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
-        }
-
-        var multiplier = Math.Pow(2, Math.Max(0, attempt - 1));
-        var calculatedDelay = TimeSpan.FromMilliseconds(runtimeOptions.InitialRetryDelay.TotalMilliseconds * multiplier);
-
-        return calculatedDelay > TimeSpan.Zero ? calculatedDelay : TimeSpan.Zero;
-    }
-
-    private static async Task<HttpRequestMessage> CloneRequestAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        var clone = new HttpRequestMessage(request.Method, request.RequestUri);
-
-        foreach (var header in request.Headers)
-        {
-            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-
-        if (request.Content is not null)
-        {
-            var content = await request.Content.ReadAsStringAsync(cancellationToken);
-            clone.Content = new StringContent(content, Encoding.UTF8, request.Content.Headers.ContentType?.MediaType);
-
-            foreach (var header in request.Content.Headers)
-            {
-                clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-        }
-
-        return clone;
     }
 
     private static JsonArray BuildInputItems(IReadOnlyList<ChatMessage> messages, ProviderToolNameMap toolNameMap)
