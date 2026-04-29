@@ -29,6 +29,28 @@ public static class CodeFlowApiDefaults
         public const string LlmProvidersWrite = "LlmProvidersWrite";
     }
 
+    /// <summary>
+    /// Named bundles of policies used together by certain endpoints. Hoisted out of the
+    /// individual endpoint files (F-022 in the 2026-04-28 backend review) so the auth-policy
+    /// surface lives next to the policy declarations.
+    /// </summary>
+    public static class PolicyBundles
+    {
+        /// <summary>
+        /// Workflow-package import endpoints touch every entity kind a package can carry, so
+        /// the caller must hold write access to all of them. <see cref="Microsoft.AspNetCore.Builder.AuthorizationEndpointConventionBuilderExtensions.RequireAuthorization(Microsoft.AspNetCore.Builder.IEndpointConventionBuilder, string[])"/>
+        /// requires every named policy to pass.
+        /// </summary>
+        public static readonly string[] PackageImportWrite =
+        [
+            Policies.WorkflowsWrite,
+            Policies.AgentsWrite,
+            Policies.AgentRolesWrite,
+            Policies.SkillsWrite,
+            Policies.McpServersWrite,
+        ];
+    }
+
     public static class Permissions
     {
         public const string AgentsRead = "agents:read";
