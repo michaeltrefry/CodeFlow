@@ -30,8 +30,8 @@ public sealed record WorkflowNode(
     // Transform nodes: "string" (default) — rendered text becomes the Out artifact verbatim.
     // "json" mode (deserialize rendered text before emitting) is gated behind TN-2.
     string OutputType = "string",
-    // Swarm nodes (sc-43): "Sequential" or "Coordinator". Closed enum stored as string. Null on
-    // every other kind. The Coordinator runtime ships in sc-46; v1 only Sequential is dispatchable.
+    // Swarm nodes: "Sequential" (sc-43) or "Coordinator" (sc-46). Closed enum stored as string;
+    // null on every other kind. Both protocols are dispatched by the runtime.
     string? SwarmProtocol = null,
     // Swarm nodes: number of contributors (Sequential) or max workers (Coordinator). 1..16.
     int? SwarmN = null,
