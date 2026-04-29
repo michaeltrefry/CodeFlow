@@ -22,9 +22,9 @@ export interface ChatConfirmationView {
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ButtonComponent],
   template: `
-    <div class="chip" [attr.data-resolved]="view().resolved ? 'true' : null">
-      <p class="chip-prompt">{{ view().prompt }}</p>
-      <div class="chip-actions">
+    <div class="confirmation-chip" [attr.data-resolved]="view().resolved ? 'true' : null">
+      <p class="confirmation-chip-prompt">{{ view().prompt }}</p>
+      <div class="confirmation-chip-actions">
         <cf-button
           variant="ghost"
           size="sm"
@@ -47,25 +47,49 @@ export interface ChatConfirmationView {
     </div>
   `,
   styles: [`
-    .chip {
+    /* Custom elements default to display: inline, which collapses the host to text-line height
+       and lets the inner flex column overflow the host's box. The chip's bottom border then
+       slices across the prompt text. Lock the host to block so it sizes to its content. */
+    :host {
+      display: block;
+    }
+    /* Match the workspace-switch prompt (chat-panel.ws-prompt) so all confirmation surfaces in
+       the assistant read the same way: bright solid border, bolder prompt, slide-in on enter so
+       the user notices the chip even when they were scrolled mid-thread. The 2px border + soft
+       outer glow are deliberate — these chips gate mutating actions, so visual weight is the
+       point. */
+    .confirmation-chip {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding: 10px 12px;
+      gap: 10px;
+      padding: 12px 14px;
       border-radius: var(--radius-md, 8px);
-      border: 1px dashed var(--accent, #5765ff);
-      background: color-mix(in oklab, var(--accent, #5765ff) 6%, transparent);
+      border: 2px solid var(--accent, #5765ff);
+      background: color-mix(in oklab, var(--accent, #5765ff) 12%, var(--surface, #131519));
+      box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent, #5765ff) 18%, transparent);
+      box-sizing: border-box;
+      animation: chip-slide-up 180ms ease-out;
     }
-    .chip[data-resolved="true"] {
+    @keyframes chip-slide-up {
+      from { transform: translateY(8px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    .confirmation-chip[data-resolved="true"] {
       opacity: 0.55;
-      border-style: solid;
+      border-style: dashed;
+      border-width: 1px;
+      box-shadow: none;
+      animation: none;
     }
-    .chip-prompt {
+    .confirmation-chip-prompt {
       margin: 0;
       font-size: var(--fs-md, 13px);
+      font-weight: 600;
+      line-height: 1.3;
       color: var(--text, #E7E9EE);
+      overflow-wrap: anywhere;
     }
-    .chip-actions {
+    .confirmation-chip-actions {
       display: flex;
       justify-content: flex-end;
       gap: 6px;
