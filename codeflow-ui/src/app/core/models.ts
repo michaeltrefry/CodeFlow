@@ -339,7 +339,7 @@ export interface WorkflowNode {
   // Transform nodes only: the Scriban template body and how its rendered output is interpreted.
   template?: string | null;
   outputType?: WorkflowTransformOutputType;
-  // Swarm nodes only (sc-43). Sequential ships in v1; Coordinator dispatch lands in sc-46.
+  // Swarm nodes only. Both Sequential (sc-43) and Coordinator (sc-46) protocols are dispatchable.
   swarmProtocol?: WorkflowSwarmProtocol | null;
   swarmN?: number | null;
   contributorAgentKey?: string | null;
