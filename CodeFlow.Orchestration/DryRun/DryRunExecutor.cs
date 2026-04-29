@@ -48,12 +48,14 @@ public sealed class DryRunExecutor
     private readonly LogicNodeScriptHost logicScriptHost;
     private readonly IAgentConfigRepository? agentConfigRepository;
     private readonly IScribanTemplateRenderer? templateRenderer;
+    private readonly IRetryContextBuilder retryContextBuilder;
 
     public DryRunExecutor(
         IWorkflowRepository workflowRepository,
         LogicNodeScriptHost logicScriptHost,
         IAgentConfigRepository? agentConfigRepository = null,
-        IScribanTemplateRenderer? templateRenderer = null)
+        IScribanTemplateRenderer? templateRenderer = null,
+        IRetryContextBuilder? retryContextBuilder = null)
     {
         this.workflowRepository = workflowRepository ?? throw new ArgumentNullException(nameof(workflowRepository));
         this.logicScriptHost = logicScriptHost ?? throw new ArgumentNullException(nameof(logicScriptHost));
@@ -68,6 +70,10 @@ public sealed class DryRunExecutor
         }
         this.agentConfigRepository = agentConfigRepository;
         this.templateRenderer = templateRenderer;
+        // Retry-context extraction is pure (no IO, no config) so a default instance keeps test
+        // wiring simple. Saga + dry-run share `RetryContextBuilder` so silent drift between the
+        // two engines on "what counts as a prior failure reason" is no longer possible.
+        this.retryContextBuilder = retryContextBuilder ?? new RetryContextBuilder();
     }
 
     public async Task<DryRunResult> ExecuteAsync(
@@ -367,11 +373,9 @@ public sealed class DryRunExecutor
                     {
                         failedAttemptCount++;
                         var retryTargetNode = workflow.FindNode(agentEdge.ToNodeId);
-                        var (failureReason, attemptSummary) = ExtractFailureContext(mock.Payload);
-                        var retryContextNode = BuildRetryContextNode(
+                        var snapshot = retryContextBuilder.Build(
                             attemptNumber: failedAttemptCount + 1,
-                            priorFailureReason: failureReason,
-                            priorAttemptSummary: attemptSummary);
+                            decisionPayload: RetryContextBuilder.AsJsonElement(mock.Payload));
                         state.RecordEvent(new DryRunEvent(
                             Ordinal: state.NextOrdinal(),
                             Kind: DryRunEventKind.RetryContextHandoff,
@@ -379,10 +383,7 @@ public sealed class DryRunExecutor
                             NodeKind: retryTargetNode?.Kind.ToString() ?? "Unknown",
                             AgentKey: retryTargetNode?.AgentKey,
                             PortName: effectivePort,
-                            Message: BuildRetryContextMessage(
-                                attemptNumber: failedAttemptCount + 1,
-                                priorFailureReason: failureReason,
-                                priorAttemptSummary: attemptSummary),
+                            Message: RetryContextBuilder.ToMessage(snapshot),
                             InputPreview: null,
                             OutputPreview: null,
                             ReviewRound: reviewRound,
@@ -391,7 +392,7 @@ public sealed class DryRunExecutor
                             SubflowKey: null,
                             SubflowVersion: null,
                             Logs: null,
-                            DecisionPayload: retryContextNode));
+                            DecisionPayload: RetryContextBuilder.ToJsonNode(snapshot)));
                     }
 
                     currentNode = workflow.FindNode(agentEdge.ToNodeId)
@@ -1752,106 +1753,6 @@ public sealed class DryRunExecutor
         }
         const int max = 2048;
         return text.Length <= max ? text : text[..max] + "…";
-    }
-
-    /// <summary>
-    /// Saga-parity payload extraction. Mirrors
-    /// <c>WorkflowSagaStateMachine.ExtractFailureContext</c> for <see cref="JsonNode"/> payloads:
-    /// reads <c>reason</c> (top-level string) and a <c>failure_context</c> object containing
-    /// <c>last_output</c> (string) and <c>tool_calls_executed</c> (number).
-    /// </summary>
-    private static (string? Reason, string? Summary) ExtractFailureContext(JsonNode? payload)
-    {
-        if (payload is not JsonObject obj)
-        {
-            return (null, null);
-        }
-
-        string? reason = null;
-        if (obj.TryGetPropertyValue("reason", out var reasonNode)
-            && reasonNode is JsonValue reasonValue
-            && reasonValue.TryGetValue<string>(out var reasonText))
-        {
-            reason = reasonText;
-        }
-
-        if (!obj.TryGetPropertyValue("failure_context", out var contextNode)
-            || contextNode is not JsonObject contextObj)
-        {
-            return (reason, null);
-        }
-
-        string? lastOutput = null;
-        if (contextObj.TryGetPropertyValue("last_output", out var lastOutputNode)
-            && lastOutputNode is JsonValue lastOutputValue
-            && lastOutputValue.TryGetValue<string>(out var lastOutputText))
-        {
-            lastOutput = lastOutputText;
-        }
-
-        int? toolCallsExecuted = null;
-        if (contextObj.TryGetPropertyValue("tool_calls_executed", out var toolCallsNode)
-            && toolCallsNode is JsonValue toolCallsValue
-            && toolCallsValue.TryGetValue<int>(out var toolCalls))
-        {
-            toolCallsExecuted = toolCalls;
-        }
-
-        var summaryBuilder = new System.Text.StringBuilder();
-        if (!string.IsNullOrWhiteSpace(lastOutput))
-        {
-            summaryBuilder.Append("Last output: ").Append(lastOutput!.Trim());
-        }
-
-        if (toolCallsExecuted is { } calls)
-        {
-            if (summaryBuilder.Length > 0)
-            {
-                summaryBuilder.Append(Environment.NewLine);
-            }
-            summaryBuilder.Append("Tool calls executed: ").Append(calls);
-        }
-
-        var summary = summaryBuilder.Length == 0 ? null : summaryBuilder.ToString();
-        return (reason, summary);
-    }
-
-    private static JsonNode BuildRetryContextNode(
-        int attemptNumber,
-        string? priorFailureReason,
-        string? priorAttemptSummary)
-    {
-        var node = new JsonObject
-        {
-            ["attemptNumber"] = attemptNumber,
-        };
-        if (priorFailureReason is not null)
-        {
-            node["priorFailureReason"] = priorFailureReason;
-        }
-        if (priorAttemptSummary is not null)
-        {
-            node["priorAttemptSummary"] = priorAttemptSummary;
-        }
-        return node;
-    }
-
-    private static string BuildRetryContextMessage(
-        int attemptNumber,
-        string? priorFailureReason,
-        string? priorAttemptSummary)
-    {
-        var builder = new System.Text.StringBuilder();
-        builder.Append("Saga would inject RetryContext: attempt #").Append(attemptNumber).Append('.');
-        if (!string.IsNullOrWhiteSpace(priorFailureReason))
-        {
-            builder.Append(" Reason: ").Append(priorFailureReason!.Trim()).Append('.');
-        }
-        if (!string.IsNullOrWhiteSpace(priorAttemptSummary))
-        {
-            builder.Append(" Summary: ").Append(priorAttemptSummary!.Trim());
-        }
-        return builder.ToString();
     }
 
     private sealed record DryRunWalkResult(
