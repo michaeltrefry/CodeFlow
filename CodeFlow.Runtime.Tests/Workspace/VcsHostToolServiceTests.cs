@@ -27,7 +27,8 @@ public sealed class VcsHostToolServiceTests
                     ["base"] = "main",
                     ["title"] = "Add x",
                     ["body"] = "Closes #1",
-                }));
+                }),
+            BuildContext("foo", "bar"));
 
         result.IsError.Should().BeFalse();
         var payload = JsonNode.Parse(result.Content)!.AsObject();
@@ -63,7 +64,8 @@ public sealed class VcsHostToolServiceTests
                     ["head"] = "feat/y",
                     ["base"] = "main",
                     ["title"] = "Add y",
-                }));
+                }),
+            BuildContext("foo", "bar"));
 
         stub.LastOpenPrCall!.Value.Body.Should().Be(string.Empty);
     }
@@ -77,7 +79,7 @@ public sealed class VcsHostToolServiceTests
         };
         var service = new VcsHostToolService(new SingleProviderFactory(stub));
 
-        var result = await service.OpenPullRequestAsync(BuildOpenPrCall());
+        var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "bar"));
 
         result.IsError.Should().BeTrue();
         var payload = JsonNode.Parse(result.Content)!.AsObject();
@@ -94,7 +96,7 @@ public sealed class VcsHostToolServiceTests
         };
         var service = new VcsHostToolService(new SingleProviderFactory(stub));
 
-        var result = await service.OpenPullRequestAsync(BuildOpenPrCall());
+        var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "bar"));
 
         result.IsError.Should().BeTrue();
         JsonNode.Parse(result.Content)!.AsObject()["error"]!.GetValue<string>().Should().Be("unauthorized");
@@ -109,7 +111,7 @@ public sealed class VcsHostToolServiceTests
         };
         var service = new VcsHostToolService(new SingleProviderFactory(stub));
 
-        var result = await service.OpenPullRequestAsync(BuildOpenPrCall());
+        var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "bar"));
 
         result.IsError.Should().BeTrue();
         JsonNode.Parse(result.Content)!.AsObject()["error"]!.GetValue<string>().Should().Be("rate_limited");
@@ -120,7 +122,7 @@ public sealed class VcsHostToolServiceTests
     {
         var service = new VcsHostToolService(new ThrowingFactory(new GitHostNotConfiguredException()));
 
-        var result = await service.OpenPullRequestAsync(BuildOpenPrCall());
+        var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "bar"));
 
         result.IsError.Should().BeTrue();
         JsonNode.Parse(result.Content)!.AsObject()["error"]!.GetValue<string>().Should().Be("not_configured");
@@ -163,13 +165,52 @@ public sealed class VcsHostToolServiceTests
                 {
                     ["owner"] = "foo",
                     ["name"] = "bar",
-                }));
+                }),
+            BuildContext("foo", "bar"));
 
         result.IsError.Should().BeFalse();
         var payload = JsonNode.Parse(result.Content)!.AsObject();
         payload["defaultBranch"]!.GetValue<string>().Should().Be("trunk");
         payload["cloneUrl"]!.GetValue<string>().Should().Be("https://example.com/foo/bar.git");
         payload["visibility"]!.GetValue<string>().Should().Be("Private");
+    }
+
+    [Fact]
+    public async Task OpenPullRequest_WhenRepoNotDeclared_ReturnsToolError()
+    {
+        var stub = new StubProvider();
+        var service = new VcsHostToolService(new SingleProviderFactory(stub));
+
+        var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "allowed"));
+
+        result.IsError.Should().BeTrue();
+        var payload = JsonNode.Parse(result.Content)!.AsObject();
+        payload["error"]!.GetValue<string>().Should().Be("repo_not_allowed");
+        stub.LastOpenPrCall.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetRepoMetadata_WhenLegacyWorkspaceRepoMatches_AllowsCall()
+    {
+        var stub = new StubProvider();
+        var service = new VcsHostToolService(new SingleProviderFactory(stub));
+
+        var result = await service.GetRepoMetadataAsync(
+            new ToolCall(
+                "call_meta",
+                "vcs.get_repo",
+                new JsonObject
+                {
+                    ["owner"] = "foo",
+                    ["name"] = "bar",
+                }),
+            new ToolExecutionContext(
+                new ToolWorkspaceContext(
+                    Guid.NewGuid(),
+                    "/tmp/work",
+                    RepoUrl: "https://github.com/foo/bar.git")));
+
+        result.IsError.Should().BeFalse();
     }
 
     private static ToolCall BuildOpenPrCall() =>
@@ -184,6 +225,13 @@ public sealed class VcsHostToolServiceTests
                 ["base"] = "main",
                 ["title"] = "Add x",
             });
+
+    private static ToolExecutionContext BuildContext(string owner, string name) =>
+        new(
+            Repositories:
+            [
+                new ToolRepositoryContext(owner, name, $"https://example.com/{owner}/{name}.git")
+            ]);
 
     private sealed class StubProvider : IVcsProvider
     {

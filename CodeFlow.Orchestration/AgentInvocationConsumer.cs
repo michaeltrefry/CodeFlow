@@ -3,6 +3,7 @@ using CodeFlow.Orchestration.TokenTracking;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Observability;
+using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
@@ -11,8 +12,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using ContractsToolExecutionContext = CodeFlow.Contracts.ToolExecutionContext;
+using ContractsToolRepositoryContext = CodeFlow.Contracts.ToolRepositoryContext;
 using ContractsToolWorkspaceContext = CodeFlow.Contracts.ToolWorkspaceContext;
 using RuntimeToolExecutionContext = CodeFlow.Runtime.ToolExecutionContext;
+using RuntimeToolRepositoryContext = CodeFlow.Runtime.ToolRepositoryContext;
 using RuntimeToolWorkspaceContext = CodeFlow.Runtime.ToolWorkspaceContext;
 
 namespace CodeFlow.Orchestration;
@@ -446,7 +449,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         if (TryGetWorkflowWorkDir(message.WorkflowContext, out var workDir))
         {
             return new RuntimeToolExecutionContext(
-                new RuntimeToolWorkspaceContext(message.TraceId, workDir));
+                new RuntimeToolWorkspaceContext(message.TraceId, workDir),
+                ExtractRepositoryContexts(message.ContextInputs));
         }
 
         return MapToolExecutionContext(message.ToolExecutionContext);
@@ -481,7 +485,9 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             return null;
         }
 
-        return new RuntimeToolExecutionContext(MapWorkspaceContext(context.Workspace));
+        return new RuntimeToolExecutionContext(
+            MapWorkspaceContext(context.Workspace),
+            MapRepositoryContexts(context.Repositories));
     }
 
     private static RuntimeToolWorkspaceContext? MapWorkspaceContext(ContractsToolWorkspaceContext? workspace)
@@ -497,6 +503,68 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             workspace.RepoUrl,
             workspace.RepoIdentityKey,
             workspace.RepoSlug);
+    }
+
+    private static IReadOnlyList<RuntimeToolRepositoryContext>? MapRepositoryContexts(
+        IReadOnlyList<ContractsToolRepositoryContext>? repositories)
+    {
+        if (repositories is null || repositories.Count == 0)
+        {
+            return null;
+        }
+
+        return repositories
+            .Select(repo => new RuntimeToolRepositoryContext(
+                repo.Owner,
+                repo.Name,
+                repo.Url,
+                repo.RepoIdentityKey,
+                repo.RepoSlug))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<RuntimeToolRepositoryContext>? ExtractRepositoryContexts(
+        IReadOnlyDictionary<string, JsonElement>? contextInputs)
+    {
+        if (contextInputs is null
+            || !contextInputs.TryGetValue("repositories", out var repositories)
+            || repositories.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var result = new List<RuntimeToolRepositoryContext>();
+        foreach (var entry in repositories.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object
+                || !entry.TryGetProperty("url", out var urlElement)
+                || urlElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var url = urlElement.GetString();
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            try
+            {
+                var repo = RepoReference.Parse(url);
+                result.Add(new RuntimeToolRepositoryContext(
+                    repo.Owner,
+                    repo.Name,
+                    url,
+                    repo.IdentityKey,
+                    repo.Slug));
+            }
+            catch (ArgumentException)
+            {
+            }
+        }
+
+        return result.Count == 0 ? null : result;
     }
 
     private static JsonObject? BuildFailureContext(

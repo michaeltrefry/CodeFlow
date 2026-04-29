@@ -262,6 +262,13 @@ public sealed class AgentInvocationConsumerTests
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
+        var contextInputs = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["repositories"] = JsonSerializer.SerializeToElement(new[]
+            {
+                new { url = "https://github.com/example/codeflow.git" }
+            })
+        };
 
         var request = new AgentInvokeRequested(
             TraceId: traceId,
@@ -272,7 +279,7 @@ public sealed class AgentInvocationConsumerTests
             AgentKey: "code-setup",
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
-            ContextInputs: new Dictionary<string, JsonElement>(),
+            ContextInputs: contextInputs,
             WorkflowContext: workflowContext);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
@@ -284,6 +291,10 @@ public sealed class AgentInvocationConsumerTests
         observed.Workspace.RepoUrl.Should().BeNull();
         observed.Workspace.RepoIdentityKey.Should().BeNull();
         observed.Workspace.RepoSlug.Should().BeNull();
+        observed.Repositories.Should().ContainSingle(repo =>
+            repo.Owner == "example" &&
+            repo.Name == "codeflow" &&
+            repo.Url == "https://github.com/example/codeflow.git");
     }
 
     [Fact]

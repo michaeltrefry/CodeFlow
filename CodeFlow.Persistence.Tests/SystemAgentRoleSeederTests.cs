@@ -54,6 +54,15 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
         grants.Select(g => g.ToolIdentifier)
             .Should().BeEquivalentTo("read_file", "apply_patch", "run_command", "echo", "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+
+        var readOnlyShell = seeded.Single(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
+        var readOnlyGrants = await ctx.AgentRoleToolGrants
+            .AsNoTracking()
+            .Where(g => g.RoleId == readOnlyShell.Id)
+            .Select(g => g.ToolIdentifier)
+            .ToListAsync();
+        readOnlyGrants.Should().BeEquivalentTo("read_file", "echo", "now");
+        readOnlyGrants.Should().NotContain("run_command");
     }
 
     [Fact]

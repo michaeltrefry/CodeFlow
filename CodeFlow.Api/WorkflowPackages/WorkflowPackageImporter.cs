@@ -1,3 +1,4 @@
+using CodeFlow.Api.Mcp;
 using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
@@ -12,7 +13,8 @@ public sealed class WorkflowPackageImporter(
     IAgentConfigRepository agentConfigRepository,
     IAgentRoleRepository agentRoleRepository,
     ISkillRepository skillRepository,
-    IMcpServerRepository mcpServerRepository) : IWorkflowPackageImporter
+    IMcpServerRepository mcpServerRepository,
+    IMcpEndpointPolicy mcpEndpointPolicy) : IWorkflowPackageImporter
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -518,6 +520,16 @@ public sealed class WorkflowPackageImporter(
             warnings.Add($"MCP server '{packageServer.Key}' exported with a bearer token. The token is not in the package and must be configured locally after import.");
         }
 
+        var endpointPolicyError = await ValidateMcpEndpointAsync(packageServer.EndpointUrl, cancellationToken);
+        if (endpointPolicyError is not null)
+        {
+            return Conflict(
+                WorkflowPackageImportResourceKind.McpServer,
+                packageServer.Key,
+                null,
+                endpointPolicyError);
+        }
+
         var existing = await mcpServerRepository.GetByKeyAsync(packageServer.Key, cancellationToken);
         if (existing is null)
         {
@@ -532,6 +544,19 @@ public sealed class WorkflowPackageImporter(
                 packageServer.Key,
                 null,
                 "An MCP server with this key already exists with different metadata or tools.");
+    }
+
+    private async Task<string?> ValidateMcpEndpointAsync(string endpointUrl, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out var uri))
+        {
+            return "MCP server endpoint URL must be an absolute URI.";
+        }
+
+        var result = await mcpEndpointPolicy.ValidateAsync(uri, cancellationToken);
+        return result.IsAllowed
+            ? null
+            : result.Reason ?? "Endpoint is not allowed by the configured MCP endpoint policy.";
     }
 
     private async Task ImportSkillsAsync(

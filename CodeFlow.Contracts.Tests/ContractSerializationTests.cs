@@ -37,7 +37,16 @@ public sealed class ContractSerializationTests
                     "/tmp/codeflow/workspaces/abc123/repo",
                     RepoUrl: "https://github.com/example/repo.git",
                     RepoIdentityKey: "github.com/example/repo",
-                    RepoSlug: "example/repo")));
+                    RepoSlug: "example/repo"),
+                Repositories:
+                [
+                    new ToolRepositoryContext(
+                        "example",
+                        "repo",
+                        Url: "https://github.com/example/repo.git",
+                        RepoIdentityKey: "github.com/example/repo",
+                        RepoSlug: "example/repo")
+                ]));
 
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         var roundTripped = JsonSerializer.Deserialize<AgentInvokeRequested>(json, SerializerOptions);

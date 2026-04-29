@@ -15,7 +15,13 @@ public static class PathConfinement
 
         var normalizedRoot = NormalizeExistingDirectory(root);
         var combined = Path.GetFullPath(Path.Combine(normalizedRoot, relativePath));
-        var resolved = ResolveSymlinksIfExists(combined);
+        if (!IsContained(normalizedRoot, combined))
+        {
+            throw new PathConfinementException(
+                $"Path '{relativePath}' resolves outside of the workspace root '{normalizedRoot}'.");
+        }
+
+        var resolved = ResolveSymlinkedComponents(normalizedRoot, combined);
 
         if (!IsContained(normalizedRoot, resolved))
         {
@@ -54,23 +60,61 @@ public static class PathConfinement
         return TrimTrailingSeparator(fullRoot);
     }
 
-    private static string ResolveSymlinksIfExists(string candidate)
+    private static string ResolveSymlinkedComponents(string root, string candidate)
     {
-        if (File.Exists(candidate))
+        if (!Directory.Exists(root))
         {
-            var fileInfo = new FileInfo(candidate);
-            var resolved = fileInfo.ResolveLinkTarget(returnFinalTarget: true);
-            return resolved is null ? candidate : Path.GetFullPath(resolved.FullName);
+            return candidate;
         }
 
-        if (Directory.Exists(candidate))
+        var relative = Path.GetRelativePath(root, candidate);
+        if (relative == ".")
         {
-            var dirInfo = new DirectoryInfo(candidate);
-            var resolved = dirInfo.ResolveLinkTarget(returnFinalTarget: true);
-            return resolved is null ? candidate : Path.GetFullPath(resolved.FullName);
+            return root;
         }
 
-        return candidate;
+        var segments = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+
+        var current = root;
+        for (var i = 0; i < segments.Length; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+
+            if (Directory.Exists(current))
+            {
+                var dirInfo = new DirectoryInfo(current);
+                var resolved = dirInfo.ResolveLinkTarget(returnFinalTarget: true);
+                if (resolved is not null)
+                {
+                    current = Path.GetFullPath(resolved.FullName);
+                }
+
+                continue;
+            }
+
+            if (File.Exists(current))
+            {
+                var fileInfo = new FileInfo(current);
+                var resolved = fileInfo.ResolveLinkTarget(returnFinalTarget: true);
+                if (resolved is not null)
+                {
+                    current = Path.GetFullPath(resolved.FullName);
+                }
+            }
+
+            if (i + 1 >= segments.Length)
+            {
+                return current;
+            }
+
+            return Path.GetFullPath(Path.Combine(
+                current,
+                Path.Combine(segments[(i + 1)..])));
+        }
+
+        return current;
     }
 
     private static bool IsContained(string root, string candidate)

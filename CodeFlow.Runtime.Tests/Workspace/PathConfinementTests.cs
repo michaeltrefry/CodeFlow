@@ -88,6 +88,32 @@ public sealed class PathConfinementTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_ShouldReject_WhenMissingPathDescendsFromSymlinkedDirectoryOutsideRoot()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var outsideDir = Path.Combine(Path.GetTempPath(), "codeflow-pathconf-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+
+        try
+        {
+            var linkPath = Path.Combine(root, "escape-link");
+            Directory.CreateSymbolicLink(linkPath, outsideDir);
+
+            var act = () => PathConfinement.Resolve(root, "escape-link/new-file.txt");
+
+            act.Should().Throw<PathConfinementException>();
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Resolve_ShouldAllow_WhenSymlinkTargetIsInsideRoot()
     {
         if (OperatingSystem.IsWindows())
