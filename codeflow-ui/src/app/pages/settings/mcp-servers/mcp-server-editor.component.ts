@@ -24,6 +24,9 @@ import { CardComponent } from '../../../ui/card.component';
   template: `
     <div class="page">
     <cf-page-header [title]="id() ? 'Edit MCP server' : 'New MCP server'">
+      @if (id() && !server()?.isArchived) {
+        <button type="button" cf-button variant="danger" icon="trash" (click)="archive()" [disabled]="saving()">Archive</button>
+      }
       <a routerLink="/settings/mcp-servers">
         <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
       </a>
@@ -36,6 +39,9 @@ import { CardComponent } from '../../../ui/card.component';
             <cf-chip [variant]="healthVariant(s)" dot [title]="s.lastVerificationError ?? ''">{{ s.healthStatus }}</cf-chip>
             @if (s.lastVerifiedAtUtc) {
               <cf-chip>last verified {{ s.lastVerifiedAtUtc | date:'medium' }}</cf-chip>
+            }
+            @if (s.isArchived) {
+              <cf-chip variant="warn" dot>archived</cf-chip>
             }
           </div>
           @if (s.lastVerificationError) {
@@ -271,6 +277,20 @@ export class McpServerEditorComponent implements OnInit {
 
   refreshingMessage(): string {
     return this.busy() === 'refresh' ? 'Refreshing…' : 'Refresh tools';
+  }
+
+  archive(): void {
+    const existingId = this.id();
+    if (!existingId) return;
+    if (!confirm('Archive this MCP server? Agents will stop receiving its tools immediately.')) return;
+    this.saving.set(true);
+    this.api.archive(existingId).subscribe({
+      next: () => this.router.navigate(['/settings/mcp-servers']),
+      error: err => {
+        this.error.set(this.formatError(err));
+        this.saving.set(false);
+      }
+    });
   }
 
   submit(event: Event): void {
