@@ -169,6 +169,148 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task ListConversations_ReturnsCallerOwnConversationsNewestFirst_WithMessagePreviews()
+    {
+        // HAA-14: the homepage rail's resume-conversation list calls GET /api/assistant/conversations
+        // and expects (a) only the caller's threads, (b) ordered by UpdatedAtUtc DESC, and (c) a
+        // server-truncated preview of the first user message.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ack"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+
+        // Both conversations are entity-scoped to UNIQUE types so they never collide with the
+        // shared homepage thread that other tests in this fixture (and the dev-bypass user)
+        // accumulate messages on. Order: A first, B second, so B becomes most-recently-updated.
+        var entityTypeA = $"haa14-list-a-{Guid.NewGuid():N}";
+        var entityTypeB = $"haa14-list-b-{Guid.NewGuid():N}";
+
+        var convAResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = entityTypeA, entityId = "1" }
+        });
+        var convA = (await convAResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var aMessage = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{convA.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "How does the swarm node work?" })
+        };
+        using (var aStream = await client.SendAsync(aMessage, HttpCompletionOption.ResponseHeadersRead))
+        {
+            await aStream.Content.ReadAsStringAsync();
+        }
+
+        var convBResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = entityTypeB, entityId = "1" }
+        });
+        var convB = (await convBResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var bMessage = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{convB.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "Why did this trace fail?" })
+        };
+        using (var bStream = await client.SendAsync(bMessage, HttpCompletionOption.ResponseHeadersRead))
+        {
+            await bStream.Content.ReadAsStringAsync();
+        }
+
+        // Widen the list call so both seeded conversations land in the response even if the
+        // shared user has accumulated many threads from other tests in this fixture.
+        var listResponse = await client.GetAsync("/api/assistant/conversations?limit=100");
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var listPayload = await listResponse.Content.ReadFromJsonAsync<ConversationListResponse>(JsonOpts);
+        listPayload!.Conversations.Should().NotBeEmpty();
+
+        var byId = listPayload.Conversations.ToDictionary(c => c.Id);
+        byId.Should().ContainKey(convA.Id);
+        byId.Should().ContainKey(convB.Id);
+
+        // Filter to just our two so other tests' contributions don't perturb relative-order
+        // assertions. Order should be B (newer) then A.
+        var ourConversations = listPayload.Conversations
+            .Where(c => c.Id == convA.Id || c.Id == convB.Id)
+            .ToList();
+        ourConversations.Select(c => c.Id).Should().BeEquivalentTo(
+            new[] { convB.Id, convA.Id }, opts => opts.WithStrictOrdering());
+
+        byId[convA.Id].FirstUserMessagePreview.Should().Contain("swarm node");
+        byId[convA.Id].MessageCount.Should().BeGreaterThanOrEqualTo(2); // user + assistant turns
+        byId[convA.Id].Scope.Kind.Should().Be("entity");
+        byId[convA.Id].Scope.EntityType.Should().Be(entityTypeA);
+
+        byId[convB.Id].FirstUserMessagePreview.Should().Contain("Why did this trace fail");
+        byId[convB.Id].Scope.Kind.Should().Be("entity");
+        byId[convB.Id].Scope.EntityType.Should().Be(entityTypeB);
+    }
+
+    [Fact]
+    public async Task GetTokenUsageSummary_AggregatesAcrossUserConversations_ScopesTodayAndAllTime()
+    {
+        // HAA-14: the homepage rail's assistant-token chip calls GET /api/assistant/token-usage/summary
+        // and expects today + all-time rollups across every synthetic-trace the user owns. Smoke-
+        // test by sending one chat turn (which captures a token-usage record) and verifying the
+        // summary endpoint reports the same numbers.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("ok"),
+            new AssistantTokenUsage(
+                Provider: "anthropic",
+                Model: "claude-sonnet-4",
+                Usage: JsonSerializer.SerializeToElement(new
+                {
+                    input_tokens = 17,
+                    output_tokens = 9
+                })),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+
+        var convResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType = "token-summary-test", entityId = Guid.NewGuid().ToString() }
+        });
+        var conversation = (await convResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var message = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "ping" })
+        };
+        using (var stream = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead))
+        {
+            await stream.Content.ReadAsStringAsync();
+        }
+
+        var summaryResponse = await client.GetAsync("/api/assistant/token-usage/summary");
+        summaryResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var summary = await summaryResponse.Content.ReadFromJsonAsync<TokenUsageSummaryResponse>(JsonOpts);
+        summary!.AllTime.CallCount.Should().BeGreaterThanOrEqualTo(1);
+        summary.AllTime.Totals["input_tokens"].Should().BeGreaterThanOrEqualTo(17);
+        summary.AllTime.Totals["output_tokens"].Should().BeGreaterThanOrEqualTo(9);
+
+        // The just-recorded turn happened "today" (calendar UTC). Other tests in the fixture may
+        // also contribute to today's bucket — we assert >= rather than ==.
+        summary.Today.CallCount.Should().BeGreaterThanOrEqualTo(1);
+
+        // The seeded conversation must appear in the per-conversation breakdown with at least
+        // its own token totals. Conversations with zero records are filtered server-side.
+        var seeded = summary.PerConversation.SingleOrDefault(p => p.ConversationId == conversation.Id);
+        seeded.Should().NotBeNull(because: "conversation has at least one captured token-usage record");
+        seeded!.SyntheticTraceId.Should().Be(conversation.SyntheticTraceId);
+        seeded.Rollup.CallCount.Should().BeGreaterThanOrEqualTo(1);
+        seeded.Scope.Kind.Should().Be("entity");
+        seeded.Scope.EntityType.Should().Be("token-summary-test");
+    }
+
+    [Fact]
     public async Task GetConversation_NonExistentId_Returns404()
     {
         using var client = CreateClientWithStub();
@@ -391,6 +533,33 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
     private sealed record ConversationDto(Guid Id, ScopeDto Scope, Guid SyntheticTraceId);
     private sealed record ScopeDto(string Kind, string? EntityType, string? EntityId);
     private sealed record MessageDto(Guid Id, int Sequence, string Role, string Content, string? Provider, string? Model);
+
+    // HAA-14 test DTOs.
+    private sealed record ConversationListResponse(IReadOnlyList<ConversationSummaryDto> Conversations);
+    private sealed record ConversationSummaryDto(
+        Guid Id,
+        ScopeDto Scope,
+        Guid SyntheticTraceId,
+        DateTime CreatedAtUtc,
+        DateTime UpdatedAtUtc,
+        int MessageCount,
+        string? FirstUserMessagePreview);
+
+    private sealed record TokenUsageSummaryResponse(
+        TokenRollupDto Today,
+        TokenRollupDto AllTime,
+        IReadOnlyList<PerConversationTokenDto> PerConversation);
+
+    private sealed record TokenRollupDto(
+        int CallCount,
+        Dictionary<string, long> Totals,
+        IReadOnlyList<JsonElement> ByProviderModel);
+
+    private sealed record PerConversationTokenDto(
+        Guid ConversationId,
+        Guid SyntheticTraceId,
+        ScopeDto Scope,
+        TokenRollupDto Rollup);
 
     public sealed class StubAssistant : ICodeFlowAssistant
     {

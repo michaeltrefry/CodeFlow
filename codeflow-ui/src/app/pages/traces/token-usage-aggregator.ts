@@ -23,10 +23,12 @@ import {
 export function aggregateTokenUsage(
   traceId: string,
   records: TokenUsageRecordDto[],
+  streamKind: 'workflow' | 'assistant' = 'workflow',
 ): TraceTokenUsageDto {
   if (records.length === 0) {
     return {
       traceId,
+      streamKind,
       total: emptyRollup(),
       records: [],
       byInvocation: [],
@@ -37,6 +39,7 @@ export function aggregateTokenUsage(
 
   return {
     traceId,
+    streamKind,
     total: buildRollup(records),
     records,
     byInvocation: buildInvocationRollups(records),

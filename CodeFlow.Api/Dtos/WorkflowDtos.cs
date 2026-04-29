@@ -14,6 +14,15 @@ public sealed record WorkflowSummaryDto(
     int InputCount,
     DateTime CreatedAtUtc);
 
+/// <summary>
+/// HAA-14 — Workflow summary annotated with the most recent saga activity timestamp. Used by
+/// <c>GET /api/workflows/recent</c> so the homepage rail can label "last used" alongside the
+/// regular summary fields.
+/// </summary>
+public sealed record RecentWorkflowDto(
+    WorkflowSummaryDto Summary,
+    DateTime LastUsedAtUtc);
+
 public sealed record WorkflowNodeDto(
     Guid Id,
     WorkflowNodeKind Kind,

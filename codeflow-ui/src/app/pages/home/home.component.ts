@@ -1,13 +1,16 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { ChatPanelComponent } from '../../ui/chat';
 import { AuthService } from '../../auth/auth.service';
+import { HomeRailComponent } from './home-rail.component';
 
 /**
  * HAA-6: Homepage shell. Replaces "land on Traces" as the default landing experience.
  *
- * Layout: chat-first, with a thin right-side context rail placeholder. The rail is filled in
- * HAA-14 (recent traces, library shortcuts, resume-conversation list, token-usage indicator);
- * for now it's a static empty-state hint pointing the user at the chat and listing capabilities.
+ * Layout: chat-first, with a thin right-side context rail. HAA-14 fills the rail with live
+ * sections (assistant token chip, resume conversations, recent traces, recently used
+ * workflows). Demo mode keeps a stripped-down version: just the resume-conversation slot —
+ * the others require live tool access — plus the existing capability blurb so anonymous
+ * users still understand what they can ask.
  *
  * The chat panel mounts with <c>scope: { kind: 'homepage' }</c> so all conversations the user
  * has on the homepage land in the same persistent thread, distinct from any entity-scoped
@@ -21,7 +24,7 @@ import { AuthService } from '../../auth/auth.service';
   selector: 'cf-home-page',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChatPanelComponent],
+  imports: [ChatPanelComponent, HomeRailComponent],
   template: `
     <main class="home" data-testid="home-page">
       <section class="home-chat">
@@ -38,26 +41,12 @@ import { AuthService } from '../../auth/auth.service';
             authoring concepts, ports, traces, and runtime behavior, but live tools are off
             until you sign in.
           </p>
-          <ul class="rail-list">
-            <li><strong>What works now.</strong> Concept questions: ports, scripting, subflows, swarms, transforms, HITL, replay-with-edit, token tracking.</li>
-            <li><strong>Sign in to unlock.</strong> Querying your library and traces ("which workflows use agent X?", "failed traces yesterday?", "token cost of trace Z?").</li>
-          </ul>
           <p class="rail-foot rail-foot-cta" data-testid="rail-demo-banner">
             Demo mode — sign in for live data access.
           </p>
+          <cf-home-rail [demoMode]="true" />
         } @else {
-          <p class="rail-blurb">
-            Ask about workflows, agents, traces, or runs. The assistant has live access to your
-            library and can pull a trace's timeline or token usage on demand.
-          </p>
-          <ul class="rail-list">
-            <li><strong>Knowledge.</strong> Authoring concepts (ports, scripting, subflows, swarms, transforms, HITL) and runtime concepts (traces, replay-with-edit, token tracking).</li>
-            <li><strong>Live state.</strong> "Which workflows use agent X?" · "Failed traces yesterday for Y?" · "Token cost of trace Z?"</li>
-            <li><strong>Coming soon.</strong> Drafting workflows, running them from chat, diagnosing failures end-to-end.</li>
-          </ul>
-          <p class="rail-foot">
-            The trace inspector is still one click away in the side nav.
-          </p>
+          <cf-home-rail />
         }
       </aside>
     </main>

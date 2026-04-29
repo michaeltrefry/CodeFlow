@@ -19,19 +19,31 @@ public static class TraceTokenUsageEndpoints
         ITokenUsageRecordRepository tokenUsageRecords,
         CancellationToken cancellationToken)
     {
-        // 404 only when the trace itself doesn't exist; a trace that exists but hasn't issued an
-        // LLM call yet returns a 200 with empty rollups so the inspector can render an empty-state
-        // pane consistently.
-        var traceExists = await dbContext.WorkflowSagas
+        // The token-usage table is shared between workflow saga traces and synthetic assistant
+        // conversation traces (HAA-1 routes assistant invocations through the same capture
+        // pipeline). A trace id is "real" iff it matches either a saga row OR an assistant
+        // conversation's synthetic id; otherwise return 404 so the inspector can't be probed for
+        // arbitrary guids. The stream kind on the response (HAA-14) tells the panel which label
+        // to render — workflow run or Assistant.
+        var sagaExists = await dbContext.WorkflowSagas
             .AsNoTracking()
             .AnyAsync(s => s.TraceId == id, cancellationToken);
-        if (!traceExists)
+
+        var assistantExists = !sagaExists && await dbContext.AssistantConversations
+            .AsNoTracking()
+            .AnyAsync(c => c.SyntheticTraceId == id, cancellationToken);
+
+        if (!sagaExists && !assistantExists)
         {
             return Results.NotFound();
         }
 
+        var streamKind = sagaExists
+            ? TokenUsageAggregator.WorkflowStreamKind
+            : TokenUsageAggregator.AssistantStreamKind;
+
         var records = await tokenUsageRecords.ListByTraceAsync(id, cancellationToken);
-        var aggregated = TokenUsageAggregator.Aggregate(id, records);
+        var aggregated = TokenUsageAggregator.Aggregate(id, records, streamKind);
         return Results.Ok(aggregated);
     }
 }

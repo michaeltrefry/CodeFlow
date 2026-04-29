@@ -30,6 +30,13 @@ public static class WorkflowsEndpoints
         group.MapGet("/", ListWorkflowsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
+        // HAA-14: recently-used workflows for the homepage rail. "Recently used" = workflows
+        // ordered by most recent saga activity. We deliberately do NOT introduce a new pin or
+        // user-preference table; recency is already implicit in WorkflowSagas.UpdatedAtUtc and
+        // covers the v1 spec for the rail.
+        group.MapGet("/recent", ListRecentWorkflowsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
+
         group.MapGet("/{key}/versions", ListVersionsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
@@ -286,6 +293,60 @@ public static class WorkflowsEndpoints
     {
         var workflows = await repository.ListLatestAsync(cancellationToken);
         return Results.Ok(workflows.Select(MapSummary).ToArray());
+    }
+
+    /// <summary>
+    /// HAA-14 — Returns up to <paramref name="take"/> workflows ordered by their most recent
+    /// saga activity (any state, any user). Used by the homepage rail to surface workflows the
+    /// caller is likely to want to revisit. Filters out workflows that have never been run; the
+    /// "browse all workflows" surface is the existing list endpoint.
+    /// </summary>
+    private static async Task<IResult> ListRecentWorkflowsAsync(
+        CodeFlowDbContext dbContext,
+        IWorkflowRepository repository,
+        CancellationToken cancellationToken,
+        int take = 5)
+    {
+        var clamped = Math.Clamp(take, 1, 50);
+
+        // Group sagas by workflow key, keep the most recent UpdatedAtUtc per key, then take the
+        // top N. We hydrate workflow detail from the Workflows table afterwards so deleted
+        // workflows (orphan sagas) silently drop out.
+        var recentKeys = await dbContext.WorkflowSagas
+            .AsNoTracking()
+            .GroupBy(saga => saga.WorkflowKey)
+            .Select(group => new
+            {
+                Key = group.Key,
+                LastUsedAtUtc = group.Max(saga => saga.UpdatedAtUtc)
+            })
+            .OrderByDescending(row => row.LastUsedAtUtc)
+            .Take(clamped)
+            .ToListAsync(cancellationToken);
+
+        if (recentKeys.Count == 0)
+        {
+            return Results.Ok(Array.Empty<RecentWorkflowDto>());
+        }
+
+        var keyArray = recentKeys.Select(r => r.Key).ToArray();
+        var workflows = await repository.ListLatestAsync(cancellationToken);
+        var byKey = workflows.ToDictionary(w => w.Key, StringComparer.Ordinal);
+
+        var result = new List<RecentWorkflowDto>(recentKeys.Count);
+        foreach (var row in recentKeys)
+        {
+            if (!byKey.TryGetValue(row.Key, out var workflow))
+            {
+                continue; // saga's workflow has been deleted
+            }
+
+            result.Add(new RecentWorkflowDto(
+                Summary: MapSummary(workflow),
+                LastUsedAtUtc: DateTime.SpecifyKind(row.LastUsedAtUtc, DateTimeKind.Utc)));
+        }
+
+        return Results.Ok(result.ToArray());
     }
 
     private static async Task<IResult> ListVersionsAsync(
