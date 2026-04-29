@@ -51,6 +51,29 @@
             "proxyConfig": "proxy.conf.json",
             "port": 4200
           }
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "buildTarget": "codeflow-ui:build:development",
+            "tsConfig": "tsconfig.spec.json",
+            "runner": "vitest",
+            "include": [
+              "src/**/*.spec.ts"
+            ],
+            "providersFile": "src/test-providers.ts",
+            "codeCoverageReporters": [
+              "text-summary",
+              "html",
+              "lcov"
+            ],
+            "codeCoverageExclude": [
+              "src/main.ts",
+              "src/app/app.config.ts",
+              "src/app/app.routes.ts",
+              "src/app/pages/workflows/editor/workers/**/*.ts"
+            ]
+          }
         }
       }
     }
