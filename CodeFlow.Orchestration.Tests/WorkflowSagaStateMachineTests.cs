@@ -3454,6 +3454,7 @@ public sealed class WorkflowSagaStateMachineTests
             .AddSingleton<IMemoryCache>(_ => new MemoryCache(new MemoryCacheOptions()))
             .AddSingleton<LogicNodeScriptHost>()
             .AddSingleton<Runtime.IScribanTemplateRenderer, Runtime.ScribanTemplateRenderer>()
+            .AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
