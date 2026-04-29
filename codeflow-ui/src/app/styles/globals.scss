@@ -54,7 +54,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .shell {
   display: grid;
   grid-template-columns: 232px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   transition: grid-template-columns var(--transition);
 }
 .shell[data-nav="collapsed"] { grid-template-columns: 56px 1fr; }
@@ -178,19 +180,28 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav-toggle:hover { background: var(--surface-2); color: var(--text); }
 
 /* ---------- workspace ---------- */
-.workspace { min-width: 0; display: flex; flex-direction: column; }
+.workspace {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .workspace-body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: row;
   align-items: stretch;
+  overflow: hidden;
 }
 .workspace-content {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: auto;
 }
 
 .topbar {
@@ -260,8 +271,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
    gets the same padding if it didn't opt into a .page wrapper. Pages that DO wrap set padding
    themselves. The :not chain skips the topbar (workspace child), the router-outlet element
    itself, and the assistant sidebar (which is a sibling of .workspace-content, not its child). */
-.workspace-content > :not(.page):not(router-outlet) {
+.workspace-content > :not(.page):not(router-outlet):not(cf-home-page) {
   display: block;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 24px 28px 40px;
 }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

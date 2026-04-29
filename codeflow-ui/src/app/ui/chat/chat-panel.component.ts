@@ -109,11 +109,18 @@ type ThreadEntry =
     </section>
   `,
   styles: [`
+    :host {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+    }
     .chat-panel {
       display: flex;
       flex-direction: column;
+      flex: 1 1 auto;
       height: 100%;
-      min-height: 320px;
+      min-height: 0;
       background: var(--bg, #0B0C0E);
       border: 1px solid var(--border, rgba(255,255,255,0.08));
       border-radius: var(--radius-md, 8px);
@@ -123,6 +130,7 @@ type ThreadEntry =
       display: flex;
       align-items: baseline;
       justify-content: space-between;
+      flex: 0 0 auto;
       padding: 8px 12px;
       border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
       background: var(--surface, #131519);
@@ -140,6 +148,7 @@ type ThreadEntry =
     }
     .chat-panel-thread {
       flex: 1 1 auto;
+      min-height: 0;
       overflow-y: auto;
       padding: 12px;
       display: flex;
@@ -160,9 +169,13 @@ type ThreadEntry =
     .chat-panel-chips {
       display: flex;
       flex-wrap: wrap;
+      flex: 0 0 auto;
       gap: 6px;
       padding: 8px 12px 4px;
       border-top: 1px solid var(--border, rgba(255,255,255,0.06));
+    }
+    cf-chat-composer {
+      flex: 0 0 auto;
     }
     .chat-chip {
       appearance: none;

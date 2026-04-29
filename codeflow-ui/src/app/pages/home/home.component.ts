@@ -52,14 +52,24 @@ import { HomeRailComponent } from './home-rail.component';
     </main>
   `,
   styles: [`
+    :host {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
     .home {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-rows: minmax(0, 1fr);
       gap: 24px;
       padding: 24px;
+      width: 100%;
+      height: 100%;
       max-width: 1480px;
       margin: 0 auto;
-      min-height: calc(100vh - 64px);
+      min-height: 0;
+      overflow: hidden;
     }
     .home-chat {
       display: flex;
@@ -69,8 +79,9 @@ import { HomeRailComponent } from './home-rail.component';
     }
     .home-chat cf-chat-panel {
       flex: 1 1 auto;
-      display: block;
-      min-height: 560px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
     .home-rail {
       display: flex;
@@ -135,6 +146,11 @@ import { HomeRailComponent } from './home-rail.component';
     @media (max-width: 1080px) {
       .home {
         grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) auto;
+        overflow-y: auto;
+      }
+      .home-chat {
+        min-height: min(640px, calc(100vh - 112px));
       }
       .home-rail {
         position: static;
