@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
 
 export type IconName =
+  | 'codeflowApp' | 'codegraphApp'
   | 'traces' | 'agents' | 'workflows' | 'hitl' | 'dlq'
   | 'settings' | 'mcp' | 'roles' | 'skills' | 'git' | 'inventory'
   | 'search' | 'bell' | 'plus' | 'chevL' | 'chevR' | 'chevD' | 'close'
@@ -13,6 +14,34 @@ export type IconName =
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @switch (name) {
+      @case ('codeflowApp') {
+        <svg [attr.width]="size(32)" [attr.height]="size(32)" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="2" y="2" width="28" height="28" rx="7" fill="color-mix(in oklab, currentColor 13%, #10151f)"/>
+          <rect x="2.5" y="2.5" width="27" height="27" rx="6.5" stroke="color-mix(in oklab, currentColor 36%, #2d3748)"/>
+          <path d="M8 11h5.4c1.5 0 2.6 1.1 2.6 2.6v4.8c0 1.5 1.1 2.6 2.6 2.6H24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          <path d="M16 13.2c0-1.4 1.1-2.2 2.4-2.2H24" stroke="color-mix(in oklab, currentColor 72%, white)" stroke-width="1.8" stroke-linecap="round" opacity=".78"/>
+          <circle cx="8" cy="11" r="3.1" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #bc8cff)" stroke-width="2"/>
+          <circle cx="16" cy="16" r="3.1" fill="#10151f" stroke="currentColor" stroke-width="2"/>
+          <circle cx="24" cy="11" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 72%, white)" stroke-width="1.8"/>
+          <circle cx="24" cy="21" r="3.1" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #06d6a0)" stroke-width="2"/>
+          <path d="m22.8 19.8 1.2 1.2 2-2.3" stroke="#d8fff1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      }
+      @case ('codegraphApp') {
+        <svg [attr.width]="size(32)" [attr.height]="size(32)" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="2" y="2" width="28" height="28" rx="7" fill="color-mix(in oklab, currentColor 13%, #10151f)"/>
+          <rect x="2.5" y="2.5" width="27" height="27" rx="6.5" stroke="color-mix(in oklab, currentColor 36%, #2d3748)"/>
+          <path d="M10 10.5 16 8l6 4.8v7.1L16 24l-6-4.1z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M10 19.9 16 15l6 4.9M16 8v7m0 0 6-2.2m-6 2.2-6-4.5" stroke="color-mix(in oklab, currentColor 70%, white)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/>
+          <circle cx="10" cy="10.5" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #06d6a0)" stroke-width="1.8"/>
+          <circle cx="16" cy="8" r="2.5" fill="#10151f" stroke="color-mix(in oklab, currentColor 80%, white)" stroke-width="1.8"/>
+          <circle cx="22" cy="12.8" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 80%, white)" stroke-width="1.8"/>
+          <circle cx="22" cy="19.9" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #bc8cff)" stroke-width="1.8"/>
+          <circle cx="16" cy="24" r="2.5" fill="#10151f" stroke="color-mix(in oklab, currentColor 65%, #8f7bff)" stroke-width="1.8"/>
+          <circle cx="10" cy="19.9" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #06d6a0)" stroke-width="1.8"/>
+          <rect x="13" y="12" width="6" height="6" rx="1.5" fill="#10151f" stroke="#e7e9ee" stroke-width="1.6"/>
+        </svg>
+      }
       @case ('traces') {
         <svg [attr.width]="size()" [attr.height]="size()" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12h2l2-6 2 8 2-5 2 3h2"/>

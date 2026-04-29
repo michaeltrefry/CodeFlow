@@ -77,7 +77,7 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
     <div class="shell" [attr.data-nav]="theme.navCollapsed() ? 'collapsed' : 'expanded'">
       <aside class="nav">
         <div class="nav-brand">
-          <span class="brand-mark"></span>
+          <cf-icon class="brand-mark" name="codeflowApp" [sizeOverride]="22"></cf-icon>
           <span class="brand-wordmark">CodeFlow</span>
         </div>
         <div class="nav-links">
