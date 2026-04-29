@@ -82,7 +82,18 @@ public sealed record WorkflowPackageWorkflowNode(
     string? MirrorOutputToWorkflowVar = null,
     IReadOnlyDictionary<string, string>? OutputPortReplacements = null,
     string? Template = null,
-    string OutputType = "string");
+    string OutputType = "string",
+    // Swarm-node fields (sc-43 Sequential, sc-46 Coordinator). Null on every other kind. Imports
+    // and exports forward these so library packages can carry runtime Swarm workflows end-to-end.
+    string? SwarmProtocol = null,
+    int? SwarmN = null,
+    string? ContributorAgentKey = null,
+    int? ContributorAgentVersion = null,
+    string? SynthesizerAgentKey = null,
+    int? SynthesizerAgentVersion = null,
+    string? CoordinatorAgentKey = null,
+    int? CoordinatorAgentVersion = null,
+    int? SwarmTokenBudget = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

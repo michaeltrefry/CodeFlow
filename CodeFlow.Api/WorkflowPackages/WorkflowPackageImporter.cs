@@ -793,6 +793,15 @@ public sealed class WorkflowPackageImporter(
                         OutputPortReplacementsJson = WorkflowJson.SerializePortReplacements(node.OutputPortReplacements),
                         Template = node.Template,
                         OutputType = NormalizeOutputType(node.OutputType),
+                        SwarmProtocol = Trim(node.SwarmProtocol),
+                        SwarmN = node.SwarmN,
+                        ContributorAgentKey = Trim(node.ContributorAgentKey),
+                        ContributorAgentVersion = node.ContributorAgentVersion,
+                        SynthesizerAgentKey = Trim(node.SynthesizerAgentKey),
+                        SynthesizerAgentVersion = node.SynthesizerAgentVersion,
+                        CoordinatorAgentKey = Trim(node.CoordinatorAgentKey),
+                        CoordinatorAgentVersion = node.CoordinatorAgentVersion,
+                        SwarmTokenBudget = node.SwarmTokenBudget,
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -875,7 +884,16 @@ public sealed class WorkflowPackageImporter(
             NormalizeOptional(node.MirrorOutputToWorkflowVar),
             node.OutputPortReplacements,
             node.Template,
-            NormalizeOutputType(node.OutputType));
+            NormalizeOutputType(node.OutputType),
+            NormalizeOptional(node.SwarmProtocol),
+            node.SwarmN,
+            NormalizeOptional(node.ContributorAgentKey),
+            node.ContributorAgentVersion ?? packageNode?.ContributorAgentVersion,
+            NormalizeOptional(node.SynthesizerAgentKey),
+            node.SynthesizerAgentVersion ?? packageNode?.SynthesizerAgentVersion,
+            NormalizeOptional(node.CoordinatorAgentKey),
+            node.CoordinatorAgentVersion ?? packageNode?.CoordinatorAgentVersion,
+            node.SwarmTokenBudget);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,
