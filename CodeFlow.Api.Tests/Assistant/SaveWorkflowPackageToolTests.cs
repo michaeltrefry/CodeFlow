@@ -94,6 +94,60 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
+    public async Task Invoke_WithStringEnumNames_AcceptsLlmCanonicalShape()
+    {
+        // Regression: the assistant tool dispatcher previously used a serializer without
+        // JsonStringEnumConverter while the HTTP /package/apply endpoint and every tool result
+        // (get_workflow / get_agent) emitted enum names as strings. The LLM saw "Workflow",
+        // "Agent", "Text" everywhere and reasonably mirrored that vocabulary, only to have
+        // save_workflow_package reject it. We feed in a package serialized with explicit string
+        // enum names to lock in that the dispatcher accepts what every other tool produces.
+        const string agentKey = "haa10-string-enum-writer";
+        await SeedAgentAsync(agentKey);
+        await SeedWorkflowAsync("haa10-string-enum-flow", agentKey: agentKey, agentVersion: 1);
+
+        WorkflowPackage package;
+        await using (var seedScope = factory.Services.CreateAsyncScope())
+        {
+            var resolver = seedScope.ServiceProvider.GetRequiredService<IWorkflowPackageResolver>();
+            package = await resolver.ResolveAsync("haa10-string-enum-flow", 1);
+        }
+
+        // Mimic what the LLM produces: camelCase property names (the assistant tool dispatcher
+        // and HTTP API both expose camelCase JSON) plus string enum names.
+        var llmStyleOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+        };
+        var packageElement = JsonSerializer.SerializeToElement(package, llmStyleOptions);
+
+        // Sanity: the serialized package really does carry string enum names — otherwise the test
+        // would be tautological (numeric integers always deserialized fine).
+        var firstNodeKind = packageElement
+            .GetProperty("workflows")[0]
+            .GetProperty("nodes")[0]
+            .GetProperty("kind");
+        firstNodeKind.ValueKind.Should().Be(JsonValueKind.String,
+            because: "the test must feed the dispatcher the LLM-canonical string form");
+
+        var args = JsonSerializer.SerializeToElement(new { package = packageElement });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse(
+            because: "string enum names are the LLM-canonical form and must round-trip");
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("status").GetString().Should().Be("preview_ok");
+        parsed.GetProperty("canApply").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Invoke_WithSelfContainedPackage_ReturnsPreviewOk()
     {
         // Use the resolver against a real seeded workflow + agent so the package is self-
