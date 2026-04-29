@@ -55,34 +55,51 @@ public sealed class WorkspaceService : IWorkspaceService
             }
 
             var mirrorPath = Path.Combine(options.CachePath, repo.MirrorRelativePath);
-            await EnsureMirrorAsync(repo, mirrorPath, repoUrl, cancellationToken);
 
-            var defaultBranch = await ResolveDefaultBranchAsync(mirrorPath, cancellationToken);
-            var effectiveBase = string.IsNullOrWhiteSpace(baseBranch) ? defaultBranch : baseBranch!;
+            // Hold the per-mirror lock across the entire mirror-touching span: clone-or-fetch,
+            // default-branch resolution, and `git worktree add`. Branch names are unique per
+            // correlation so logical writers don't collide, but git serializes on per-repo
+            // lock files (refs/heads/.lock, worktrees/<name>/HEAD, index.lock) and parallel
+            // `worktree add` against the same mirror can fail with "invalid reference" when
+            // those locks race during ref creation. Serializing here trades a small amount of
+            // open-time concurrency for correctness on the shared bare repo.
+            var mirrorLock = mirrorLocks.GetOrAdd(repo.MirrorRelativePath, _ => new SemaphoreSlim(1, 1));
+            await mirrorLock.WaitAsync(cancellationToken);
+            try
+            {
+                await EnsureMirrorCoreAsync(mirrorPath, repoUrl, cancellationToken);
 
-            var worktreePath = Path.Combine(options.WorkPath, correlationId.ToString("N"), repo.IdentityKey);
-            Directory.CreateDirectory(Path.GetDirectoryName(worktreePath)!);
+                var defaultBranch = await ResolveDefaultBranchAsync(mirrorPath, cancellationToken);
+                var effectiveBase = string.IsNullOrWhiteSpace(baseBranch) ? defaultBranch : baseBranch!;
 
-            var branchName = BuildWorkBranchName(correlationId, repo);
+                var worktreePath = Path.Combine(options.WorkPath, correlationId.ToString("N"), repo.IdentityKey);
+                Directory.CreateDirectory(Path.GetDirectoryName(worktreePath)!);
 
-            await git.WorktreeAddAsync(
-                mirrorPath,
-                worktreePath,
-                branchName,
-                startPoint: effectiveBase,
-                cancellationToken);
+                var branchName = BuildWorkBranchName(correlationId, repo);
 
-            var workspace = new Workspace(
-                correlationId,
-                repo,
-                repoUrl,
-                worktreePath,
-                defaultBranch,
-                branchName,
-                mirrorPath);
+                await git.WorktreeAddAsync(
+                    mirrorPath,
+                    worktreePath,
+                    branchName,
+                    startPoint: effectiveBase,
+                    cancellationToken);
 
-            workspaces[key] = workspace;
-            return workspace;
+                var workspace = new Workspace(
+                    correlationId,
+                    repo,
+                    repoUrl,
+                    worktreePath,
+                    defaultBranch,
+                    branchName,
+                    mirrorPath);
+
+                workspaces[key] = workspace;
+                return workspace;
+            }
+            finally
+            {
+                mirrorLock.Release();
+            }
         }
         finally
         {
@@ -194,41 +211,35 @@ public sealed class WorkspaceService : IWorkspaceService
         }
     }
 
-    private async Task EnsureMirrorAsync(
-        RepoReference repo,
+    /// <summary>
+    /// Clone or fetch the bare mirror at <paramref name="mirrorPath"/>. Caller MUST hold the
+    /// per-mirror semaphore from <c>mirrorLocks</c> before invoking this — the previous
+    /// inline lock acquisition was widened into <see cref="OpenAsync"/> so the mirror lock
+    /// covers the subsequent <c>git worktree add</c> as well.
+    /// </summary>
+    private async Task EnsureMirrorCoreAsync(
         string mirrorPath,
         string repoUrl,
         CancellationToken cancellationToken)
     {
-        var lockKey = repo.MirrorRelativePath;
-        var mirrorLock = mirrorLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
-
-        await mirrorLock.WaitAsync(cancellationToken);
-        try
+        if (IsMirrorReady(mirrorPath))
         {
-            if (IsMirrorReady(mirrorPath))
-            {
-                await git.FetchAsync(mirrorPath, cancellationToken);
-                return;
-            }
-
-            var mirrorParent = Path.GetDirectoryName(mirrorPath);
-            if (!string.IsNullOrEmpty(mirrorParent))
-            {
-                Directory.CreateDirectory(mirrorParent);
-            }
-
-            if (Directory.Exists(mirrorPath))
-            {
-                Directory.Delete(mirrorPath, recursive: true);
-            }
-
-            await git.CloneMirrorAsync(repoUrl, mirrorPath, cancellationToken);
+            await git.FetchAsync(mirrorPath, cancellationToken);
+            return;
         }
-        finally
+
+        var mirrorParent = Path.GetDirectoryName(mirrorPath);
+        if (!string.IsNullOrEmpty(mirrorParent))
         {
-            mirrorLock.Release();
+            Directory.CreateDirectory(mirrorParent);
         }
+
+        if (Directory.Exists(mirrorPath))
+        {
+            Directory.Delete(mirrorPath, recursive: true);
+        }
+
+        await git.CloneMirrorAsync(repoUrl, mirrorPath, cancellationToken);
     }
 
     private static bool IsMirrorReady(string mirrorPath)
