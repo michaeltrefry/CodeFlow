@@ -30,6 +30,7 @@ public sealed class AssistantChatService(
         AssistantPageContext? pageContext = null,
         string? overrideProvider = null,
         string? overrideModel = null,
+        AssistantWorkspaceTarget? workspaceOverride = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userContent);
@@ -90,6 +91,7 @@ public sealed class AssistantChatService(
                 overrideProvider,
                 overrideModel,
                 conversationId,
+                workspaceOverride,
                 cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
 

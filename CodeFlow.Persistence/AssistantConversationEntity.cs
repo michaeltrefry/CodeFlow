@@ -36,6 +36,14 @@ public sealed class AssistantConversationEntity
     /// <summary>HAA-17 — Cumulative output tokens; mirrors <see cref="InputTokensTotal"/>.</summary>
     public long OutputTokensTotal { get; set; }
 
+    /// <summary>
+    /// HAA-19 — Signature of the workspace the assistant most recently used for this conversation
+    /// (e.g. <c>conversation</c> or <c>trace:{guidN}</c>). Used to detect when the next turn's
+    /// resolved workspace differs and the model needs a one-shot "workspace switched" notice in
+    /// its system prompt so it can re-orient. Null on first turn / before the column existed.
+    /// </summary>
+    public string? ActiveWorkspaceSignature { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }

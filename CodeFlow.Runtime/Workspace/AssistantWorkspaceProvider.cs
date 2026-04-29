@@ -1,9 +1,10 @@
 namespace CodeFlow.Runtime.Workspace;
 
 /// <summary>
-/// Resolves the per-conversation workspace directory the homepage assistant's host tools operate
-/// against when an agent role is assigned. Directory is created lazily on first call so demo
-/// users / role-less conversations never touch disk.
+/// Resolves the workspace directory the homepage assistant's host tools operate against when
+/// an agent role is assigned. Two flavours: the conversation's own dir (created lazily, isolated
+/// per chat) or a code-aware trace's dir (existing path on the shared workdir volume — read-only
+/// from the assistant's perspective in that the assistant did not create it).
 /// </summary>
 public interface IAssistantWorkspaceProvider
 {
@@ -12,7 +13,16 @@ public interface IAssistantWorkspaceProvider
     /// <c>{AssistantWorkspaceRoot}/{conversationId:N}</c>. Creates the directory if it does not
     /// exist; the caller may invoke this multiple times per conversation cheaply.
     /// </summary>
-    ToolWorkspaceContext GetOrCreateWorkspace(Guid conversationId);
+    ToolWorkspaceContext GetOrCreateConversationWorkspace(Guid conversationId);
+
+    /// <summary>
+    /// Returns a <see cref="ToolWorkspaceContext"/> rooted at
+    /// <c>{WorkingDirectoryRoot}/{traceId:N}</c> — the code-aware-workflow per-trace workdir.
+    /// Throws <see cref="DirectoryNotFoundException"/> if the dir does not exist (the trace had
+    /// no code-aware step, or the workdir was swept). Never creates: the assistant treats the
+    /// trace workspace as observation-only data, not its own.
+    /// </summary>
+    ToolWorkspaceContext GetTraceWorkspace(Guid traceId);
 }
 
 public sealed class AssistantWorkspaceProvider : IAssistantWorkspaceProvider
@@ -25,7 +35,7 @@ public sealed class AssistantWorkspaceProvider : IAssistantWorkspaceProvider
         this.options = options;
     }
 
-    public ToolWorkspaceContext GetOrCreateWorkspace(Guid conversationId)
+    public ToolWorkspaceContext GetOrCreateConversationWorkspace(Guid conversationId)
     {
         if (conversationId == Guid.Empty)
         {
@@ -38,5 +48,24 @@ public sealed class AssistantWorkspaceProvider : IAssistantWorkspaceProvider
         var path = Path.Combine(root, conversationId.ToString("N"));
         Directory.CreateDirectory(path);
         return new ToolWorkspaceContext(conversationId, path);
+    }
+
+    public ToolWorkspaceContext GetTraceWorkspace(Guid traceId)
+    {
+        if (traceId == Guid.Empty)
+        {
+            throw new ArgumentException("Trace id is required.", nameof(traceId));
+        }
+
+        var root = string.IsNullOrWhiteSpace(options.WorkingDirectoryRoot)
+            ? WorkspaceOptions.DefaultWorkingDirectoryRoot
+            : options.WorkingDirectoryRoot;
+        var path = Path.Combine(root, traceId.ToString("N"));
+        if (!Directory.Exists(path))
+        {
+            throw new DirectoryNotFoundException(
+                $"Trace {traceId:N} has no workspace at '{path}'. The trace either had no code-aware step or its workdir has been swept.");
+        }
+        return new ToolWorkspaceContext(traceId, path);
     }
 }

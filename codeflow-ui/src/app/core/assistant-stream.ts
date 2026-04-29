@@ -42,12 +42,24 @@ export type AssistantStreamEvent =
  * header can be attached (EventSource cannot set custom headers and bypasses the auth
  * interceptor).
  */
+export interface AssistantWorkspaceTargetDto {
+  /** 'Conversation' (default per-chat dir) or 'Trace' (the workdir of an existing trace). */
+  kind: 'Conversation' | 'Trace';
+  /** Required for Trace; the trace's GUID (any standard string form, the server normalizes). */
+  traceId?: string;
+}
+
 export interface SendTurnOptions {
   pageContext?: PageContextDto;
   /** HAA-16 — per-turn provider override (lower-cased canonical key). Falls back to admin default. */
   provider?: string;
   /** HAA-16 — per-turn model override. Falls back to admin default's model for the provider. */
   model?: string;
+  /**
+   * HAA-19 — per-turn workspace selection. Falls back to the conversation's own workspace when
+   * absent. Use Trace to point the assistant's host tools at a code-aware workflow's workdir.
+   */
+  workspaceOverride?: AssistantWorkspaceTargetDto;
 }
 
 export function streamAssistantTurn(
@@ -75,6 +87,7 @@ export function streamAssistantTurn(
           pageContext?: PageContextDto;
           provider?: string;
           model?: string;
+          workspaceOverride?: AssistantWorkspaceTargetDto;
         } = { content };
         if (options?.pageContext) {
           body.pageContext = options.pageContext;
@@ -84,6 +97,9 @@ export function streamAssistantTurn(
         }
         if (options?.model) {
           body.model = options.model;
+        }
+        if (options?.workspaceOverride) {
+          body.workspaceOverride = options.workspaceOverride;
         }
 
         const response = await fetch(

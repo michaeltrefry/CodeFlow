@@ -7,6 +7,7 @@ using Anthropic.Models.Messages;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.Workspace;
 using Microsoft.Extensions.Logging;
 using OpenAI;
 using OpenAI.Chat;
@@ -29,6 +30,7 @@ public interface ICodeFlowAssistant
         string? overrideProvider = null,
         string? overrideModel = null,
         Guid conversationId = default,
+        AssistantWorkspaceTarget? workspaceOverride = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -55,6 +57,8 @@ public sealed class CodeFlowAssistant(
     IAnthropicClient anthropicClient,
     IRoleResolutionService roleResolution,
     AgentRoleToolFactory roleToolFactory,
+    IAssistantWorkspaceProvider workspaceProvider,
+    IAssistantConversationRepository conversations,
     ILogger<CodeFlowAssistant> logger) : ICodeFlowAssistant
 {
     public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
@@ -65,6 +69,7 @@ public sealed class CodeFlowAssistant(
         string? overrideProvider = null,
         string? overrideModel = null,
         Guid conversationId = default,
+        AssistantWorkspaceTarget? workspaceOverride = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
@@ -83,16 +88,35 @@ public sealed class CodeFlowAssistant(
                 : contextBlock + "\n\n" + systemPrompt;
         }
 
+        // HAA-19 — Resolve the host-tool workspace based on the per-turn override. Detect a switch
+        // versus the previously-persisted signature and prepend a one-shot notice to the system
+        // prompt so the model can re-orient (different repos / files visible).
+        var resolvedWorkspace = ResolveWorkspace(workspaceOverride, conversationId);
+        if (conversationId != Guid.Empty && resolvedWorkspace is { } rw)
+        {
+            var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+            var newSignature = rw.Signature;
+            if (conversation is not null
+                && !string.Equals(conversation.ActiveWorkspaceSignature, newSignature, StringComparison.Ordinal))
+            {
+                var notice = BuildWorkspaceSwitchNotice(conversation.ActiveWorkspaceSignature, rw);
+                systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                    ? notice
+                    : notice + "\n\n" + systemPrompt;
+                await conversations.SetActiveWorkspaceSignatureAsync(conversationId, newSignature, cancellationToken);
+            }
+        }
+
         // Merge the built-in IAssistantTool registry with adapters for the assigned agent role's
         // host + MCP grants (if any). Demo policy still wins — if NoTools is in effect the merge
         // is filtered down to nothing.
         var dispatcher = toolDispatcher;
-        if (config.AssignedAgentRoleId is { } roleId && roleId > 0 && conversationId != Guid.Empty)
+        if (config.AssignedAgentRoleId is { } roleId && roleId > 0 && resolvedWorkspace is { } workspace)
         {
             try
             {
                 var resolved = await roleResolution.ResolveByRoleAsync(roleId, cancellationToken);
-                var roleTools = roleToolFactory.Build(conversationId, resolved);
+                var roleTools = roleToolFactory.Build(workspace.Context, resolved);
                 if (roleTools.Count > 0)
                 {
                     dispatcher = MergeDispatcher(toolDispatcher, roleTools);
@@ -136,6 +160,99 @@ public sealed class CodeFlowAssistant(
         var filtered = tools.Where(t => policy.AllowsTool(t.Name)).ToArray();
         return filtered;
     }
+
+    /// <summary>
+    /// HAA-19 — resolves the workspace the assistant's host tools should operate against. Returns
+    /// null if there's no plausible workspace (no conversation id) so callers can short-circuit.
+    /// A trace override that points at a missing dir is logged and degrades to the conversation
+    /// workspace; the UI is responsible for not offering "switch to trace" when the workdir was
+    /// already swept, but a stale tab shouldn't crash the turn.
+    /// </summary>
+    private ResolvedWorkspace? ResolveWorkspace(AssistantWorkspaceTarget? target, Guid conversationId)
+    {
+        if (conversationId == Guid.Empty)
+        {
+            return null;
+        }
+
+        if (target is { Kind: AssistantWorkspaceKind.Trace, TraceId: { } traceId } && traceId != Guid.Empty)
+        {
+            try
+            {
+                var ctx = workspaceProvider.GetTraceWorkspace(traceId);
+                return new ResolvedWorkspace(ctx, $"trace:{traceId:N}", traceId);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                logger.LogWarning(
+                    "Assistant conversation {ConversationId} requested trace {TraceId} workspace, but the dir is missing; falling back to conversation workspace.",
+                    conversationId, traceId);
+            }
+        }
+
+        var conversationCtx = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        return new ResolvedWorkspace(conversationCtx, "conversation", null);
+    }
+
+    private static string BuildWorkspaceSwitchNotice(string? previousSignature, ResolvedWorkspace next)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<workspace-switch>");
+        sb.Append("Previous workspace: ").AppendLine(previousSignature ?? "(none)");
+        sb.Append("Active workspace: ").AppendLine(next.Signature);
+        if (next.TraceId is { } traceId)
+        {
+            sb.Append("This is the workdir of trace ").Append(traceId.ToString("N")).AppendLine(" — read-only context produced by a code-aware workflow run.");
+        }
+        else
+        {
+            sb.AppendLine("This is your private per-conversation workspace; you may create, modify, and read files here.");
+        }
+
+        var entries = TryListTopLevelEntries(next.Context.RootPath);
+        if (entries.Count > 0)
+        {
+            sb.AppendLine("Top-level entries:");
+            foreach (var entry in entries)
+            {
+                sb.Append("- ").AppendLine(entry);
+            }
+        }
+        else
+        {
+            sb.AppendLine("Workspace is currently empty.");
+        }
+
+        sb.AppendLine("Re-orient before assuming any prior file paths or repository state still applies.");
+        sb.Append("</workspace-switch>");
+        return sb.ToString();
+    }
+
+    private static IReadOnlyList<string> TryListTopLevelEntries(string root)
+    {
+        try
+        {
+            // Bound the listing so a wildly populated trace workdir doesn't blow the system prompt.
+            const int max = 24;
+            var dirs = Directory.EnumerateDirectories(root)
+                .Select(p => Path.GetFileName(p) + "/")
+                .Take(max);
+            var files = Directory.EnumerateFiles(root)
+                .Select(p => Path.GetFileName(p) ?? string.Empty)
+                .Take(max);
+            return dirs.Concat(files)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .Take(max)
+                .ToArray();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    private sealed record ResolvedWorkspace(ToolWorkspaceContext Context, string Signature, Guid? TraceId);
 
     /// <summary>
     /// Returns a per-turn dispatcher that contains the built-in IAssistantTool registrations plus
