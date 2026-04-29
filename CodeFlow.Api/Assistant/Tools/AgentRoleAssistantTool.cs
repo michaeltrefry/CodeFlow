@@ -22,6 +22,7 @@ public sealed class AgentRoleAssistantTool : IAssistantTool
     private readonly IToolProvider provider;
     private readonly Func<ToolExecutionContext?> contextFactory;
     private readonly JsonElement inputSchema;
+    private readonly string runtimeName;
 
     public AgentRoleAssistantTool(
         ToolSchema schema,
@@ -32,7 +33,11 @@ public sealed class AgentRoleAssistantTool : IAssistantTool
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(contextFactory);
 
-        Name = schema.Name;
+        // Anthropic + OpenAI tool-calling APIs only accept names matching ^[a-zA-Z0-9_-]{1,128}$,
+        // but the runtime catalog uses dotted names (vcs.get_repo, mcp:server:tool) and colons.
+        // Sanitize the LLM-facing name; preserve the original for runtime dispatch via runtimeName.
+        runtimeName = schema.Name;
+        Name = SanitizeName(schema.Name);
         Description = string.IsNullOrWhiteSpace(schema.Description)
             ? schema.Name
             : schema.Description;
@@ -52,7 +57,7 @@ public sealed class AgentRoleAssistantTool : IAssistantTool
         var argumentsNode = ConvertArguments(arguments);
         var toolCall = new ToolCall(
             Id: Guid.NewGuid().ToString("N"),
-            Name: Name,
+            Name: runtimeName,
             Arguments: argumentsNode);
 
         ToolResult result;
@@ -65,12 +70,55 @@ public sealed class AgentRoleAssistantTool : IAssistantTool
             // The provider doesn't recognize the tool — surface as a structured tool error so the
             // model can recover rather than crashing the turn.
             return new AssistantToolResult(
-                JsonSerializer.Serialize(new { error = $"Tool '{Name}' is not available in the runtime catalog." }),
+                JsonSerializer.Serialize(new { error = $"Tool '{runtimeName}' is not available in the runtime catalog." }),
                 IsError: true);
         }
 
         return new AssistantToolResult(result.Content, result.IsError);
     }
+
+    /// <summary>
+    /// Replaces any character outside <c>[a-zA-Z0-9_-]</c> with an underscore. Both Anthropic and
+    /// OpenAI reject tool names with dots/colons, which collide with the runtime's catalog
+    /// (<c>vcs.get_repo</c>) and the MCP convention (<c>mcp:server:tool</c>).
+    /// </summary>
+    internal static string SanitizeName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return name;
+        }
+
+        var needsSanitize = false;
+        foreach (var ch in name)
+        {
+            if (!IsValidNameChar(ch))
+            {
+                needsSanitize = true;
+                break;
+            }
+        }
+        if (!needsSanitize)
+        {
+            return name;
+        }
+
+        return string.Create(name.Length, name, static (span, source) =>
+        {
+            for (var i = 0; i < source.Length; i++)
+            {
+                var ch = source[i];
+                span[i] = IsValidNameChar(ch) ? ch : '_';
+            }
+        });
+    }
+
+    private static bool IsValidNameChar(char ch)
+        => (ch >= 'a' && ch <= 'z')
+            || (ch >= 'A' && ch <= 'Z')
+            || (ch >= '0' && ch <= '9')
+            || ch == '_'
+            || ch == '-';
 
     private static JsonElement ConvertSchema(JsonNode? parameters)
     {
