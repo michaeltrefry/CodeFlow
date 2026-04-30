@@ -329,12 +329,13 @@ jobs:
               "set -eu; \
                mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'; \
                # Container app uid is 1654 (see CodeFlow.Api/Dockerfile). Bind-mount targets must be \
-               # owned by that uid so the assistant can create per-conversation subdirs. sudo is \
-               # gated to chown via the LINODE_USER's sudoers entry; falls back to a soft chmod when \
-               # sudo isn't permitted (the dir is created by the deploy user and may already be \
-               # writable group-wise on a single-tenant box). \
+               # writable by that uid so the assistant + saga can create per-conversation / per-trace \
+               # subdirs. Try sudo chown first; if the LINODE_USER lacks NOPASSWD sudo, fall back to \
+               # a+rwX so uid 1654 ('other' from the host's POV) can still write. The fallback is \
+               # world-writable, which is acceptable on a single-tenant deploy box where the dirs \
+               # only hold runtime workspaces; switch back to chown if you tighten host multi-tenancy. \
                sudo -n chown -R 1654:1654 '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant' 2>/dev/null || \
-               chmod -R u+rwX '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'"
+               chmod -R a+rwX '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               deploy/docker-compose.prod.yml \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/deploy/docker-compose.prod.yml"
