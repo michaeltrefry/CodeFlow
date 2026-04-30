@@ -36,8 +36,10 @@ public sealed class DefaultIntentClarityAssessor : IIntentClarityAssessor
         {
             PreflightMode.ReplayEdit when input is ReplayEditPreflightInput replay => AssessReplayEdit(replay),
             PreflightMode.AssistantChat when input is AssistantChatPreflightInput chat => AssessAssistantChat(chat),
-            // Phase 3 lands here. Until then, an unsupported mode means "no preflight" — return
-            // a fully clear assessment so the caller can let the work through unchanged.
+            PreflightMode.BrownfieldChange when input is WorkflowLaunchPreflightInput launch => AssessBrownfieldChange(launch),
+            PreflightMode.GreenfieldDraft when input is WorkflowLaunchPreflightInput launch => AssessGreenfieldDraft(launch),
+            // Unsupported mode / wrong input shape — pass through. The assessor never throws on
+            // unrecognized payloads; a configuration mistake should not block production work.
             _ => new IntentClarityAssessment(
                 Mode: mode,
                 OverallScore: 1.0,
@@ -252,6 +254,105 @@ public sealed class DefaultIntentClarityAssessor : IIntentClarityAssessor
             MissingFields: missing,
             ClarificationQuestions: questions);
     }
+
+    /// <summary>
+    /// sc-274 phase 3 — brownfield code-change workflow launch (e.g. dev/reviewer loop).
+    /// The workflow has the repo for context, so the heuristic only needs to make sure the
+    /// freeform Start-agent input expresses the change goal in enough words to act on. Single-
+    /// or three-word Inputs ("review PR", "fix the build") are the dominant under-specified
+    /// shape and refuse with a goal-dimension miss.
+    /// </summary>
+    private IntentClarityAssessment AssessBrownfieldChange(WorkflowLaunchPreflightInput input) =>
+        AssessWorkflowLaunch(
+            input,
+            mode: PreflightMode.BrownfieldChange,
+            tooShortWordCount: 3,
+            tooShortQuestion: "What change are you asking for? Describe the goal in 1-2 sentences.");
+
+    /// <summary>
+    /// sc-274 phase 3 — greenfield workflow / PRD drafting launch. The workflow has no repo to
+    /// anchor on, so the input itself has to carry the goal + audience + success criteria. The
+    /// bar is correspondingly stricter: anything under five words almost certainly leaves the
+    /// drafting agent with nothing to design against.
+    /// </summary>
+    private IntentClarityAssessment AssessGreenfieldDraft(WorkflowLaunchPreflightInput input) =>
+        AssessWorkflowLaunch(
+            input,
+            mode: PreflightMode.GreenfieldDraft,
+            tooShortWordCount: 4,
+            tooShortQuestion: "Describe what you want drafted in at least 1-2 sentences (the goal, who it's for, why it matters).");
+
+    /// <summary>
+    /// Shared shape for the two workflow-launch modes — they only differ in the word-count
+    /// floor and the clarification wording. Pure placeholder input refuses with a goal score
+    /// of 0.0 in both modes; the empty-input case is caught by the endpoint's required-field
+    /// validation upstream and passes through here so the assessor doesn't shadow the more
+    /// specific upstream error.
+    /// </summary>
+    private IntentClarityAssessment AssessWorkflowLaunch(
+        WorkflowLaunchPreflightInput input,
+        PreflightMode mode,
+        int tooShortWordCount,
+        string tooShortQuestion)
+    {
+        var threshold = ThresholdFor(mode);
+        var trimmed = (input.Input ?? string.Empty).Trim();
+
+        if (trimmed.Length == 0)
+        {
+            return ClearAssessment(mode, threshold);
+        }
+
+        if (PurePlaceholderPattern.IsMatch(trimmed))
+        {
+            var dims = new[]
+            {
+                new IntentClarityDimensionScore(IntentClarityDimensions.Goal, 0.0,
+                    "input is a placeholder token (TODO/FIXME/TBD/WIP) — no actual goal to act on"),
+                Clear(IntentClarityDimensions.Constraints),
+                Clear(IntentClarityDimensions.SuccessCriteria),
+                Clear(IntentClarityDimensions.Context),
+            };
+            return new IntentClarityAssessment(
+                Mode: mode,
+                OverallScore: 0.0,
+                Threshold: threshold,
+                IsClear: false,
+                Dimensions: dims,
+                MissingFields: ["input.placeholder"],
+                ClarificationQuestions: ["What would you like the workflow to do?"]);
+        }
+
+        var wordCount = CountWords(trimmed);
+        if (wordCount <= tooShortWordCount)
+        {
+            var dims = new[]
+            {
+                new IntentClarityDimensionScore(IntentClarityDimensions.Goal, 0.2,
+                    $"input is {wordCount} word(s) — not enough to act on for a {ModeLabel(mode)} launch"),
+                Clear(IntentClarityDimensions.Constraints),
+                Clear(IntentClarityDimensions.SuccessCriteria),
+                Clear(IntentClarityDimensions.Context),
+            };
+            return new IntentClarityAssessment(
+                Mode: mode,
+                OverallScore: 0.2,
+                Threshold: threshold,
+                IsClear: false,
+                Dimensions: dims,
+                MissingFields: ["input.too-short"],
+                ClarificationQuestions: [tooShortQuestion]);
+        }
+
+        return ClearAssessment(mode, threshold);
+    }
+
+    private static string ModeLabel(PreflightMode mode) => mode switch
+    {
+        PreflightMode.BrownfieldChange => "brownfield code-change",
+        PreflightMode.GreenfieldDraft => "greenfield drafting",
+        _ => mode.ToString(),
+    };
 
     private static IntentClarityDimensionScore Clear(string dimension) =>
         new(dimension, 1.0, null);

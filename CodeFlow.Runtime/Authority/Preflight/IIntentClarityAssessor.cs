@@ -64,3 +64,29 @@ public sealed record AssistantChatPreflightInput(
     string Content,
     bool HasPageContext,
     string? PageContextKind);
+
+/// <summary>
+/// sc-274 phase 3 — workflow launch preflight input. The freeform Start-agent input plus a
+/// signal the caller derives from the launch request (presence of the <c>repositories</c>
+/// context input) so the assessor can route to the brownfield-vs-greenfield heuristic set
+/// without depending on workflow metadata. <c>WorkflowKey</c> is carried so refusal events
+/// can attribute the refusal to a specific workflow without parsing the detail blob.
+/// </summary>
+/// <param name="Input">
+/// The freeform Start-agent input the user supplied (the <c>input</c> field on
+/// <c>POST /api/traces</c>). Trimmed by the caller before the assessor runs.
+/// </param>
+/// <param name="HasRepositoriesInput">
+/// True when the launch request supplied a <c>repositories</c> key in <c>Inputs</c>. This
+/// is CodeFlow's de-facto convention for code-aware (brownfield) workflows; absent it,
+/// the workflow is assumed to be greenfield (drafting from scratch). The caller picks the
+/// <see cref="PreflightMode"/> based on this flag, not the assessor.
+/// </param>
+/// <param name="WorkflowKey">
+/// The workflow being launched. Carried for refusal-event attribution; not used by the
+/// heuristics themselves.
+/// </param>
+public sealed record WorkflowLaunchPreflightInput(
+    string Input,
+    bool HasRepositoriesInput,
+    string? WorkflowKey);

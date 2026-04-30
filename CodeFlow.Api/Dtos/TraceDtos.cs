@@ -11,6 +11,25 @@ public sealed record CreateTraceRequest(
 
 public sealed record CreateTraceResponse(Guid TraceId);
 
+/// <summary>
+/// sc-274 phase 3 — ambiguity preflight refusal payload for the workflow launch endpoint.
+/// Returned with HTTP 422 from <c>POST /api/traces</c> when the launch <c>Input</c> does not
+/// meet the brownfield/greenfield clarity threshold; the trace-submit page renders the
+/// clarification questions inline so the launcher can refine and re-submit without ever
+/// creating a trace. Mirrors <see cref="PreflightRefusalResponse"/>'s shape but carries
+/// <c>WorkflowKey</c> instead of <c>OriginalTraceId</c> — workflow launches refuse before a
+/// trace exists.
+/// </summary>
+public sealed record WorkflowPreflightRefusalResponse(
+    string WorkflowKey,
+    string Code,
+    string Mode,
+    double OverallScore,
+    double Threshold,
+    IReadOnlyList<PreflightDimensionDto> Dimensions,
+    IReadOnlyList<string> MissingFields,
+    IReadOnlyList<string> ClarificationQuestions);
+
 public sealed record BulkDeleteTracesRequest(
     string? State,
     int OlderThanDays);
