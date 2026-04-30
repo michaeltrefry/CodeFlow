@@ -54,6 +54,7 @@ describe('ChatMessageComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.querySelector('.chat-msg-pending')?.textContent).toContain('streaming');
+    expect(fixture.nativeElement.querySelector('.chat-msg-spinner')).not.toBeNull();
     expect(fixture.nativeElement.querySelector('.chat-msg-meta')).toBeNull();
   });
 });
