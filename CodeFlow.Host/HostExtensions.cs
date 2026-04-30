@@ -4,7 +4,9 @@ using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Persistence.Authority;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Anthropic;
 using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Mcp;
@@ -110,6 +112,8 @@ public static class HostExtensions
         services.AddScoped<ILlmProviderSettingsRepository, LlmProviderSettingsRepository>();
         services.AddScoped<IAssistantSettingsRepository, AssistantSettingsRepository>();
         services.AddScoped<ITokenUsageRecordRepository, TokenUsageRecordRepository>();
+        services.AddScoped<IRefusalEventRepository, RefusalEventRepository>();
+        services.AddSingleton<IRefusalEventSink, EfRefusalEventSink>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);

@@ -1,3 +1,4 @@
+using CodeFlow.Persistence.Authority;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 
@@ -52,6 +53,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
     public DbSet<AssistantMessageEntity> AssistantMessages => Set<AssistantMessageEntity>();
 
     public DbSet<AssistantSettingsEntity> AssistantSettings => Set<AssistantSettingsEntity>();
+
+    public DbSet<RefusalEventEntity> RefusalEvents => Set<RefusalEventEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

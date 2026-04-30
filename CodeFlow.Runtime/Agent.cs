@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Observability;
 
 namespace CodeFlow.Runtime;
@@ -9,6 +10,7 @@ public sealed class Agent : IAgentInvoker
     private readonly ModelClientRegistry modelClients;
     private readonly HostToolProvider hostToolProvider;
     private readonly IMcpClient? mcpClient;
+    private readonly IRefusalEventSink refusalSink;
     private readonly Func<DateTimeOffset> nowProvider;
 
     public Agent(
@@ -16,12 +18,14 @@ public sealed class Agent : IAgentInvoker
         ContextAssembler? contextAssembler = null,
         HostToolProvider? hostToolProvider = null,
         IMcpClient? mcpClient = null,
+        IRefusalEventSink? refusalSink = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
         this.modelClients = modelClients ?? throw new ArgumentNullException(nameof(modelClients));
         this.contextAssembler = contextAssembler ?? new ContextAssembler();
         this.hostToolProvider = hostToolProvider ?? new HostToolProvider();
         this.mcpClient = mcpClient;
+        this.refusalSink = refusalSink ?? NullRefusalEventSink.Instance;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
@@ -66,7 +70,7 @@ public sealed class Agent : IAgentInvoker
 
         var toolAccessPolicy = MergeToolAccessPolicy(configuration.ToolAccessPolicy, tools, configuration);
 
-        var toolRegistry = new ToolRegistry(BuildProviders(configuration, tools));
+        var toolRegistry = new ToolRegistry(BuildProviders(configuration, tools), refusalSink, nowProvider);
         var invocationLoop = new InvocationLoop(modelClient, toolRegistry, nowProvider);
         var loopResult = await invocationLoop.RunAsync(
             new InvocationLoopRequest(

@@ -71,6 +71,12 @@ public static class TracesEndpoints
         group.MapGet("/{id:guid}/token-usage", TraceTokenUsageEndpoints.GetTraceTokenUsageAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        // sc-285: append-only refusal stream for a trace or assistant conversation. Read-only —
+        // TracesRead. Refusals captured by tools (sc-270 workspace mutation today; envelope and
+        // gates as those land) become first-class evidence rather than missing execution.
+        group.MapGet("/{id:guid}/refusals", TraceRefusalsEndpoints.GetTraceRefusalsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         return routes;
     }
 
