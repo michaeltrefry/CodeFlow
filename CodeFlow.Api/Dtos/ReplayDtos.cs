@@ -54,3 +54,22 @@ public sealed record RecordedDecisionRefDto(
     Guid? NodeId,
     Guid RoundId,
     string OriginalDecision);
+
+// sc-274 phase 1 — ambiguity preflight refusal payload. Returned with HTTP 422 when the
+// replay edits do not meet the mode's clarity threshold; the UI renders the clarification
+// questions inline so the author can refine and re-submit without leaving the panel.
+
+public sealed record PreflightRefusalResponse(
+    Guid OriginalTraceId,
+    string Code,
+    string Mode,
+    double OverallScore,
+    double Threshold,
+    IReadOnlyList<PreflightDimensionDto> Dimensions,
+    IReadOnlyList<string> MissingFields,
+    IReadOnlyList<string> ClarificationQuestions);
+
+public sealed record PreflightDimensionDto(
+    string Dimension,
+    double Score,
+    string? Reason);

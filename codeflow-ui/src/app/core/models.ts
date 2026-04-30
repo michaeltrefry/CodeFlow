@@ -730,6 +730,27 @@ export interface ReplayResponse {
   drift: ReplayDrift;
 }
 
+// sc-274 phase 1: ambiguity preflight refusal payload (HTTP 422 from POST /api/traces/{id}/replay
+// when the deterministic assessor decides the edits don't meet the mode's clarity threshold).
+// Surfaced inline in the replay panel as a clarification banner.
+
+export interface PreflightDimension {
+  dimension: string;
+  score: number;
+  reason: string | null;
+}
+
+export interface PreflightRefusalResponse {
+  originalTraceId: string;
+  code: 'preflight-ambiguous';
+  mode: string;
+  overallScore: number;
+  threshold: number;
+  dimensions: PreflightDimension[];
+  missingFields: string[];
+  clarificationQuestions: string[];
+}
+
 // sc-271 PR2: trace evidence bundle manifest, mirroring CodeFlow.Api.TraceBundle types.
 // The trace inspector renders a composition summary from this without parsing the zip.
 

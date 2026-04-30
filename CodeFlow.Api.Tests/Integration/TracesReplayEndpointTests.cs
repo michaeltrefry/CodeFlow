@@ -65,7 +65,17 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
             {
                 edits = new[]
                 {
-                    new { agentKey = "echo", ordinal = 1, decision = "Loop" }
+                    // sc-274 phase 1: include an output so the preflight assessor's
+                    // success-criteria heuristic sees the edit carries new evidence.
+                    // The queue-exhaustion behavior is downstream of preflight and
+                    // independent of the edit's output content.
+                    new
+                    {
+                        agentKey = "echo",
+                        ordinal = 1,
+                        decision = "Loop",
+                        output = "Routing back to echo to exercise queue-exhaustion behavior.",
+                    }
                 },
             });
 
@@ -168,11 +178,65 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
             {
                 edits = new[]
                 {
-                    new { agentKey = "echo", ordinal = 99, decision = "Completed" }
+                    // sc-274 phase 1: provide output so the preflight gate passes and
+                    // execution reaches the existing admission validator (the ordinal-99
+                    // failure path under test).
+                    new
+                    {
+                        agentKey = "echo",
+                        ordinal = 99,
+                        decision = "Completed",
+                        output = "Output to satisfy preflight; ordinal 99 still triggers admission rejection.",
+                    }
                 },
             });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// sc-274 phase 1 — empty replay request (no edits, no mocks, no version override) is
+    /// the round-trip identity case in the existing tests above. With preflight enabled,
+    /// it should still succeed because round-trip-identity is a legitimate use case (replays
+    /// the trace verbatim) — the preflight goal heuristic only fires when nothing is being
+    /// changed AND no override is set. The next test covers the refusal path with a
+    /// decision-changing edit that lacks the supporting evidence (output / payload).
+    /// </summary>
+    [Fact]
+    public async Task Replay_DecisionEditWithoutOutput_PreflightRefusesWith422()
+    {
+        var (traceId, _, _, _) = await SeedSimpleEchoTraceAsync();
+
+        using var client = factory.CreateClient();
+        var response = await client.PostAsJsonAsync(
+            $"/api/traces/{traceId}/replay",
+            new
+            {
+                edits = new[]
+                {
+                    new { agentKey = "echo", ordinal = 1, decision = "Loop" }
+                    // ^ no output, no payload — sc-274 success-criteria heuristic fires
+                },
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await response.Content.ReadFromJsonAsync<PreflightRefusalPayload>();
+        payload.Should().NotBeNull();
+        payload!.Code.Should().Be("preflight-ambiguous");
+        payload.Mode.Should().Be("ReplayEdit");
+        payload.OverallScore.Should().BeLessThan(payload.Threshold);
+        payload.ClarificationQuestions.Should().NotBeEmpty()
+            .And.Subject.First().Should().Contain("echo/ord-1");
+        payload.MissingFields.Should().Contain(f => f.Contains("output"));
+
+        // sc-285: refusal must be persisted to the append-only stream so governance + bundle
+        // export both see preflight refusals as first-class evidence.
+        using var verifyScope = factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var refusal = await db.RefusalEvents.SingleAsync(r => r.TraceId == traceId);
+        refusal.Stage.Should().Be("preflight");
+        refusal.Code.Should().Be("preflight-ambiguous");
+        refusal.DetailJson.Should().NotBeNullOrEmpty();
     }
 
     /// <summary>
@@ -302,4 +366,16 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
         Guid RoundId,
         string OriginalDecision);
     private sealed record ReplayEventPayload(int Ordinal, string Kind, Guid NodeId, string NodeKind);
+
+    private sealed record PreflightRefusalPayload(
+        Guid OriginalTraceId,
+        string Code,
+        string Mode,
+        double OverallScore,
+        double Threshold,
+        IReadOnlyList<PreflightDimensionPayload> Dimensions,
+        IReadOnlyList<string> MissingFields,
+        IReadOnlyList<string> ClarificationQuestions);
+
+    private sealed record PreflightDimensionPayload(string Dimension, double Score, string? Reason);
 }

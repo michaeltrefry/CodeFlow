@@ -8,10 +8,12 @@ using CodeFlow.Orchestration.Replay.Admission;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Admission;
+using CodeFlow.Runtime.Authority.Preflight;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Endpoints;
 
@@ -34,6 +36,8 @@ public static class TracesReplayEndpoints
         DryRunExecutor executor,
         ReplayRequestValidator replayValidator,
         IRefusalEventSink refusalSink,
+        IIntentClarityAssessor preflightAssessor,
+        IOptions<PreflightOptions> preflightOptions,
         CancellationToken cancellationToken)
     {
         var rootSaga = await dbContext.WorkflowSagas
@@ -42,6 +46,44 @@ public static class TracesReplayEndpoints
         if (rootSaga is null)
         {
             return Results.NotFound();
+        }
+
+        // sc-274 phase 1: ambiguity preflight runs BEFORE admission. Refusing here saves the
+        // dry-run, the admission validator, and the artifact reads — and gives the author a
+        // focused list of clarifying questions instead of a generic "edit didn't move the
+        // needle" downstream surprise. Disabled-mode falls through; assessor failure is
+        // observability-only and never blocks the primary flow.
+        if (preflightOptions.Value.Enabled)
+        {
+            var preflightInput = new ReplayEditPreflightInput(
+                Edits: (body?.Edits ?? Array.Empty<ReplayEditDto>())
+                    .Select(e => new ReplayEditPreflightEdit(
+                        AgentKey: e.AgentKey,
+                        Ordinal: e.Ordinal,
+                        Decision: e.Decision,
+                        Output: e.Output,
+                        HasPayload: e.Payload is not null))
+                    .ToArray(),
+                HasAdditionalMocks: body?.AdditionalMocks is { Count: > 0 },
+                HasWorkflowVersionOverride: body?.WorkflowVersionOverride is not null);
+
+            IntentClarityAssessment? assessment = null;
+            try
+            {
+                assessment = preflightAssessor.Assess(PreflightMode.ReplayEdit, preflightInput);
+            }
+            catch
+            {
+                // Preflight failure is observability-only — never block the primary replay flow
+                // because of an assessor bug. Admission still runs below.
+            }
+
+            if (assessment is { IsClear: false })
+            {
+                await EmitPreflightRefusalAsync(refusalSink, id, assessment, cancellationToken);
+                return Results.Json(BuildPreflightResponse(id, assessment),
+                    statusCode: StatusCodes.Status422UnprocessableEntity);
+            }
         }
 
         var subtreeSagas = await CollectSubtreeSagasAsync(dbContext, rootSaga, cancellationToken);
@@ -205,6 +247,77 @@ public static class TracesReplayEndpoints
                     result.HitlPayload.RenderError),
             Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings)));
     }
+
+    /// <summary>
+    /// sc-274 phase 1 — emit a <see cref="RefusalStages.Preflight"/> refusal when the
+    /// ambiguity assessor refuses the replay edits. The refusal carries the per-dimension
+    /// scores + clarification questions in <c>DetailJson</c> so governance queries can
+    /// reconstruct what the author saw without re-running the assessor.
+    /// </summary>
+    private static async Task EmitPreflightRefusalAsync(
+        IRefusalEventSink sink,
+        Guid traceId,
+        IntentClarityAssessment assessment,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var detail = new JsonObject
+            {
+                ["mode"] = assessment.Mode.ToString(),
+                ["score"] = assessment.OverallScore,
+                ["threshold"] = assessment.Threshold,
+                ["dimensions"] = new JsonArray(assessment.Dimensions
+                    .Select(d => (JsonNode)new JsonObject
+                    {
+                        ["dimension"] = d.Dimension,
+                        ["score"] = d.Score,
+                        ["reason"] = d.Reason,
+                    }).ToArray()),
+                ["missingFields"] = new JsonArray(
+                    assessment.MissingFields.Select(f => (JsonNode)JsonValue.Create(f)!).ToArray()),
+                ["clarificationQuestions"] = new JsonArray(
+                    assessment.ClarificationQuestions.Select(q => (JsonNode)JsonValue.Create(q)!).ToArray()),
+            };
+
+            await sink.RecordAsync(
+                new RefusalEvent(
+                    Id: Guid.NewGuid(),
+                    TraceId: traceId,
+                    AssistantConversationId: null,
+                    Stage: RefusalStages.Preflight,
+                    Code: "preflight-ambiguous",
+                    Reason: $"Replay edits did not meet the {assessment.Mode} clarity threshold "
+                            + $"({assessment.OverallScore:0.00} < {assessment.Threshold:0.00}).",
+                    Axis: assessment.Dimensions
+                        .OrderBy(d => d.Score)
+                        .FirstOrDefault()?.Dimension,
+                    Path: null,
+                    DetailJson: detail.ToJsonString(),
+                    OccurredAt: DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch
+        {
+            // Refusal recording is observability — never break the primary replay flow on
+            // sink failure. The HTTP rejection still flows to the caller.
+        }
+    }
+
+    private static PreflightRefusalResponse BuildPreflightResponse(
+        Guid traceId,
+        IntentClarityAssessment assessment) =>
+        new(
+            OriginalTraceId: traceId,
+            Code: "preflight-ambiguous",
+            Mode: assessment.Mode.ToString(),
+            OverallScore: assessment.OverallScore,
+            Threshold: assessment.Threshold,
+            Dimensions: assessment.Dimensions
+                .Select(d => new PreflightDimensionDto(d.Dimension, d.Score, d.Reason))
+                .ToArray(),
+            MissingFields: assessment.MissingFields,
+            ClarificationQuestions: assessment.ClarificationQuestions);
 
     /// <summary>
     /// sc-272 PR3 — emit a <see cref="RefusalStages.Handoff"/> refusal directly via the sink
