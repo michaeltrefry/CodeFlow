@@ -1,6 +1,13 @@
+import { AngularArea2D } from 'rete-angular-plugin/20';
 import { ClassicPreset, GetSchemes } from 'rete';
-import { AreaExtra } from './workflow-area-extra';
 import { WorkflowNodeKind, WorkflowSwarmProtocol, WorkflowTransformOutputType } from '../../../core/models';
+
+type ClassicSchemes = GetSchemes<
+  ClassicPreset.Node,
+  ClassicPreset.Connection<ClassicPreset.Node, ClassicPreset.Node>
+>;
+
+export type AreaExtra<Schemes extends ClassicSchemes = ClassicSchemes> = AngularArea2D<Schemes>;
 
 export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
 

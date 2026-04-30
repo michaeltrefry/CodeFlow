@@ -628,27 +628,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .wf-zoom .zoom-val { padding: 0 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--muted); min-width: 46px; text-align: center; }
 
-.wf-minimap {
-  position: absolute; bottom: 14px; right: 14px;
-  width: 180px; height: 110px;
-  background: color-mix(in oklab, var(--surface) 92%, transparent);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 6px;
-  z-index: 5;
-  overflow: hidden;
-}
-.wf-minimap-title {
-  position: absolute; top: 4px; left: 8px;
-  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--faint); font-weight: 600;
-  pointer-events: none;
-}
-.wf-minimap-inner { position: relative; width: 100%; height: 100%; }
-.wf-minimap-node { position: absolute; background: var(--accent-dim); border-radius: 2px; }
-.wf-minimap-view { position: absolute; border: 1.5px solid var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); border-radius: 2px; }
-
 .wf-node {
   position: absolute;
   width: 220px;
@@ -791,61 +770,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .wf-side-head h3 { font-size: var(--fs-md); font-weight: 600; }
 .wf-side-body { flex: 1; padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
-
-.wf-drawer {
-  position: absolute; left: 12px; right: 332px; bottom: 12px;
-  height: 260px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: 0 12px 40px rgba(0,0,0,.35);
-  z-index: 6;
-  display: flex; flex-direction: column;
-  overflow: hidden;
-  transform: translateY(0);
-  transition: transform var(--transition), opacity var(--transition);
-}
-.wf-drawer.hidden { transform: translateY(calc(100% + 16px)); opacity: 0; pointer-events: none; }
-.wf-drawer-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-  gap: 8px;
-}
-.wf-drawer-head h4 { font-size: var(--fs-sm); font-weight: 600; font-family: var(--font-mono); }
-.wf-drawer-body { flex: 1; overflow: auto; padding: 0; }
-
-.code-editor {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.6;
-  padding: 12px 14px 12px 48px;
-  position: relative;
-  background: var(--bg);
-  color: var(--text);
-  white-space: pre;
-  min-height: 100%;
-}
-.code-gutter {
-  position: absolute; left: 0; top: 0; bottom: 0;
-  width: 36px;
-  padding: 12px 0;
-  text-align: right;
-  color: var(--faint);
-  font-family: var(--font-mono); font-size: 11.5px;
-  line-height: 1.6;
-  user-select: none;
-  border-right: 1px solid var(--hairline);
-  background: var(--surface);
-}
-.code-gutter span { display: block; padding-right: 10px; }
-.tok-kw   { color: #c678dd; }
-.tok-str  { color: var(--sem-green); }
-.tok-num  { color: var(--sem-amber); }
-.tok-fn   { color: var(--sem-blue); }
-.tok-com  { color: var(--faint); font-style: italic; }
-.tok-ident { color: var(--text); }
 
 /* ==========================================================================
    AGENTS
@@ -1073,34 +997,4 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 1px 5px;
   border-radius: 3px;
   color: var(--muted);
-}
-
-/* Legacy compat — old components reference these colour names */
-.tag {
-  display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  background: var(--surface-2);
-  color: var(--text-2);
-}
-.tag.ok { background: var(--ok-bg); color: var(--sem-green); }
-.tag.warn { background: var(--warn-bg); color: var(--sem-amber); }
-.tag.error { background: var(--err-bg); color: var(--sem-red); }
-.tag.accent { background: var(--accent-weak); color: var(--accent-ink); }
-
-.grid-two { display: grid; grid-template-columns: 2fr 3fr; gap: 1.5rem; }
-.monospace { font-family: var(--font-mono); }
-
-.form-field { margin-bottom: 1rem; }
-label.legacy-label,
-.form-field label {
-  display: block;
-  color: var(--muted);
-  margin-bottom: 0.25rem;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }

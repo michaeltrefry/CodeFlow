@@ -3,6 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../core/agents.api';
 import { TracesApi } from '../../core/traces.api';
 import { AgentOutputDeclaration, HitlTask } from '../../core/models';
+import { ChipComponent } from '../../ui/chip.component';
 import {
   HitlPlaceholder,
   parseHitlTemplate,
@@ -12,7 +13,7 @@ import {
 @Component({
   selector: 'cf-hitl-review',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, ChipComponent],
   template: `
     <article class="hitl-review-card">
       <header class="review-header">
@@ -21,7 +22,7 @@ import {
           <span class="muted small"> v{{ task().agentVersion }}</span>
         </div>
         <div class="review-actions">
-          <span class="tag warn">Pending</span>
+          <cf-chip variant="warn" dot>Pending</cf-chip>
           <a href="" (click)="downloadReviewArtifact($event)">Download review artifact</a>
         </div>
       </header>
@@ -31,7 +32,7 @@ import {
           <div class="section-header compact">
             <h4>Review Prompt</h4>
           </div>
-          <pre class="monospace preview">{{ task().inputPreview }}</pre>
+          <pre class="mono preview">{{ task().inputPreview }}</pre>
         </section>
       } @else {
         <p class="muted small">(no preview — see artifact {{ task().inputRef }})</p>
@@ -51,9 +52,9 @@ import {
 
             <div class="display-grid">
               @for (ph of displayPlaceholders(); track ph.name) {
-                <div class="form-field display-field">
+                <div class="field display-field">
                   <label class="field-label">{{ placeholderLabel(ph.name) }}</label>
-                  <pre class="monospace preview readonly-value">{{ displayValue(ph.name) }}</pre>
+                  <pre class="mono preview readonly-value">{{ displayValue(ph.name) }}</pre>
                 </div>
               }
             </div>
@@ -67,7 +68,7 @@ import {
           </div>
 
           @for (ph of editablePlaceholders(); track ph.name) {
-            <div class="form-field">
+            <div class="field">
               <label class="field-label">{{ placeholderLabel(ph.name) }}</label>
               @if (ph.kind === 'select') {
                 <div class="choice-group" [attr.aria-label]="placeholderLabel(ph.name)">
@@ -126,15 +127,15 @@ import {
             <p class="muted small">This is the exact content that will be submitted for the next node to consume.</p>
           </div>
           @if (serverPreviewError()) {
-            <pre class="monospace preview preview-output preview-error-box">{{ serverPreviewError() }}</pre>
+            <pre class="mono preview preview-output preview-error-box">{{ serverPreviewError() }}</pre>
           } @else {
-            <pre class="monospace preview preview-output">{{ renderedOutput() }}</pre>
+            <pre class="mono preview preview-output">{{ renderedOutput() }}</pre>
           }
         </section>
       }
 
       @if (error()) {
-        <div class="tag error">{{ error() }}</div>
+        <cf-chip variant="err" dot>{{ error() }}</cf-chip>
       }
     </article>
   `,
@@ -231,7 +232,9 @@ import {
       background: color-mix(in srgb, var(--surface-2) 88%, #8fb7ff 12%);
     }
     .field-label { display: block; margin-bottom: 0.35rem; }
-    .form-field:last-child { margin-bottom: 0; }
+    .field { margin-bottom: 1rem; }
+    .field:last-child { margin-bottom: 0; }
+    .mono { font-family: var(--font-mono); }
     textarea {
       width: 100%;
       min-height: 4.5rem;
