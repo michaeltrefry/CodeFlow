@@ -122,7 +122,7 @@ import { IconComponent } from '../../ui/icon.component';
     </div>
   `,
   styles: [`
-    .hitl-card { cursor: default; }
+    .hitl-card { cursor: pointer; }
   `]
 })
 export class HitlQueueComponent {

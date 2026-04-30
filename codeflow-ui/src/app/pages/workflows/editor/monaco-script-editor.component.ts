@@ -17,6 +17,7 @@ import {
   inject
 } from '@angular/core';
 import { ThemeService } from '../../../core/theme.service';
+import { LoggerService } from '../../../core/logger.service';
 import { ensureMonacoEditorStyles, ensureMonacoEnvironment } from './monaco-environment';
 import { getSnippetsForContext, ScriptSnippet, SnippetContext, SnippetKind } from './script-snippets';
 import { buildTemplateSuggestions, isInsideScribanTag } from './template-completion';
@@ -99,6 +100,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
   private readonly ngZone = inject(NgZone);
   private readonly themeService = inject(ThemeService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly logger = inject(LoggerService);
 
   @ViewChild('host', { static: true }) hostRef!: ElementRef<HTMLDivElement>;
 
@@ -194,7 +196,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
         this.registerTemplateCompletionForModel();
       });
     } catch (err) {
-      console.warn('Monaco editor failed to load; falling back to plain textarea.', err);
+      this.logger.warn('Monaco editor failed to load; falling back to plain textarea.', err);
       this.fallback = true;
     }
   }

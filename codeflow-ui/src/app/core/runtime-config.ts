@@ -1,3 +1,5 @@
+import { consoleLogger } from './logger.service';
+
 export interface OAuthRuntimeConfig {
   authority: string;
   clientId: string;
@@ -27,7 +29,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
       credentials: 'omit'
     });
     if (!response.ok) {
-      console.warn(`[runtime-config] fetch failed: ${response.status}; using defaults`);
+      consoleLogger.warn(`[runtime-config] fetch failed: ${response.status}; using defaults`);
       loaded = DEFAULT_CONFIG;
       return DEFAULT_CONFIG;
     }
@@ -35,7 +37,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     loaded = mergeWithDefaults(parsed);
     return loaded;
   } catch (err) {
-    console.warn('[runtime-config] fetch threw; using defaults', err);
+    consoleLogger.warn('[runtime-config] fetch threw; using defaults', err);
     loaded = DEFAULT_CONFIG;
     return loaded;
   }

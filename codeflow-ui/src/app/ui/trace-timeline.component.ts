@@ -196,7 +196,7 @@ interface ArtifactLoadState {
       all: unset;
       display: block;
       width: 100%;
-      cursor: default;
+      cursor: pointer;
     }
     .timeline-toggle:disabled { cursor: default; }
     .timeline-toggle:focus-visible {

@@ -24,7 +24,7 @@ h2 { font-size: var(--fs-h2); }
 h3 { font-size: var(--fs-h3); }
 
 p  { margin: 0; }
-a  { color: var(--accent-ink); text-decoration: none; cursor: default; }
+a  { color: var(--accent-ink); text-decoration: none; cursor: pointer; }
 a:hover { color: var(--accent); }
 
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -110,7 +110,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--text-2);
   font-size: var(--fs-md);
   font-weight: 500;
-  cursor: default;
+  cursor: pointer;
   white-space: nowrap;
   transition: background var(--transition), color var(--transition);
   position: relative;
@@ -165,7 +165,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; gap: 10px;
   padding: 7px 10px;
   border-radius: var(--radius);
-  cursor: default; width: 100%; text-align: left;
+  cursor: pointer; width: 100%; text-align: left;
   font-size: var(--fs-sm);
 }
 .nav-toggle:hover { background: var(--surface-2); color: var(--text); }
@@ -210,52 +210,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .breadcrumb .sep { color: var(--faint); }
 .breadcrumb .current { color: var(--text); font-weight: 500; }
 
-.topbar-search {
-  margin-left: auto;
-  position: relative;
-  width: 320px;
-}
-.topbar-search input {
-  width: 100%;
-  height: 30px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0 10px 0 32px;
-  color: var(--text);
-  font-size: var(--fs-sm);
-  outline: none;
-  transition: border-color var(--transition), background var(--transition);
-}
-.topbar-search input::placeholder { color: var(--faint); }
-.topbar-search input:focus { border-color: var(--accent-dim); background: var(--surface-2); }
-.topbar-search .kbd {
-  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-  font-family: var(--font-mono); font-size: var(--fs-xs);
-  color: var(--muted);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  padding: 1px 5px; border-radius: 3px;
-}
-.topbar-search .search-icon {
-  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
-  color: var(--muted);
-  display: inline-flex;
-}
 .topbar-icon-btn {
+  margin-left: auto;
   appearance: none; border: 1px solid var(--border); background: var(--surface);
   color: var(--text-2);
   width: 30px; height: 30px; border-radius: var(--radius);
-  display: grid; place-items: center; cursor: default;
+  display: grid; place-items: center; cursor: pointer;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
   position: relative;
 }
 .topbar-icon-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-2); }
-.topbar-icon-btn .dot {
-  position: absolute; top: 5px; right: 5px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--sem-red); border: 1.5px solid var(--surface);
-}
 
 .page { padding: 24px 28px 40px; display: flex; flex-direction: column; gap: 18px; flex: 1; min-width: 0; }
 /* Fallback: any page-level component rendered via router-outlet (now inside .workspace-content)
@@ -286,7 +250,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 0 12px; height: 30px;
   border-radius: var(--radius);
   display: inline-flex; align-items: center; gap: 7px;
-  cursor: default;
+  cursor: pointer;
   transition: background var(--transition), border-color var(--transition), color var(--transition);
   white-space: nowrap;
 }
@@ -428,7 +392,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .textarea { font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.55; resize: vertical; min-height: 80px; }
 .input.mono, .textarea.mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 
-.checkbox { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text-2); cursor: default; }
+.checkbox { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text-2); cursor: pointer; }
 .checkbox input { accent-color: var(--accent); width: 14px; height: 14px; }
 
 /* ---------- segmented ---------- */
@@ -439,7 +403,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm); font-weight: 500;
   padding: 4px 10px;
   border-radius: calc(var(--radius) - 2px);
-  cursor: default;
+  cursor: pointer;
   transition: background var(--transition), color var(--transition);
 }
 .seg button[data-active="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 0 var(--border); }
@@ -452,7 +416,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--muted);
   font-size: var(--fs-md); font-weight: 500;
   padding: 10px 14px;
-  cursor: default;
+  cursor: pointer;
   position: relative;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -526,7 +490,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .list-toolbar-left { display: flex; align-items: center; gap: 10px; }
 
-.mono-link { font-family: var(--font-mono); color: var(--accent-ink); font-size: var(--fs-sm); font-weight: 500; cursor: default; }
+.mono-link { font-family: var(--font-mono); color: var(--accent-ink); font-size: var(--fs-sm); font-weight: 500; cursor: pointer; }
 .mono-link:hover { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 
 /* ==========================================================================
@@ -554,7 +518,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   gap: 12px;
   padding: 10px 16px;
   position: relative;
-  cursor: default;
+  cursor: pointer;
 }
 .tl-step:not(:last-child)::before {
   content: "";
@@ -694,7 +658,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 4px 14px rgba(0,0,0,.25), 0 1px 0 rgba(255,255,255,.02) inset;
   overflow: hidden;
   user-select: none;
-  cursor: default;
+  cursor: pointer;
   transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
   border-left-width: 4px;
   border-left-style: solid;
@@ -897,7 +861,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  cursor: default;
+  cursor: pointer;
   transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
   position: relative;
   min-height: 148px;
@@ -971,7 +935,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-lg);
   display: grid; grid-template-columns: auto 1fr auto; gap: 14px;
   align-items: flex-start;
-  cursor: default;
+  cursor: pointer;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 .hitl-card:hover { border-color: var(--border-2); }
@@ -1011,7 +975,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  cursor: default;
+  cursor: pointer;
   transition: border-color var(--transition);
 }
 .stat[data-selected="true"] { border-color: var(--accent); }
@@ -1043,7 +1007,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .skill-list-item {
   padding: 12px 16px;
   border-bottom: 1px solid var(--hairline);
-  cursor: default;
+  cursor: pointer;
   border-left: 2px solid transparent;
 }
 .skill-list-item[data-selected="true"] { background: var(--surface-2); border-left-color: var(--accent); }
@@ -1076,13 +1040,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .twk-swatch {
   width: 28px; height: 28px; border-radius: var(--radius-sm);
   border: 2px solid var(--border);
-  cursor: default; transition: border-color var(--transition), transform var(--transition);
+  cursor: pointer; transition: border-color var(--transition), transform var(--transition);
 }
 .twk-swatch[data-active="true"] { border-color: var(--text); transform: scale(1.05); }
 .twk-x {
   appearance: none; border: 0; background: transparent;
   color: var(--muted); width: 22px; height: 22px; border-radius: var(--radius-sm);
-  display: grid; place-items: center; cursor: default;
+  display: grid; place-items: center; cursor: pointer;
 }
 .twk-x:hover { background: var(--surface-2); color: var(--text); }
 

@@ -136,15 +136,6 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
               <span class="mono" style="color: var(--muted)">{{ layout.subcrumb() }}</span>
             }
           </div>
-          <div class="topbar-search">
-            <span class="search-icon"><cf-icon name="search"></cf-icon></span>
-            <input type="search" placeholder="Search traces, agents, workflows…" #searchInput>
-            <span class="kbd">⌘K</span>
-          </div>
-          <button type="button" class="topbar-icon-btn" title="Notifications">
-            <cf-icon name="bell"></cf-icon>
-            <span class="dot"></span>
-          </button>
           <button type="button" class="topbar-icon-btn" (click)="toggleTweaks()" title="Tweaks">
             <cf-icon name="settings"></cf-icon>
           </button>
