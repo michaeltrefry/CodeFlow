@@ -15,10 +15,35 @@ networks:
     external: true
 
 services:
+  # Init container: chowns the bind-mounted host dirs to the app uid (1654, see
+  # CodeFlow.Api/Dockerfile) on every `up`. Without this, a host dir created as root (e.g. by a
+  # one-off `mkdir -p /opt/codeflow/assistant` from a sudo'd shell) stays root-owned and the api +
+  # worker can't write into it — manifesting as `EACCES` on the assistant's per-conversation
+  # workspace and on the saga's per-trace workdirs. Doing the chown from inside Docker means we
+  # don't need NOPASSWD sudo on the deploy host or for LINODE_USER to own the dirs already; this
+  # container has root inside its own namespace by default and can chown any bind-mounted path.
+  # Runs once per `up` and exits (`restart: no`); api/worker gate on it via depends_on.
+  codeflow-init:
+    image: busybox:1.36
+    container_name: codeflow-init
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - "mkdir -p /target/assistant /target/workdir /target/artifacts && chown -R 1654:1654 /target/assistant /target/workdir /target/artifacts"
+    volumes:
+      - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/target/assistant
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/target/workdir
+      - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/target/artifacts
+    restart: "no"
+
   codeflow-api:
     image: ${CODEFLOW_API_IMAGE:?CODEFLOW_API_IMAGE must be set (full ghcr.io/<owner>/codeflow-api:<tag>)}
     container_name: codeflow-api
     restart: unless-stopped
+    depends_on:
+      codeflow-init:
+        condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
@@ -79,7 +104,10 @@ services:
     container_name: codeflow-worker
     restart: unless-stopped
     depends_on:
-      - codeflow-api
+      codeflow-init:
+        condition: service_completed_successfully
+      codeflow-api:
+        condition: service_started
     environment:
       DOTNET_ENVIRONMENT: Production
       CODEFLOW_DB_CONNECTION_STRING: ${CODEFLOW_DB_CONNECTION_STRING}
