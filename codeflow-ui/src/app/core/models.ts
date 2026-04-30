@@ -734,3 +734,116 @@ export interface ReplayResponse {
   hitlPayload: ReplayHitlPayload | null;
   drift: ReplayDrift;
 }
+
+// sc-271 PR2: trace evidence bundle manifest, mirroring CodeFlow.Api.TraceBundle types.
+// The trace inspector renders a composition summary from this without parsing the zip.
+
+/** Pointer from a manifest field to a deduplicated artifact under `artifacts/` in the zip.
+ *  An empty `sha256` + zero `sizeBytes` means the artifact was missing from the store at
+ *  export time (a "dangling pointer"); the manifest still records the original ref so a
+ *  retention-driven gap is visible in the bundle instead of silently dropped. */
+export interface TraceBundleArtifactPointer {
+  originalRef: string;
+  sha256: string;
+  sizeBytes: number;
+  bundlePath: string;
+}
+
+export interface TraceBundleArtifactRef {
+  bundlePath: string;
+  sha256: string;
+  sizeBytes: number;
+  contentType: string | null;
+  originalRef: string;
+}
+
+export interface TraceBundleSagaSummary {
+  correlationId: string;
+  traceId: string;
+  parentTraceId: string | null;
+  subflowDepth: number;
+  workflowKey: string;
+  workflowVersion: number;
+  currentState: string;
+  failureReason: string | null;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+  pinnedAgentVersions: Record<string, number>;
+}
+
+export interface TraceBundleDecision {
+  sagaCorrelationId: string;
+  ordinal: number;
+  traceId: string;
+  agentKey: string;
+  agentVersion: number;
+  decision: string;
+  decisionPayloadJson: string | null;
+  roundId: string;
+  recordedAtUtc: string;
+  nodeId: string | null;
+  outputPortName: string | null;
+  nodeEnteredAtUtc: string | null;
+  input: TraceBundleArtifactPointer | null;
+  output: TraceBundleArtifactPointer | null;
+}
+
+export interface TraceBundleRefusal {
+  id: string;
+  traceId: string | null;
+  assistantConversationId: string | null;
+  stage: string;
+  code: string;
+  reason: string;
+  axis: string | null;
+  path: string | null;
+  detailJson: string | null;
+  occurredAtUtc: string;
+}
+
+export interface TraceBundleAuthoritySnapshot {
+  id: string;
+  traceId: string;
+  roundId: string;
+  agentKey: string;
+  agentVersion: number | null;
+  workflowKey: string | null;
+  workflowVersion: number | null;
+  envelopeJson: string;
+  blockedAxesJson: string;
+  tiersJson: string;
+  resolvedAtUtc: string;
+}
+
+export interface TraceBundleTokenUsageRecord {
+  id: string;
+  traceId: string;
+  nodeId: string;
+  invocationId: string;
+  provider: string;
+  model: string;
+  recordedAtUtc: string;
+  usageJson: string;
+}
+
+export interface TraceBundleTokenUsageSummary {
+  recordCount: number;
+  records: TraceBundleTokenUsageRecord[];
+}
+
+export interface TraceBundleTraceSummary {
+  traceId: string;
+  rootSaga: TraceBundleSagaSummary;
+  subflowSagas: TraceBundleSagaSummary[];
+  decisions: TraceBundleDecision[];
+  refusals: TraceBundleRefusal[];
+  authoritySnapshots: TraceBundleAuthoritySnapshot[];
+  tokenUsage: TraceBundleTokenUsageSummary;
+}
+
+export interface TraceBundleManifest {
+  schemaVersion: string;
+  generatedAtUtc: string;
+  trace: TraceBundleTraceSummary;
+  artifacts: TraceBundleArtifactRef[];
+}

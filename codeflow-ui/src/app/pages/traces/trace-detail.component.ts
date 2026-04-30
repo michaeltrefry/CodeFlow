@@ -27,6 +27,7 @@ import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
 import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
 import { TraceReplayPanelComponent } from './trace-replay-panel.component';
 import { TokenUsagePanelComponent } from './token-usage-panel.component';
+import { TraceBundlePanelComponent } from './trace-bundle-panel.component';
 import { WorkflowNodeTokenOverlay } from '../workflows/editor/workflow-node-schemes';
 import {
   TokenUsageInvocationRollup,
@@ -99,6 +100,7 @@ interface ReviewLoopGroup {
     TraceTimelineComponent,
     TraceReplayPanelComponent,
     TokenUsagePanelComponent,
+    TraceBundlePanelComponent,
   ],
   template: `
     <div class="page">
@@ -260,6 +262,8 @@ interface ReviewLoopGroup {
           [traceId]="d.traceId"
           [nodeLabel]="nodeLabelResolver"
           [scopeLabel]="scopeLabelResolver"></cf-token-usage-panel>
+
+        <cf-trace-bundle-panel [traceId]="d.traceId"></cf-trace-bundle-panel>
 
         <cf-card title="Execution timeline" flush>
           <ng-template #cardRight><cf-chip mono>{{ timeline().length }} hops</cf-chip></ng-template>

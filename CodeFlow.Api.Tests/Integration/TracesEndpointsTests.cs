@@ -1109,4 +1109,42 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string AgentKey,
         Guid? OriginTraceId,
         IReadOnlyList<string>? SubflowPath);
+
+    /// <summary>
+    /// sc-271 PR2: the manifest-only endpoint must return the same versioned schema as the
+    /// zip's <c>manifest.json</c> entry, but without packaging artifact bytes — the trace
+    /// inspector calls this for the bundle-composition panel and shouldn't pay zip I/O.
+    /// </summary>
+    [Fact]
+    public async Task GetBundleManifest_ShouldReturnVersionedSchemaForKnownTrace()
+    {
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+
+        await SeedTraceAsync(traceId, correlationId, currentState: "Completed", includePendingHitl: false);
+
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync($"/api/traces/{traceId}/bundle/manifest");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+
+        using var stream = await response.Content.ReadAsStreamAsync();
+        using var json = await JsonDocument.ParseAsync(stream);
+        var root = json.RootElement;
+
+        root.GetProperty("schemaVersion").GetString().Should().Be("codeflow.trace-bundle.v1");
+        root.GetProperty("trace").GetProperty("traceId").GetGuid().Should().Be(traceId);
+        root.GetProperty("trace").GetProperty("rootSaga").GetProperty("workflowKey").GetString().Should().Be("cleanup-flow");
+        root.GetProperty("artifacts").ValueKind.Should().Be(JsonValueKind.Array);
+    }
+
+    [Fact]
+    public async Task GetBundleManifest_ShouldReturnNotFoundForUnknownTrace()
+    {
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync($"/api/traces/{Guid.NewGuid()}/bundle/manifest");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

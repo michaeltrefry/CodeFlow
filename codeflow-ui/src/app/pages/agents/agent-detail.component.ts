@@ -346,7 +346,7 @@ interface ReadOnlyFallbackRow {
               <p class="muted small">Saving assignments…</p>
             }
             @if (assignError()) {
-              <p class="tag error">{{ assignError() }}</p>
+              <cf-chip variant="err" dot>{{ assignError() }}</cf-chip>
             }
           }
         </div>
@@ -385,7 +385,7 @@ interface ReadOnlyFallbackRow {
             </button>
           </div>
           @if (configJson()) {
-            <pre class="json-block monospace">{{ configJson() }}</pre>
+            <pre class="json-block mono">{{ configJson() }}</pre>
           } @else {
             <p class="muted small">No configuration available for this version.</p>
           }
@@ -417,6 +417,7 @@ interface ReadOnlyFallbackRow {
       border: 1px solid var(--border);
       border-radius: var(--radius);
       background: var(--bg);
+      font-family: var(--font-mono);
       font-size: var(--fs-sm);
       margin: 0;
     }

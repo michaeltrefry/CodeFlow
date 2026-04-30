@@ -7,6 +7,7 @@ import {
   McpServer,
   McpServerTool,
 } from '../../core/models';
+import { ChipComponent } from '../../ui/chip.component';
 
 export interface McpServerToolCatalog {
   server: McpServer;
@@ -35,7 +36,7 @@ function grantKey(grant: AgentRoleGrant): string {
 @Component({
   selector: 'cf-tool-picker',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, ChipComponent],
   template: `
     <div class="tool-picker">
       <div class="row">
@@ -75,10 +76,10 @@ function grantKey(grant: AgentRoleGrant): string {
                     <span class="tool-label">
                       <span class="tool-name">{{ tool.label }}</span>
                       @if (tool.isGhost) {
-                        <span class="tag warn small">ghost</span>
+                        <cf-chip variant="warn" mono>ghost</cf-chip>
                       }
                       @if (tool.isMutating) {
-                        <span class="tag small">mutating</span>
+                        <cf-chip mono>mutating</cf-chip>
                       }
                     </span>
                   } @else {
@@ -91,10 +92,10 @@ function grantKey(grant: AgentRoleGrant): string {
                       <span class="tool-label">
                         <span class="tool-name">{{ tool.label }}</span>
                         @if (tool.isGhost) {
-                          <span class="tag warn small">ghost</span>
+                          <cf-chip variant="warn" mono>ghost</cf-chip>
                         }
                         @if (tool.isMutating) {
-                          <span class="tag small">mutating</span>
+                          <cf-chip mono>mutating</cf-chip>
                         }
                       </span>
                     </label>
@@ -131,8 +132,6 @@ function grantKey(grant: AgentRoleGrant): string {
     .tool-label { display: inline-flex; align-items: center; gap: 0.5rem; }
     .tool-desc { color: var(--muted); font-size: 0.8rem; }
     .tool-desc.indented { padding-left: 1.5rem; }
-    .tag.small { font-size: 0.7rem; padding: 0 0.35rem; }
-    .tag.warn { background: rgba(250,204,21,0.15); color: #eab308; }
     .ghost-tool .tool-name { color: var(--muted); font-style: italic; }
     .muted.small { font-size: 0.8rem; color: var(--muted); }
   `]

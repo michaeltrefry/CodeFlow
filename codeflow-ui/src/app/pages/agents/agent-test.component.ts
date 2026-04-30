@@ -13,7 +13,7 @@ import {
 } from '../../core/agent-test-stream';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
-import { ChipComponent } from '../../ui/chip.component';
+import { ChipComponent, ChipVariant } from '../../ui/chip.component';
 
 interface LogEntry {
   id: number;
@@ -85,7 +85,7 @@ const RESERVED_VARIABLES = new Set(['input']);
             <div class="form-field">
               <label>Template variables</label>
               @if (configError()) {
-                <p class="tag error">{{ configError() }}</p>
+                <cf-chip variant="err" dot>{{ configError() }}</cf-chip>
               }
               <div class="variable-list">
                 @for (entry of variables(); track entry.name; let i = $index) {
@@ -134,11 +134,11 @@ const RESERVED_VARIABLES = new Set(['input']);
           <h2>Live log</h2>
           <div class="row small muted">
             @if (cumulativeUsage(); as u) {
-              <span class="tag">in: {{ u.inputTokens }}</span>
-              <span class="tag">out: {{ u.outputTokens }}</span>
-              <span class="tag accent">total: {{ u.totalTokens }}</span>
+              <cf-chip mono>in: {{ u.inputTokens }}</cf-chip>
+              <cf-chip mono>out: {{ u.outputTokens }}</cf-chip>
+              <cf-chip variant="accent" mono>total: {{ u.totalTokens }}</cf-chip>
             }
-            <span class="tag">tool calls: {{ toolCallCount() }}</span>
+            <cf-chip mono>tool calls: {{ toolCallCount() }}</cf-chip>
           </div>
         </header>
 
@@ -165,15 +165,10 @@ const RESERVED_VARIABLES = new Set(['input']);
           <header class="section-header section-header-spaced">
             <h2>Final output</h2>
             @if (finalDecision(); as decision) {
-              <span
-                class="tag"
-                [class.ok]="decision === 'Completed' || decision === 'Approved'"
-                [class.error]="decision === 'Failed' || decision === 'Rejected'">
-                {{ decision }}
-              </span>
+              <cf-chip [variant]="decisionChipVariant(decision)" mono>{{ decision }}</cf-chip>
             }
           </header>
-          <pre class="card monospace">{{ output }}</pre>
+          <pre class="card mono">{{ output }}</pre>
         }
       </section>
     </div>
@@ -198,6 +193,15 @@ const RESERVED_VARIABLES = new Set(['input']);
     }
     .section-header.section-header-spaced { margin-top: 1.5rem; }
     .section-header h2 { margin: 0; font-size: 1.1rem; }
+    .form-field { margin-bottom: 1rem; }
+    .form-field label {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
     .variable-list { display: flex; flex-direction: column; gap: 0.35rem; }
     .variable-row {
       display: grid;
@@ -274,7 +278,7 @@ const RESERVED_VARIABLES = new Set(['input']);
       max-height: 200px;
       overflow: auto;
     }
-    pre.card.monospace {
+    pre.card.mono {
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 400px;
@@ -430,6 +434,18 @@ export class AgentTestComponent implements OnInit, OnDestroy {
     this.toolCallCount.set(0);
     this.finalOutput.set(null);
     this.finalDecision.set(null);
+  }
+
+  decisionChipVariant(decision: string): ChipVariant {
+    if (decision === 'Completed' || decision === 'Approved') {
+      return 'ok';
+    }
+
+    if (decision === 'Failed' || decision === 'Rejected') {
+      return 'err';
+    }
+
+    return 'default';
   }
 
   private buildVariablesPayload(): Record<string, string> | null {
