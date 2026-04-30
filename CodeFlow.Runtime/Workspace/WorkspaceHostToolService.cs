@@ -3,16 +3,22 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Authority.Admission;
 
 namespace CodeFlow.Runtime.Workspace;
 
 public sealed class WorkspaceHostToolService
 {
     private readonly WorkspaceOptions options;
+    private readonly WorkspacePatchValidator patchValidator;
 
-    public WorkspaceHostToolService(WorkspaceOptions? options = null)
+    public WorkspaceHostToolService(
+        WorkspaceOptions? options = null,
+        WorkspacePatchValidator? patchValidator = null,
+        Func<DateTimeOffset>? nowProvider = null)
     {
         this.options = options ?? new WorkspaceOptions();
+        this.patchValidator = patchValidator ?? new WorkspacePatchValidator(this.options, nowProvider);
     }
 
     public Task<ToolResult> ReadFileAsync(
@@ -53,24 +59,48 @@ public sealed class WorkspaceHostToolService
 
         var workspace = RequireWorkspace(context);
         var patchText = GetRequiredString(toolCall.Arguments, "patch");
-        var commands = WorkspacePatchDocument.Parse(patchText);
+
+        // sc-272 PR1: validate up-front. The validator catches malformed patches, paths
+        // that escape the workspace root, and symlink-policy violations before any
+        // filesystem mutation runs — so a single bad path can't leave a partially-applied
+        // patch on disk. Filesystem-state-dependent checks (preimage, destination-exists)
+        // stay in the apply loop where they belong.
+        var admission = patchValidator.Validate(new WorkspacePatchAdmissionRequest(
+            WorkspaceCorrelationId: workspace.CorrelationId,
+            WorkspaceRootPath: workspace.RootPath,
+            PatchText: patchText));
+
+        if (admission is Rejected<AdmittedWorkspacePatch> rejected)
+        {
+            return RejectionResult(toolCall.Id, rejected.Reason);
+        }
+
+        var admitted = ((Accepted<AdmittedWorkspacePatch>)admission).Value;
+        return await ApplyAdmittedPatchAsync(toolCall.Id, admitted, cancellationToken);
+    }
+
+    private async Task<ToolResult> ApplyAdmittedPatchAsync(
+        string callId,
+        AdmittedWorkspacePatch admitted,
+        CancellationToken cancellationToken)
+    {
         var changedFiles = new List<string>();
 
         try
         {
-            foreach (var command in commands.Commands)
+            foreach (var command in admitted.Document.Commands)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 switch (command)
                 {
                     case AddFilePatchCommand add:
-                        changedFiles.Add(ApplyAdd(workspace.RootPath, add, options));
+                        changedFiles.Add(ApplyAdd(admitted.WorkspaceRootPath, add, options));
                         break;
                     case DeleteFilePatchCommand delete:
-                        changedFiles.Add(ApplyDelete(workspace.RootPath, delete, options));
+                        changedFiles.Add(ApplyDelete(admitted.WorkspaceRootPath, delete, options));
                         break;
                     case UpdateFilePatchCommand update:
-                        changedFiles.AddRange(ApplyUpdate(workspace.RootPath, update, options));
+                        changedFiles.AddRange(ApplyUpdate(admitted.WorkspaceRootPath, update, options));
                         break;
                     default:
                         throw new InvalidOperationException($"Unsupported patch command '{command.GetType().Name}'.");
@@ -79,11 +109,13 @@ public sealed class WorkspaceHostToolService
         }
         catch (WorkspaceMutationRefusal refusal)
         {
-            return RefusalResult(toolCall.Id, refusal);
+            return RefusalResult(callId, refusal);
         }
         catch (PathConfinementException ex)
         {
-            return RefusalResult(toolCall.Id, new WorkspaceMutationRefusal(
+            // Defence-in-depth: validator already path-confined every command, but a TOCTOU
+            // symlink swap between admission and execution could still surface here.
+            return RefusalResult(callId, new WorkspaceMutationRefusal(
                 code: "path-confinement",
                 reason: ex.Message,
                 path: null));
@@ -92,7 +124,7 @@ public sealed class WorkspaceHostToolService
         await Task.CompletedTask;
 
         return new ToolResult(
-            toolCall.Id,
+            callId,
             new JsonObject
             {
                 ["ok"] = true,
@@ -454,6 +486,39 @@ public sealed class WorkspaceHostToolService
         if (refusal.Detail is not null)
         {
             refusalJson["detail"] = refusal.Detail.DeepClone();
+        }
+
+        return new ToolResult(
+            callId,
+            new JsonObject
+            {
+                ["ok"] = false,
+                ["refusal"] = refusalJson
+            }.ToJsonString(),
+            IsError: true);
+    }
+
+    /// <summary>
+    /// sc-272 PR1: builds a tool-result refusal payload from a <see cref="Rejection"/>
+    /// minted by an admission validator. Shape matches the workspace mutation refusal
+    /// payload so <see cref="RefusalPayloadParser"/> picks it up as a Stage = Tool
+    /// <see cref="RefusalEvent"/> on the existing <see cref="ToolRegistry"/> path.
+    /// </summary>
+    private static ToolResult RejectionResult(string callId, Rejection rejection)
+    {
+        var refusalJson = new JsonObject
+        {
+            ["code"] = rejection.Code,
+            ["reason"] = rejection.Reason,
+            ["axis"] = rejection.Axis
+        };
+        if (rejection.Path is not null)
+        {
+            refusalJson["path"] = rejection.Path;
+        }
+        if (rejection.Detail is not null)
+        {
+            refusalJson["detail"] = rejection.Detail.DeepClone();
         }
 
         return new ToolResult(
