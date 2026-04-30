@@ -7,6 +7,7 @@ import {
   TraceBundleAuthoritySnapshot,
   TraceBundleManifest,
   TraceBundleRefusal,
+  TraceBundleReplayAttempt,
 } from '../../core/models';
 
 /**
@@ -87,6 +88,61 @@ describe('TraceBundlePanelComponent', () => {
     expect(downloadReq.request.responseType).toBe('blob');
   });
 
+  it('renders sc-275 replay attempts stat chip + collapsible list', () => {
+    const fixture = TestBed.createComponent(TraceBundlePanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-r');
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-r/bundle/manifest').flush(buildManifest({
+      replayAttempts: [
+        {
+          id: 'r1', parentTraceId: 'trace-r',
+          lineageId: '11111111-2222-3333-4444-555555555555',
+          contentHash: 'a'.repeat(64),
+          generation: 1, replayState: 'Completed', terminalPort: 'Completed',
+          driftLevel: 'None', reason: 'ui:replay-panel',
+          createdAtUtc: '2026-04-30T17:30:00Z',
+        },
+        {
+          id: 'r2', parentTraceId: 'trace-r',
+          lineageId: '11111111-2222-3333-4444-555555555555',
+          contentHash: 'a'.repeat(64),
+          generation: 1, replayState: 'Failed', terminalPort: null,
+          driftLevel: 'Soft', reason: 'assistant:propose_replay_with_edit',
+          createdAtUtc: '2026-04-30T18:00:00Z',
+        },
+      ],
+    }));
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('2 replay attempts');
+    const section = (fixture.nativeElement as HTMLElement)
+      .querySelector('[data-testid="bundle-replay-attempts"]');
+    expect(section).not.toBeNull();
+    const sectionText = section!.textContent ?? '';
+    expect(sectionText).toContain('1 lineage');
+    expect(sectionText).toContain('11111111');
+    expect(sectionText).toContain('Soft drift');
+    expect(sectionText).toContain('ui:replay-panel');
+  });
+
+  it('omits the replay attempts surface when the bundle has none', () => {
+    const fixture = TestBed.createComponent(TraceBundlePanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-no-replays');
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-no-replays/bundle/manifest')
+      .flush(buildManifest({}));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement)
+      .querySelector('[data-testid="bundle-replay-attempts"]'))
+      .toBeNull();
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).not.toContain('replay attempts');
+  });
+
   it('shows a friendly empty state when the manifest endpoint returns 404', () => {
     const fixture = TestBed.createComponent(TraceBundlePanelComponent);
     fixture.componentRef.setInput('traceId', 'unknown');
@@ -105,6 +161,7 @@ function buildManifest(overrides: {
   refusals?: TraceBundleRefusal[];
   authoritySnapshots?: TraceBundleAuthoritySnapshot[];
   artifacts?: TraceBundleArtifactRef[];
+  replayAttempts?: TraceBundleReplayAttempt[];
 }): TraceBundleManifest {
   return {
     schemaVersion: 'codeflow.trace-bundle.v1',
@@ -129,6 +186,7 @@ function buildManifest(overrides: {
       refusals: overrides.refusals ?? [],
       authoritySnapshots: overrides.authoritySnapshots ?? [],
       tokenUsage: { recordCount: 0, records: [] },
+      replayAttempts: overrides.replayAttempts,
     },
     artifacts: overrides.artifacts ?? [],
   };

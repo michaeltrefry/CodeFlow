@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
+using CodeFlow.Persistence.Replay;
 using Microsoft.EntityFrameworkCore;
 
 namespace CodeFlow.Api.TraceBundle;
@@ -94,6 +95,13 @@ public sealed class TraceEvidenceBundleBuilder
             .ThenBy(t => t.Id)
             .ToListAsync(cancellationToken);
 
+        var replayAttempts = await dbContext.ReplayAttempts
+            .AsNoTracking()
+            .Where(r => traceIds.Contains(r.ParentTraceId))
+            .OrderBy(r => r.CreatedAtUtc)
+            .ThenBy(r => r.Id)
+            .ToListAsync(cancellationToken);
+
         // Walk decisions and inline-read each unique artifact so the manifest pointers all
         // resolve to a deduplicated entry under artifacts/. Done in a single pass before zip
         // assembly so the artifact list + decisions can be sorted before serialization.
@@ -110,7 +118,7 @@ public sealed class TraceEvidenceBundleBuilder
                 await entryStream.WriteAsync(artifact.Bytes, cancellationToken);
             }
 
-            var manifest = BuildManifest(rootSaga, subtreeSagas, decisions, refusals, authoritySnapshots, tokenUsage, artifacts);
+            var manifest = BuildManifest(rootSaga, subtreeSagas, decisions, refusals, authoritySnapshots, tokenUsage, replayAttempts, artifacts);
             var manifestEntry = zip.CreateEntry(TraceEvidenceBundleDefaults.ManifestFileName, CompressionLevel.Optimal);
             await using var manifestStream = manifestEntry.Open();
             await JsonSerializer.SerializeAsync(manifestStream, manifest, ManifestSerializerOptions, cancellationToken);
@@ -161,9 +169,15 @@ public sealed class TraceEvidenceBundleBuilder
             .OrderBy(t => t.RecordedAtUtc)
             .ThenBy(t => t.Id)
             .ToListAsync(cancellationToken);
+        var replayAttempts = await dbContext.ReplayAttempts
+            .AsNoTracking()
+            .Where(r => traceIds.Contains(r.ParentTraceId))
+            .OrderBy(r => r.CreatedAtUtc)
+            .ThenBy(r => r.Id)
+            .ToListAsync(cancellationToken);
 
         var artifacts = await CollectArtifactsAsync(decisions, cancellationToken);
-        return BuildManifest(rootSaga, subtreeSagas, decisions, refusals, authoritySnapshots, tokenUsage, artifacts);
+        return BuildManifest(rootSaga, subtreeSagas, decisions, refusals, authoritySnapshots, tokenUsage, replayAttempts, artifacts);
     }
 
     private TraceEvidenceManifest BuildManifest(
@@ -173,6 +187,7 @@ public sealed class TraceEvidenceBundleBuilder
         IReadOnlyList<RefusalEventEntity> refusals,
         IReadOnlyList<AgentInvocationAuthorityEntity> authoritySnapshots,
         IReadOnlyList<TokenUsageRecordEntity> tokenUsage,
+        IReadOnlyList<ReplayAttemptEntity> replayAttempts,
         ArtifactInventory artifacts)
     {
         var subflows = subtreeSagas
@@ -187,6 +202,7 @@ public sealed class TraceEvidenceBundleBuilder
         var mappedRefusals = refusals.Select(MapRefusal).ToArray();
         var mappedAuthority = authoritySnapshots.Select(MapAuthority).ToArray();
         var mappedTokenUsage = tokenUsage.Select(MapTokenUsage).ToArray();
+        var mappedReplayAttempts = replayAttempts.Select(MapReplayAttempt).ToArray();
 
         return new TraceEvidenceManifest(
             SchemaVersion: TraceEvidenceBundleDefaults.SchemaVersionV1,
@@ -200,7 +216,8 @@ public sealed class TraceEvidenceBundleBuilder
                 AuthoritySnapshots: mappedAuthority,
                 TokenUsage: new TraceEvidenceTokenUsageSummary(
                     RecordCount: mappedTokenUsage.Length,
-                    Records: mappedTokenUsage)),
+                    Records: mappedTokenUsage),
+                ReplayAttempts: mappedReplayAttempts),
             Artifacts: artifacts.OrderedEntries
                 .Select(entry => new TraceEvidenceArtifactRef(
                     BundlePath: entry.BundlePath,
@@ -210,6 +227,19 @@ public sealed class TraceEvidenceBundleBuilder
                     OriginalRef: entry.OriginalRef))
                 .ToArray());
     }
+
+    private static TraceEvidenceReplayAttempt MapReplayAttempt(ReplayAttemptEntity entity) =>
+        new(
+            Id: entity.Id,
+            ParentTraceId: entity.ParentTraceId,
+            LineageId: entity.LineageId,
+            ContentHash: entity.ContentHash,
+            Generation: entity.Generation,
+            ReplayState: entity.ReplayState,
+            TerminalPort: entity.TerminalPort,
+            DriftLevel: entity.DriftLevel,
+            Reason: entity.Reason,
+            CreatedAtUtc: entity.CreatedAtUtc);
 
     private async Task<ArtifactInventory> CollectArtifactsAsync(
         IReadOnlyList<WorkflowSagaDecisionEntity> decisions,

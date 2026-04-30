@@ -5,6 +5,7 @@ using System.Text.Json;
 using CodeFlow.Api.TraceBundle;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
+using CodeFlow.Persistence.Replay;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 
@@ -122,6 +123,58 @@ public sealed class TraceEvidenceBundleBuilderTests
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         JsonSerializer.Serialize(first, jsonOptions)
             .Should().Be(JsonSerializer.Serialize(second, jsonOptions));
+    }
+
+    [Fact]
+    public async Task BuildManifest_IncludesReplayAttempts_OrderedByCreatedAt()
+    {
+        // sc-275: replay-attempt rows persisted by the replay endpoint surface in the bundle
+        // manifest under `trace.replayAttempts`, ordered chronologically. The bundle is the
+        // canonical export, so attempt history travels with the trace.
+        await using var dbContext = CreateDbContext();
+        var artifactStore = new InMemoryArtifactStore();
+        var (traceId, _) = SeedRootSaga(dbContext);
+        var earlier = DateTime.Parse("2026-04-29T10:00:00Z").ToUniversalTime();
+        var later = DateTime.Parse("2026-04-30T10:00:00Z").ToUniversalTime();
+
+        var lineageId = Guid.NewGuid();
+        dbContext.ReplayAttempts.Add(new ReplayAttemptEntity
+        {
+            Id = Guid.NewGuid(),
+            ParentTraceId = traceId,
+            LineageId = lineageId,
+            ContentHash = new string('a', 64),
+            Generation = 1,
+            ReplayState = "Completed",
+            TerminalPort = "Completed",
+            DriftLevel = "None",
+            Reason = "ui:replay-panel",
+            CreatedAtUtc = later,
+        });
+        dbContext.ReplayAttempts.Add(new ReplayAttemptEntity
+        {
+            Id = Guid.NewGuid(),
+            ParentTraceId = traceId,
+            LineageId = lineageId,
+            ContentHash = new string('a', 64),
+            Generation = 1,
+            ReplayState = "Completed",
+            TerminalPort = "Completed",
+            DriftLevel = "None",
+            Reason = "ui:replay-panel",
+            CreatedAtUtc = earlier,
+        });
+        await dbContext.SaveChangesAsync();
+
+        var builder = new TraceEvidenceBundleBuilder(dbContext, artifactStore);
+        var manifest = await builder.BuildManifestAsync(traceId);
+
+        manifest.Should().NotBeNull();
+        manifest!.Trace.ReplayAttempts.Should().HaveCount(2);
+        manifest.Trace.ReplayAttempts[0].CreatedAtUtc.Should().Be(earlier);
+        manifest.Trace.ReplayAttempts[1].CreatedAtUtc.Should().Be(later);
+        manifest.Trace.ReplayAttempts.All(r => r.LineageId == lineageId).Should().BeTrue();
+        manifest.Trace.ReplayAttempts.All(r => r.Reason == "ui:replay-panel").Should().BeTrue();
     }
 
     [Fact]

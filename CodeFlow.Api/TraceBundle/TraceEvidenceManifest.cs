@@ -34,7 +34,26 @@ public sealed record TraceEvidenceTraceSummary(
     IReadOnlyList<TraceEvidenceDecision> Decisions,
     IReadOnlyList<TraceEvidenceRefusal> Refusals,
     IReadOnlyList<TraceEvidenceAuthoritySnapshot> AuthoritySnapshots,
-    TraceEvidenceTokenUsageSummary TokenUsage);
+    TraceEvidenceTokenUsageSummary TokenUsage,
+    /// <summary>
+    /// sc-275 — replay-with-edit attempts rooted at this trace, ordered by
+    /// <see cref="TraceEvidenceReplayAttempt.CreatedAtUtc"/>. Empty for traces that
+    /// have never been replayed; additive optional field, manifest schema version
+    /// stays at <c>codeflow.trace-bundle.v1</c>.
+    /// </summary>
+    IReadOnlyList<TraceEvidenceReplayAttempt> ReplayAttempts);
+
+public sealed record TraceEvidenceReplayAttempt(
+    Guid Id,
+    Guid ParentTraceId,
+    Guid LineageId,
+    string ContentHash,
+    int Generation,
+    string ReplayState,
+    string? TerminalPort,
+    string DriftLevel,
+    string? Reason,
+    DateTime CreatedAtUtc);
 
 public sealed record TraceEvidenceSagaSummary(
     Guid CorrelationId,

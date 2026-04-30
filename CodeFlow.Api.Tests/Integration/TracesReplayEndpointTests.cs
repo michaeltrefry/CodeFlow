@@ -195,6 +195,46 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
     }
 
     /// <summary>
+    /// sc-275 — every successful replay POST persists a `replay_attempts` row and returns
+    /// lineage metadata. Identical inputs against the same trace produce the same lineage
+    /// id (deterministic content hash), so authors can see "you've already tried this exact
+    /// replay" instead of being confused by ambient drift between attempts.
+    /// </summary>
+    [Fact]
+    public async Task Replay_RoundTrip_PersistsLineageRowAndReturnsLineageDto()
+    {
+        var (traceId, _, _, _) = await SeedSimpleEchoTraceAsync();
+
+        using var client = factory.CreateClient();
+        var firstResponse = await client.PostAsJsonAsync($"/api/traces/{traceId}/replay", new { reason = "ui:replay-panel" });
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPayload = await firstResponse.Content.ReadFromJsonAsync<ReplayResponsePayload>();
+        firstPayload.Should().NotBeNull();
+        firstPayload!.Lineage.Should().NotBeNull();
+        firstPayload.Lineage!.LineageId.Should().NotBe(Guid.Empty);
+        firstPayload.Lineage.ContentHash.Should().NotBeNullOrEmpty().And.HaveLength(64);
+        firstPayload.Lineage.Generation.Should().Be(1);
+        firstPayload.Lineage.ParentTraceId.Should().Be(traceId);
+        firstPayload.Lineage.Reason.Should().Be("ui:replay-panel");
+
+        // Second call with identical inputs — same lineage id (content hash is stable);
+        // a second row is written so attempt history is preserved.
+        var secondResponse = await client.PostAsJsonAsync($"/api/traces/{traceId}/replay", new { reason = "ui:replay-panel" });
+        secondResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var secondPayload = await secondResponse.Content.ReadFromJsonAsync<ReplayResponsePayload>();
+        secondPayload!.Lineage!.LineageId.Should().Be(firstPayload.Lineage.LineageId);
+        secondPayload.Lineage.ContentHash.Should().Be(firstPayload.Lineage.ContentHash);
+
+        using var verifyScope = factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var rows = await db.ReplayAttempts.Where(r => r.ParentTraceId == traceId).ToListAsync();
+        rows.Should().HaveCount(2, "each successful replay POST writes a row even when content_hash repeats");
+        rows.Select(r => r.LineageId).Distinct().Should().ContainSingle();
+        rows.All(r => r.Generation == 1).Should().BeTrue();
+        rows.All(r => r.Reason == "ui:replay-panel").Should().BeTrue();
+    }
+
+    /// <summary>
     /// sc-274 phase 1 — empty replay request (no edits, no mocks, no version override) is
     /// the round-trip identity case in the existing tests above. With preflight enabled,
     /// it should still succeed because round-trip-identity is a legitimate use case (replays
@@ -353,7 +393,16 @@ public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory
         ReplayExhaustedAgentPayload? ExhaustedAgent,
         IReadOnlyList<RecordedDecisionRefPayload> Decisions,
         IReadOnlyList<ReplayEventPayload> ReplayEvents,
-        ReplayDriftPayload Drift);
+        ReplayDriftPayload Drift,
+        ReplayLineagePayload? Lineage);
+
+    private sealed record ReplayLineagePayload(
+        Guid LineageId,
+        string ContentHash,
+        Guid ParentTraceId,
+        int Generation,
+        DateTime CreatedAtUtc,
+        string? Reason);
 
     private sealed record ReplayDriftPayload(string Level, IReadOnlyList<string> Warnings);
     private sealed record ReplayExhaustedAgentPayload(string AgentKey, int RecordedResponses);

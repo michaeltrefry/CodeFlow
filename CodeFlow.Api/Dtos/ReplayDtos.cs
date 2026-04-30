@@ -12,7 +12,13 @@ public sealed record ReplayRequest(
     IReadOnlyList<ReplayEditDto>? Edits,
     IReadOnlyDictionary<string, IReadOnlyList<ReplayMockResponseDto>>? AdditionalMocks,
     int? WorkflowVersionOverride,
-    bool Force);
+    bool Force,
+    /// <summary>
+    /// sc-275 — caller-supplied source identifier persisted on the replay attempt row
+    /// (e.g. <c>ui:replay-panel</c>, <c>assistant:propose_replay_with_edit</c>).
+    /// Optional; not used for content hashing.
+    /// </summary>
+    string? Reason = null);
 
 public sealed record ReplayEditDto(
     string AgentKey,
@@ -36,7 +42,27 @@ public sealed record ReplayResponse(
     IReadOnlyList<RecordedDecisionRefDto> Decisions,
     IReadOnlyList<DryRunEventDto> ReplayEvents,
     DryRunHitlPayloadDto? HitlPayload,
-    ReplayDriftDto Drift);
+    ReplayDriftDto Drift,
+    /// <summary>
+    /// sc-275 — lineage metadata for the just-recorded replay attempt. Always populated
+    /// on a successful replay, even when persistence of the underlying row failed (the
+    /// hash + lineage id are computed in-process and don't depend on the DB write).
+    /// </summary>
+    ReplayLineageDto? Lineage = null);
+
+/// <summary>
+/// sc-275 — lineage metadata returned with every successful replay response. Identical
+/// inputs against the same parent produce the same <see cref="LineageId"/>, so authors
+/// see "you've already tried this exact replay" instead of being confused by drift
+/// between otherwise-identical attempts.
+/// </summary>
+public sealed record ReplayLineageDto(
+    Guid LineageId,
+    string ContentHash,
+    Guid ParentTraceId,
+    int Generation,
+    DateTime CreatedAtUtc,
+    string? Reason);
 
 public sealed record ReplayDriftDto(
     string Level,

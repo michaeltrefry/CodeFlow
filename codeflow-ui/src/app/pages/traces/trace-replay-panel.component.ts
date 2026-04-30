@@ -214,6 +214,12 @@ interface EditRowState {
                 @if (res.replayTerminalPort) {
                   <cf-chip mono variant="accent">{{ res.replayTerminalPort }}</cf-chip>
                 }
+                @if (res.lineage; as lineage) {
+                  <cf-chip mono [title]="'Content hash: ' + lineage.contentHash"
+                          data-testid="replay-lineage-chip">
+                    gen {{ lineage.generation }} · lineage {{ lineage.lineageId.slice(0, 8) }}
+                  </cf-chip>
+                }
               </div>
             </div>
 

@@ -85,6 +85,47 @@ describe('TraceReplayPanelComponent — preflight banner', () => {
     expect(text).toContain('0.50');
   });
 
+  it('renders the sc-275 lineage chip on a successful replay response', () => {
+    const fixture = TestBed.createComponent(TraceReplayPanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-z');
+    fixture.componentRef.setInput('workflow', null);
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-z/replay').flush({
+      ...buildEmptyReplayResponse('trace-z'),
+      lineage: {
+        lineageId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        contentHash: 'a'.repeat(64),
+        parentTraceId: 'trace-z',
+        generation: 1,
+        createdAtUtc: '2026-04-30T18:00:00Z',
+        reason: 'ui:replay-panel',
+      },
+    });
+    fixture.detectChanges();
+
+    const chip = (fixture.nativeElement as HTMLElement)
+      .querySelector('[data-testid="replay-lineage-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent ?? '').toContain('gen 1');
+    expect(chip!.textContent ?? '').toContain('aaaaaaaa');
+    expect(chip!.getAttribute('title') ?? '').toContain('a'.repeat(64));
+  });
+
+  it('omits the lineage chip when the response has no lineage (older deployments)', () => {
+    const fixture = TestBed.createComponent(TraceReplayPanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-old');
+    fixture.componentRef.setInput('workflow', null);
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-old/replay')
+      .flush(buildEmptyReplayResponse('trace-old'));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('[data-testid="replay-lineage-chip"]'))
+      .toBeNull();
+  });
+
   it('clears the preflight banner when the user resets edits', () => {
     const fixture = TestBed.createComponent(TraceReplayPanelComponent);
     fixture.componentRef.setInput('traceId', 'trace-y');
@@ -126,5 +167,6 @@ function buildEmptyReplayResponse(traceId: string) {
     replayEvents: [],
     hitlPayload: null,
     drift: { level: 'None', warnings: [] },
+    lineage: null,
   };
 }
