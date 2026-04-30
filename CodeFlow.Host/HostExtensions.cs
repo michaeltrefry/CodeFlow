@@ -1,10 +1,13 @@
 using CodeFlow.Host.Mcp;
 using CodeFlow.Host.Workspace;
+using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
+using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
+using CodeFlow.Persistence.Notifications;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Anthropic;
@@ -117,6 +120,17 @@ public static class HostExtensions
         services.AddScoped<IAgentInvocationAuthorityRepository, AgentInvocationAuthorityRepository>();
         services.AddScoped<IAuthorityResolver, AuthorityResolver>();
         services.AddScoped<IAuthoritySnapshotRecorder, AuthoritySnapshotRecorder>();
+
+        // Notification subsystem (epic 48). Provider adapters (Slack/Email/SMS, sc-54/55/56)
+        // register their own INotificationProvider implementations; the registry below picks
+        // them up via DI enumeration.
+        services.AddScoped<INotificationProviderConfigRepository, NotificationProviderConfigRepository>();
+        services.AddScoped<INotificationRouteRepository, NotificationRouteRepository>();
+        services.AddScoped<INotificationTemplateRepository, NotificationTemplateRepository>();
+        services.AddScoped<INotificationDeliveryAttemptRepository, NotificationDeliveryAttemptRepository>();
+        services.AddScoped<INotificationTemplateRenderer, ScribanNotificationTemplateRenderer>();
+        services.AddScoped<INotificationProviderRegistry, NotificationProviderRegistry>();
+        services.AddScoped<INotificationDispatcher, NotificationDispatcher>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
