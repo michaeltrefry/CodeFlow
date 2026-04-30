@@ -1,4 +1,5 @@
 using CodeFlow.Persistence.Authority;
+using CodeFlow.Persistence.Notifications;
 using CodeFlow.Persistence.Replay;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
@@ -60,6 +61,14 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
     public DbSet<AgentInvocationAuthorityEntity> AgentInvocationAuthority => Set<AgentInvocationAuthorityEntity>();
 
     public DbSet<ReplayAttemptEntity> ReplayAttempts => Set<ReplayAttemptEntity>();
+
+    public DbSet<NotificationProviderEntity> NotificationProviders => Set<NotificationProviderEntity>();
+
+    public DbSet<NotificationRouteEntity> NotificationRoutes => Set<NotificationRouteEntity>();
+
+    public DbSet<NotificationTemplateEntity> NotificationTemplates => Set<NotificationTemplateEntity>();
+
+    public DbSet<NotificationDeliveryAttemptEntity> NotificationDeliveryAttempts => Set<NotificationDeliveryAttemptEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

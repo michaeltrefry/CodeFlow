@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CodeFlow.Contracts\CodeFlow.Contracts.csproj" />
     <ProjectReference Include="..\CodeFlow.Runtime\CodeFlow.Runtime.csproj" />
   </ItemGroup>
 
