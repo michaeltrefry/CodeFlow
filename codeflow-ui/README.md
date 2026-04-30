@@ -55,13 +55,13 @@ Use `npm run coverage:check` before raising coverage-sensitive frontend PRs. Cov
 
 ### Coverage Guardrail
 
-`npm run coverage:check` runs coverage and then checks `coverage-summary.json` with `scripts/check-coverage-thresholds.mjs`.
+`npm run coverage:check` runs coverage and then checks `coverage-summary.json` with `scripts/check-coverage-thresholds.mjs`. The script includes uncovered production TypeScript files in the denominator so the percentages describe the full `src` tree, not only files touched by specs.
 
 Current global minimums:
 
-- Statements: 10%
+- Statements: 9%
 - Branches: 5%
-- Functions: 10%
-- Lines: 10%
+- Functions: 5%
+- Lines: 9%
 
 Raise these only after coverage improves for meaningful behavior. Do not raise thresholds by adding tests whose only purpose is to execute lines.

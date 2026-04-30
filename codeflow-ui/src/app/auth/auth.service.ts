@@ -3,6 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { firstValueFrom } from 'rxjs';
 import { buildAuthConfig, hasAuthConfigured } from './auth.config';
+import { LoggerService } from '../core/logger.service';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -26,6 +27,7 @@ export interface CurrentUser {
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly oauth = inject(OAuthService);
+  private readonly logger = inject(LoggerService);
 
   readonly currentUser = signal<CurrentUser | null>(null);
   readonly loading = signal(false);
@@ -96,7 +98,7 @@ export class AuthService {
             'Most likely cause: the access token does not contain `codeflow-api` in the `aud` claim. ' +
             'Check the Audience mapper on the codeflow-ui client and the API\'s Auth__Authority/Auth__Audience env vars.'
           );
-          console.error('[auth] /api/me rejected a valid Keycloak token:', apiErr);
+          this.logger.error('[auth] /api/me rejected a valid Keycloak token:', apiErr);
         } else {
           // No token AND no /api/me access: anonymous. Guard will redirect to Keycloak.
           throw apiErr;
@@ -106,7 +108,7 @@ export class AuthService {
       this.currentUser.set(null);
       const message = err instanceof Error ? err.message : 'Unable to load current user.';
       this.error.set(message);
-      console.error('[auth] load failed:', err);
+      this.logger.error('[auth] load failed:', err);
     } finally {
       this.loading.set(false);
     }
@@ -158,7 +160,7 @@ export class AuthService {
       return refreshed;
     } catch (err) {
       this.markTokenUnavailable();
-      console.error('[auth] token refresh failed:', err);
+      this.logger.error('[auth] token refresh failed:', err);
       return null;
     }
   }
