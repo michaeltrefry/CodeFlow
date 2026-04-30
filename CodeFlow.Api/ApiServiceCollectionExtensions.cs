@@ -66,6 +66,11 @@ public static class ApiServiceCollectionExtensions
         // validator; the endpoint resolves it per request via Minimal API DI.
         services.AddSingleton<CodeFlow.Orchestration.Replay.Admission.ReplayRequestValidator>();
 
+        // sc-271: trace evidence bundle export. Scoped because the builder reads through the
+        // per-request DbContext to collect saga + decision + refusal + authority + token-usage
+        // rows; the artifact store is a singleton so it doesn't pull the lifetime down.
+        services.AddScoped<CodeFlow.Api.TraceBundle.TraceEvidenceBundleBuilder>();
+
         // Workflow validation pipeline (F1). Rules are scoped because they take a per-request
         // DbContext via WorkflowValidationContext; the pipeline itself is scoped so it picks up
         // the correct DI scope's rule instances.
