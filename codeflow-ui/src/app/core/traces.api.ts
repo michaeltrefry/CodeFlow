@@ -10,6 +10,7 @@ import {
   HitlTask,
   ReplayRequest,
   ReplayResponse,
+  TraceBundleManifest,
   TraceDetail,
   TraceSummary,
   TraceTokenUsageDto
@@ -77,5 +78,20 @@ export class TracesApi {
    *  rollups in-memory. */
   getTokenUsage(traceId: string): Observable<TraceTokenUsageDto> {
     return this.http.get<TraceTokenUsageDto>(`/api/traces/${traceId}/token-usage`);
+  }
+
+  /** sc-271 PR2: lightweight manifest fetch for the bundle composition panel — same
+   *  shape as `manifest.json` inside the exported zip but without artifact bytes. */
+  getBundleManifest(traceId: string): Observable<TraceBundleManifest> {
+    return this.http.get<TraceBundleManifest>(`/api/traces/${traceId}/bundle/manifest`);
+  }
+
+  /** sc-271 PR2: trigger the actual zip download. Returns the full HttpResponse so the
+   *  caller can read the server-supplied filename from the Content-Disposition header. */
+  downloadBundle(traceId: string): Observable<HttpResponse<Blob>> {
+    return this.http.get(`/api/traces/${traceId}/bundle`, {
+      observe: 'response',
+      responseType: 'blob'
+    });
   }
 }
