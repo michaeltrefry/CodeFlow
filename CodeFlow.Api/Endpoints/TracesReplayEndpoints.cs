@@ -1,9 +1,13 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Replay;
+using CodeFlow.Orchestration.Replay.Admission;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Authority.Admission;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -28,6 +32,8 @@ public static class TracesReplayEndpoints
         IWorkflowRepository workflowRepository,
         IArtifactStore artifactStore,
         DryRunExecutor executor,
+        ReplayRequestValidator replayValidator,
+        IRefusalEventSink refusalSink,
         CancellationToken cancellationToken)
     {
         var rootSaga = await dbContext.WorkflowSagas
@@ -113,22 +119,6 @@ public static class TracesReplayEndpoints
             bundle.Decisions);
 
         var force = body?.Force ?? false;
-        if (drift.Level == DriftLevel.Hard && !force)
-        {
-            return Results.Json(
-                new ReplayResponse(
-                    OriginalTraceId: id,
-                    ReplayState: "DriftRefused",
-                    ReplayTerminalPort: null,
-                    FailureReason: "Hard drift detected; pass force=true to opt into a best-effort replay.",
-                    FailureCode: "drift_hard_refused",
-                    ExhaustedAgent: null,
-                    Decisions: bundle.Decisions.Select(MapDecisionRef).ToArray(),
-                    ReplayEvents: Array.Empty<DryRunEventDto>(),
-                    HitlPayload: null,
-                    Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings)),
-                statusCode: StatusCodes.Status422UnprocessableEntity);
-        }
 
         var edits = body?.Edits?.Select(e => new ReplayEdit(
             AgentKey: e.AgentKey,
@@ -152,29 +142,45 @@ public static class TracesReplayEndpoints
         var portIndex = await ReplayEditsApplicator.BuildPortIndexAsync(
             targetWorkflow, workflowRepository, cancellationToken);
         var workflowLabel = $"'{targetWorkflow.Key}' v{targetWorkflow.Version}";
-        var applied = ReplayEditsApplicator.Apply(
-            bundle.Mocks, edits, additionalMocks, portIndex, workflowLabel);
-        if (applied.ValidationErrors.Count > 0)
+
+        // sc-272 PR3: drift-vs-force admission + edit-shape validation are now consolidated
+        // into ReplayRequestValidator. Rejections fire a Stage = Handoff RefusalEvent so
+        // governance queries see refused replays as first-class evidence (parallel to the
+        // tool-stage refusals that admission already emits via ToolRegistry).
+        var admission = replayValidator.Validate(new ReplayAdmissionRequest(
+            ParentTraceId: id,
+            WorkflowKey: targetWorkflow.Key,
+            OriginalWorkflowVersion: rootSaga.WorkflowVersion,
+            TargetWorkflowVersion: targetWorkflow.Version,
+            TargetWorkflowDisplayLabel: workflowLabel,
+            PinnedAgentVersions: rootSaga.GetPinnedAgentVersions(),
+            MockBundle: bundle,
+            DeclaredPortsByAgent: portIndex,
+            Edits: edits,
+            AdditionalMocks: additionalMocks,
+            Force: force,
+            Drift: drift));
+
+        if (admission is Rejected<AdmittedReplayRequest> rejected)
         {
-            var grouped = applied.ValidationErrors
-                .Select((message, idx) => new { Key = $"edits[{idx}]", message })
-                .GroupBy(x => x.Key, x => x.message)
-                .ToDictionary(g => g.Key, g => g.ToArray());
-            return Results.ValidationProblem(grouped);
+            await EmitHandoffRefusalAsync(refusalSink, id, rejected.Reason, cancellationToken);
+            return MapAdmissionRejection(rejected.Reason, id, drift, bundle);
         }
+
+        var admitted = ((Accepted<AdmittedReplayRequest>)admission).Value;
 
         var startingInput = await ResolveStartingInputAsync(
             artifactStore, decisions, cancellationToken);
 
         var dryRunRequest = new DryRunRequest(
-            WorkflowKey: targetWorkflow.Key,
-            WorkflowVersion: targetWorkflow.Version,
+            WorkflowKey: admitted.WorkflowKey,
+            WorkflowVersion: admitted.TargetWorkflowVersion,
             StartingInput: startingInput,
-            MockResponses: applied.Mocks);
+            MockResponses: admitted.Mocks);
 
         var result = await executor.ExecuteAsync(dryRunRequest, cancellationToken);
 
-        var (failureCode, exhaustedAgent) = ClassifyFailure(result, applied.Mocks);
+        var (failureCode, exhaustedAgent) = ClassifyFailure(result, admitted.Mocks);
         var replayState = exhaustedAgent is null
             ? result.State.ToString()
             : "Failed";
@@ -198,6 +204,110 @@ public static class TracesReplayEndpoints
                     result.HitlPayload.RenderedFormPreview,
                     result.HitlPayload.RenderError),
             Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings)));
+    }
+
+    /// <summary>
+    /// sc-272 PR3 — emit a <see cref="RefusalStages.Handoff"/> refusal directly via the sink
+    /// when an admission boundary refuses outside of a tool-call context. Tool-call boundaries
+    /// (workspace patch, vcs.open_pr) ride the existing <see cref="ToolRegistry"/> path at
+    /// <see cref="RefusalStages.Tool"/>; the replay endpoint isn't inside a tool call, so it
+    /// emits Handoff stage directly so governance queries see the refusal as first-class
+    /// evidence rather than just an HTTP error.
+    /// </summary>
+    private static async Task EmitHandoffRefusalAsync(
+        IRefusalEventSink sink,
+        Guid traceId,
+        Rejection rejection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await sink.RecordAsync(
+                new RefusalEvent(
+                    Id: Guid.NewGuid(),
+                    TraceId: traceId,
+                    AssistantConversationId: null,
+                    Stage: RefusalStages.Handoff,
+                    Code: rejection.Code,
+                    Reason: rejection.Reason,
+                    Axis: rejection.Axis,
+                    Path: rejection.Path,
+                    DetailJson: rejection.Detail?.ToJsonString(),
+                    OccurredAt: DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch
+        {
+            // Refusal recording is observability — never break the primary replay flow on
+            // sink failure. The HTTP rejection still flows to the caller.
+        }
+    }
+
+    /// <summary>
+    /// Maps a replay <see cref="Rejection"/> back to the response shape the API already
+    /// surfaces for that case: <c>replay-drift-hard-refused</c> reconstitutes the
+    /// <see cref="ReplayResponse"/> with <c>DriftRefused</c> state; <c>replay-edit-validation</c>
+    /// rebuilds a <see cref="ValidationProblem"/> from the indexed errors stored in the
+    /// rejection's <c>Detail</c>.
+    /// </summary>
+    private static IResult MapAdmissionRejection(
+        Rejection rejection,
+        Guid traceId,
+        DriftReport drift,
+        ReplayMockBundle bundle)
+    {
+        if (string.Equals(rejection.Code, "replay-drift-hard-refused", StringComparison.Ordinal))
+        {
+            return Results.Json(
+                new ReplayResponse(
+                    OriginalTraceId: traceId,
+                    ReplayState: "DriftRefused",
+                    ReplayTerminalPort: null,
+                    FailureReason: rejection.Reason,
+                    FailureCode: "drift_hard_refused",
+                    ExhaustedAgent: null,
+                    Decisions: bundle.Decisions.Select(MapDecisionRef).ToArray(),
+                    ReplayEvents: Array.Empty<DryRunEventDto>(),
+                    HitlPayload: null,
+                    Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings)),
+                statusCode: StatusCodes.Status422UnprocessableEntity);
+        }
+
+        if (string.Equals(rejection.Code, "replay-edit-validation", StringComparison.Ordinal))
+        {
+            var errors = ExtractEditErrors(rejection);
+            var grouped = errors
+                .Select((message, idx) => new { Key = $"edits[{idx}]", message })
+                .GroupBy(x => x.Key, x => x.message)
+                .ToDictionary(g => g.Key, g => g.ToArray());
+            return Results.ValidationProblem(grouped);
+        }
+
+        // Unknown rejection codes fall through to a 400 with the rejection reason — keeps the
+        // surface honest if a future validator adds a code without updating this map.
+        return Results.Problem(
+            title: "Replay request was refused.",
+            detail: rejection.Reason,
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    private static IReadOnlyList<string> ExtractEditErrors(Rejection rejection)
+    {
+        if (rejection.Detail is null
+            || rejection.Detail["errors"] is not JsonArray errorsArray)
+        {
+            return Array.Empty<string>();
+        }
+
+        var errors = new List<string>(errorsArray.Count);
+        foreach (var node in errorsArray)
+        {
+            if (node is JsonValue value && value.TryGetValue<string>(out var text))
+            {
+                errors.Add(text);
+            }
+        }
+        return errors;
     }
 
     private static (string? FailureCode, ReplayExhaustedAgentDto? Exhausted) ClassifyFailure(
