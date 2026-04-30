@@ -1,7 +1,8 @@
-import { Component, OnDestroy, OnInit, computed, effect, inject, input, signal, viewChild } from '@angular/core';
+import { Component, DestroyRef, OnDestroy, OnInit, computed, effect, inject, input, signal, viewChild } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { Subscription, interval, retry, timer } from 'rxjs';
+import { Observable, interval, retry, timer } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
 import { WorkflowsApi } from '../../core/workflows.api';
@@ -34,7 +35,8 @@ import {
   TokenUsageRollup,
   TokenUsageScopeRollup,
 } from '../../core/models';
-import { Observable } from 'rxjs';
+
+const DESCENDANT_REFRESH_INTERVAL_MS = 15_000;
 
 interface TimelineEntry {
   id: string;
@@ -318,6 +320,7 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly pageContext = inject(PageContextService);
+  private readonly destroyRef = inject(DestroyRef);
 
   readonly id = input.required<string>();
   readonly detail = signal<TraceDetail | null>(null);
@@ -467,9 +470,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
     return null;
   });
-
-  private streamSub?: Subscription;
-  private pollSub?: Subscription;
 
   /** Token Usage panel reference for live SSE-event forwarding. The signal-form
    *  `viewChild` resolves once the `@if (detail()` template branch renders.
@@ -644,7 +644,9 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   }
 
   downloadArtifact(uri: string): void {
-    this.api.downloadArtifact(this.id(), uri).subscribe({
+    this.api.downloadArtifact(this.id(), uri).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
       next: response => {
         const blob = response.body;
         if (!blob) {
@@ -681,21 +683,23 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.reload();
 
-    this.streamSub = streamTrace(this.id(), this.auth).subscribe({
+    streamTrace(this.id(), this.auth).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
       next: evt => this.appendEvent(evt)
     });
 
-    this.pollSub = interval(3000).subscribe(() => {
+    interval(DESCENDANT_REFRESH_INTERVAL_MS).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(() => {
       const current = this.detail();
       if (current && current.currentState === 'Running') {
-        this.reload();
+        this.loadDescendantTracesFor(current.traceId);
       }
     });
   }
 
   ngOnDestroy(): void {
-    this.streamSub?.unsubscribe();
-    this.pollSub?.unsubscribe();
     this.pageContext.clear();
   }
 
@@ -708,7 +712,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           err instanceof HttpErrorResponse && err.status === 404
             ? timer(500 * Math.min(attempt, 4))
             : (() => { throw err; })()
-      })
+      }),
+      takeUntilDestroyed(this.destroyRef)
     ).subscribe({
       next: detail => {
         this.detail.set(detail);
@@ -719,8 +724,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Parent-of mapping for every trace returned by `api.list()` — covers the full
-   *  descendant tree, not just direct children. Rebuilt every reload. */
+  /** Parent-of mapping for every trace returned by the descendants endpoint — covers the
+   *  full descendant tree, not just direct children. Rebuilt every descendant refresh. */
   private readonly parentByTraceId = signal<Map<string, string>>(new Map());
 
   /** Load the full descendant tree (children + grandchildren + ...) so the timeline can
@@ -728,45 +733,30 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
    *  appears stuck while a Subflow/ReviewLoop is mid-execution because the parent saga
    *  doesn't record any decision until the child returns. */
   private loadDescendantTracesFor(rootTraceId: string): void {
-    this.api.list().subscribe({
-      next: all => {
-        const directChildren = all.filter(t => t.parentTraceId === rootTraceId);
+    this.api.getDescendants(rootTraceId).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
+      next: descendants => {
+        const summaries = descendants.map(descendant => descendant.summary);
+        const directChildren = summaries.filter(t => t.parentTraceId === rootTraceId);
         this.childTraces.set(directChildren);
 
         const parentMap = new Map<string, string>();
-        for (const t of all) {
+        for (const t of summaries) {
           if (t.parentTraceId) parentMap.set(t.traceId, t.parentTraceId);
         }
         this.parentByTraceId.set(parentMap);
 
-        const descendants = this.collectDescendants(rootTraceId, all);
         if (descendants.length === 0) {
           this.descendantDetails.set(new Map());
           this.rebuildTimeline();
           return;
         }
 
-        // Fetch each descendant's detail in parallel; rebuild the timeline once all
-        // arrive (or whichever ones succeed).
-        let pending = descendants.length;
-        const next = new Map<string, TraceDetail>();
-        for (const summary of descendants) {
-          this.api.get(summary.traceId).subscribe({
-            next: childDetail => {
-              next.set(summary.traceId, childDetail);
-              if (--pending === 0) {
-                this.descendantDetails.set(next);
-                this.rebuildTimeline();
-              }
-            },
-            error: () => {
-              if (--pending === 0) {
-                this.descendantDetails.set(next);
-                this.rebuildTimeline();
-              }
-            }
-          });
-        }
+        this.descendantDetails.set(
+          new Map(descendants.map(descendant => [descendant.summary.traceId, descendant.detail]))
+        );
+        this.rebuildTimeline();
       },
       error: () => {
         this.childTraces.set([]);
@@ -774,28 +764,6 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
         this.rebuildTimeline();
       }
     });
-  }
-
-  private collectDescendants(rootId: string, all: TraceSummary[]): TraceSummary[] {
-    const childrenByParent = new Map<string, TraceSummary[]>();
-    for (const t of all) {
-      if (!t.parentTraceId) continue;
-      const list = childrenByParent.get(t.parentTraceId) ?? [];
-      list.push(t);
-      childrenByParent.set(t.parentTraceId, list);
-    }
-
-    const out: TraceSummary[] = [];
-    const stack = [rootId];
-    while (stack.length > 0) {
-      const id = stack.pop()!;
-      const kids = childrenByParent.get(id) ?? [];
-      for (const kid of kids) {
-        out.push(kid);
-        stack.push(kid.traceId);
-      }
-    }
-    return out;
   }
 
   /** Rebuild the timeline from the parent trace's decisions + every descendant's
@@ -876,7 +844,9 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
     this.actionBusy.set(true);
     this.actionError.set(null);
-    this.api.terminate(detail.traceId).subscribe({
+    this.api.terminate(detail.traceId).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
       next: () => { this.actionBusy.set(false); this.reload(); },
       error: err => {
         this.actionBusy.set(false);
@@ -892,7 +862,9 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
     this.actionBusy.set(true);
     this.actionError.set(null);
-    this.api.delete(detail.traceId).subscribe({
+    this.api.delete(detail.traceId).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
       next: () => { this.actionBusy.set(false); this.router.navigate(['/traces']); },
       error: err => {
         this.actionBusy.set(false);
@@ -976,7 +948,9 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     ) {
       return;
     }
-    this.workflowsApi.getVersion(detail.workflowKey, detail.workflowVersion).subscribe({
+    this.workflowsApi.getVersion(detail.workflowKey, detail.workflowVersion).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe({
       next: wf => {
         this.loadedWorkflowKey = detail.workflowKey;
         this.loadedWorkflowVersion = detail.workflowVersion;
@@ -1013,12 +987,16 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     this.timeline.set([...existing, entry]);
 
     if (evt.kind === 'Requested') {
-      setTimeout(() => this.reload(), 400);
+      timer(400).pipe(
+        takeUntilDestroyed(this.destroyRef)
+      ).subscribe(() => this.reload());
     }
 
     if (evt.kind === 'Completed') {
       this.reload();
-      setTimeout(() => this.reload(), 600);
+      timer(600).pipe(
+        takeUntilDestroyed(this.destroyRef)
+      ).subscribe(() => this.reload());
     }
   }
 

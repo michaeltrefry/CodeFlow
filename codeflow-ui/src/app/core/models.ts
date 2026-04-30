@@ -453,6 +453,11 @@ export interface TraceSummary {
   parentReviewMaxRounds?: number | null;
 }
 
+export interface TraceDescendant {
+  summary: TraceSummary;
+  detail: TraceDetail;
+}
+
 export interface TraceDecision {
   agentKey: string;
   agentVersion: number;

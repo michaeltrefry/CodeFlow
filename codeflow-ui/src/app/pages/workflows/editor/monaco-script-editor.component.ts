@@ -18,7 +18,7 @@ import {
 } from '@angular/core';
 import { ThemeService } from '../../../core/theme.service';
 import { LoggerService } from '../../../core/logger.service';
-import { ensureMonacoEditorStyles, ensureMonacoEnvironment } from './monaco-environment';
+import { ensureMonacoEditorStyles, ensureMonacoEnvironment, loadMonacoEditor } from './monaco-environment';
 import { getSnippetsForContext, ScriptSnippet, SnippetContext, SnippetKind } from './script-snippets';
 import { buildTemplateSuggestions, isInsideScribanTag } from './template-completion';
 
@@ -143,7 +143,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
     try {
       await ensureMonacoEditorStyles();
       ensureMonacoEnvironment();
-      const monaco = await import('monaco-editor');
+      const monaco = await loadMonacoEditor();
       this.monacoApi = monaco;
 
       // E1: enable TS-style checking on JS so ambient .d.ts is surfaced as autocomplete
