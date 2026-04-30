@@ -77,6 +77,12 @@ public static class TracesEndpoints
         group.MapGet("/{id:guid}/refusals", TraceRefusalsEndpoints.GetTraceRefusalsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        // sc-271: portable trace evidence bundle. Read-only zip of saga state + decisions +
+        // refusals + authority snapshots + token usage + every referenced artifact's bytes,
+        // each pinned by SHA-256. Manifest schema is versioned for forward-compat.
+        group.MapGet("/{id:guid}/bundle", TraceBundle.TraceBundleEndpoints.GetTraceBundleAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         return routes;
     }
 
