@@ -292,6 +292,36 @@ public sealed class McpServerRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetConnectionInfoAsync_matches_keys_case_insensitively()
+    {
+        // Defensive: role-grant identifiers are stored verbatim from the admin UI, so a grant
+        // text like "mcp:codegraph:..." against a DB row keyed "CodeGraph" must still resolve.
+        var key = $"GrAph-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var repo = new McpServerRepository(context, protector);
+
+        await repo.CreateAsync(new McpServerCreate(
+            Key: key,
+            DisplayName: "Graph",
+            Transport: McpTransportKind.StreamableHttp,
+            EndpointUrl: "https://graph.local/mcp",
+            BearerTokenPlaintext: null,
+            CreatedBy: null));
+
+        var lowered = await repo.GetConnectionInfoAsync(key.ToLowerInvariant());
+        lowered.Should().NotBeNull();
+        lowered!.Endpoint.ToString().Should().Be("https://graph.local/mcp");
+
+        var uppered = await repo.GetConnectionInfoAsync(key.ToUpperInvariant());
+        uppered.Should().NotBeNull();
+
+        var unrelated = await repo.GetConnectionInfoAsync($"unrelated-{Guid.NewGuid():N}");
+        unrelated.Should().BeNull();
+    }
+
+    [Fact]
     public async Task UpdateAsync_throws_McpServerNotFoundException_for_unknown_id()
     {
         await using var context = CreateDbContext();

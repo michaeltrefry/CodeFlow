@@ -1,3 +1,4 @@
+using CodeFlow.Host.Mcp;
 using CodeFlow.Host.Workspace;
 using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
@@ -155,7 +156,12 @@ public static class HostExtensions
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 
         services.AddSingleton<IMcpSessionFactory, ModelContextProtocolSessionFactory>();
-        services.TryAddSingleton<IMcpConnectionInfoProvider, NullMcpConnectionInfoProvider>();
+        // Resolve MCP server connection info from the admin DB at invocation time. The previous
+        // default (NullMcpConnectionInfoProvider, which always returned null) made every
+        // role-granted MCP tool throw McpServerNotConfiguredException despite the admin UI
+        // showing the server as healthy — the admin/health path bypasses this provider, so the
+        // gap was invisible until role grants started reaching the homepage assistant.
+        services.AddSingleton<IMcpConnectionInfoProvider, DbBackedMcpConnectionInfoProvider>();
         services.AddSingleton<IMcpClient, DefaultMcpClient>();
         services.AddSingleton<McpToolDiscovery>();
 

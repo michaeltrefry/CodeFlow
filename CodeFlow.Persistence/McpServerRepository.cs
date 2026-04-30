@@ -186,9 +186,14 @@ public sealed class McpServerRepository(CodeFlowDbContext dbContext, ISecretProt
     {
         var normalized = NormalizeKey(serverKey);
 
+        // Case-insensitive lookup defensively. Role grants store the identifier verbatim from the
+        // admin UI, so a grant text like "mcp:codegraph:..." against a DB row keyed "CodeGraph"
+        // would otherwise miss under a case-sensitive collation. The runtime tool dispatcher
+        // already treats MCP server keys as case-insensitive (DefaultMcpClient.sessions cache).
         var entity = await dbContext.McpServers
             .AsNoTracking()
-            .SingleOrDefaultAsync(server => server.Key == normalized && !server.IsArchived, cancellationToken);
+            .Where(server => !server.IsArchived)
+            .SingleOrDefaultAsync(server => server.Key.ToLower() == normalized.ToLower(), cancellationToken);
 
         if (entity is null)
         {
