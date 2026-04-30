@@ -559,6 +559,117 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         persistedPayload.GetProperty("content").GetString().Should().Be("Looking it up. Found alpha v1.");
     }
 
+    /// <summary>
+    /// sc-274 phase 2 — assistant ambiguity preflight short-circuits the SSE stream and
+    /// returns a 422 with structured clarification questions when the user message looks
+    /// like a vague action request. The refusal is also persisted to the append-only
+    /// <c>refusal_events</c> stream against the conversation id (not a trace id) so
+    /// governance + bundle export both see assistant preflight refusals as first-class
+    /// evidence.
+    /// </summary>
+    [Fact]
+    public async Task PostMessage_VagueActionVerb_PreflightRefusesWith422_AndPersistsRefusal()
+    {
+        AssistantStub.Reset();
+
+        // Unique entity-scoped conversation so the assertion that no message was persisted is
+        // not perturbed by other tests in this fixture sharing the dev-bypass user's homepage
+        // conversation.
+        var entityType = $"sc274-preflight-refuse-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            // Action verb + pronoun + ≤2 words + no scope noun → vague-action heuristic fires;
+            // pronoun-without-context heuristic piggy-backs (no page context provided).
+            Content = JsonContent.Create(new { content = "fix it" })
+        };
+        using var response = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        // SSE never opened — must be application/json so the client can parse the body.
+        response.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+
+        var payload = await response.Content.ReadFromJsonAsync<AssistantPreflightRefusalPayload>(JsonOpts);
+        payload.Should().NotBeNull();
+        payload!.Code.Should().Be("assistant-preflight-ambiguous");
+        payload.Mode.Should().Be("AssistantChat");
+        payload.ConversationId.Should().Be(conversation.Id);
+        payload.OverallScore.Should().BeLessThan(payload.Threshold);
+        payload.MissingFields.Should().Contain("content.scope");
+        payload.ClarificationQuestions.Should().NotBeEmpty()
+            .And.Contain(q => q.StartsWith("What specifically should I"));
+
+        // Preflight refused before the chat service ran — no user message persisted, no
+        // assistant message persisted, no token usage rows for this conversation.
+        var fetched = await client.GetAsync($"/api/assistant/conversations/{conversation.Id}");
+        var fetchedPayload = await fetched.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+        fetchedPayload!.Messages.Should().BeEmpty(
+            "preflight refused before AssistantChatService was invoked, so no message was persisted");
+
+        // Refusal must land in the append-only stream against the conversation id (not a trace).
+        using var verifyScope = factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var refusal = await db.RefusalEvents.SingleAsync(r => r.AssistantConversationId == conversation.Id);
+        refusal.Stage.Should().Be("preflight");
+        refusal.Code.Should().Be("assistant-preflight-ambiguous");
+        refusal.TraceId.Should().BeNull();
+        refusal.DetailJson.Should().NotBeNullOrEmpty();
+    }
+
+    /// <summary>
+    /// sc-274 phase 2 — a well-scoped prompt passes preflight cleanly; the SSE stream opens
+    /// and the chat service runs as normal. Guards against the assessor over-refusing
+    /// realistic action requests with concrete targets.
+    /// </summary>
+    [Fact]
+    public async Task PostMessage_WellScopedActionPrompt_PassesPreflight_AndStreams()
+    {
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("Working on it."),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        // Unique entity-scoped conversation so the refusal-count assertion is not perturbed
+        // by other tests in this fixture sharing a conversation.
+        var entityType = $"sc274-preflight-pass-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+        var conversationResponse = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await conversationResponse.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        var streamRequest = new HttpRequestMessage(HttpMethod.Post, $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            // Concrete file + concept noun ("AssistantChatService") — vague-action heuristic
+            // never fires because ContainsScopeNoun matches.
+            Content = JsonContent.Create(new { content = "update the AssistantChatService to log token usage" })
+        };
+        using var response = await client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("text/event-stream");
+
+        var body = await response.Content.ReadAsStringAsync();
+        var events = ParseSse(body);
+        events.Select(e => e.Event).Should().Contain("user-message-persisted");
+        events.Select(e => e.Event).Should().Contain("text-delta");
+
+        // No preflight refusal landed for this conversation.
+        using var verifyScope = factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var refusalCount = await db.RefusalEvents.CountAsync(r => r.AssistantConversationId == conversation.Id);
+        refusalCount.Should().Be(0);
+    }
+
     private static List<SseFrame> ParseSse(string body)
     {
         var frames = new List<SseFrame>();
@@ -621,6 +732,19 @@ public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
         Guid SyntheticTraceId,
         ScopeDto Scope,
         TokenRollupDto Rollup);
+
+    // sc-274 phase 2 — assistant preflight refusal payload mirroring AssistantPreflightRefusalResponse.
+    private sealed record AssistantPreflightRefusalPayload(
+        Guid ConversationId,
+        string Code,
+        string Mode,
+        double OverallScore,
+        double Threshold,
+        IReadOnlyList<PreflightDimensionPayload> Dimensions,
+        IReadOnlyList<string> MissingFields,
+        IReadOnlyList<string> ClarificationQuestions);
+
+    private sealed record PreflightDimensionPayload(string Dimension, double Score, string? Reason);
 
     public sealed class StubAssistant : ICodeFlowAssistant
     {

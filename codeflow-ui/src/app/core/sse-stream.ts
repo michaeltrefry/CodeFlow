@@ -36,9 +36,12 @@ export function streamSse<T>(
             const fallbackEvent = await handleErrorResponse(response);
             if (fallbackEvent) {
               subscriber.next(fallbackEvent as T);
+              subscriber.complete();
+              return;
             }
-            subscriber.complete();
-            return;
+            // Helper didn't recognize the response — fall through to the default error path
+            // so callers that opt in for one specific error code (e.g. sc-274 preflight 422)
+            // still see the generic HTTP error for everything else.
           }
 
           subscriber.error(new Error(`HTTP ${response.status} ${response.statusText}`));

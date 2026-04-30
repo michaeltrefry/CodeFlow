@@ -3,10 +3,13 @@ using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TokenTracking;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Authority.Preflight;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 namespace CodeFlow.Api.Endpoints;
@@ -340,6 +343,9 @@ public static class AssistantEndpoints
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
         AssistantChatService chatService,
+        IRefusalEventSink refusalSink,
+        IIntentClarityAssessor preflightAssessor,
+        IOptions<PreflightOptions> preflightOptions,
         CancellationToken cancellationToken)
     {
         var conversation = await repository.GetByIdAsync(id, cancellationToken);
@@ -371,6 +377,39 @@ public static class AssistantEndpoints
             return;
         }
 
+        // sc-274 phase 2 — ambiguity preflight runs BEFORE the SSE stream opens. Refusing
+        // here saves the LLM call entirely and lets the chat panel show focused clarification
+        // questions instead of a generic "model couldn't help you" reply. Disabled-mode and
+        // assessor failures fall through to the normal stream — preflight is observability
+        // for ambiguity, never a hard barrier when the assessor itself misbehaves.
+        if (preflightOptions.Value.Enabled)
+        {
+            IntentClarityAssessment? assessment = null;
+            try
+            {
+                var preflightInput = new AssistantChatPreflightInput(
+                    Content: request.Content,
+                    HasPageContext: request.PageContext is not null,
+                    PageContextKind: request.PageContext?.Kind);
+                assessment = preflightAssessor.Assess(PreflightMode.AssistantChat, preflightInput);
+            }
+            catch
+            {
+                // Preflight failure is observability-only — never block the chat flow because
+                // of an assessor bug. The model call still runs below.
+            }
+
+            if (assessment is { IsClear: false })
+            {
+                await EmitPreflightRefusalAsync(refusalSink, id, assessment, cancellationToken);
+                httpContext.Response.StatusCode = StatusCodes.Status422UnprocessableEntity;
+                await httpContext.Response.WriteAsJsonAsync(
+                    BuildAssistantPreflightResponse(id, assessment),
+                    cancellationToken);
+                return;
+            }
+        }
+
         httpContext.Response.Headers.ContentType = "text/event-stream";
         httpContext.Response.Headers.CacheControl = "no-cache";
         httpContext.Response.Headers.Connection = "keep-alive";
@@ -393,6 +432,59 @@ public static class AssistantEndpoints
 
         await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
     }
+
+    /// <summary>
+    /// sc-274 phase 2 — emit a <see cref="RefusalStages.Preflight"/> refusal when the
+    /// assistant chat assessor refuses the user message. The refusal carries the per-dimension
+    /// scores + clarification questions in <c>DetailJson</c> via the shared
+    /// <see cref="PreflightRefusalDetail"/> shape so phase 1 (replay-edit) and phase 2
+    /// (assistant chat) write the same schema. Distinguished from phase 1 by
+    /// <c>AssistantConversationId</c> being populated instead of <c>TraceId</c>.
+    /// </summary>
+    private static async Task EmitPreflightRefusalAsync(
+        IRefusalEventSink sink,
+        Guid conversationId,
+        IntentClarityAssessment assessment,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await sink.RecordAsync(
+                new RefusalEvent(
+                    Id: Guid.NewGuid(),
+                    TraceId: null,
+                    AssistantConversationId: conversationId,
+                    Stage: RefusalStages.Preflight,
+                    Code: "assistant-preflight-ambiguous",
+                    Reason: $"Assistant prompt did not meet the {assessment.Mode} clarity threshold "
+                            + $"({assessment.OverallScore:0.00} < {assessment.Threshold:0.00}).",
+                    Axis: PreflightRefusalDetail.LowestDimensionAxis(assessment),
+                    Path: null,
+                    DetailJson: PreflightRefusalDetail.Build(assessment).ToJsonString(),
+                    OccurredAt: DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch
+        {
+            // Refusal recording is observability — never break the primary chat flow on
+            // sink failure. The HTTP 422 still flows to the caller.
+        }
+    }
+
+    private static AssistantPreflightRefusalResponse BuildAssistantPreflightResponse(
+        Guid conversationId,
+        IntentClarityAssessment assessment) =>
+        new(
+            ConversationId: conversationId,
+            Code: "assistant-preflight-ambiguous",
+            Mode: assessment.Mode.ToString(),
+            OverallScore: assessment.OverallScore,
+            Threshold: assessment.Threshold,
+            Dimensions: assessment.Dimensions
+                .Select(d => new PreflightDimensionDto(d.Dimension, d.Score, d.Reason))
+                .ToArray(),
+            MissingFields: assessment.MissingFields,
+            ClarificationQuestions: assessment.ClarificationQuestions);
 
     private static async Task WriteEventAsync(HttpContext httpContext, AssistantTurnEvent evt, CancellationToken ct)
     {

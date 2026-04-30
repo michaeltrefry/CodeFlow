@@ -19,3 +19,21 @@ public sealed record AssistantSettingsWriteRequest(
     string? Model,
     long? MaxTokensPerConversation,
     long? AssignedAgentRoleId);
+
+/// <summary>
+/// sc-274 phase 2 — ambiguity preflight refusal payload for the assistant chat endpoint.
+/// Returned with HTTP 422 from <c>POST /api/assistant/conversations/{id}/messages</c> when
+/// the user message does not meet the assistant-chat clarity threshold; the chat panel
+/// renders the clarification questions inline so the user can refine and re-send without
+/// any tokens being spent. Mirrors <see cref="PreflightRefusalResponse"/>'s shape but
+/// carries <c>ConversationId</c> instead of <c>OriginalTraceId</c>.
+/// </summary>
+public sealed record AssistantPreflightRefusalResponse(
+    Guid ConversationId,
+    string Code,
+    string Mode,
+    double OverallScore,
+    double Threshold,
+    IReadOnlyList<PreflightDimensionDto> Dimensions,
+    IReadOnlyList<string> MissingFields,
+    IReadOnlyList<string> ClarificationQuestions);
