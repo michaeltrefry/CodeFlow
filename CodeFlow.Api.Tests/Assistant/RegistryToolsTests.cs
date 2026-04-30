@@ -191,6 +191,113 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
     }
 
     [Fact]
+    public async Task GetAgentRole_ReturnsGrantsAndSkillNames()
+    {
+        // Seed a role with a host grant, an MCP grant, and one skill grant — exactly the surface
+        // the assistant needs to self-diagnose what an assigned role permits.
+        long roleId;
+        long skillId;
+        await using (var seedScope = factory.Services.CreateAsyncScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var skill = new SkillEntity
+            {
+                Name = "test-skill",
+                Body = "skill body",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            };
+            db.Skills.Add(skill);
+            await db.SaveChangesAsync();
+            skillId = skill.Id;
+
+            var role = new AgentRoleEntity
+            {
+                Key = "gar-test-role",
+                DisplayName = "GetAgentRole test",
+                Description = "test role",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            };
+            db.AgentRoles.Add(role);
+            await db.SaveChangesAsync();
+            roleId = role.Id;
+
+            db.AgentRoleToolGrants.AddRange(
+                new AgentRoleToolGrantEntity
+                {
+                    RoleId = roleId,
+                    Category = AgentRoleToolCategory.Host,
+                    ToolIdentifier = "read_file",
+                },
+                new AgentRoleToolGrantEntity
+                {
+                    RoleId = roleId,
+                    Category = AgentRoleToolCategory.Mcp,
+                    ToolIdentifier = "mcp:codegraph:search_graph",
+                });
+            db.AgentRoleSkillGrants.Add(new AgentRoleSkillGrantEntity
+            {
+                RoleId = roleId,
+                SkillId = skillId,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = ResolveTool<GetAgentRoleTool>(scope);
+
+        // Lookup by id.
+        var byId = ParseObject(await tool.InvokeAsync(Args(new { id = roleId }), CancellationToken.None));
+        byId.GetProperty("key").GetString().Should().Be("gar-test-role");
+        byId.GetProperty("grantCount").GetInt32().Should().Be(2);
+        byId.GetProperty("skillCount").GetInt32().Should().Be(1);
+        byId.GetProperty("skillNames")[0].GetString().Should().Be("test-skill");
+
+        var grants = byId.GetProperty("toolGrants");
+        grants.GetArrayLength().Should().Be(2);
+        var grantTuples = grants.EnumerateArray()
+            .Select(g => (g.GetProperty("category").GetString(), g.GetProperty("toolIdentifier").GetString()))
+            .OrderBy(t => t.Item1)
+            .ThenBy(t => t.Item2)
+            .ToArray();
+        grantTuples.Should().BeEquivalentTo(new[]
+        {
+            ("Host", "read_file"),
+            ("Mcp", "mcp:codegraph:search_graph"),
+        });
+
+        // Lookup by key returns the same payload.
+        var byKey = ParseObject(await tool.InvokeAsync(Args(new { key = "gar-test-role" }), CancellationToken.None));
+        byKey.GetProperty("id").GetInt64().Should().Be(roleId);
+        byKey.GetProperty("grantCount").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetAgentRole_RequiresExactlyOneOfIdOrKey()
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = ResolveTool<GetAgentRoleTool>(scope);
+
+        var neither = await tool.InvokeAsync(EmptyArgs, CancellationToken.None);
+        neither.IsError.Should().BeTrue();
+
+        var both = await tool.InvokeAsync(Args(new { id = 1, key = "x" }), CancellationToken.None);
+        both.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetAgentRole_NotFound_ReturnsErrorResult()
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = ResolveTool<GetAgentRoleTool>(scope);
+
+        var result = await tool.InvokeAsync(Args(new { key = "no-such-role-xyz" }), CancellationToken.None);
+        result.IsError.Should().BeTrue();
+        result.ResultJson.Should().Contain("not found");
+    }
+
+    [Fact]
     public async Task ListAgentRoles_DefaultExcludesArchived()
     {
         await using var scope = factory.Services.CreateAsyncScope();

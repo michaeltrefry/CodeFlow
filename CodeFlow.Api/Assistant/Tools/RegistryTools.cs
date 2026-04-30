@@ -748,6 +748,102 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
 }
 
 /// <summary>
+/// Returns a single agent role's full surface: identity, tool grants (host + MCP + sub-agent),
+/// and skill grants. Lets the homepage assistant self-diagnose what its assigned role actually
+/// permits — distinguishing "the role grants nothing" from "the runtime didn't merge the grants"
+/// when expected tools don't appear at runtime.
+/// </summary>
+public sealed class GetAgentRoleTool(IAgentRoleRepository roleRepository, ISkillRepository skillRepository) : IAssistantTool
+{
+    public string Name => "get_agent_role";
+
+    public string Description =>
+        "Get a single agent role's full surface: id, key, displayName, description, archived/" +
+        "system flags, every tool grant (host tools, MCP tool identifiers, sub-agent keys), and " +
+        "every granted skill name. Use this to verify what the assistant's assigned role permits, " +
+        "or to inspect a role you discovered via list_agent_roles. Lookup is by `id` OR `key` — " +
+        "exactly one must be supplied.";
+
+    public JsonElement InputSchema => AssistantToolJson.Schema(@"{
+        ""type"": ""object"",
+        ""properties"": {
+            ""id"": { ""type"": ""integer"", ""description"": ""Role id (use either id or key, not both)."" },
+            ""key"": { ""type"": ""string"", ""description"": ""Role key (use either id or key, not both)."" }
+        },
+        ""additionalProperties"": false
+    }");
+
+    public async Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        var idArg = AssistantToolJson.ReadOptionalInt(arguments, "id");
+        var keyArg = AssistantToolJson.ReadOptionalString(arguments, "key");
+
+        if (idArg is null && keyArg is null)
+        {
+            return Error("Provide either `id` or `key`.");
+        }
+        if (idArg is not null && keyArg is not null)
+        {
+            return Error("Provide either `id` or `key`, not both.");
+        }
+
+        AgentRole? role = idArg is { } id
+            ? await roleRepository.GetAsync(id, cancellationToken)
+            : await roleRepository.GetByKeyAsync(keyArg!, cancellationToken);
+
+        if (role is null)
+        {
+            var label = idArg is { } missingId ? $"id={missingId}" : $"key='{keyArg}'";
+            return Error($"Agent role {label} not found.");
+        }
+
+        var grants = await roleRepository.GetGrantsAsync(role.Id, cancellationToken);
+        var skillIds = await roleRepository.GetSkillGrantsAsync(role.Id, cancellationToken);
+        var skillNames = new List<string>(skillIds.Count);
+        foreach (var skillId in skillIds.Distinct())
+        {
+            var skill = await skillRepository.GetAsync(skillId, cancellationToken);
+            if (skill is not null)
+            {
+                skillNames.Add(skill.Name);
+            }
+        }
+        skillNames.Sort(StringComparer.OrdinalIgnoreCase);
+
+        var payload = new
+        {
+            id = role.Id,
+            key = role.Key,
+            displayName = role.DisplayName,
+            description = role.Description,
+            isArchived = role.IsArchived,
+            isSystemManaged = role.IsSystemManaged,
+            grantCount = grants.Count,
+            skillCount = skillNames.Count,
+            toolGrants = grants
+                .OrderBy(g => g.Category)
+                .ThenBy(g => g.ToolIdentifier, StringComparer.Ordinal)
+                .Select(g => new
+                {
+                    category = g.Category.ToString(),
+                    toolIdentifier = g.ToolIdentifier,
+                })
+                .ToArray(),
+            skillNames = skillNames.ToArray(),
+        };
+
+        return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
+    }
+
+    private static AssistantToolResult Error(string message)
+    {
+        return new AssistantToolResult(
+            JsonSerializer.Serialize(new { error = message }, AssistantToolJson.SerializerOptions),
+            IsError: true);
+    }
+}
+
+/// <summary>
 /// Lightweight reader over an agent's ConfigJson — the assistant tools only need provider, model,
 /// kind, and the two prompt fields, so we avoid the heavier <c>AgentConfigJson.Deserialize</c>
 /// path which round-trips through <c>AgentInvocationConfiguration</c> (and crashes on configs that

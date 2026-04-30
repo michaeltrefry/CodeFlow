@@ -28,12 +28,13 @@ public sealed class AgentRoleToolFactory
 
     /// <summary>
     /// Build adapters for every tool the role grants. Host-tool adapters share a single
-    /// <see cref="ToolExecutionContext"/> wrapping the supplied workspace. MCP-tool adapters
-    /// don't need workspace context (the MCP server runs the work) so they get null.
+    /// <see cref="ToolExecutionContext"/> wrapping the supplied workspace; pass <c>null</c> when
+    /// no workspace is available and host tools will be omitted (with a one-line warning per call,
+    /// not per tool). MCP adapters do not need workspace context — the MCP server runs the work —
+    /// so they always register when granted, regardless of <paramref name="hostWorkspace"/>.
     /// </summary>
-    public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext hostWorkspace, ResolvedAgentTools resolved)
+    public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext? hostWorkspace, ResolvedAgentTools resolved)
     {
-        ArgumentNullException.ThrowIfNull(hostWorkspace);
         ArgumentNullException.ThrowIfNull(resolved);
 
         if ((!resolved.EnableHostTools || resolved.AllowedToolNames.Count == 0)
@@ -46,7 +47,7 @@ public sealed class AgentRoleToolFactory
         var hostCatalogByName = HostToolProvider.GetCatalog()
             .ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
 
-        if (resolved.EnableHostTools)
+        if (resolved.EnableHostTools && hostWorkspace is not null)
         {
             var hostContext = new ToolExecutionContext(Workspace: hostWorkspace);
 
