@@ -1,7 +1,9 @@
 using CodeFlow.Contracts;
 using CodeFlow.Orchestration.TokenTracking;
 using CodeFlow.Persistence;
+using CodeFlow.Persistence.Authority;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Observability;
 using CodeFlow.Runtime.Workspace;
 using MassTransit;
@@ -46,6 +48,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private readonly CodeFlowDbContext dbContext;
     private readonly IPromptPartialRepository promptPartialRepository;
     private readonly ITokenUsageRecordRepository? tokenUsageRecords;
+    private readonly IAuthoritySnapshotRecorder? authoritySnapshotRecorder;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
@@ -54,7 +57,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         IRoleResolutionService roleResolution,
         CodeFlowDbContext dbContext,
         IPromptPartialRepository promptPartialRepository,
-        ITokenUsageRecordRepository? tokenUsageRecords = null)
+        ITokenUsageRecordRepository? tokenUsageRecords = null,
+        IAuthoritySnapshotRecorder? authoritySnapshotRecorder = null)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
@@ -63,8 +67,9 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         this.dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         this.promptPartialRepository = promptPartialRepository ?? throw new ArgumentNullException(nameof(promptPartialRepository));
         // Optional so existing test fixtures that construct the consumer directly without
-        // building a full DI graph keep working. Production wires it through HostExtensions.
+        // building a full DI graph keep working. Production wires them through HostExtensions.
         this.tokenUsageRecords = tokenUsageRecords;
+        this.authoritySnapshotRecorder = authoritySnapshotRecorder;
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -152,6 +157,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
 
+            // sc-269 PR2: resolve and persist the per-invocation authority envelope. Observation
+            // only — the existing resolvedTools value is still what enforces today; PR3 makes the
+            // envelope authoritative at the tool layer. Failure to record is swallowed so the
+            // primary invocation path is unchanged.
+            await TryRecordAuthoritySnapshotAsync(message, context.CancellationToken);
+
             // Pre-resolve scope chain ONCE for this consumer call so the per-round capture
             // observer doesn't re-query the saga table on every LLM round-trip. Subflow depth is
             // capped at 3 → at most 3 lookups for nested traces, one for top-level.
@@ -197,6 +208,49 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 failureResult,
                 $"{message.AgentKey}-error.txt",
                 DateTimeOffset.UtcNow - startedAt);
+        }
+    }
+
+    /// <summary>
+    /// sc-269 PR2 — resolve the per-invocation authority envelope, persist a snapshot row, and
+    /// emit a <see cref="RefusalStages.Admission"/> refusal per blocked axis. Observation only:
+    /// invocation continues regardless of denial evidence (PR3 makes the envelope authoritative
+    /// at the tool layer). All failures are swallowed so the snapshot path can never break the
+    /// primary invocation flow — operators still see the agent run, they just don't get the
+    /// new evidence row this time.
+    /// </summary>
+    private async Task TryRecordAuthoritySnapshotAsync(
+        AgentInvokeRequested message,
+        CancellationToken cancellationToken)
+    {
+        if (authoritySnapshotRecorder is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await authoritySnapshotRecorder.ResolveAndRecordAsync(
+                new AuthoritySnapshotInput(
+                    AgentKey: message.AgentKey,
+                    TraceId: message.TraceId,
+                    RoundId: message.RoundId,
+                    AgentVersion: message.AgentVersion,
+                    WorkflowKey: message.WorkflowKey,
+                    WorkflowVersion: message.WorkflowVersion),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Snapshot recording must never break the calling invocation. Capture activity tag
+            // so the failure is still observable without blocking the agent run.
+            Activity.Current?.AddEvent(new ActivityEvent(
+                "authority-snapshot-failed",
+                tags: new ActivityTagsCollection
+                {
+                    { "exception.type", ex.GetType().FullName },
+                    { "exception.message", ex.Message }
+                }));
         }
     }
 

@@ -56,6 +56,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<RefusalEventEntity> RefusalEvents => Set<RefusalEventEntity>();
 
+    public DbSet<AgentInvocationAuthorityEntity> AgentInvocationAuthority => Set<AgentInvocationAuthorityEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
