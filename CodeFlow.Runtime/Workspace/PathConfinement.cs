@@ -46,6 +46,53 @@ public static class PathConfinement
         }
     }
 
+    /// <summary>
+    /// Returns <c>true</c> if any existing segment of <paramref name="relativePath"/> under
+    /// <paramref name="root"/> is itself a symlink (file or directory). Missing tail segments
+    /// are ignored — only segments that exist on disk are inspected.
+    /// </summary>
+    public static bool ContainsSymlink(string root, string relativePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentNullException.ThrowIfNull(relativePath);
+
+        var normalizedRoot = NormalizeExistingDirectory(root);
+        var segments = relativePath.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+
+        var current = normalizedRoot;
+        foreach (var segment in segments)
+        {
+            current = Path.Combine(current, segment);
+
+            if (Directory.Exists(current))
+            {
+                if (new DirectoryInfo(current).LinkTarget is not null)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (File.Exists(current))
+            {
+                if (new FileInfo(current).LinkTarget is not null)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            // Segment does not exist; nothing further to check on disk.
+            break;
+        }
+
+        return false;
+    }
+
     private static string NormalizeExistingDirectory(string root)
     {
         var fullRoot = Path.GetFullPath(root);
