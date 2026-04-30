@@ -83,6 +83,12 @@ public static class TracesEndpoints
         group.MapGet("/{id:guid}/bundle", TraceBundle.TraceBundleEndpoints.GetTraceBundleAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        // sc-271 PR2: manifest-only sibling of the bundle endpoint. Returns the same JSON
+        // structure as `manifest.json` inside the zip but skips artifact byte packaging,
+        // so the trace inspector can render a bundle-composition panel cheaply.
+        group.MapGet("/{id:guid}/bundle/manifest", TraceBundle.TraceBundleEndpoints.GetTraceBundleManifestAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         return routes;
     }
 
