@@ -627,6 +627,153 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// sc-273 — the trace detail endpoint must tag each decision with a verdict-source so
+    /// the timeline UI can distinguish mechanical-gate decisions (deterministic command
+    /// execution) from model-side reviewer decisions (LLM judgment). The classification is
+    /// computed from the agent's role grants:
+    /// <list type="bullet">
+    ///   <item><description>Agent with a host grant for <c>run_command</c> or <c>apply_patch</c>
+    ///   → <c>"mechanical"</c>.</description></item>
+    ///   <item><description>Agent with no host-tool grants at all → <c>"model"</c>.</description></item>
+    ///   <item><description>Agent with a mixed/non-exec grant set → <c>null</c>.</description></item>
+    /// </list>
+    /// </summary>
+    [Fact]
+    public async Task GetTrace_ShouldTagDecisionsWithVerdictSource_FromAgentRoleGrants()
+    {
+        // Seed three agents with different role shapes so the heuristic exercises all three
+        // result buckets in one trace: mechanical (code-worker), model (no roles),
+        // null (read-only-shell — host grants but nothing exec-class).
+        var traceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+
+        using (var seedScope = factory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+
+            // Seed the system roles once so the assignments below land. The shared API
+            // factory may already have them; SystemAgentRoleSeeder is insert-only, so a
+            // re-call is a no-op when present.
+            await SystemAgentRoleSeeder.SeedAsync(db);
+
+            var codeWorker = await db.AgentRoles.SingleAsync(r => r.Key == SystemAgentRoles.CodeWorkerKey);
+            var readOnly = await db.AgentRoles.SingleAsync(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
+
+            db.AgentRoleAssignments.AddRange(
+                new AgentRoleAssignmentEntity
+                {
+                    AgentKey = "sc273-mechanical-agent",
+                    RoleId = codeWorker.Id,
+                    CreatedAtUtc = DateTime.UtcNow,
+                },
+                new AgentRoleAssignmentEntity
+                {
+                    AgentKey = "sc273-inspector-agent",
+                    RoleId = readOnly.Id,
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+            // sc273-model-agent gets no role assignment at all.
+
+            db.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = traceId,
+                CurrentState = "Completed",
+                CurrentNodeId = Guid.NewGuid(),
+                CurrentAgentKey = "sc273-model-agent",
+                CurrentRoundId = Guid.NewGuid(),
+                RoundCount = 1,
+                AgentVersionsJson = """{"sc273-mechanical-agent":1,"sc273-model-agent":1,"sc273-inspector-agent":1}""",
+                DecisionHistoryJson = "[]",
+                LogicEvaluationHistoryJson = "[]",
+                DecisionCount = 3,
+                LogicEvaluationCount = 0,
+                WorkflowKey = "sc273-test-flow",
+                WorkflowVersion = 1,
+                InputsJson = "{}",
+                CurrentInputRef = "file:///tmp/in.bin",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Version = 1,
+            });
+
+            db.WorkflowSagaDecisions.AddRange(
+                new WorkflowSagaDecisionEntity
+                {
+                    SagaCorrelationId = correlationId,
+                    Ordinal = 0,
+                    TraceId = traceId,
+                    AgentKey = "sc273-mechanical-agent",
+                    AgentVersion = 1,
+                    Decision = "Approved",
+                    RoundId = Guid.NewGuid(),
+                    RecordedAtUtc = DateTime.UtcNow,
+                    NodeId = Guid.NewGuid(),
+                    OutputPortName = "Approved",
+                    InputRef = "file:///tmp/mech-in.bin",
+                    OutputRef = "file:///tmp/mech-out.bin",
+                },
+                new WorkflowSagaDecisionEntity
+                {
+                    SagaCorrelationId = correlationId,
+                    Ordinal = 1,
+                    TraceId = traceId,
+                    AgentKey = "sc273-model-agent",
+                    AgentVersion = 1,
+                    Decision = "Approved",
+                    RoundId = Guid.NewGuid(),
+                    RecordedAtUtc = DateTime.UtcNow,
+                    NodeId = Guid.NewGuid(),
+                    OutputPortName = "Approved",
+                    InputRef = "file:///tmp/mod-in.bin",
+                    OutputRef = "file:///tmp/mod-out.bin",
+                },
+                new WorkflowSagaDecisionEntity
+                {
+                    SagaCorrelationId = correlationId,
+                    Ordinal = 2,
+                    TraceId = traceId,
+                    AgentKey = "sc273-inspector-agent",
+                    AgentVersion = 1,
+                    Decision = "Completed",
+                    RoundId = Guid.NewGuid(),
+                    RecordedAtUtc = DateTime.UtcNow,
+                    NodeId = Guid.NewGuid(),
+                    OutputPortName = "Completed",
+                    InputRef = "file:///tmp/insp-in.bin",
+                    OutputRef = "file:///tmp/insp-out.bin",
+                });
+
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var detail = await client.GetFromJsonAsync<VerdictSourceTracePayload>($"/api/traces/{traceId}");
+        detail.Should().NotBeNull();
+        detail!.Decisions.Should().HaveCount(3);
+
+        var mechanical = detail.Decisions.Single(d => d.AgentKey == "sc273-mechanical-agent");
+        mechanical.VerdictSource.Should().Be("mechanical",
+            "code-worker role grants run_command + apply_patch — exec-class host tools");
+
+        var model = detail.Decisions.Single(d => d.AgentKey == "sc273-model-agent");
+        model.VerdictSource.Should().Be("model",
+            "agent with no role assignments has no host grants → pure LLM agent");
+
+        var inspector = detail.Decisions.Single(d => d.AgentKey == "sc273-inspector-agent");
+        inspector.VerdictSource.Should().BeNull(
+            "read-only-shell grants read_file + non-mutating helpers but nothing exec-class — neither bucket fits cleanly");
+    }
+
+    private sealed record VerdictSourceTracePayload(
+        Guid TraceId,
+        IReadOnlyList<VerdictSourceDecisionPayload> Decisions);
+
+    private sealed record VerdictSourceDecisionPayload(
+        string AgentKey,
+        string? VerdictSource);
+
     [Fact]
     public async Task GetTrace_ShouldAggregatePendingHitlFromSubflowDescendants()
     {

@@ -469,6 +469,16 @@ export interface TraceDecision {
   outputPortName?: string | null;
   inputRef?: string | null;
   outputRef?: string | null;
+  /**
+   * sc-273 — coarse classification of the verdict source so the trace timeline can
+   * distinguish mechanical-gate decisions from model-side reviewer decisions.
+   * - `'mechanical'`: agent has a host grant for `run_command` or `apply_patch` —
+   *   decision was gated by deterministic command execution.
+   * - `'model'`: agent has no host-tool grants — decision came from the LLM's response
+   *   to its prompt.
+   * - `null` / absent: agent has a mixed grant set; the timeline omits the badge.
+   */
+  verdictSource?: 'mechanical' | 'model' | null;
 }
 
 export interface TraceLogicEvaluation {

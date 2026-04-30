@@ -24,7 +24,7 @@ import { ChipComponent } from '../../ui/chip.component';
 import { StateChipComponent } from '../../ui/state-chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { TraceTimelineComponent } from '../../ui/trace-timeline.component';
-import { TraceTimelineEvent, TraceTimelineExtraLink } from '../../ui/trace-timeline.types';
+import { TraceTimelineBadge, TraceTimelineEvent, TraceTimelineExtraLink, verdictSourceBadge } from '../../ui/trace-timeline.types';
 import { TraceReplayPanelComponent } from './trace-replay-panel.component';
 import { TokenUsagePanelComponent } from './token-usage-panel.component';
 import { TraceBundlePanelComponent } from './trace-bundle-panel.component';
@@ -57,6 +57,10 @@ interface TimelineEntry {
   /** Trace id this entry was actually recorded on — same as the viewed trace, or a
    *  descendant. Used to drive "open child trace ↗" links per entry. */
   originTraceId?: string;
+  /** sc-273 — coarse classification of the verdict source (mechanical vs model). Server
+   *  computes this from the agent's role grants; the timeline renders a small chip
+   *  when present so authors can tell at a glance which gate produced a decision. */
+  verdictSource?: 'mechanical' | 'model' | null;
 }
 
 interface PendingHitlGroup {
@@ -819,7 +823,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
           inputRef: d.inputRef,
           outputRef: d.outputRef,
           originPath: originPath || undefined,
-          originTraceId: detail.traceId
+          originTraceId: detail.traceId,
+          verdictSource: d.verdictSource ?? null,
         });
       }
     };
@@ -902,11 +907,18 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
    * `fetchArtifact` input; previews on this page are NEVER inline.
    */
   private mapToTimelineEvent(entry: TimelineEntry): TraceTimelineEvent {
-    const badges = [
+    const badges: TraceTimelineBadge[] = [
       { label: `v${entry.agentVersion}`, mono: true },
     ];
     if (entry.originPath) {
       badges.push({ label: `via ${entry.originPath}`, mono: true });
+    }
+    // sc-273 — distinguish mechanical-gate decisions (deterministic command execution)
+    // from model-side reviewer decisions (LLM judgment). Helper returns null when the
+    // server didn't tag the decision (mixed grant set), which the spread guards.
+    const verdictBadge = verdictSourceBadge(entry.verdictSource);
+    if (verdictBadge) {
+      badges.push(verdictBadge);
     }
 
     const expandedExtras: TraceTimelineExtraLink[] = [];

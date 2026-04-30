@@ -65,7 +65,24 @@ public sealed record TraceDecisionDto(
     string? OutputPortName,
     string? InputRef,
     string? OutputRef,
-    DateTime? NodeEnteredAtUtc);
+    DateTime? NodeEnteredAtUtc,
+    /// <summary>
+    /// sc-273 — coarse classification of the verdict source so the trace timeline can
+    /// distinguish mechanical-gate decisions from model-side reviewer decisions.
+    /// <list type="bullet">
+    ///   <item><description><c>"mechanical"</c> — the deciding agent has a host grant for an
+    ///   execution-class tool (<c>run_command</c> or <c>apply_patch</c>); its decision was
+    ///   gated by deterministic checks, not LLM judgment.</description></item>
+    ///   <item><description><c>"model"</c> — the deciding agent has no host-tool grants at
+    ///   all; its decision came from the LLM's response to its prompt.</description></item>
+    ///   <item><description><c>null</c> — the agent has a mixed grant set (e.g.
+    ///   <c>read_file</c> only) that doesn't fit either bucket cleanly.</description></item>
+    /// </list>
+    /// Heuristic only — operators can author their own gate shapes and they'll surface
+    /// correctly without metadata change as long as their mechanical agents have the
+    /// expected exec grants.
+    /// </summary>
+    string? VerdictSource = null);
 
 public sealed record TraceLogicEvaluationDto(
     Guid NodeId,
