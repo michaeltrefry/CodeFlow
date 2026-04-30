@@ -22,7 +22,10 @@ export interface ChatMessageView {
       <header class="chat-msg-head">
         <span class="chat-msg-role">{{ roleLabel() }}</span>
         @if (message().pending) {
-          <span class="chat-msg-pending" aria-live="polite">streaming…</span>
+          <span class="chat-msg-pending" aria-live="polite">
+            <span class="chat-msg-spinner" aria-hidden="true"></span>
+            <span>streaming…</span>
+          </span>
         }
         @if (message().provider && !message().pending) {
           <span class="chat-msg-meta">
@@ -54,7 +57,7 @@ export interface ChatMessageView {
     .chat-msg-head {
       display: flex;
       gap: 10px;
-      align-items: baseline;
+      align-items: center;
       font-size: var(--fs-sm, 12px);
     }
     .chat-msg-role {
@@ -64,8 +67,29 @@ export interface ChatMessageView {
       color: var(--text-muted, #9aa3b2);
     }
     .chat-msg-pending {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       color: var(--text-muted, #9aa3b2);
       font-style: italic;
+    }
+    .chat-msg-spinner {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      border: 2px solid color-mix(in oklab, var(--text-muted, #9aa3b2) 35%, transparent);
+      border-top-color: var(--accent, #6ea8fe);
+      flex: 0 0 auto;
+      animation: chat-msg-spin 0.75s linear infinite;
+    }
+    @keyframes chat-msg-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .chat-msg-spinner {
+        animation: none;
+        border-color: var(--accent, #6ea8fe);
+      }
     }
     .chat-msg-meta {
       margin-left: auto;
