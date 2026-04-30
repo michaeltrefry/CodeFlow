@@ -285,6 +285,12 @@ export type LlmProviderKey = 'openai' | 'anthropic' | 'lmstudio';
 
 export const LLM_PROVIDER_KEYS: readonly LlmProviderKey[] = ['openai', 'anthropic', 'lmstudio'] as const;
 
+export const LLM_PROVIDER_DISPLAY_NAMES: Record<LlmProviderKey, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  lmstudio: 'LM Studio (local)',
+};
+
 export type LlmProviderTokenAction = 'Preserve' | 'Replace' | 'Clear';
 
 export interface LlmProviderTokenUpdateRequest {

@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { McpServersApi } from '../../../core/mcp-servers.api';
+import { useAsyncList } from '../../../core/async-state';
 import { McpServer } from '../../../core/models';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
@@ -99,10 +100,14 @@ import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
 export class McpServersListComponent {
   private readonly api = inject(McpServersApi);
   private readonly router = inject(Router);
+  private readonly serversList = useAsyncList(
+    () => this.api.list(),
+    { errorMessage: 'Failed to load MCP servers' },
+  );
 
-  readonly servers = signal<McpServer[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly servers = this.serversList.items;
+  readonly loading = this.serversList.loading;
+  readonly error = this.serversList.error;
   readonly busy = signal<number | null>(null);
 
   readonly unhealthy = computed(() => this.servers().find(s => s.healthStatus === 'Unhealthy' && s.lastVerificationError));
@@ -118,15 +123,7 @@ export class McpServersListComponent {
   }
 
   reload(): void {
-    this.loading.set(true);
-    this.error.set(null);
-    this.api.list().subscribe({
-      next: servers => { this.servers.set(servers); this.loading.set(false); },
-      error: err => {
-        this.error.set(err?.message ?? 'Failed to load MCP servers');
-        this.loading.set(false);
-      },
-    });
+    this.serversList.reload();
   }
 
   verify(server: McpServer): void {

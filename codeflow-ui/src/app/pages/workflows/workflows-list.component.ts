@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { useAsyncList } from '../../core/async-state';
 import { formatHttpError } from '../../core/format-error';
 import { WorkflowPackageDocument, WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowPackageReference, WorkflowsApi } from '../../core/workflows.api';
 import { WORKFLOW_CATEGORIES, WorkflowCategory, WorkflowSummary } from '../../core/models';
@@ -415,7 +416,7 @@ function byteLengthOfJson(value: unknown): number {
                       <cf-chip [variant]="categoryVariant(displayCategory(wf))">{{ displayCategory(wf) }}</cf-chip>
                     </td>
                     <td class="tags-cell">
-                      @if ((wf.tags ?? []).length === 0) {
+                      @if (wf.tags.length === 0) {
                         <span class="muted xsmall">—</span>
                       } @else {
                         <span class="tag-chip-row">
@@ -581,10 +582,14 @@ function byteLengthOfJson(value: unknown): number {
 export class WorkflowsListComponent {
   private readonly api = inject(WorkflowsApi);
   private readonly router = inject(Router);
+  private readonly workflowsList = useAsyncList(
+    () => this.api.list(),
+    { errorMessage: 'Failed to load' },
+  );
 
-  readonly workflows = signal<WorkflowSummary[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly workflows = this.workflowsList.items;
+  readonly loading = this.workflowsList.loading;
+  readonly error = this.workflowsList.error;
   readonly exportError = signal<string | null>(null);
   readonly importError = signal<string | null>(null);
   readonly importLoading = signal(false);
@@ -648,10 +653,11 @@ export class WorkflowsListComponent {
   });
 
   constructor() {
-    this.api.list().subscribe({
-      next: wfs => { this.workflows.set(wfs); this.loading.set(false); },
-      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); },
-    });
+    this.reload();
+  }
+
+  reload(): void {
+    this.workflowsList.reload();
   }
 
   open(key: string): void {
@@ -826,9 +832,7 @@ export class WorkflowsListComponent {
         this.categoryFilter.set('All');
         this.tagFilter.set([]);
         this.importApplyLoading.set(false);
-        this.api.list().subscribe({
-          next: workflows => this.workflows.set(workflows)
-        });
+        this.reload();
       },
       error: err => {
         this.importError.set(this.errorMessage(err, 'Failed to apply workflow package.'));

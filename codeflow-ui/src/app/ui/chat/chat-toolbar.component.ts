@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { LlmProviderKey, LlmProviderModelOption } from '../../core/models';
+import { LLM_PROVIDER_DISPLAY_NAMES, LlmProviderKey, LlmProviderModelOption } from '../../core/models';
 
 /**
  * HAA-16/HAA-17 — toolbar that sits beneath the chat composer. Carries:
@@ -277,12 +277,7 @@ export class ChatToolbarComponent {
   }
 
   protected providerDisplayName(key: LlmProviderKey): string {
-    switch (key) {
-      case 'anthropic': return 'Anthropic';
-      case 'openai': return 'OpenAI';
-      case 'lmstudio': return 'LM Studio';
-      default: return key;
-    }
+    return LLM_PROVIDER_DISPLAY_NAMES[key];
   }
 
   protected formatNum(n: number): string {

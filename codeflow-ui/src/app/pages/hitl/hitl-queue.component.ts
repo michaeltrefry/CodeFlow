@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
+import { useAsyncList } from '../../core/async-state';
 import { relativeTime } from '../../core/format-time';
 import { TracesApi } from '../../core/traces.api';
 import { HitlTask } from '../../core/models';
@@ -27,6 +28,8 @@ import { IconComponent } from '../../ui/icon.component';
 
       @if (loading()) {
         <cf-card><div class="muted">Loading pending reviews…</div></cf-card>
+      } @else if (error()) {
+        <cf-card><cf-chip variant="err" dot>{{ error() }}</cf-chip></cf-card>
       } @else if (tasks().length === 0) {
         <cf-card><cf-chip variant="ok" dot>No pending human reviews.</cf-chip></cf-card>
       } @else {
@@ -125,9 +128,21 @@ import { IconComponent } from '../../ui/icon.component';
 export class HitlQueueComponent {
   private readonly api = inject(TracesApi);
   private readonly router = inject(Router);
+  private readonly hitlList = useAsyncList(
+    () => this.api.pendingHitl(),
+    {
+      errorMessage: 'Failed to load pending reviews',
+      onLoaded: tasks => {
+        if (this.selectedId() === null && tasks.length > 0) {
+          this.selectedId.set(tasks[0].id);
+        }
+      },
+    },
+  );
 
-  readonly tasks = signal<HitlTask[]>([]);
-  readonly loading = signal(true);
+  readonly tasks = this.hitlList.items;
+  readonly loading = this.hitlList.loading;
+  readonly error = this.hitlList.error;
   readonly selectedId = signal<number | null>(null);
 
   readonly pendingCount = computed(() => this.tasks().filter(t => t.state === 'Pending').length);
@@ -140,17 +155,7 @@ export class HitlQueueComponent {
   constructor() { this.reload(); }
 
   reload(): void {
-    this.loading.set(true);
-    this.api.pendingHitl().subscribe({
-      next: tasks => {
-        this.tasks.set(tasks);
-        if (this.selectedId() === null && tasks.length > 0) {
-          this.selectedId.set(tasks[0].id);
-        }
-        this.loading.set(false);
-      },
-      error: () => this.loading.set(false),
-    });
+    this.hitlList.reload();
   }
 
   openTrace(task: HitlTask): void {

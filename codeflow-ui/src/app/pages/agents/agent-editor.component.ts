@@ -22,6 +22,8 @@ import {
   AgentConfig,
   AgentOutputDeclaration,
   DecisionOutputTemplateMode,
+  LLM_PROVIDER_DISPLAY_NAMES,
+  LLM_PROVIDER_KEYS,
   LlmProviderKey,
   LlmProviderModelOption,
   PromptPartialPinDto,
@@ -315,9 +317,9 @@ type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
                 <label class="field">
                   <span class="field-label">Provider</span>
                   <select class="select" [(ngModel)]="provider" name="provider">
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="lmstudio">LM Studio (local)</option>
+                    @for (providerKey of LLM_PROVIDER_KEYS; track providerKey) {
+                      <option [value]="providerKey">{{ providerDisplayName(providerKey) }}</option>
+                    }
                   </select>
                 </label>
                 <label class="field">
@@ -647,7 +649,7 @@ export class AgentEditorComponent implements OnInit, OnDestroy {
   readonly type = signal<'agent' | 'hitl'>('agent');
   readonly name = signal('');
   readonly description = signal('');
-  readonly provider = signal<'openai' | 'anthropic' | 'lmstudio'>('openai');
+  readonly provider = signal<LlmProviderKey>('openai');
   readonly model = signal('gpt-5.4');
   readonly systemPrompt = signal('');
   readonly promptTemplate = signal('');
@@ -703,11 +705,16 @@ export class AgentEditorComponent implements OnInit, OnDestroy {
   readonly error = signal<string | null>(null);
 
   readonly configuredModels = signal<LlmProviderModelOption[]>([]);
+  protected readonly LLM_PROVIDER_KEYS = LLM_PROVIDER_KEYS;
   readonly availableModels = computed(() => {
     const all = this.configuredModels();
     const current = this.provider();
     return all.filter(o => o.provider === current).map(o => o.model);
   });
+
+  protected providerDisplayName(key: LlmProviderKey): string {
+    return LLM_PROVIDER_DISPLAY_NAMES[key];
+  }
   readonly modelNotConfigured = computed(() => {
     const current = this.model();
     if (!current) return false;
@@ -968,7 +975,7 @@ export class AgentEditorComponent implements OnInit, OnDestroy {
     this.type.set(resolvedType);
     this.name.set((config['name'] as string) ?? '');
     this.description.set((config['description'] as string) ?? '');
-    this.provider.set((config['provider'] as 'openai' | 'anthropic' | 'lmstudio') ?? 'openai');
+    this.provider.set(config.provider ?? 'openai');
     this.model.set((config['model'] as string) ?? 'gpt-5.4');
     this.systemPrompt.set((config['systemPrompt'] as string) ?? '');
     this.promptTemplate.set((config['promptTemplate'] as string) ?? '');

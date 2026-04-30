@@ -1,5 +1,6 @@
 import { CommonModule, DatePipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
+import { useAsyncState } from '../../core/async-state';
 import { relativeTime } from '../../core/format-time';
 import {
   DeadLetterListResponse,
@@ -134,10 +135,26 @@ import { IconComponent } from '../../ui/icon.component';
 })
 export class DlqComponent {
   private readonly ops = inject(OpsApi);
+  private readonly dlqState = useAsyncState<DeadLetterListResponse | null>(
+    null,
+    () => this.ops.listDlq(),
+    {
+      errorMessage: 'Failed to load DLQ data.',
+      onLoaded: data => {
+        if (!data) return;
+        if (!this.selectedQueue() && data.queues.length > 0) {
+          this.selectedQueue.set(data.queues[0].queueName);
+        }
+        if (!this.selectedMessageId() && data.messages.length > 0) {
+          this.selectedMessageId.set(data.messages[0].messageId);
+        }
+      },
+    },
+  );
 
-  protected readonly loading = signal(false);
-  protected readonly response = signal<DeadLetterListResponse | null>(null);
-  protected readonly error = signal<string | null>(null);
+  protected readonly loading = this.dlqState.loading;
+  protected readonly response = this.dlqState.value;
+  protected readonly error = this.dlqState.error;
   protected readonly retrying = signal<string | null>(null);
   protected readonly retryResult = signal<DeadLetterRetryResponse | null>(null);
   protected readonly selectedQueue = signal<string | null>(null);
@@ -161,24 +178,7 @@ export class DlqComponent {
   constructor() { this.refresh(); }
 
   refresh(): void {
-    this.loading.set(true);
-    this.error.set(null);
-    this.ops.listDlq().subscribe({
-      next: data => {
-        this.response.set(data);
-        this.loading.set(false);
-        if (!this.selectedQueue() && data.queues.length > 0) {
-          this.selectedQueue.set(data.queues[0].queueName);
-        }
-        if (!this.selectedMessageId() && data.messages.length > 0) {
-          this.selectedMessageId.set(data.messages[0].messageId);
-        }
-      },
-      error: err => {
-        this.error.set(err?.message ?? 'Failed to load DLQ data.');
-        this.loading.set(false);
-      }
-    });
+    this.dlqState.reload();
   }
 
   retry(message: DeadLetterMessage): void {

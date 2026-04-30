@@ -3,6 +3,7 @@ import { DatePipe, SlicePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { TracesApi } from '../../core/traces.api';
+import { useAsyncList } from '../../core/async-state';
 import { TraceSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
@@ -166,10 +167,14 @@ const FILTER_OPTIONS: SegmentedOption[] = [
 export class TracesListComponent {
   private readonly api = inject(TracesApi);
   private readonly router = inject(Router);
+  private readonly tracesList = useAsyncList(
+    () => this.api.list(),
+    { errorMessage: 'Failed to load' },
+  );
 
-  readonly traces = signal<TraceSummary[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly traces = this.tracesList.items;
+  readonly loading = this.tracesList.loading;
+  readonly error = this.tracesList.error;
   readonly busyTraceId = signal<string | null>(null);
   readonly bulkBusy = signal(false);
   readonly bulkResult = signal<string | null>(null);
@@ -265,10 +270,6 @@ export class TracesListComponent {
   }
 
   reload(): void {
-    this.loading.set(true);
-    this.api.list().subscribe({
-      next: ts => { this.traces.set(ts); this.loading.set(false); },
-      error: err => { this.error.set(err?.message ?? 'Failed to load'); this.loading.set(false); },
-    });
+    this.tracesList.reload();
   }
 }

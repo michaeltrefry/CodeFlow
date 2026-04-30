@@ -1,7 +1,8 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { AgentRolesApi } from '../../../core/agent-roles.api';
+import { useAsyncList } from '../../../core/async-state';
 import { AgentRole } from '../../../core/models';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
@@ -64,19 +65,17 @@ import { ChipComponent } from '../../../ui/chip.component';
 export class RolesListComponent {
   private readonly api = inject(AgentRolesApi);
   private readonly router = inject(Router);
+  private readonly rolesList = useAsyncList(
+    () => this.api.list(),
+    { errorMessage: 'Failed to load roles' },
+  );
 
-  readonly roles = signal<AgentRole[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly roles = this.rolesList.items;
+  readonly loading = this.rolesList.loading;
+  readonly error = this.rolesList.error;
 
   constructor() {
-    this.api.list().subscribe({
-      next: roles => { this.roles.set(roles); this.loading.set(false); },
-      error: err => {
-        this.error.set(err?.message ?? 'Failed to load roles');
-        this.loading.set(false);
-      },
-    });
+    this.rolesList.reload();
   }
 
   open(id: number): void { this.router.navigate(['/settings/roles', id]); }
