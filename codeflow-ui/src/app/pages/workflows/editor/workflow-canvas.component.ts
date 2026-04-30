@@ -55,22 +55,24 @@ import { tidyLayout } from './auto-layout';
 import { WorkflowNodeComponent } from './workflow-node.component';
 import { MonacoAmbientLib, MonacoMarker, MonacoScriptEditorComponent } from './monaco-script-editor.component';
 import { NodeContextMenuComponent, NodeContextMenuItem } from './node-context-menu.component';
+import { buildScriptAmbientLibs } from './script-ambient-libs';
 import {
   AgentInPlaceEditDialogComponent,
-  InPlaceEditResult,
-  InPlaceEditTarget
+  InPlaceEditResult
 } from './agent-in-place-edit-dialog.component';
 import {
   PublishForkDialogComponent,
-  PublishForkResult,
-  PublishForkTarget
+  PublishForkResult
 } from './publish-fork-dialog.component';
 import {
   VersionUpdateDialogComponent,
-  VersionUpdateResult,
-  VersionUpdateTarget
+  VersionUpdateResult
 } from './version-update-dialog.component';
 import { WorkflowVersionHistoryDialogComponent } from './workflow-version-history-dialog.component';
+import { WorkflowCanvasDialogOrchestrator } from './workflow-canvas-dialog-orchestrator.service';
+import { WorkflowBackedgeAnalyzer } from './workflow-backedge-analyzer';
+import { declaredOutputPorts, derivePortRows, hasPortDrift } from './workflow-port-rows';
+import type { DerivedPortRow } from './workflow-port-rows';
 
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
@@ -141,68 +143,6 @@ function extractWorkflowAndContextRefsFromScript(text: string, wf: Set<string>, 
   extractMatches(CONTEXT_REF_SCRIPT_BRACKET, text, ctx);
 }
 
-/** E1: compose Monaco ambient declarations for a script-editor slot. The active set is
- *  swapped into Monaco's TS service when an editor takes focus. Symbol availability is
- *  gated by script kind so `output` is undefined inside an input script (and vice versa),
- *  matching runtime semantics. F2 dataflow narrows `workflow` / `context` to known keys
- *  while keeping an index signature so unknown keys don't error. */
-type ScriptSlotKind = 'input-script' | 'output-script' | 'logic-script';
-
-function buildScriptAmbientLibs(
-  kind: ScriptSlotKind,
-  workflowKeys: readonly string[],
-  contextKeys: readonly string[],
-  inLoop: boolean
-): MonacoAmbientLib[] {
-  const wfNarrow = workflowKeys.length === 0
-    ? '[key: string]: unknown;'
-    : workflowKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
-  const ctxNarrow = contextKeys.length === 0
-    ? '[key: string]: unknown;'
-    : contextKeys.map(k => `${JSON.stringify(k)}?: unknown;`).join(' ') + ' [key: string]: unknown;';
-
-  const sharedHeader = [
-    '// CodeFlow script sandbox — auto-generated ambient declarations.',
-    '// Do not edit; regenerated when this script-editor takes focus.',
-    `declare const workflow: { ${wfNarrow} };`,
-    `declare const context: { ${ctxNarrow} };`,
-    'declare function setWorkflow(key: string, value: unknown): void;',
-    'declare function setContext(key: string, value: unknown): void;',
-    'declare function log(message: string): void;'
-  ];
-
-  const loopBlock = inLoop
-    ? [
-        'declare const round: number;',
-        'declare const maxRounds: number;',
-        'declare const isLastRound: boolean;'
-      ]
-    : [];
-
-  const slotBlock = kind === 'input-script'
-    ? [
-        '// Input scripts run BEFORE the node receives the upstream artifact.',
-        'declare const input: unknown;',
-        'declare function setInput(text: string): void;'
-      ]
-    : kind === 'output-script'
-    ? [
-        '// Output scripts run AFTER the agent submits.',
-        'declare const output: { decision: string; text: string };',
-        'declare function setOutput(text: string): void;',
-        'declare function setNodePath(port: string): void;'
-      ]
-    : [
-        '// Logic-node scripts evaluate the node\'s decision against the upstream artifact.',
-        'declare const output: { decision: string; text: string };',
-        'declare function setOutput(text: string): void;',
-        'declare function setNodePath(port: string): void;'
-      ];
-
-  const content = [...sharedHeader, ...loopBlock, ...slotBlock, ''].join('\n');
-  return [{ filePath: `inmemory://codeflow/${kind}.d.ts`, content }];
-}
-
 function defaultStartInput(): WorkflowInput {
   return {
     key: DEFAULT_INPUT_KEY,
@@ -219,6 +159,7 @@ function defaultStartInput(): WorkflowInput {
   selector: 'app-workflow-canvas',
   standalone: true,
   imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
+  providers: [WorkflowCanvasDialogOrchestrator],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
@@ -233,7 +174,7 @@ function defaultStartInput(): WorkflowInput {
               {{ showImplicitFailed() ? 'Hide failed ports' : 'Show failed ports' }}
             </button>
             <button type="button" cf-button variant="default" size="sm"
-                    (click)="historyOpen.set(true)"
+                    (click)="dialogs.openHistory()"
                     [disabled]="!hasExistingKey()"
                     title="Compare versions of this workflow">
               History
@@ -1133,26 +1074,26 @@ function defaultStartInput(): WorkflowInput {
     }
 
     <cf-agent-in-place-edit-dialog
-      [target]="editTarget()"
-      [suppressWarning]="warningSuppressed()"
-      (close)="closeEditInPlace()"
+      [target]="dialogs.editTarget()"
+      [suppressWarning]="dialogs.warningSuppressed()"
+      (close)="dialogs.closeEditInPlace()"
       (saved)="onEditInPlaceSaved($event)"
-      (warningSuppressed)="warningSuppressed.set(true)"></cf-agent-in-place-edit-dialog>
+      (warningSuppressed)="dialogs.suppressWarning()"></cf-agent-in-place-edit-dialog>
 
     <cf-publish-fork-dialog
-      [target]="publishTarget()"
-      (close)="closePublishFork()"
+      [target]="dialogs.publishTarget()"
+      (close)="dialogs.closePublishFork()"
       (published)="onForkPublished($event)"></cf-publish-fork-dialog>
 
     <cf-version-update-dialog
-      [target]="versionUpdateTarget()"
+      [target]="dialogs.versionUpdateTarget()"
       (confirmed)="onVersionUpdateConfirmed($event)"
-      (cancelled)="versionUpdateTarget.set(null)"></cf-version-update-dialog>
+      (cancelled)="dialogs.cancelVersionUpdate()"></cf-version-update-dialog>
 
     <cf-workflow-version-history-dialog
-      [open]="historyOpen()"
+      [open]="dialogs.historyOpen()"
       [workflowKey]="workflowKey()"
-      (closed)="historyOpen.set(false)"></cf-workflow-version-history-dialog>
+      (closed)="dialogs.closeHistory()"></cf-workflow-version-history-dialog>
   `,
   styles: [`
     :host { display: block; height: 100%; }
@@ -1553,6 +1494,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly router = inject(Router);
   private readonly injector = inject(Injector);
   private readonly pageContext = inject(PageContextService);
+  readonly dialogs = inject(WorkflowCanvasDialogOrchestrator);
 
   constructor() {
     // Keep the assistant sidebar's PageContext in sync with the workflow key + selected node.
@@ -1619,10 +1561,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly inputScriptMarkers = signal<MonacoMarker[]>([]);
   readonly selectedSubflowDetail = signal<import('../../../core/models').WorkflowDetail | null>(null);
   readonly contextMenu = signal<NodeContextMenuState | null>(null);
-  readonly editTarget = signal<InPlaceEditTarget | null>(null);
-  readonly warningSuppressed = signal(false);
-  readonly publishTarget = signal<PublishForkTarget | null>(null);
-  readonly versionUpdateTarget = signal<VersionUpdateTarget | null>(null);
   readonly selectedAgentDocs = signal<SelectedAgentDocs | null>(null);
   readonly selectedAgentDocsLoading = signal(false);
   readonly selectedAgentDocsError = signal<string | null>(null);
@@ -1664,9 +1602,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  workflow JSON (lives in localStorage so it survives page reloads). */
   readonly showImplicitFailed = signal(false);
   private static readonly ShowImplicitFailedStorageKey = 'cf:editor:showImplicitFailed';
-
-  /** T3: workflow version history dialog visibility. */
-  readonly historyOpen = signal(false);
 
   /** VZ6: per-candidate terminal-port cache for the Subflow / ReviewLoop pickers. Keyed by
    *  workflow key, value is the candidate's terminal port list at its latest version (the
@@ -1750,85 +1685,35 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  - `status: 'ok'` — port present on the node and declared by the agent.
    *  - `status: 'stale'` (red) — port wired on the node but the agent can no longer submit it.
    *  - `status: 'missing'` (orange) — port declared by the agent but not yet on the node. */
-  readonly derivedPortRows = computed<{ name: string; status: 'ok' | 'stale' | 'missing' }[]>(() => {
+  readonly derivedPortRows = computed<DerivedPortRow[]>(() => {
     this.portsRevision();
     const sel = this.selectedNode();
     if (!sel) return [];
     if (!AGENT_BEARING_KINDS.has(sel.editor.kind)) return [];
 
-    const docs = this.selectedAgentDocs();
-    const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs
-          .map(o => o.kind)
-          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
-      : null;
-    const declaredSet = declared ? new Set(declared) : null;
-    const nodePorts = sel.editor.outputPortNames;
-    const nodePortSet = new Set(nodePorts);
-
-    const rows: { name: string; status: 'ok' | 'stale' | 'missing' }[] = nodePorts.map(name => ({
-      name,
-      status: declaredSet
-        ? (declaredSet.has(name) ? 'ok' : 'stale')
-        : 'ok',
-    }));
-
-    if (declared) {
-      for (const name of declared) {
-        if (!nodePortSet.has(name)) {
-          rows.push({ name, status: 'missing' });
-        }
-      }
-    }
-
-    return rows;
+    return derivePortRows(sel.editor, this.selectedAgentDocs()?.config);
   });
 
   /** True when the selected agent-bearing node's ports drift from its pinned agent's declared
    *  outputs in either direction (stale or missing). Drives the "Sync from agent" affordance. */
   readonly selectedNodeHasPortDrift = computed(() => {
-    return this.derivedPortRows().some(r => r.status !== 'ok');
+    return hasPortDrift(this.derivedPortRows());
   });
 
   /** Swarm-only counterpart to derivedPortRows. The Swarm node's terminal ports follow the
    *  *synthesizer* agent's declared outputs (contributor + coordinator outputs are internal
    *  to the swarm and don't appear on the node). Until a synthesizer is picked, the row set
    *  is empty and the existing default `Synthesized` port stays in place. */
-  readonly derivedSwarmPortRows = computed<{ name: string; status: 'ok' | 'stale' | 'missing' }[]>(() => {
+  readonly derivedSwarmPortRows = computed<DerivedPortRow[]>(() => {
     this.portsRevision();
     const sel = this.selectedNode();
     if (!sel || sel.editor.kind !== 'Swarm') return [];
 
-    const docs = this.selectedSynthesizerDocs();
-    const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs
-          .map(o => o.kind)
-          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
-      : null;
-    const declaredSet = declared ? new Set(declared) : null;
-    const nodePorts = sel.editor.outputPortNames;
-    const nodePortSet = new Set(nodePorts);
-
-    const rows: { name: string; status: 'ok' | 'stale' | 'missing' }[] = nodePorts.map(name => ({
-      name,
-      status: declaredSet
-        ? (declaredSet.has(name) ? 'ok' : 'stale')
-        : 'ok',
-    }));
-
-    if (declared) {
-      for (const name of declared) {
-        if (!nodePortSet.has(name)) {
-          rows.push({ name, status: 'missing' });
-        }
-      }
-    }
-
-    return rows;
+    return derivePortRows(sel.editor, this.selectedSynthesizerDocs()?.config);
   });
 
   readonly selectedSwarmHasPortDrift = computed(() => {
-    return this.derivedSwarmPortRows().some(r => r.status !== 'ok');
+    return hasPortDrift(this.derivedSwarmPortRows());
   });
 
   /** E1: ambient TS declarations for the input-script editor on the selected node.
@@ -2026,12 +1911,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  surviving ports keep their wires. Implicit Failed is unaffected. */
   syncPortsFromSynthesizer(node: WorkflowEditorNode): void {
     if (node.kind !== 'Swarm') return;
-    const docs = this.selectedSynthesizerDocs();
-    const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs
-          .map(o => o.kind)
-          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
-      : null;
+    const declared = declaredOutputPorts(this.selectedSynthesizerDocs()?.config);
     if (!declared) return;
     this.applyNodePorts(node, declared);
   }
@@ -2427,75 +2307,16 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         sourcePort: c.sourceOutput,
         targetLabel: this.connectionEndpointLabel(c.target, c.targetInput),
       }));
-
-    if (AGENT_BEARING_KINDS.has(node.kind) && node.agentKey) {
-      const agentKey = node.agentKey;
-      const fromVersion = node.agentVersion ?? 0;
-      this.agentsApi.getLatest(agentKey).subscribe({
-        next: latest => {
-          if (!latest.version || latest.version <= fromVersion) {
-            this.statusMessage.set(`Agent '${agentKey}' v${fromVersion} is already the latest.`);
-            return;
-          }
-          const latestPorts = (latest.config?.outputs ?? [])
-            .map(o => o.kind)
-            .filter((k): k is string => typeof k === 'string' && k.length > 0);
-          this.versionUpdateTarget.set({
-            nodeId: node.id,
-            kind: 'agent',
-            refKey: agentKey,
-            fromVersion,
-            toVersion: latest.version,
-            currentPorts: node.outputPortNames.slice(),
-            latestPorts,
-            outgoing,
-          });
-        },
-        error: err => this.error.set(`Failed to load latest agent version: ${err?.message ?? err}`),
-      });
-      return;
-    }
-
-    if ((node.kind === 'Subflow' || node.kind === 'ReviewLoop') && node.subflowKey) {
-      const subflowKey = node.subflowKey;
-      const fromVersion = node.subflowVersion ?? 0;
-      this.api.getLatest(subflowKey).subscribe({
-        next: latest => {
-          if (!latest.version || latest.version <= fromVersion) {
-            this.statusMessage.set(`Workflow '${subflowKey}' v${fromVersion} is already the latest.`);
-            return;
-          }
-          this.api.getTerminalPorts(subflowKey, latest.version).subscribe({
-            next: terminals => {
-              let latestPorts = terminals.slice();
-              if (node.kind === 'ReviewLoop') {
-                const loopDecision = (node.loopDecision?.trim()) || 'Rejected';
-                latestPorts = latestPorts.filter(p => p !== loopDecision);
-                if (!latestPorts.includes('Exhausted')) latestPorts.push('Exhausted');
-              }
-              this.versionUpdateTarget.set({
-                nodeId: node.id,
-                kind: 'workflow',
-                refKey: subflowKey,
-                fromVersion,
-                toVersion: latest.version,
-                currentPorts: node.outputPortNames.slice(),
-                latestPorts,
-                outgoing,
-              });
-            },
-            error: err => this.error.set(`Failed to load latest workflow's terminal ports: ${err?.message ?? err}`),
-          });
-        },
-        error: err => this.error.set(`Failed to load latest workflow version: ${err?.message ?? err}`),
-      });
-    }
+    this.dialogs.openVersionUpdate(node, outgoing, {
+      setStatus: message => this.statusMessage.set(message),
+      setError: message => this.error.set(message),
+    });
   }
 
   onVersionUpdateConfirmed(result: VersionUpdateResult): void {
     const node = this.editor?.getNode(result.nodeId) as WorkflowEditorNode | undefined;
     if (!node) {
-      this.versionUpdateTarget.set(null);
+      this.dialogs.cancelVersionUpdate();
       return;
     }
 
@@ -2516,7 +2337,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
 
     this.applyNodePorts(node, result.newPorts);
-    this.versionUpdateTarget.set(null);
+    this.dialogs.cancelVersionUpdate();
     this.statusMessage.set(`Updated to v${result.toVersion}.`);
   }
 
@@ -2525,43 +2346,15 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   protected openEditInPlace(node: WorkflowEditorNode): void {
-    if (!node.agentKey) return;
-    const workflowKey = this.workflowKey().trim();
-    if (!workflowKey) {
-      this.error.set('Pick a workflow key before editing an agent in place.');
-      return;
-    }
-
-    const isExistingFork = node.agentKey.startsWith(FORK_KEY_PREFIX);
-    const load$ = node.agentVersion
-      ? this.agentsApi.getVersion(node.agentKey, node.agentVersion)
-      : this.agentsApi.getLatest(node.agentKey);
-
-    load$.subscribe({
-      next: version => {
-        const config = (version.config ?? {}) as import('../../../core/models').AgentConfig;
-        const resolvedType = version.type === 'hitl' ? 'hitl' : 'agent';
-        this.editTarget.set({
-          nodeId: node.id,
-          agentKey: version.key,
-          agentVersion: version.version,
-          workflowKey,
-          initialConfig: config,
-          initialType: resolvedType,
-          isExistingFork
-        });
-      },
-      error: err => this.error.set(`Failed to load agent for in-place edit: ${err?.message ?? err}`)
-    });
+    this.dialogs.openEditInPlace(
+      node,
+      this.workflowKey().trim(),
+      message => this.error.set(message)
+    );
   }
 
   protected openPublishFork(node: WorkflowEditorNode): void {
-    if (!node.agentKey || !node.agentKey.startsWith(FORK_KEY_PREFIX)) return;
-    this.publishTarget.set({ nodeId: node.id, forkKey: node.agentKey });
-  }
-
-  closePublishFork(): void {
-    this.publishTarget.set(null);
+    this.dialogs.openPublishFork(node);
   }
 
   onForkPublished(result: PublishForkResult): void {
@@ -2577,16 +2370,12 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       }
     }
     this.statusMessage.set(`Published ${result.publishedKey} v${result.publishedVersion}. Save the workflow to persist the re-link.`);
-    this.publishTarget.set(null);
-  }
-
-  closeEditInPlace(): void {
-    this.editTarget.set(null);
+    this.dialogs.closePublishFork();
   }
 
   onEditInPlaceSaved(result: InPlaceEditResult): void {
     if (!this.editor) {
-      this.editTarget.set(null);
+      this.dialogs.closeEditInPlace();
       return;
     }
 
@@ -2611,7 +2400,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
 
     this.statusMessage.set(`Saved ${result.agentKey} v${result.agentVersion} (workflow-scoped fork). Save the workflow to persist.`);
-    this.editTarget.set(null);
+    this.dialogs.closeEditInPlace();
   }
 
   private findNodeIdAtEvent(event: MouseEvent): string | null {
@@ -2805,12 +2594,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
    *  added. Wires on ports that survive the diff are left untouched. */
   syncPortsFromAgent(node: WorkflowEditorNode): void {
     if (!AGENT_BEARING_KINDS.has(node.kind)) return;
-    const docs = this.selectedAgentDocs();
-    const declared = Array.isArray(docs?.config.outputs)
-      ? docs!.config.outputs
-          .map(o => o.kind)
-          .filter((k): k is string => typeof k === 'string' && k.length > 0 && k !== 'Failed')
-      : null;
+    const declared = declaredOutputPorts(this.selectedAgentDocs()?.config);
     if (!declared) return;
     this.applyNodePorts(node, declared);
   }
@@ -2919,42 +2703,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const connection = this.editor?.getConnection(connectionId) as WorkflowEditorConnection | undefined;
     if (!registered || !connection) return;
 
-    const path = registered.element.querySelector('path') as SVGPathElement | null;
-    if (!path) return;
-
-    const isLiveBackedge = this.backedgeIds.has(connectionId) && !connection.intentionalBackedge;
-    const cycleMembers = this.backedgeCycleByConnId.get(connectionId);
-
-    path.style.cursor = 'pointer';
-    path.style.pointerEvents = 'auto';
-    path.style.transition = 'stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease';
-    if (connection.isSelected) {
-      path.style.stroke = '#ffd166';
-      path.style.strokeWidth = '7px';
-      path.style.filter = 'drop-shadow(0 0 6px rgba(255, 209, 102, 0.45))';
-    } else if (isLiveBackedge) {
-      // VZ7: dashed amber for cycles (target reachable from source).
-      path.style.stroke = '#f5b84c';
-      path.style.strokeWidth = '5px';
-      path.style.filter = '';
-    } else {
-      path.style.stroke = '#4682b4';
-      path.style.strokeWidth = '5px';
-      path.style.filter = '';
-    }
-    path.style.strokeDasharray = isLiveBackedge ? '10 6' : '';
-
-    // Tooltip for backedges. Cleared on connections that are not (or no longer) live
-    // backedges so a previous tooltip doesn't linger after the cycle is broken or marked
-    // intentional.
-    if (isLiveBackedge && cycleMembers && cycleMembers.length > 0) {
-      const memberList = cycleMembers.join(' → ');
-      registered.element.title =
-        `This edge creates a cycle: ${memberList} → ${cycleMembers[0]}. ` +
-        `ReviewLoop iteration handles loops natively — verify the backedge is intentional.`;
-    } else if (registered.element.title) {
-      registered.element.title = '';
-    }
+    WorkflowBackedgeAnalyzer.applyConnectionStyles(
+      { element: registered.element, connection },
+      { backedgeIds: this.backedgeIds, cycleByConnectionId: this.backedgeCycleByConnId }
+    );
   }
 
   /**
@@ -2980,68 +2732,13 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    type Edge = { id: string; source: string; target: string };
-    const outgoing = new Map<string, Edge[]>();
-    const incomingCount = new Map<string, number>();
-    for (const id of nodeIds) {
-      outgoing.set(id, []);
-      incomingCount.set(id, 0);
-    }
-    for (const c of connections) {
-      const list = outgoing.get(c.source);
-      if (!list) continue;
-      list.push({ id: c.id, source: c.source, target: c.target });
-      incomingCount.set(c.target, (incomingCount.get(c.target) ?? 0) + 1);
-    }
-
-    type Color = 'white' | 'gray' | 'black';
-    const color = new Map<string, Color>();
-    for (const id of nodeIds) color.set(id, 'white');
-
-    const rootOrder = [
-      ...nodeIds.filter(id => (incomingCount.get(id) ?? 0) === 0),
-      ...nodeIds
-    ];
-    const seenRoot = new Set<string>();
-
-    for (const root of rootOrder) {
-      if (seenRoot.has(root)) continue;
-      seenRoot.add(root);
-      if (color.get(root) !== 'white') continue;
-
-      const stack: { nodeId: string; nextEdge: number }[] = [];
-      color.set(root, 'gray');
-      stack.push({ nodeId: root, nextEdge: 0 });
-
-      while (stack.length > 0) {
-        const frame = stack[stack.length - 1];
-        const edges = outgoing.get(frame.nodeId);
-        if (!edges || frame.nextEdge >= edges.length) {
-          color.set(frame.nodeId, 'black');
-          stack.pop();
-          continue;
-        }
-        const edge = edges[frame.nextEdge];
-        frame.nextEdge += 1;
-
-        const targetColor = color.get(edge.target);
-        if (targetColor === 'white') {
-          color.set(edge.target, 'gray');
-          stack.push({ nodeId: edge.target, nextEdge: 0 });
-        } else if (targetColor === 'gray') {
-          // Backedge — reconstruct cycle from the active stack: target → ... → source.
-          const cycle: string[] = [];
-          let collecting = false;
-          for (const f of stack) {
-            if (!collecting && f.nodeId === edge.target) collecting = true;
-            if (collecting) cycle.push(this.nodeLabelFor(f.nodeId));
-          }
-          if (cycle.length === 0) cycle.push(this.nodeLabelFor(edge.target));
-          this.backedgeIds.add(edge.id);
-          this.backedgeCycleByConnId.set(edge.id, cycle);
-        }
-      }
-    }
+    const analysis = WorkflowBackedgeAnalyzer.recompute(
+      nodeIds,
+      connections,
+      id => this.nodeLabelFor(id)
+    );
+    for (const id of analysis.backedgeIds) this.backedgeIds.add(id);
+    for (const [id, cycle] of analysis.cycleByConnectionId) this.backedgeCycleByConnId.set(id, cycle);
 
     this.backedgeRevision.update(v => v + 1);
     for (const c of connections) this.applyConnectionStyles(c.id);
