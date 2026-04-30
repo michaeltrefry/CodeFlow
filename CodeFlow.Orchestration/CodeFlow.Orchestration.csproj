@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Jint" />
     <PackageReference Include="MassTransit" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
 
   <ItemGroup>

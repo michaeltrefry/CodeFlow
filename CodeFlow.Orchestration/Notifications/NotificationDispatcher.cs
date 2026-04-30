@@ -68,7 +68,7 @@ public sealed class NotificationDispatcher(
         List<NotificationDeliveryResult> results,
         CancellationToken cancellationToken)
     {
-        var provider = providerRegistry.GetById(route.ProviderId);
+        var provider = await providerRegistry.GetByIdAsync(route.ProviderId, cancellationToken);
         if (provider is null)
         {
             await RecordOutcomeAsync(

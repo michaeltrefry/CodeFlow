@@ -296,7 +296,8 @@ public sealed class NotificationDispatcherTests
         public StubTemplateRenderer Renderer { get; } = new();
         public List<RecordingProvider> Providers { get; } = new();
 
-        public INotificationProviderRegistry ProviderRegistry => new NotificationProviderRegistry(Providers);
+        public INotificationProviderRegistry ProviderRegistry =>
+            new NotificationProviderRegistry(Providers, Array.Empty<INotificationProviderFactory>());
 
         public RecordingProvider RegisterProvider(
             string id,

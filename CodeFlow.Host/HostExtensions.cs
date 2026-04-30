@@ -4,6 +4,7 @@ using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Notifications;
+using CodeFlow.Orchestration.Notifications.Providers.Slack;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
@@ -135,6 +136,18 @@ public static class HostExtensions
         services.AddScoped<INotificationProviderRegistry, NotificationProviderRegistry>();
         services.AddScoped<INotificationDispatcher, NotificationDispatcher>();
         services.AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>();
+
+        // Slack provider (sc-54). Named HttpClient so connection pooling + DNS rotation are
+        // handled by IHttpClientFactory; the factory creates one provider instance per stored
+        // Slack config row at dispatch time.
+        services.AddHttpClient(SlackNotificationProviderFactory.HttpClientName, client =>
+        {
+            client.BaseAddress = SlackNotificationProviderFactory.DefaultBaseAddress;
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddSingleton<SlackNotificationProviderFactory>();
+        services.AddSingleton<INotificationProviderFactory>(sp =>
+            sp.GetRequiredService<SlackNotificationProviderFactory>());
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
