@@ -68,7 +68,11 @@ public sealed class Agent : IAgentInvoker
             configuration.DeclaredOutputs,
             configuration.ResolvedPartials));
 
-        var toolAccessPolicy = MergeToolAccessPolicy(configuration.ToolAccessPolicy, tools, configuration);
+        var toolAccessPolicy = MergeToolAccessPolicy(
+            configuration.ToolAccessPolicy,
+            tools,
+            configuration,
+            toolExecutionContext?.Envelope);
 
         var toolRegistry = new ToolRegistry(BuildProviders(configuration, tools), refusalSink, nowProvider);
         var invocationLoop = new InvocationLoop(modelClient, toolRegistry, nowProvider);
@@ -138,16 +142,39 @@ public sealed class Agent : IAgentInvoker
     private static ToolAccessPolicy MergeToolAccessPolicy(
         ToolAccessPolicy? configured,
         ResolvedAgentTools tools,
-        AgentInvocationConfiguration configuration)
+        AgentInvocationConfiguration configuration,
+        WorkflowExecutionEnvelope? envelope)
     {
-        if (tools.AllowedToolNames.Count == 0)
+        // sc-269 PR3: when the resolved envelope expresses ToolGrants, those are the
+        // authoritative source of allowed tool names — they already reflect the per-axis
+        // intersection of every tier (tenant → workflow → role → context). When the envelope
+        // is silent (no opinion expressed by any tier), fall back to the role-derived
+        // ResolvedAgentTools.AllowedToolNames so legacy callers — and standalone unit tests
+        // that don't construct an envelope — keep their existing behaviour.
+        var envelopeToolNames = envelope?.ToolGrants;
+
+        // An explicit empty envelope ToolGrants means "intersection denied everything" — must
+        // map to DenyAll, since ToolAccessPolicy treats an empty AllowedToolNames list as
+        // "no allowlist enforcement" (legacy back-compat that pre-dates this axis).
+        if (envelopeToolNames is { Count: 0 })
+        {
+            return new ToolAccessPolicy(
+                DenyAll: true,
+                CategoryToolLimits: configured?.CategoryToolLimits);
+        }
+
+        if (envelopeToolNames is null && tools.AllowedToolNames.Count == 0)
         {
             return configured ?? ToolAccessPolicy.AllowAll;
         }
 
-        // spawn_subagent is a runtime-managed meta-tool; callers don't (and shouldn't) grant
-        // it through a role. Implicitly allow it whenever SubAgents is configured.
-        var allowed = new List<string>(tools.AllowedToolNames);
+        // Source the allowlist from the envelope when present; otherwise from ResolvedAgentTools.
+        // Either way, spawn_subagent is a runtime-managed meta-tool that callers never grant
+        // through a role / envelope; implicitly allow it when SubAgents is configured.
+        var allowed = envelopeToolNames is not null
+            ? envelopeToolNames.Select(g => g.ToolName).ToList()
+            : new List<string>(tools.AllowedToolNames);
+
         if (configuration.SubAgents is { Count: > 0 })
         {
             allowed.Add(SubAgentToolProvider.SpawnToolName);

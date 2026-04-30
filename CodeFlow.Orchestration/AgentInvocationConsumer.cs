@@ -157,11 +157,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
 
-            // sc-269 PR2: resolve and persist the per-invocation authority envelope. Observation
-            // only — the existing resolvedTools value is still what enforces today; PR3 makes the
-            // envelope authoritative at the tool layer. Failure to record is swallowed so the
-            // primary invocation path is unchanged.
-            await TryRecordAuthoritySnapshotAsync(message, context.CancellationToken);
+            // sc-269 PR3: resolve and persist the per-invocation authority envelope, then thread
+            // the resolved envelope into the tool layer so workspace command/repo/network checks
+            // and the ToolAccessPolicy can self-enforce against it. Failure to record is still
+            // swallowed (snapshot persistence must never break the primary invocation), but a
+            // non-null envelope is passed downstream when resolution succeeds.
+            var envelopeResolution = await TryRecordAuthoritySnapshotAsync(message, context.CancellationToken);
 
             // Pre-resolve scope chain ONCE for this consumer call so the per-round capture
             // observer doesn't re-query the saga table on every LLM round-trip. Subflow depth is
@@ -174,7 +175,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 resolvedTools,
                 captureObserver,
                 context.CancellationToken,
-                BuildToolExecutionContext(message));
+                BuildToolExecutionContext(message, envelopeResolution?.Envelope));
 
             await PublishCompletionAsync(
                 context,
@@ -212,25 +213,25 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     /// <summary>
-    /// sc-269 PR2 — resolve the per-invocation authority envelope, persist a snapshot row, and
-    /// emit a <see cref="RefusalStages.Admission"/> refusal per blocked axis. Observation only:
-    /// invocation continues regardless of denial evidence (PR3 makes the envelope authoritative
-    /// at the tool layer). All failures are swallowed so the snapshot path can never break the
-    /// primary invocation flow — operators still see the agent run, they just don't get the
-    /// new evidence row this time.
+    /// sc-269 PR3 — resolve the per-invocation authority envelope, persist a snapshot row, emit
+    /// a <see cref="RefusalStages.Admission"/> refusal per blocked axis, and return the
+    /// resolution result so callers can thread the envelope into the tool layer for enforcement.
+    /// Returns <c>null</c> when no recorder is wired (legacy test fixtures) or when resolution
+    /// fails — both cases preserve the pre-envelope behaviour because tools fall back to their
+    /// static configuration when the envelope is null.
     /// </summary>
-    private async Task TryRecordAuthoritySnapshotAsync(
+    private async Task<EnvelopeResolutionResult?> TryRecordAuthoritySnapshotAsync(
         AgentInvokeRequested message,
         CancellationToken cancellationToken)
     {
         if (authoritySnapshotRecorder is null)
         {
-            return;
+            return null;
         }
 
         try
         {
-            await authoritySnapshotRecorder.ResolveAndRecordAsync(
+            return await authoritySnapshotRecorder.ResolveAndRecordAsync(
                 new AuthoritySnapshotInput(
                     AgentKey: message.AgentKey,
                     TraceId: message.TraceId,
@@ -243,7 +244,9 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Snapshot recording must never break the calling invocation. Capture activity tag
-            // so the failure is still observable without blocking the agent run.
+            // so the failure is still observable without blocking the agent run. Tool-layer
+            // enforcement degrades gracefully — a null envelope means "no opinion expressed",
+            // which preserves pre-PR3 behaviour.
             Activity.Current?.AddEvent(new ActivityEvent(
                 "authority-snapshot-failed",
                 tags: new ActivityTagsCollection
@@ -251,6 +254,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     { "exception.type", ex.GetType().FullName },
                     { "exception.message", ex.Message }
                 }));
+            return null;
         }
     }
 
@@ -497,17 +501,21 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     // directory through `workflow.workDir` (seeded by `TracesEndpoints.CreateTraceAsync`); when
     // present, that path-jails every host tool to the trace workdir and supersedes the legacy
     // per-repo `ToolExecutionContext` carried on the message. Non-code workflows fall through
-    // to the legacy plumbing unchanged.
-    private static RuntimeToolExecutionContext? BuildToolExecutionContext(AgentInvokeRequested message)
+    // to the legacy plumbing unchanged. The resolved authority envelope (sc-269 PR3) rides
+    // alongside both shapes so the tool layer can self-enforce its axes.
+    private static RuntimeToolExecutionContext? BuildToolExecutionContext(
+        AgentInvokeRequested message,
+        WorkflowExecutionEnvelope? envelope)
     {
         if (TryGetWorkflowWorkDir(message.WorkflowContext, out var workDir))
         {
             return new RuntimeToolExecutionContext(
                 new RuntimeToolWorkspaceContext(message.TraceId, workDir),
-                ExtractRepositoryContexts(message.ContextInputs));
+                ExtractRepositoryContexts(message.ContextInputs),
+                envelope);
         }
 
-        return MapToolExecutionContext(message.ToolExecutionContext);
+        return MapToolExecutionContext(message.ToolExecutionContext, envelope);
     }
 
     private static bool TryGetWorkflowWorkDir(
@@ -532,16 +540,22 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         return true;
     }
 
-    private static RuntimeToolExecutionContext? MapToolExecutionContext(ContractsToolExecutionContext? context)
+    private static RuntimeToolExecutionContext? MapToolExecutionContext(
+        ContractsToolExecutionContext? context,
+        WorkflowExecutionEnvelope? envelope)
     {
-        if (context is null)
+        // When neither the legacy contract context nor an envelope has anything to say, return
+        // null so the tool layer keeps its no-context fast path. Otherwise build a shell that
+        // carries whichever pieces are present (workspace, repos, envelope).
+        if (context is null && envelope is null)
         {
             return null;
         }
 
         return new RuntimeToolExecutionContext(
-            MapWorkspaceContext(context.Workspace),
-            MapRepositoryContexts(context.Repositories));
+            MapWorkspaceContext(context?.Workspace),
+            MapRepositoryContexts(context?.Repositories),
+            envelope);
     }
 
     private static RuntimeToolWorkspaceContext? MapWorkspaceContext(ContractsToolWorkspaceContext? workspace)

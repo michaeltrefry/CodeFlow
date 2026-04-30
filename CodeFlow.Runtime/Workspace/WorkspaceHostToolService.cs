@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Authority;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -113,11 +114,14 @@ public sealed class WorkspaceHostToolService
         var command = GetRequiredString(toolCall.Arguments, "command");
         var args = GetOptionalStringArray(toolCall.Arguments, "args");
 
-        if (!CommandIsAllowed(command, options.CommandAllowlist))
+        var allowlistDecision = ResolveCommandAllowlist(context?.Envelope, options.CommandAllowlist);
+        if (!CommandIsAllowed(command, allowlistDecision.Allowlist, allowlistDecision.StrictEmpty))
         {
-            var allowedNames = options.CommandAllowlist is null
+            var allowedNames = allowlistDecision.Allowlist is null
                 ? Array.Empty<string>()
-                : options.CommandAllowlist.Where(static name => !string.IsNullOrWhiteSpace(name)).ToArray();
+                : allowlistDecision.Allowlist
+                    .Where(static name => !string.IsNullOrWhiteSpace(name))
+                    .ToArray();
             return new ToolResult(
                 toolCall.Id,
                 new JsonObject
@@ -125,9 +129,9 @@ public sealed class WorkspaceHostToolService
                     ["ok"] = false,
                     ["refusal"] = new JsonObject
                     {
-                        ["code"] = "command-allowlist",
-                        ["reason"] = $"Command '{command}' is not in the workspace command allowlist.",
-                        ["axis"] = "command-allowlist",
+                        ["code"] = allowlistDecision.RefusalCode,
+                        ["reason"] = allowlistDecision.RefusalReason(command),
+                        ["axis"] = allowlistDecision.RefusalAxis,
                         ["command"] = command,
                         ["allowed"] = new JsonArray(allowedNames
                             .Select(static name => (JsonNode?)JsonValue.Create(name))
@@ -311,17 +315,21 @@ public sealed class WorkspaceHostToolService
         }
     }
 
-    private static bool CommandIsAllowed(string command, IList<string>? allowlist)
+    private static bool CommandIsAllowed(string command, IReadOnlyList<string>? allowlist, bool strictEmpty)
     {
         if (allowlist is null)
         {
+            // null = no opinion expressed → no enforcement (preserves the sc-270 default).
             return true;
         }
 
         var trimmed = allowlist.Where(static name => !string.IsNullOrWhiteSpace(name)).ToArray();
         if (trimmed.Length == 0)
         {
-            return true;
+            // Static-config back-compat: an all-whitespace IList<string> in WorkspaceOptions has
+            // always been treated as "no enforcement". For envelope-derived allowlists we honour
+            // explicit empty ("intersection denied everything") as a deny-all.
+            return !strictEmpty;
         }
 
         var requested = NormalizeCommandForMatch(command);
@@ -339,6 +347,57 @@ public sealed class WorkspaceHostToolService
 
         return false;
     }
+
+    /// <summary>
+    /// sc-269 PR3: pick the active <c>run_command</c> allowlist + refusal taxonomy for the
+    /// invocation. Priority order: envelope <c>ExecuteGrants</c> → envelope
+    /// <c>Workspace.CommandAllowlist</c> → static <see cref="WorkspaceOptions.CommandAllowlist"/>.
+    /// Each layer reports a distinct refusal code/axis so trace evidence shows where the deny
+    /// originated; <c>StrictEmpty</c> distinguishes envelope intent (an explicit empty intersection
+    /// denies everything) from static back-compat (an all-whitespace list in config means
+    /// "no enforcement").
+    /// </summary>
+    private static CommandAllowlistDecision ResolveCommandAllowlist(
+        WorkflowExecutionEnvelope? envelope,
+        IList<string>? staticAllowlist)
+    {
+        if (envelope?.ExecuteGrants is { } grants)
+        {
+            return new CommandAllowlistDecision(
+                Allowlist: grants.Select(g => g.Command).ToArray(),
+                StrictEmpty: true,
+                RefusalCode: "envelope-execute-grants",
+                RefusalAxis: BlockedBy.Axes.ExecuteGrants,
+                RefusalReason: command =>
+                    $"Command '{command}' is not authorised by the run's ExecuteGrants envelope axis.");
+        }
+
+        if (envelope?.Workspace?.CommandAllowlist is { } envAllow)
+        {
+            return new CommandAllowlistDecision(
+                Allowlist: envAllow,
+                StrictEmpty: true,
+                RefusalCode: "envelope-workspace-allowlist",
+                RefusalAxis: BlockedBy.Axes.Workspace,
+                RefusalReason: command =>
+                    $"Command '{command}' is not authorised by the run's Workspace.CommandAllowlist envelope axis.");
+        }
+
+        return new CommandAllowlistDecision(
+            Allowlist: staticAllowlist?.ToArray(),
+            StrictEmpty: false,
+            RefusalCode: "command-allowlist",
+            RefusalAxis: "command-allowlist",
+            RefusalReason: command =>
+                $"Command '{command}' is not in the workspace command allowlist.");
+    }
+
+    private sealed record CommandAllowlistDecision(
+        IReadOnlyList<string>? Allowlist,
+        bool StrictEmpty,
+        string RefusalCode,
+        string RefusalAxis,
+        Func<string, string> RefusalReason);
 
     private static string NormalizeCommandForMatch(string command)
     {
