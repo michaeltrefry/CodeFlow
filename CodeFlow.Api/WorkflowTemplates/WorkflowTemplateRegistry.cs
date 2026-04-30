@@ -19,6 +19,7 @@ public sealed class WorkflowTemplateRegistry
         : this(
             EmptyWorkflowTemplate.Build(),
             ReviewLoopPairTemplate.Build(),
+            MechanicalReviewLoopTemplate.Build(),
             HitlApprovalGateTemplate.Build(),
             SetupLoopFinalizeTemplate.Build(),
             LifecycleWrapperTemplate.Build())

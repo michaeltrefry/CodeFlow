@@ -164,12 +164,16 @@ public static class TracesEndpoints
             .OrderBy(e => e.Ordinal)
             .ToListAsync(cancellationToken);
 
+        var verdictSources = await ResolveVerdictSourcesAsync(
+            dbContext, decisions.Select(d => d.AgentKey), cancellationToken);
+
         var detail = MapDetail(
             saga,
             decisions,
             logicEvaluations,
             pendingHitl,
-            subflowPaths);
+            subflowPaths,
+            verdictSources);
 
         return Results.Ok(detail);
     }
@@ -232,6 +236,9 @@ public static class TracesEndpoints
             .GroupBy(task => task.TraceId)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<HitlTaskEntity>)group.ToArray());
 
+        var verdictSources = await ResolveVerdictSourcesAsync(
+            dbContext, decisions.Select(d => d.AgentKey), cancellationToken);
+
         var response = descendants
             .Select(descendant => new TraceDescendantDto(
                 Summary: MapSummary(descendant),
@@ -240,7 +247,8 @@ public static class TracesEndpoints
                     decisionsByCorrelationId.GetValueOrDefault(descendant.CorrelationId) ?? Array.Empty<WorkflowSagaDecisionEntity>(),
                     evaluationsByCorrelationId.GetValueOrDefault(descendant.CorrelationId) ?? Array.Empty<WorkflowSagaLogicEvaluationEntity>(),
                     hitlByTraceId.GetValueOrDefault(descendant.TraceId) ?? Array.Empty<HitlTaskEntity>(),
-                    subflowPaths)))
+                    subflowPaths,
+                    verdictSources)))
             .ToArray();
 
         return Results.Ok(response);
@@ -1070,6 +1078,74 @@ public static class TracesEndpoints
         return document.RootElement.Clone();
     }
 
+    /// <summary>
+    /// sc-273 — bulk-resolve <see cref="TraceDecisionDto.VerdictSource"/> for the agents that
+    /// produced decisions in a trace. One round-trip per call regardless of trace size.
+    ///
+    /// <list type="bullet">
+    ///   <item><description>An agent with any host grant for <c>run_command</c> or
+    ///   <c>apply_patch</c> is tagged <c>"mechanical"</c> — its decisions are gated by
+    ///   deterministic command execution.</description></item>
+    ///   <item><description>An agent with NO host-tool grants at all is tagged
+    ///   <c>"model"</c> — its decisions came from the LLM's response to its prompt.</description></item>
+    ///   <item><description>Anything else (e.g. <c>read_file</c>-only inspectors) maps to
+    ///   <c>null</c> — the timeline omits the badge for those.</description></item>
+    /// </list>
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string?>> ResolveVerdictSourcesAsync(
+        CodeFlowDbContext dbContext,
+        IEnumerable<string> agentKeys,
+        CancellationToken cancellationToken)
+    {
+        var distinctKeys = agentKeys
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (distinctKeys.Length == 0)
+        {
+            return new Dictionary<string, string?>(StringComparer.Ordinal);
+        }
+
+        var hostGrantsByAgent = await (
+            from assignment in dbContext.AgentRoleAssignments.AsNoTracking()
+            join grant in dbContext.AgentRoleToolGrants.AsNoTracking()
+                on assignment.RoleId equals grant.RoleId
+            where distinctKeys.Contains(assignment.AgentKey)
+                && !assignment.Role.IsArchived
+                && grant.Category == AgentRoleToolCategory.Host
+            select new { assignment.AgentKey, grant.ToolIdentifier })
+            .ToListAsync(cancellationToken);
+
+        var grantsByAgent = hostGrantsByAgent
+            .GroupBy(g => g.AgentKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.ToolIdentifier).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.Ordinal);
+
+        var result = new Dictionary<string, string?>(distinctKeys.Length, StringComparer.Ordinal);
+        foreach (var key in distinctKeys)
+        {
+            if (!grantsByAgent.TryGetValue(key, out var grants))
+            {
+                // No host-tool grants at all → pure LLM agent → "model".
+                result[key] = "model";
+                continue;
+            }
+
+            if (grants.Contains("run_command") || grants.Contains("apply_patch"))
+            {
+                result[key] = "mechanical";
+            }
+            else
+            {
+                // Has some host grants (e.g. read_file-only inspector) but nothing exec-class
+                // → don't claim either bucket; UI omits the badge.
+                result[key] = null;
+            }
+        }
+
+        return result;
+    }
+
     private static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)
     {
         if (string.IsNullOrWhiteSpace(inputsJson))
@@ -1148,7 +1224,8 @@ public static class TracesEndpoints
         IReadOnlyList<WorkflowSagaDecisionEntity> decisions,
         IReadOnlyList<WorkflowSagaLogicEvaluationEntity> logicEvaluations,
         IReadOnlyList<HitlTaskEntity> pendingHitl,
-        IReadOnlyDictionary<Guid, IReadOnlyList<string>> subflowPaths) => new(
+        IReadOnlyDictionary<Guid, IReadOnlyList<string>> subflowPaths,
+        IReadOnlyDictionary<string, string?> verdictSources) => new(
         TraceId: saga.TraceId,
         WorkflowKey: saga.WorkflowKey,
         WorkflowVersion: saga.WorkflowVersion,
@@ -1172,7 +1249,8 @@ public static class TracesEndpoints
                 OutputRef: entity.OutputRef,
                 NodeEnteredAtUtc: entity.NodeEnteredAtUtc.HasValue
                     ? DateTime.SpecifyKind(entity.NodeEnteredAtUtc.Value, DateTimeKind.Utc)
-                    : null))
+                    : null,
+                VerdictSource: verdictSources.GetValueOrDefault(entity.AgentKey)))
             .ToArray(),
         LogicEvaluations: logicEvaluations
             .Select(entity => new TraceLogicEvaluationDto(

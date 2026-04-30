@@ -156,3 +156,32 @@ export function dotStateFor(event: TraceTimelineEvent): TraceTimelineDotState {
   }
   return KIND_TO_DOT_STATE[event.kind] ?? '';
 }
+
+/**
+ * sc-273 — build a small chip describing where a decision's verdict came from. The
+ * server tags decisions with `verdictSource = 'mechanical' | 'model' | null` based on
+ * the agent's role grants (run_command/apply_patch → mechanical; no host grants → model;
+ * mixed → null). Returns the chip when the source is known, null otherwise so callers
+ * can spread the result without conditional branches.
+ *
+ * Lives in trace-timeline.types so any timeline producer can append it consistently.
+ */
+export function verdictSourceBadge(
+  verdictSource: 'mechanical' | 'model' | null | undefined,
+): TraceTimelineBadge | null {
+  if (verdictSource === 'mechanical') {
+    return {
+      label: 'mechanical',
+      variant: 'warn',
+      title: 'Verdict from a mechanical gate (deterministic checks via run_command / apply_patch).',
+    };
+  }
+  if (verdictSource === 'model') {
+    return {
+      label: 'model',
+      variant: 'accent',
+      title: 'Verdict from an LLM-only agent (no host-tool grants).',
+    };
+  }
+  return null;
+}
