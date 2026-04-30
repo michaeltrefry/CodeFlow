@@ -19,13 +19,14 @@ import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-
 import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
 import { CardComponent } from '../../../ui/card.component';
+import { ChipComponent } from '../../../ui/chip.component';
 
 @Component({
   selector: 'cf-role-editor',
   standalone: true,
   imports: [
     FormsModule, RouterLink, ToolPickerComponent,
-    PageHeaderComponent, ButtonComponent, CardComponent,
+    PageHeaderComponent, ButtonComponent, CardComponent, ChipComponent,
   ],
   template: `
     <div class="page">
@@ -118,7 +119,7 @@ import { CardComponent } from '../../../ui/card.component';
                          [checked]="true"
                          (change)="toggleSkill(ghostId, $any($event.target).checked)" />
                   <span class="skill-name">
-                    skill #{{ ghostId }} <span class="tag warn">archived</span>
+                    skill #{{ ghostId }} <cf-chip variant="warn" mono>archived</cf-chip>
                   </span>
                 </label>
               </li>

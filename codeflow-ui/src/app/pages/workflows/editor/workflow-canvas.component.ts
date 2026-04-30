@@ -36,6 +36,7 @@ import {
 } from '../../../core/models';
 import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
 import { ButtonComponent } from '../../../ui/button.component';
+import { ChipComponent } from '../../../ui/chip.component';
 import { TagInputComponent } from '../../../ui/tag-input.component';
 import {
   WorkflowAreaExtra,
@@ -158,7 +159,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'cf-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
+  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, ChipComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
   providers: [WorkflowCanvasDialogOrchestrator],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
@@ -242,16 +243,16 @@ function defaultStartInput(): WorkflowInput {
               @if (selectedAgentDocsLoading()) {
                 <div class="muted xsmall">Loading agent port examples…</div>
               } @else if (selectedAgentDocsError()) {
-                <div class="tag error">{{ selectedAgentDocsError() }}</div>
+                <cf-chip variant="err" dot>{{ selectedAgentDocsError() }}</cf-chip>
               } @else {
                 @for (row of selectedPortReferences(); track row.port) {
                   <article class="port-reference-row" [class.blank]="row.source === 'blank'">
                     <div class="port-reference-meta">
                       <span class="mono port-name">{{ row.port }}</span>
                       @if (row.source === 'payload') {
-                        <span class="tag small success">payload example</span>
+                        <cf-chip variant="ok" mono>payload example</cf-chip>
                       } @else if (row.source === 'template') {
-                        <span class="tag small">decision template</span>
+                        <cf-chip mono>decision template</cf-chip>
                       }
                     </div>
                     @if (row.content) {
@@ -315,9 +316,9 @@ function defaultStartInput(): WorkflowInput {
                         <li [attr.data-port-status]="p.status">
                           <code>{{ p.name }}</code>
                           @if (p.status === 'stale') {
-                            <span class="tag error xsmall" title="Wired on this node but the pinned agent can't submit it. Agents reaching this port at runtime would crash.">stale (not declared by agent)</span>
+                            <cf-chip variant="err" mono title="Wired on this node but the pinned agent can't submit it. Agents reaching this port at runtime would crash.">stale (not declared by agent)</cf-chip>
                           } @else if (p.status === 'missing') {
-                            <span class="tag warn xsmall" title="Declared by the pinned agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</span>
+                            <cf-chip variant="warn" mono title="Declared by the pinned agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</cf-chip>
                           }
                         </li>
                       }
@@ -371,9 +372,9 @@ function defaultStartInput(): WorkflowInput {
                 <div class="row">
                   <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
                   @if (inputScriptValidationError()) {
-                    <span class="tag error">{{ inputScriptValidationError() }}</span>
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
                   } @else if (inputScriptValidationOk()) {
-                    <span class="tag success">Script parses OK</span>
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
                   }
                 </div>
               </div>
@@ -396,9 +397,9 @@ function defaultStartInput(): WorkflowInput {
                 <div class="row">
                   <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
                   @if (scriptValidationError()) {
-                    <span class="tag error">{{ scriptValidationError() }}</span>
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
                   } @else if (scriptValidationOk()) {
-                    <span class="tag success">Script parses OK</span>
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
                   }
                 </div>
               </div>
@@ -416,7 +417,7 @@ function defaultStartInput(): WorkflowInput {
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
-                    <span class="tag error xsmall">Self-reference — save will be rejected.</span>
+                    <cf-chip variant="err" dot>Self-reference — save will be rejected.</cf-chip>
                   }
                 </label>
                 <label class="field">
@@ -438,7 +439,7 @@ function defaultStartInput(): WorkflowInput {
                       </div>
                       <ul class="subflow-nodes">
                         @for (n of detail.nodes; track n.id) {
-                          <li><span class="tag small">{{ n.kind }}</span> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
+                          <li><cf-chip mono>{{ n.kind }}</cf-chip> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
                         }
                       </ul>
                     </div>
@@ -488,7 +489,7 @@ function defaultStartInput(): WorkflowInput {
                     }
                   </select>
                   @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
-                    <span class="tag error xsmall">Self-reference — save will be rejected.</span>
+                    <cf-chip variant="err" dot>Self-reference — save will be rejected.</cf-chip>
                   }
                 </label>
                 <label class="field">
@@ -526,7 +527,7 @@ function defaultStartInput(): WorkflowInput {
                       </div>
                       <ul class="subflow-nodes">
                         @for (n of detail.nodes; track n.id) {
-                          <li><span class="tag small">{{ n.kind }}</span> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
+                          <li><cf-chip mono>{{ n.kind }}</cf-chip> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
                         }
                       </ul>
                     </div>
@@ -583,9 +584,9 @@ function defaultStartInput(): WorkflowInput {
                 <div class="row">
                   <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
                   @if (scriptValidationError()) {
-                    <span class="tag error">{{ scriptValidationError() }}</span>
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
                   } @else if (scriptValidationOk()) {
-                    <span class="tag success">Script parses OK</span>
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
                   }
                 </div>
 
@@ -639,7 +640,7 @@ function defaultStartInput(): WorkflowInput {
                             (input)="onTransformPreviewFixtureChanged($any($event.target).value)"
                             placeholder='{ "example": 1 }'></textarea>
                   @if (transformPreviewFixtureError(); as err) {
-                    <p class="tag error xsmall transform-preview-fixture-error">{{ err }}</p>
+                    <cf-chip class="transform-preview-fixture-error" variant="err" dot>{{ err }}</cf-chip>
                   }
                 </div>
 
@@ -651,13 +652,13 @@ function defaultStartInput(): WorkflowInput {
                     }
                   </div>
                   @if (transformPreviewError(); as err) {
-                    <p class="tag error xsmall">Render error — would route to <code>Failed</code>:</p>
+                    <cf-chip variant="err" dot>Render error — would route to <code>Failed</code>:</cf-chip>
                     <pre class="transform-preview-output error">{{ err }}</pre>
                   } @else if (transformPreviewRendered() === null) {
                     <p class="muted xsmall">Enter a template above to see the rendered output.</p>
                   } @else if (sel.editor.outputType === 'json') {
                     @if (transformPreviewJsonParseError(); as parseErr) {
-                      <p class="tag error xsmall">JSON parse error — would route to <code>Failed</code>:</p>
+                      <cf-chip variant="err" dot>JSON parse error — would route to <code>Failed</code>:</cf-chip>
                       <pre class="transform-preview-output error">{{ parseErr }}</pre>
                       <p class="muted xsmall transform-preview-subhead">Raw render:</p>
                       <pre class="transform-preview-output">{{ transformPreviewRendered() }}</pre>
@@ -756,9 +757,9 @@ function defaultStartInput(): WorkflowInput {
                         <li [attr.data-port-status]="p.status">
                           <code>{{ p.name }}</code>
                           @if (p.status === 'stale') {
-                            <span class="tag error xsmall" title="Wired on this node but the synthesizer agent can't submit it. Synthesizer reaching this port at runtime would crash.">stale (not declared by synthesizer)</span>
+                            <cf-chip variant="err" mono title="Wired on this node but the synthesizer agent can't submit it. Synthesizer reaching this port at runtime would crash.">stale (not declared by synthesizer)</cf-chip>
                           } @else if (p.status === 'missing') {
-                            <span class="tag warn xsmall" title="Declared by the synthesizer agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</span>
+                            <cf-chip variant="warn" mono title="Declared by the synthesizer agent but missing from this node. Submissions to this port would route nowhere (dead branch).">missing on node</cf-chip>
                           }
                         </li>
                       }
@@ -807,7 +808,7 @@ function defaultStartInput(): WorkflowInput {
               @if (dataflowLoading()) {
                 <p class="muted xsmall">Analyzing data flow…</p>
               } @else if (dataflowError(); as err) {
-                <p class="tag error xsmall">{{ err }}</p>
+                <cf-chip variant="err" dot>{{ err }}</cf-chip>
               } @else if (!dataflowSnapshot()) {
                 <p class="muted xsmall">Save this workflow to enable data-flow analysis.</p>
               } @else if (selectedNodeDataflow(); as scope) {
@@ -823,12 +824,11 @@ function defaultStartInput(): WorkflowInput {
                       @for (v of scope.workflowVariables; track v.key) {
                         <li>
                           <code class="mono">{{ v.key }}</code>
-                          <span class="tag small"
-                                [class.success]="v.confidence === 'Definite'"
-                                [class.warn]="v.confidence === 'Conditional'"
+                          <cf-chip mono
+                                [variant]="v.confidence === 'Definite' ? 'ok' : 'warn'"
                                 [title]="v.confidence === 'Definite' ? 'Every upstream path writes this key.' : 'At least one upstream path writes this key — others may not.'">
                             {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
-                          </span>
+                          </cf-chip>
                           @if (v.sources.length > 0) {
                             <span class="muted xsmall">from</span>
                             @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
@@ -842,7 +842,7 @@ function defaultStartInput(): WorkflowInput {
                       @for (k of selectedNodeUndeclaredReads().workflow; track k) {
                         <li class="undeclared">
                           <code class="mono">{{ k }}</code>
-                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                          <cf-chip variant="err" mono title="This key is referenced by this node but no upstream node writes it.">no writer found</cf-chip>
                         </li>
                       }
                     </ul>
@@ -861,11 +861,9 @@ function defaultStartInput(): WorkflowInput {
                       @for (v of scope.contextKeys; track v.key) {
                         <li>
                           <code class="mono">{{ v.key }}</code>
-                          <span class="tag small"
-                                [class.success]="v.confidence === 'Definite'"
-                                [class.warn]="v.confidence === 'Conditional'">
+                          <cf-chip mono [variant]="v.confidence === 'Definite' ? 'ok' : 'warn'">
                             {{ v.confidence === 'Definite' ? 'definite' : 'conditional' }}
-                          </span>
+                          </cf-chip>
                           @if (v.sources.length > 0) {
                             <span class="muted xsmall">from</span>
                             @for (src of v.sources; track src.nodeId + ':' + src.scriptKind; let last = $last) {
@@ -879,7 +877,7 @@ function defaultStartInput(): WorkflowInput {
                       @for (k of selectedNodeUndeclaredReads().context; track k) {
                         <li class="undeclared">
                           <code class="mono">{{ k }}</code>
-                          <span class="tag small error" title="This key is referenced by this node but no upstream node writes it.">no writer found</span>
+                          <cf-chip variant="err" mono title="This key is referenced by this node but no upstream node writes it.">no writer found</cf-chip>
                         </li>
                       }
                     </ul>
@@ -917,12 +915,12 @@ function defaultStartInput(): WorkflowInput {
                       <li>
                         <code class="mono">round</code>
                         @if (lb.staticRound !== null) {
-                          <span class="tag small success">= {{ lb.staticRound }}</span>
+                          <cf-chip variant="ok" mono>= {{ lb.staticRound }}</cf-chip>
                         } @else {
-                          <span class="tag small">1..{{ lb.maxRounds }}</span>
+                          <cf-chip mono>1..{{ lb.maxRounds }}</cf-chip>
                         }
                       </li>
-                      <li><code class="mono">maxRounds</code> <span class="tag small success">= {{ lb.maxRounds }}</span></li>
+                      <li><code class="mono">maxRounds</code> <cf-chip variant="ok" mono>= {{ lb.maxRounds }}</cf-chip></li>
                       <li><code class="mono">isLastRound</code> <span class="muted xsmall">true on round {{ lb.maxRounds }}</span></li>
                     </ul>
                   </div>
@@ -938,7 +936,7 @@ function defaultStartInput(): WorkflowInput {
                       @for (p of selectedNodeAutoInjectedPartials(); track p) {
                         <li>
                           <code class="mono">{{ p }}</code>
-                          <span class="tag small">[auto-injected]</span>
+                          <cf-chip mono>[auto-injected]</cf-chip>
                         </li>
                       }
                     </ul>
@@ -960,7 +958,7 @@ function defaultStartInput(): WorkflowInput {
               @if (selectedConnectionBackedge(); as bk) {
                 <div class="backedge-card" [class.dismissed]="bk.intentional">
                   <div class="row-spread">
-                    <span class="tag warn small">Backedge</span>
+                    <cf-chip variant="warn" dot>Backedge</cf-chip>
                     @if (bk.intentional) {
                       <span class="muted xsmall">Marked intentional</span>
                     }
@@ -1005,7 +1003,7 @@ function defaultStartInput(): WorkflowInput {
                     <div class="row-spread">
                       <strong class="mono">{{ input.key }}</strong>
                       @if (isDefaultInput(input)) {
-                        <span class="tag small">required · start</span>
+                        <cf-chip mono>required · start</cf-chip>
                       } @else {
                         <button type="button" class="icon-button" (click)="removeInput(input)" title="Remove input">×</button>
                       }
@@ -1418,18 +1416,6 @@ function defaultStartInput(): WorkflowInput {
       color: inherit;
     }
     .icon-button:hover { border-color: #f85149; color: #f85149; }
-    .tag {
-      background: rgba(88, 166, 255, 0.14);
-      color: #58a6ff;
-      padding: 0.2rem 0.4rem;
-      border-radius: 3px;
-      font-size: 0.75rem;
-    }
-    .tag.error { background: rgba(248, 81, 73, 0.15); color: #f85149; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
-    .tag.warn { background: rgba(245, 184, 76, 0.18); color: #f5b84c; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
-    .tag.success { background: rgba(63, 185, 80, 0.15); color: #3fb950; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75rem; }
-    .tag.small { font-size: 0.7rem; }
-    .tag.xsmall { font-size: 0.65rem; padding: 0.1rem 0.3rem; }
     .dataflow-section .row-spread { margin-bottom: 0.5rem; }
     .dataflow-section .dirty { color: #f5b84c; }
     .df-group { margin-bottom: 0.6rem; }
