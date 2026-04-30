@@ -3,6 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
 import { AgentRolesApi } from '../../../core/agent-roles.api';
+import { formatHttpError } from '../../../core/format-error';
 import { HostToolsApi } from '../../../core/host-tools.api';
 import { McpServersApi } from '../../../core/mcp-servers.api';
 import { SkillsApi } from '../../../core/skills.api';
@@ -207,7 +208,7 @@ export class RoleEditorComponent implements OnInit {
         this.skillsLoading.set(false);
       },
       error: err => {
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err, 'Save failed'));
         this.skillsLoading.set(false);
       }
     });
@@ -234,7 +235,7 @@ export class RoleEditorComponent implements OnInit {
         this.skillsSaving.set(false);
       },
       error: err => {
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err, 'Save failed'));
         this.skillsSaving.set(false);
       }
     });
@@ -274,7 +275,7 @@ export class RoleEditorComponent implements OnInit {
         this.grantsSaving.set(false);
       },
       error: err => {
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err, 'Save failed'));
         this.grantsSaving.set(false);
       }
     });
@@ -296,7 +297,7 @@ export class RoleEditorComponent implements OnInit {
           this.saving.set(false);
         },
         error: err => {
-          this.error.set(this.formatError(err));
+          this.error.set(formatHttpError(err, 'Save failed'));
           this.saving.set(false);
         }
       });
@@ -311,23 +312,11 @@ export class RoleEditorComponent implements OnInit {
           this.router.navigate(['/settings/roles', role.id]);
         },
         error: err => {
-          this.error.set(this.formatError(err));
+          this.error.set(formatHttpError(err, 'Save failed'));
           this.saving.set(false);
         }
       });
     }
   }
 
-  private formatError(err: unknown): string {
-    if (err && typeof err === 'object') {
-      const httpErr = err as { error?: unknown; message?: string };
-      if (httpErr.error && typeof httpErr.error === 'object') {
-        return JSON.stringify(httpErr.error);
-      }
-      if (httpErr.message) {
-        return httpErr.message;
-      }
-    }
-    return 'Save failed';
-  }
 }

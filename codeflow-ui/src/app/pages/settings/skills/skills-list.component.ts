@@ -1,21 +1,11 @@
 import { Component, inject, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
+import { relativeTime } from '../../../core/format-time';
 import { SkillsApi } from '../../../core/skills.api';
 import { Skill } from '../../../core/models';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
 import { ChipComponent } from '../../../ui/chip.component';
-
-function relTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '—';
-  const diff = (Date.now() - t) / 1000;
-  if (diff < 60) return `${Math.max(0, Math.round(diff))}s ago`;
-  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
-  return `${Math.round(diff / 86400)}d ago`;
-}
 
 @Component({
   selector: 'cf-skills-list',
@@ -82,5 +72,5 @@ export class SkillsListComponent {
     return skill.body.length > 240 ? skill.body.slice(0, 240) + '…' : skill.body;
   }
 
-  relTime = relTime;
+  relTime = relativeTime;
 }

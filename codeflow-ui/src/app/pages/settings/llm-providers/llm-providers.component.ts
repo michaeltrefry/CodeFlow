@@ -2,6 +2,7 @@ import { Component, computed, inject, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
+import { formatHttpError } from '../../../core/format-error';
 import { LlmProvidersApi } from '../../../core/llm-providers.api';
 import { AgentRolesApi } from '../../../core/agent-roles.api';
 import {
@@ -370,7 +371,7 @@ export class LlmProvidersComponent implements OnInit {
       assignedAgentRoleId: current.assignedAgentRoleId,
     }).subscribe({
       next: response => this.applyAssistantResponse(response),
-      error: err => this.patchAssistant({ saving: false, error: this.formatError(err) }),
+      error: err => this.patchAssistant({ saving: false, error: formatHttpError(err) }),
     });
   }
 
@@ -474,7 +475,7 @@ export class LlmProvidersComponent implements OnInit {
           this.applyResponse(response);
         },
         error: err => {
-          this.patch(state, { saving: false, error: this.formatError(err) });
+          this.patch(state, { saving: false, error: formatHttpError(err) });
         },
       });
   }
@@ -496,7 +497,7 @@ export class LlmProvidersComponent implements OnInit {
         // Seed empty forms so the UI is still usable once the backend comes back online; the
         // banner tells the operator why saving isn't going to work yet.
         this.providers.set(LLM_PROVIDER_KEYS.map(p => this.buildState(p, undefined)));
-        this.loadError.set(this.formatError(err));
+        this.loadError.set(formatHttpError(err));
         this.loading.set(false);
       },
     });
@@ -533,16 +534,4 @@ export class LlmProvidersComponent implements OnInit {
       rows.map(r => (r.provider === response.provider ? this.buildState(response.provider, response) : r)));
   }
 
-  private formatError(err: unknown): string {
-    if (err && typeof err === 'object' && 'error' in err) {
-      const body = (err as { error: unknown }).error;
-      if (body && typeof body === 'object' && 'title' in body) {
-        return String((body as { title: unknown }).title);
-      }
-      if (typeof body === 'string') {
-        return body;
-      }
-    }
-    return 'Request failed.';
-  }
 }

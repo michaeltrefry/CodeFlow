@@ -1,4 +1,6 @@
-import { Observable } from 'rxjs';
+import type { Observable } from 'rxjs';
+import type { SseFrame } from './sse-stream';
+import { streamSse } from './sse-stream';
 
 export interface AgentTestTokenUsage {
   inputTokens: number;
@@ -86,89 +88,26 @@ export function streamAgentTest(
   request: AgentTestRequest,
   accessToken: string | null | Promise<string | null>
 ): Observable<AgentTestEvent> {
-  return new Observable<AgentTestEvent>(subscriber => {
-    const controller = new AbortController();
-
-    const run = async () => {
-      try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream'
-        };
-        const token = await Promise.resolve(accessToken);
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch('/api/agent-test', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(request),
-          signal: controller.signal
-        });
-
-        if (!response.ok || !response.body) {
-          const text = await response.text().catch(() => '');
-          subscriber.next({
-            type: 'error',
-            message: text || `HTTP ${response.status} ${response.statusText}`
-          });
-          subscriber.complete();
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) { break; }
-          buffer += decoder.decode(value, { stream: true });
-
-          let delimiterIndex = buffer.indexOf('\n\n');
-          while (delimiterIndex !== -1) {
-            const raw = buffer.slice(0, delimiterIndex);
-            buffer = buffer.slice(delimiterIndex + 2);
-
-            const parsed = parseSseFrame(raw);
-            if (parsed) {
-              subscriber.next(parsed);
-            }
-
-            delimiterIndex = buffer.indexOf('\n\n');
-          }
-        }
-
-        subscriber.complete();
-      } catch (err) {
-        if ((err as Error)?.name === 'AbortError') {
-          subscriber.complete();
-          return;
-        }
-        subscriber.error(err);
-      }
-    };
-
-    void run();
-
-    return () => controller.abort();
-  });
+  return streamSse(
+    '/api/agent-test',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      accessToken,
+      handleErrorResponse: async response => {
+        const text = await response.text().catch(() => '');
+        return {
+          type: 'error',
+          message: text || `HTTP ${response.status} ${response.statusText}`
+        } satisfies AgentTestErrorEvent;
+      },
+    },
+    parseSseFrame,
+  );
 }
 
-function parseSseFrame(raw: string): AgentTestEvent | null {
-  let eventName = '';
-  const dataLines: string[] = [];
-
-  for (const line of raw.split('\n')) {
-    if (line.startsWith(':')) { continue; }
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim();
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
+function parseSseFrame({ eventName, dataLines }: SseFrame): AgentTestEvent | null {
   if (!eventName || dataLines.length === 0) {
     return null;
   }

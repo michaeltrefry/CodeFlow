@@ -1,5 +1,4 @@
 import { ChangeDetectionStrategy, Component, ElementRef, ViewChild, computed, effect, inject, input, signal, untracked } from '@angular/core';
-import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
@@ -12,6 +11,7 @@ import {
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
 import { AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
+import { formatHttpError } from '../../core/format-error';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowsApi } from '../../core/workflows.api';
@@ -810,7 +810,7 @@ export class ChatPanelComponent {
       error: err => {
         this.streaming.set(false);
         this.streamSub = null;
-        this.turnError.set(formatError(err));
+        this.turnError.set(formatHttpError(err));
         // Roll back: drop the in-flight assistant bubble, keep the user message visible so the
         // user can retry.
         this.pending.set(null);
@@ -868,7 +868,7 @@ export class ChatPanelComponent {
       error: err => {
         this.loading.set(false);
         this.conversationId.set(previousId);
-        this.loadFailed.set(formatError(err));
+        this.loadFailed.set(formatHttpError(err));
       },
     });
   }
@@ -926,7 +926,7 @@ export class ChatPanelComponent {
         this.updateConfirmation(toolCallId, c => ({
           ...c,
           state: 'error',
-          errorMessage: formatError(err),
+          errorMessage: formatHttpError(err),
         }));
       },
     });
@@ -970,7 +970,7 @@ export class ChatPanelComponent {
         this.updateConfirmation(toolCallId, c => ({
           ...c,
           state: 'error',
-          errorMessage: formatError(err),
+          errorMessage: formatHttpError(err),
         }));
       },
     });
@@ -1004,7 +1004,7 @@ export class ChatPanelComponent {
         this.updateConfirmation(toolCallId, c => ({
           ...c,
           state: 'error',
-          errorMessage: formatError(err),
+          errorMessage: formatHttpError(err),
         }));
       },
     });
@@ -1143,7 +1143,7 @@ export class ChatPanelComponent {
       next: payload => this.applyConversationPayload(payload),
       error: err => {
         this.loading.set(false);
-        this.loadFailed.set(formatError(err));
+        this.loadFailed.set(formatHttpError(err));
       },
     });
   }
@@ -1154,7 +1154,7 @@ export class ChatPanelComponent {
       next: payload => this.applyConversationPayload(payload),
       error: err => {
         this.loading.set(false);
-        this.loadFailed.set(formatError(err));
+        this.loadFailed.set(formatHttpError(err));
       },
     });
   }
@@ -1402,18 +1402,4 @@ function truncatePreview(value: string): string {
   const PREVIEW_CAP = 4_000;
   if (value.length <= PREVIEW_CAP) return value;
   return value.slice(0, PREVIEW_CAP) + `\n... [truncated, original was ${value.length} chars]`;
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof HttpErrorResponse) {
-    // HttpClient wraps non-2xx responses; the default toString() yields "[object Object]".
-    const reason = typeof err.error === 'string'
-      ? err.error
-      : err.error?.error ?? err.message;
-    return `${err.status} ${err.statusText}${reason ? ` — ${reason}` : ''}`;
-  }
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }

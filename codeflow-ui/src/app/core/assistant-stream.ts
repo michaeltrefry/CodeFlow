@@ -1,7 +1,9 @@
-import { Observable } from 'rxjs';
+import type { Observable } from 'rxjs';
 import { AuthService } from '../auth/auth.service';
 import { AssistantMessage } from './assistant.api';
 import type { PageContextDto } from './page-context';
+import type { SseFrame } from './sse-stream';
+import { streamSse } from './sse-stream';
 
 /**
  * One frame from the assistant SSE stream. Mirrors the event names emitted by
@@ -38,9 +40,8 @@ export type AssistantStreamEvent =
 
 /**
  * Streams a single chat turn against <c>POST /api/assistant/conversations/{id}/messages</c>.
- * Mirrors the fetch+ReadableStream pattern from {@link streamTrace} so the Authorization
- * header can be attached (EventSource cannot set custom headers and bypasses the auth
- * interceptor).
+ * Uses the shared fetch-based SSE helper so the Authorization header can be attached
+ * (EventSource cannot set custom headers and bypasses the auth interceptor).
  */
 export interface AssistantWorkspaceTargetDto {
   /** 'Conversation' (default per-chat dir) or 'Trace' (the workdir of an existing trace). */
@@ -68,110 +69,39 @@ export function streamAssistantTurn(
   auth: AuthService,
   options?: SendTurnOptions,
 ): Observable<AssistantStreamEvent> {
-  return new Observable<AssistantStreamEvent>(subscriber => {
-    const controller = new AbortController();
-
-    const run = async () => {
-      try {
-        const headers: Record<string, string> = {
-          Accept: 'text/event-stream',
-          'Content-Type': 'application/json',
-        };
-        const token = await auth.getValidAccessToken();
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const body: {
-          content: string;
-          pageContext?: PageContextDto;
-          provider?: string;
-          model?: string;
-          workspaceOverride?: AssistantWorkspaceTargetDto;
-        } = { content };
-        if (options?.pageContext) {
-          body.pageContext = options.pageContext;
-        }
-        if (options?.provider) {
-          body.provider = options.provider;
-        }
-        if (options?.model) {
-          body.model = options.model;
-        }
-        if (options?.workspaceOverride) {
-          body.workspaceOverride = options.workspaceOverride;
-        }
-
-        const response = await fetch(
-          `/api/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
-          {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: controller.signal,
-          },
-        );
-
-        if (!response.ok || !response.body) {
-          subscriber.error(new Error(`HTTP ${response.status} ${response.statusText}`));
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) {
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-
-          let delimiterIndex = buffer.indexOf('\n\n');
-          while (delimiterIndex !== -1) {
-            const raw = buffer.slice(0, delimiterIndex);
-            buffer = buffer.slice(delimiterIndex + 2);
-
-            const parsed = parseSseFrame(raw);
-            if (parsed) {
-              subscriber.next(parsed);
-            }
-            delimiterIndex = buffer.indexOf('\n\n');
-          }
-        }
-
-        subscriber.complete();
-      } catch (err) {
-        if ((err as Error)?.name === 'AbortError') {
-          subscriber.complete();
-          return;
-        }
-        subscriber.error(err);
-      }
-    };
-
-    void run();
-
-    return () => controller.abort();
-  });
-}
-
-function parseSseFrame(raw: string): AssistantStreamEvent | null {
-  let eventName = '';
-  const dataLines: string[] = [];
-
-  for (const line of raw.split('\n')) {
-    if (line.startsWith(':')) {
-      continue;
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim();
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
+  const body: {
+    content: string;
+    pageContext?: PageContextDto;
+    provider?: string;
+    model?: string;
+    workspaceOverride?: AssistantWorkspaceTargetDto;
+  } = { content };
+  if (options?.pageContext) {
+    body.pageContext = options.pageContext;
+  }
+  if (options?.provider) {
+    body.provider = options.provider;
+  }
+  if (options?.model) {
+    body.model = options.model;
+  }
+  if (options?.workspaceOverride) {
+    body.workspaceOverride = options.workspaceOverride;
   }
 
+  return streamSse(
+    `/api/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      accessToken: auth.getValidAccessToken(),
+    },
+    parseSseFrame,
+  );
+}
+
+function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStreamEvent | null {
   if (!eventName) {
     return null;
   }

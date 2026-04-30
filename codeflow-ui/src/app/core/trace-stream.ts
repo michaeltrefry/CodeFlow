@@ -1,6 +1,8 @@
-import { Observable } from 'rxjs';
-import { TraceStreamEvent } from './models';
+import type { Observable } from 'rxjs';
 import { AuthService } from '../auth/auth.service';
+import { TraceStreamEvent } from './models';
+import type { SseFrame } from './sse-stream';
+import { streamSse } from './sse-stream';
 
 /**
  * Subscribes to /api/traces/{id}/stream using a fetch-based SSE reader so the
@@ -11,86 +13,17 @@ export function streamTrace(
   traceId: string,
   auth: AuthService,
 ): Observable<TraceStreamEvent> {
-  return new Observable<TraceStreamEvent>(subscriber => {
-    const controller = new AbortController();
-
-    const run = async () => {
-      try {
-        const headers: Record<string, string> = {
-          Accept: 'text/event-stream',
-        };
-        const token = await auth.getValidAccessToken();
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(`/api/traces/${encodeURIComponent(traceId)}/stream`, {
-          method: 'GET',
-          headers,
-          signal: controller.signal,
-        });
-
-        if (!response.ok || !response.body) {
-          subscriber.error(new Error(`HTTP ${response.status} ${response.statusText}`));
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) {
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-
-          let delimiterIndex = buffer.indexOf('\n\n');
-          while (delimiterIndex !== -1) {
-            const raw = buffer.slice(0, delimiterIndex);
-            buffer = buffer.slice(delimiterIndex + 2);
-
-            const parsed = parseSseFrame(raw);
-            if (parsed) {
-              subscriber.next(parsed);
-            }
-
-            delimiterIndex = buffer.indexOf('\n\n');
-          }
-        }
-
-        subscriber.complete();
-      } catch (err) {
-        if ((err as Error)?.name === 'AbortError') {
-          subscriber.complete();
-          return;
-        }
-        subscriber.error(err);
-      }
-    };
-
-    void run();
-
-    return () => controller.abort();
-  });
+  return streamSse(
+    `/api/traces/${encodeURIComponent(traceId)}/stream`,
+    {
+      method: 'GET',
+      accessToken: auth.getValidAccessToken(),
+    },
+    parseSseFrame,
+  );
 }
 
-function parseSseFrame(raw: string): TraceStreamEvent | null {
-  let eventName = '';
-  const dataLines: string[] = [];
-
-  for (const line of raw.split('\n')) {
-    if (line.startsWith(':')) {
-      continue;
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim();
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
+function parseSseFrame({ eventName, dataLines }: SseFrame): TraceStreamEvent | null {
   if (eventName !== 'requested' && eventName !== 'completed' && eventName !== 'tokenusagerecorded') {
     return null;
   }

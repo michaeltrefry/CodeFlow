@@ -1,5 +1,6 @@
 import { CommonModule, DatePipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
+import { relativeTime } from '../../core/format-time';
 import {
   DeadLetterListResponse,
   DeadLetterMessage,
@@ -11,17 +12,6 @@ import { ButtonComponent } from '../../ui/button.component';
 import { ChipComponent } from '../../ui/chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { IconComponent } from '../../ui/icon.component';
-
-function relTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '—';
-  const diff = (Date.now() - t) / 1000;
-  if (diff < 60) return `${Math.max(0, Math.round(diff))}s ago`;
-  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
-  return `${Math.round(diff / 86400)}d ago`;
-}
 
 @Component({
   selector: 'cf-dlq',
@@ -233,5 +223,5 @@ export class DlqComponent {
     navigator.clipboard?.writeText(message.payloadPreview ?? '').catch(() => undefined);
   }
 
-  relTime = relTime;
+  relTime = relativeTime;
 }

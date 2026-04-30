@@ -12,6 +12,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../../core/agents.api';
+import { formatHttpError } from '../../../core/format-error';
 import { AgentConfig } from '../../../core/models';
 import { AgentEditorComponent } from '../../agents/agent-editor.component';
 import { ButtonComponent } from '../../../ui/button.component';
@@ -212,19 +213,9 @@ export class AgentInPlaceEditDialogComponent implements OnChanges {
       },
       error: err => {
         this.phase.set('edit');
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err, 'Save failed'));
       }
     });
   }
 
-  private formatError(err: unknown): string {
-    if (err && typeof err === 'object') {
-      const httpErr = err as { error?: unknown; message?: string };
-      if (httpErr.error && typeof httpErr.error === 'object') {
-        return JSON.stringify(httpErr.error);
-      }
-      if (httpErr.message) return httpErr.message;
-    }
-    return 'Save failed';
-  }
 }

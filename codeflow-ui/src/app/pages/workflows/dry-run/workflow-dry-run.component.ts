@@ -2,6 +2,7 @@ import { Component, OnInit, computed, inject, input, signal } from '@angular/cor
 import { CommonModule, JsonPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
+import { formatHttpError } from '../../../core/format-error';
 import {
   DryRunEvent,
   DryRunMockResponse,
@@ -462,10 +463,6 @@ export class WorkflowDryRunComponent implements OnInit {
   }
 
   private errorMessage(err: unknown): string {
-    if (err && typeof err === 'object' && 'error' in err) {
-      const e = (err as { error?: { error?: string } }).error;
-      if (e?.error) return e.error;
-    }
-    return (err as { message?: string })?.message ?? 'Request failed';
+    return formatHttpError(err);
   }
 }

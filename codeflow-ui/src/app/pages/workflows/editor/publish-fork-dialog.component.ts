@@ -12,6 +12,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../../core/agents.api';
+import { formatHttpError } from '../../../core/format-error';
 import { ButtonComponent } from '../../../ui/button.component';
 import { ChipComponent } from '../../../ui/chip.component';
 import { DialogComponent } from '../../../ui/dialog.component';
@@ -207,7 +208,7 @@ export class PublishForkDialogComponent implements OnChanges {
         this.loading.set(false);
       },
       error: err => {
-        this.loadError.set(this.formatError(err));
+        this.loadError.set(formatHttpError(err, 'Publish failed'));
         this.loading.set(false);
       }
     });
@@ -238,7 +239,7 @@ export class PublishForkDialogComponent implements OnChanges {
       },
       error: err => {
         this.saving.set(null);
-        this.saveError.set(this.formatError(err));
+        this.saveError.set(formatHttpError(err, 'Publish failed'));
       }
     });
   }
@@ -264,22 +265,9 @@ export class PublishForkDialogComponent implements OnChanges {
       },
       error: err => {
         this.saving.set(null);
-        this.saveError.set(this.formatError(err));
+        this.saveError.set(formatHttpError(err, 'Publish failed'));
       }
     });
   }
 
-  private formatError(err: unknown): string {
-    if (err && typeof err === 'object') {
-      const httpErr = err as { error?: unknown; message?: string };
-      if (httpErr.error && typeof httpErr.error === 'object') {
-        const inner = (httpErr.error as { error?: unknown }).error;
-        if (typeof inner === 'string') return inner;
-        return JSON.stringify(httpErr.error);
-      }
-      if (typeof httpErr.error === 'string') return httpErr.error;
-      if (httpErr.message) return httpErr.message;
-    }
-    return 'Publish failed';
-  }
 }
