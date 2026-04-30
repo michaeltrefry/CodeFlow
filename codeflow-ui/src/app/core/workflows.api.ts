@@ -49,9 +49,19 @@ export interface WorkflowPackageReference {
 export interface WorkflowPackageImportItem {
   kind: WorkflowPackageImportResourceKind;
   key: string;
+  /** Post-rewrite target version. For an auto-bump Create row this is the bumped value, NOT
+   *  the package's source version — use `sourceVersion` for that. */
   version?: number | null;
   action: WorkflowPackageImportAction;
   message: string;
+  /** sc-393: the version the package itself carries, before any importer rewrite. Equals
+   *  `version` for plain Create / Reuse rows. Differs from `version` for the auto-bump path.
+   *  Null on non-versioned kinds (Role, Skill, McpServer, AgentRoleAssignment). */
+  sourceVersion?: number | null;
+  /** sc-393: the highest version present in the local library for this key, or null when none
+   *  exists yet (or for non-versioned kinds). For a stale-package Conflict, this is the value
+   *  the package would need to bump above to land cleanly. */
+  existingMaxVersion?: number | null;
 }
 
 export interface WorkflowPackageImportPreview {

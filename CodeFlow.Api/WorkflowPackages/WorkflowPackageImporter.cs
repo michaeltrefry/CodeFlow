@@ -161,7 +161,9 @@ public sealed class WorkflowPackageImporter(
                         WorkflowPackageImportResourceKind.Agent,
                         agent.Key,
                         agent.Version,
-                        $"Target already has agent '{agent.Key}' v{existingVersion}, which is higher than imported v{agent.Version}."));
+                        $"Target already has agent '{agent.Key}' v{existingVersion}, which is higher than imported v{agent.Version}.",
+                        sourceVersion: agent.Version,
+                        existingMaxVersion: existingVersion));
                     continue;
                 }
 
@@ -169,12 +171,22 @@ public sealed class WorkflowPackageImporter(
                 if (existing is null)
                 {
                     versionMap[key] = agent.Version;
-                    items.Add(Create(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
+                    items.Add(Create(
+                        WorkflowPackageImportResourceKind.Agent,
+                        agent.Key,
+                        agent.Version,
+                        sourceVersion: agent.Version,
+                        existingMaxVersion: maxExistingVersion));
                 }
                 else if (Equivalent(agent, existing))
                 {
                     versionMap[key] = agent.Version;
-                    items.Add(Reuse(WorkflowPackageImportResourceKind.Agent, agent.Key, agent.Version));
+                    items.Add(Reuse(
+                        WorkflowPackageImportResourceKind.Agent,
+                        agent.Key,
+                        agent.Version,
+                        sourceVersion: agent.Version,
+                        existingMaxVersion: maxExistingVersion));
                 }
                 else
                 {
@@ -185,7 +197,8 @@ public sealed class WorkflowPackageImporter(
                         agent.Key,
                         agent.Version,
                         targetVersion,
-                        "configuration or outputs"));
+                        "configuration or outputs",
+                        existingMaxVersion: maxExistingVersion));
                 }
             }
         }
@@ -252,7 +265,9 @@ public sealed class WorkflowPackageImporter(
                         WorkflowPackageImportResourceKind.Workflow,
                         workflow.Key,
                         workflow.Version,
-                        $"Target already has workflow '{workflow.Key}' v{existingVersion}, which is higher than imported v{workflow.Version}."));
+                        $"Target already has workflow '{workflow.Key}' v{existingVersion}, which is higher than imported v{workflow.Version}.",
+                        sourceVersion: workflow.Version,
+                        existingMaxVersion: existingVersion));
                     continue;
                 }
 
@@ -260,12 +275,22 @@ public sealed class WorkflowPackageImporter(
                 if (existing is null)
                 {
                     nextWorkflowVersionMap[key] = workflow.Version;
-                    items.Add(Create(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
+                    items.Add(Create(
+                        WorkflowPackageImportResourceKind.Workflow,
+                        workflow.Key,
+                        workflow.Version,
+                        sourceVersion: workflow.Version,
+                        existingMaxVersion: maxExistingVersion));
                 }
                 else if (!referencesRemapped && Equivalent(remappedWorkflow, existing))
                 {
                     nextWorkflowVersionMap[key] = workflow.Version;
-                    items.Add(Reuse(WorkflowPackageImportResourceKind.Workflow, workflow.Key, workflow.Version));
+                    items.Add(Reuse(
+                        WorkflowPackageImportResourceKind.Workflow,
+                        workflow.Key,
+                        workflow.Version,
+                        sourceVersion: workflow.Version,
+                        existingMaxVersion: maxExistingVersion));
                 }
                 else
                 {
@@ -276,7 +301,8 @@ public sealed class WorkflowPackageImporter(
                         workflow.Key,
                         workflow.Version,
                         targetVersion,
-                        "graph metadata"));
+                        "graph metadata",
+                        existingMaxVersion: maxExistingVersion));
                 }
             }
         }
@@ -325,17 +351,25 @@ public sealed class WorkflowPackageImporter(
         foreach (var reference in unembedded.OrderBy(r => r.Key, StringComparer.Ordinal).ThenBy(r => r.Version))
         {
             var existing = await agentConfigRepository.TryGetAsync(reference.Key, reference.Version, cancellationToken);
+            // Resolve the library's max version for this key so a Conflict row carries the
+            // structured datum a Bump / UseExisting resolution needs (sc-393). For ReuseExternal
+            // we also surface it because the resolver UI may want to flag "library has a newer
+            // version available" even when the requested version exists.
+            var existingMaxVersion = await MaxAgentVersionAsync(reference.Key, cancellationToken);
             items.Add(existing is null
                 ? Conflict(
                     WorkflowPackageImportResourceKind.Agent,
                     reference.Key,
                     reference.Version,
-                    $"Workflow node references agent '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.")
+                    $"Workflow node references agent '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.",
+                    sourceVersion: reference.Version,
+                    existingMaxVersion: existingMaxVersion)
                 : ReuseExternal(
                     WorkflowPackageImportResourceKind.Agent,
                     reference.Key,
                     reference.Version,
-                    "Reusing existing target-library agent (not embedded in package)."));
+                    "Reusing existing target-library agent (not embedded in package).",
+                    existingMaxVersion: existingMaxVersion));
         }
 
         return items;
@@ -388,17 +422,21 @@ public sealed class WorkflowPackageImporter(
         foreach (var reference in unembedded.OrderBy(r => r.Key, StringComparer.Ordinal).ThenBy(r => r.Version))
         {
             var existing = await workflowRepository.TryGetAsync(reference.Key, reference.Version, cancellationToken);
+            var existingMaxVersion = await MaxWorkflowVersionAsync(reference.Key, cancellationToken);
             items.Add(existing is null
                 ? Conflict(
                     WorkflowPackageImportResourceKind.Workflow,
                     reference.Key,
                     reference.Version,
-                    $"Workflow node references subflow '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.")
+                    $"Workflow node references subflow '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.",
+                    sourceVersion: reference.Version,
+                    existingMaxVersion: existingMaxVersion)
                 : ReuseExternal(
                     WorkflowPackageImportResourceKind.Workflow,
                     reference.Key,
                     reference.Version,
-                    "Reusing existing target-library workflow (not embedded in package)."));
+                    "Reusing existing target-library workflow (not embedded in package).",
+                    existingMaxVersion: existingMaxVersion));
         }
 
         return items;
@@ -934,38 +972,82 @@ public sealed class WorkflowPackageImporter(
         }
     }
 
-    private static WorkflowPackageImportItem Create(WorkflowPackageImportResourceKind kind, string key, int? version) =>
-        new(kind, key, version, WorkflowPackageImportAction.Create, "Will create this package resource.");
+    private static WorkflowPackageImportItem Create(
+        WorkflowPackageImportResourceKind kind,
+        string key,
+        int? version,
+        int? sourceVersion = null,
+        int? existingMaxVersion = null) =>
+        new(
+            kind,
+            key,
+            version,
+            WorkflowPackageImportAction.Create,
+            "Will create this package resource.",
+            SourceVersion: sourceVersion ?? version,
+            ExistingMaxVersion: existingMaxVersion);
 
-    private static WorkflowPackageImportItem Reuse(WorkflowPackageImportResourceKind kind, string key, int? version) =>
-        new(kind, key, version, WorkflowPackageImportAction.Reuse, "Matching target resource already exists.");
+    private static WorkflowPackageImportItem Reuse(
+        WorkflowPackageImportResourceKind kind,
+        string key,
+        int? version,
+        int? sourceVersion = null,
+        int? existingMaxVersion = null) =>
+        new(
+            kind,
+            key,
+            version,
+            WorkflowPackageImportAction.Reuse,
+            "Matching target resource already exists.",
+            SourceVersion: sourceVersion ?? version,
+            ExistingMaxVersion: existingMaxVersion);
 
     private static WorkflowPackageImportItem ReuseExternal(
         WorkflowPackageImportResourceKind kind,
         string key,
         int? version,
-        string message) =>
-        new(kind, key, version, WorkflowPackageImportAction.Reuse, message);
+        string message,
+        int? existingMaxVersion = null) =>
+        new(
+            kind,
+            key,
+            version,
+            WorkflowPackageImportAction.Reuse,
+            message,
+            SourceVersion: version,
+            ExistingMaxVersion: existingMaxVersion);
 
     private static WorkflowPackageImportItem CreateVersionBump(
         WorkflowPackageImportResourceKind kind,
         string key,
         int importedVersion,
         int targetVersion,
-        string changedDescription) =>
+        string changedDescription,
+        int? existingMaxVersion = null) =>
         new(
             kind,
             key,
             targetVersion,
             WorkflowPackageImportAction.Create,
-            $"Will create v{targetVersion} because imported v{importedVersion} matches an existing target version with different {changedDescription}.");
+            $"Will create v{targetVersion} because imported v{importedVersion} matches an existing target version with different {changedDescription}.",
+            SourceVersion: importedVersion,
+            ExistingMaxVersion: existingMaxVersion);
 
     private static WorkflowPackageImportItem Conflict(
         WorkflowPackageImportResourceKind kind,
         string key,
         int? version,
-        string message) =>
-        new(kind, key, version, WorkflowPackageImportAction.Conflict, message);
+        string message,
+        int? sourceVersion = null,
+        int? existingMaxVersion = null) =>
+        new(
+            kind,
+            key,
+            version,
+            WorkflowPackageImportAction.Conflict,
+            message,
+            SourceVersion: sourceVersion ?? version,
+            ExistingMaxVersion: existingMaxVersion);
 
     private static bool Equivalent(WorkflowPackageWorkflow packageWorkflow, Workflow existing) =>
         string.Equals(packageWorkflow.Name, existing.Name, StringComparison.Ordinal) &&
