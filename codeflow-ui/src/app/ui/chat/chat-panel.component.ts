@@ -566,9 +566,35 @@ export class ChatPanelComponent {
   private streamSub: Subscription | null = null;
 
   protected readonly thread = computed<ThreadEntry[]>(() => {
+    // Tool calls always belong to the LATEST assistant turn (toolCalls is reset on every new
+    // user submission). Render them BEFORE the assistant's reply so the temporal flow reads
+    // user → tool calls → assistant text, matching the order things actually happened.
+    //
+    // Where "the assistant's reply" is depends on stream state:
+    //   - In-flight (pending != null): the streaming text bubble at the end. Tool cards go
+    //     between the (optimistic) user message and the pending text.
+    //   - Just-persisted (pending == null): the most recent assistant message in history. Tool
+    //     cards get spliced in just before it.
     const out: ThreadEntry[] = [];
-    for (const m of this.history()) {
-      if (m.role === 'system') continue;
+    const messages = this.history().filter(m => m.role !== 'system');
+    const tools = this.toolCalls();
+    const pending = this.pending();
+    const optimistic = this.optimisticUser();
+
+    // Find the last persisted assistant message — only relevant when there's no streaming
+    // bubble, since otherwise the streaming bubble is the destination.
+    let toolInsertIdx = -1;
+    if (pending === null && tools.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant') { toolInsertIdx = i; break; }
+      }
+    }
+
+    for (let i = 0; i < messages.length; i++) {
+      if (i === toolInsertIdx) {
+        for (const tc of tools) out.push({ kind: 'tool', ...tc });
+      }
+      const m = messages[i];
       out.push({
         kind: 'message',
         id: m.id,
@@ -578,15 +604,14 @@ export class ChatPanelComponent {
         model: m.model,
       });
     }
-    const optimistic = this.optimisticUser();
+
     if (optimistic !== null) {
       out.push({ kind: 'message', id: null, role: 'user', content: optimistic });
     }
-    for (const tc of this.toolCalls()) {
-      out.push({ kind: 'tool', ...tc });
-    }
-    const pending = this.pending();
+
+    // In-flight: tool cards render between the user message and the streaming reply text.
     if (pending !== null) {
+      for (const tc of tools) out.push({ kind: 'tool', ...tc });
       out.push({
         kind: 'message',
         id: pending.serverId,
@@ -597,6 +622,7 @@ export class ChatPanelComponent {
         pending: pending.serverId === null,
       });
     }
+
     return out;
   });
 
