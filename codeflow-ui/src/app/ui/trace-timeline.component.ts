@@ -122,6 +122,9 @@ interface ArtifactLoadState {
                   <div class="artifact-block">
                     <div class="artifact-h">Output</div>
                     @if (entry.outputRef) {
+                      <p class="artifact-link-row">
+                        <a class="mono-link" href="" (click)="onDownload($event, entry.outputRef!)">Download output artifact</a>
+                      </p>
                       @if (refContent(entry.outputRef); as state) {
                         @if (state.loading) { <p class="muted small">Loading…</p> }
                         @else if (state.error) { <cf-chip variant="err" dot>{{ state.error }}</cf-chip> }
