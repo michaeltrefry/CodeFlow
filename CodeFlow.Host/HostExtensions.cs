@@ -114,6 +114,9 @@ public static class HostExtensions
         services.AddScoped<ITokenUsageRecordRepository, TokenUsageRecordRepository>();
         services.AddScoped<IRefusalEventRepository, RefusalEventRepository>();
         services.AddSingleton<IRefusalEventSink, EfRefusalEventSink>();
+        services.AddScoped<IAgentInvocationAuthorityRepository, AgentInvocationAuthorityRepository>();
+        services.AddScoped<IAuthorityResolver, AuthorityResolver>();
+        services.AddScoped<IAuthoritySnapshotRecorder, AuthoritySnapshotRecorder>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
