@@ -6,6 +6,7 @@ using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Replay;
 using CodeFlow.Orchestration.Replay.Admission;
 using CodeFlow.Persistence;
+using CodeFlow.Persistence.Replay;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Admission;
 using CodeFlow.Runtime.Authority.Preflight;
@@ -226,6 +227,19 @@ public static class TracesReplayEndpoints
         var replayState = exhaustedAgent is null
             ? result.State.ToString()
             : "Failed";
+
+        // sc-275: persist a replay-attempt row + return lineage metadata so authors can
+        // see "you've already tried this exact replay" and bundle exports preserve attempt
+        // history. Persistence failure is observability-only — never break the primary
+        // replay flow because we couldn't write a lineage row.
+        var lineageInputs = BuildLineageInputs(body, rootSaga.GetPinnedAgentVersions(), force);
+        var contentHash = ReplayLineageHasher.ComputeContentHash(lineageInputs);
+        var lineageId = ReplayLineageHasher.ComputeLineageId(id, contentHash);
+        var driftLevel = drift.Level.ToString();
+        await TryPersistReplayAttemptAsync(
+            dbContext, id, lineageId, contentHash, replayState,
+            result.TerminalPort, driftLevel, body?.Reason, cancellationToken);
+
         return Results.Ok(new ReplayResponse(
             OriginalTraceId: id,
             ReplayState: replayState,
@@ -245,7 +259,82 @@ public static class TracesReplayEndpoints
                     result.HitlPayload.DecisionOutputTemplates,
                     result.HitlPayload.RenderedFormPreview,
                     result.HitlPayload.RenderError),
-            Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings)));
+            Drift: new ReplayDriftDto(drift.Level.ToString(), drift.Warnings),
+            Lineage: new ReplayLineageDto(
+                LineageId: lineageId,
+                ContentHash: contentHash,
+                ParentTraceId: id,
+                Generation: 1,
+                CreatedAtUtc: DateTime.UtcNow,
+                Reason: body?.Reason)));
+    }
+
+    private static ReplayLineageInputs BuildLineageInputs(
+        ReplayRequest? body,
+        IReadOnlyDictionary<string, int> pinnedAgentVersions,
+        bool force)
+    {
+        var edits = (body?.Edits ?? Array.Empty<ReplayEditDto>())
+            .Select(e => new ReplayLineageEdit(
+                AgentKey: e.AgentKey,
+                Ordinal: e.Ordinal,
+                Decision: e.Decision,
+                Output: e.Output,
+                Payload: e.Payload))
+            .ToArray();
+
+        IReadOnlyDictionary<string, IReadOnlyList<ReplayLineageMock>> mocks =
+            (body?.AdditionalMocks ?? new Dictionary<string, IReadOnlyList<ReplayMockResponseDto>>())
+                .ToDictionary(
+                    kv => kv.Key,
+                    kv => (IReadOnlyList<ReplayLineageMock>)kv.Value
+                        .Where(m => m is not null)
+                        .Select(m => new ReplayLineageMock(m.Decision, m.Output, m.Payload))
+                        .ToArray(),
+                    StringComparer.Ordinal);
+
+        return new ReplayLineageInputs(
+            Edits: edits,
+            AdditionalMocks: mocks,
+            WorkflowVersionOverride: body?.WorkflowVersionOverride,
+            PinnedAgentVersions: pinnedAgentVersions,
+            Force: force);
+    }
+
+    private static async Task TryPersistReplayAttemptAsync(
+        CodeFlowDbContext dbContext,
+        Guid parentTraceId,
+        Guid lineageId,
+        string contentHash,
+        string replayState,
+        string? terminalPort,
+        string driftLevel,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            dbContext.ReplayAttempts.Add(new ReplayAttemptEntity
+            {
+                Id = Guid.NewGuid(),
+                ParentTraceId = parentTraceId,
+                LineageId = lineageId,
+                ContentHash = contentHash,
+                Generation = 1,
+                ReplayState = replayState,
+                TerminalPort = terminalPort,
+                DriftLevel = driftLevel,
+                Reason = reason,
+                CreatedAtUtc = DateTime.UtcNow,
+            });
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            // Persistence is for evidence — never break the primary replay flow on a
+            // lineage write failure. The response still flows back to the caller with
+            // its computed lineage metadata.
+        }
     }
 
     /// <summary>

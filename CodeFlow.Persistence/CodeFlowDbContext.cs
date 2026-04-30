@@ -1,4 +1,5 @@
 using CodeFlow.Persistence.Authority;
+using CodeFlow.Persistence.Replay;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 
@@ -57,6 +58,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
     public DbSet<RefusalEventEntity> RefusalEvents => Set<RefusalEventEntity>();
 
     public DbSet<AgentInvocationAuthorityEntity> AgentInvocationAuthority => Set<AgentInvocationAuthorityEntity>();
+
+    public DbSet<ReplayAttemptEntity> ReplayAttempts => Set<ReplayAttemptEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

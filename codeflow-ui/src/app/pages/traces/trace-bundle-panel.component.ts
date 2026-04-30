@@ -69,6 +69,9 @@ interface RefusalStageBucket {
             <cf-chip variant="err" dot mono>{{ missingArtifactCount() }} missing</cf-chip>
           }
           <cf-chip mono>{{ m.trace.tokenUsage.recordCount }} token records</cf-chip>
+          @if (replayAttemptCount() > 0) {
+            <cf-chip mono>{{ replayAttemptCount() }} replay attempts</cf-chip>
+          }
         </div>
 
         @if (refusalStages().length > 0) {
@@ -123,6 +126,46 @@ interface RefusalStageBucket {
                       }
                     </span>
                     <span class="muted xsmall mono">{{ snapshot.resolvedAtUtc | date:'medium' }}</span>
+                  </div>
+                </li>
+              }
+            </ul>
+          </details>
+        }
+
+        @if (replayAttempts().length > 0) {
+          <details class="bundle-section" data-testid="bundle-replay-attempts">
+            <summary>
+              <strong>Replay attempts</strong>
+              <span class="muted xsmall">
+                {{ replayAttempts().length }}
+                {{ replayAttempts().length === 1 ? 'attempt' : 'attempts' }}
+                · {{ uniqueLineageCount() }}
+                {{ uniqueLineageCount() === 1 ? 'lineage' : 'lineages' }}
+              </span>
+            </summary>
+            <ul class="bundle-list">
+              @for (attempt of replayAttempts(); track attempt.id) {
+                <li>
+                  <div class="row-spread">
+                    <span>
+                      <cf-chip mono>gen {{ attempt.generation }}</cf-chip>
+                      <code class="mono small" [title]="'Content hash: ' + attempt.contentHash">
+                        {{ attempt.lineageId.slice(0, 8) }}
+                      </code>
+                      <cf-chip [variant]="replayStateChipVariant(attempt.replayState)" dot mono>
+                        {{ attempt.replayState }}
+                      </cf-chip>
+                      @if (attempt.driftLevel !== 'None') {
+                        <cf-chip [variant]="attempt.driftLevel === 'Hard' ? 'err' : 'warn'" dot mono>
+                          {{ attempt.driftLevel }} drift
+                        </cf-chip>
+                      }
+                      @if (attempt.reason) {
+                        <span class="muted xsmall">{{ attempt.reason }}</span>
+                      }
+                    </span>
+                    <span class="muted xsmall mono">{{ attempt.createdAtUtc | date:'medium' }}</span>
                   </div>
                 </li>
               }
@@ -207,6 +250,16 @@ export class TraceBundlePanelComponent implements OnDestroy {
       .sort((a, b) => b.count - a.count);
   });
 
+  /** sc-275: replay attempts attached to this trace. The bundle field is optional in the
+   *  schema (older bundles don't carry it), so the component treats absence as zero. */
+  readonly replayAttempts = computed(() => this.manifest()?.trace.replayAttempts ?? []);
+
+  readonly replayAttemptCount = computed(() => this.replayAttempts().length);
+
+  readonly uniqueLineageCount = computed(() =>
+    new Set(this.replayAttempts().map(a => a.lineageId)).size,
+  );
+
   private loadSub?: Subscription;
   private exportSub?: Subscription;
 
@@ -224,6 +277,17 @@ export class TraceBundlePanelComponent implements OnDestroy {
 
   blockedAxesCountFor(snapshot: TraceBundleAuthoritySnapshot): number {
     return this.parseBlockedAxesCount(snapshot.blockedAxesJson);
+  }
+
+  replayStateChipVariant(state: string): 'ok' | 'err' | 'warn' | 'accent' | 'default' {
+    switch (state) {
+      case 'Completed': return 'ok';
+      case 'HitlReached': return 'accent';
+      case 'Failed':
+      case 'DriftRefused': return 'err';
+      case 'StepLimitExceeded': return 'warn';
+      default: return 'default';
+    }
   }
 
   exportBundle(): void {

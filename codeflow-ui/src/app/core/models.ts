@@ -726,13 +726,25 @@ export interface ReplayResponse {
   originalTraceId: string;
   replayState: ReplayState;
   replayTerminalPort: string | null;
-  failureReason: string | null;
   failureCode: 'queue_exhausted' | 'drift_hard_refused' | null;
+  failureReason: string | null;
   exhaustedAgent: ReplayExhaustedAgent | null;
   decisions: RecordedDecisionRef[];
   replayEvents: ReplayEvent[];
   hitlPayload: ReplayHitlPayload | null;
   drift: ReplayDrift;
+  /** sc-275: lineage metadata for the just-recorded replay attempt. Null when the
+   *  endpoint pre-dates sc-275 (older deployments) — UI guards on the missing case. */
+  lineage: ReplayLineage | null;
+}
+
+export interface ReplayLineage {
+  lineageId: string;
+  contentHash: string;
+  parentTraceId: string;
+  generation: number;
+  createdAtUtc: string;
+  reason: string | null;
 }
 
 // sc-274 phase 1: ambiguity preflight refusal payload (HTTP 422 from POST /api/traces/{id}/replay
@@ -852,6 +864,19 @@ export interface TraceBundleTokenUsageSummary {
   records: TraceBundleTokenUsageRecord[];
 }
 
+export interface TraceBundleReplayAttempt {
+  id: string;
+  parentTraceId: string;
+  lineageId: string;
+  contentHash: string;
+  generation: number;
+  replayState: string;
+  terminalPort: string | null;
+  driftLevel: string;
+  reason: string | null;
+  createdAtUtc: string;
+}
+
 export interface TraceBundleTraceSummary {
   traceId: string;
   rootSaga: TraceBundleSagaSummary;
@@ -860,6 +885,9 @@ export interface TraceBundleTraceSummary {
   refusals: TraceBundleRefusal[];
   authoritySnapshots: TraceBundleAuthoritySnapshot[];
   tokenUsage: TraceBundleTokenUsageSummary;
+  /** sc-275: replay-with-edit attempts rooted at this trace, ordered by createdAtUtc.
+   *  Optional — older bundles produced before sc-275 don't carry this field. */
+  replayAttempts?: TraceBundleReplayAttempt[];
 }
 
 export interface TraceBundleManifest {
