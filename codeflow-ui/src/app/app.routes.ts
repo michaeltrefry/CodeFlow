@@ -19,7 +19,7 @@ export const routes: Routes = [
   {
     path: 'agents/new',
     canActivate: [authenticatedGuard],
-    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorComponent)
+    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorPageComponent)
   },
   {
     path: 'agents/:key/test',
@@ -29,7 +29,7 @@ export const routes: Routes = [
   {
     path: 'agents/:key/edit',
     canActivate: [authenticatedGuard],
-    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorComponent)
+    loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorPageComponent)
   },
   {
     path: 'agents/:key',

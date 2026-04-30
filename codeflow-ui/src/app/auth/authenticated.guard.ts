@@ -1,14 +1,14 @@
 import { inject } from '@angular/core';
-import { CanActivateFn } from '@angular/router';
+import { CanActivateFn, Router, UrlTree } from '@angular/router';
 import { AuthService } from './auth.service';
-import { hasAuthConfigured } from './auth.config';
 
 /**
- * Keeps guarded pages from rendering before auth bootstrap completes, then sends anonymous
- * users into the OAuth code flow. The server remains authoritative; this is UX only.
+ * Keeps guarded pages from rendering before auth bootstrap completes. The public landing page
+ * is the only anonymous surface; every other route requires a resolved current user.
  */
-export const authenticatedGuard: CanActivateFn = async (): Promise<boolean> => {
+export const authenticatedGuard: CanActivateFn = async (): Promise<boolean | UrlTree> => {
   const auth = inject(AuthService);
+  const router = inject(Router);
 
   await auth.ready();
 
@@ -16,17 +16,11 @@ export const authenticatedGuard: CanActivateFn = async (): Promise<boolean> => {
     return true;
   }
 
-  // If OAuth is not configured (dev bypass, local), we can't start the code flow — let the
-  // anonymous user through and the API will authenticate them via DevelopmentBypass.
-  if (!hasAuthConfigured()) {
-    return true;
-  }
-
   // We have a Keycloak token but the API rejected it. Calling login() again would just re-mint
-  // the same broken token and loop. Let the user through so the AppShell can render the auth
-  // error instead of trapping them in a redirect loop.
+  // the same broken token and loop. Keep the user on the landing page where the auth error can
+  // render instead of allowing access to protected routes.
   if (auth.hasToken() && !auth.tokenAcceptedByApi()) {
-    return true;
+    return router.parseUrl('/');
   }
 
   // initCodeFlow() leaves the app for Keycloak; cancel this local navigation.

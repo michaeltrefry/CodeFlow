@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   EventEmitter,
   Input,
   OnChanges,
@@ -10,6 +11,7 @@ import {
   signal
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../../core/agents.api';
 import { formatHttpError } from '../../../core/format-error';
@@ -176,6 +178,7 @@ interface PublishStatus {
 })
 export class PublishForkDialogComponent implements OnChanges {
   private readonly agentsApi = inject(AgentsApi);
+  private readonly destroyRef = inject(DestroyRef);
 
   @Input() target: PublishForkTarget | null = null;
 
@@ -202,7 +205,7 @@ export class PublishForkDialogComponent implements OnChanges {
     if (!target) return;
 
     this.loading.set(true);
-    this.agentsApi.getPublishStatus(target.forkKey).subscribe({
+    this.agentsApi.getPublishStatus(target.forkKey).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: s => {
         this.status.set(s);
         this.loading.set(false);
@@ -228,7 +231,7 @@ export class PublishForkDialogComponent implements OnChanges {
     this.agentsApi.publish(target.forkKey, {
       mode: 'original',
       acknowledgeDrift: status.isDrift ? this.acknowledgeDrift : undefined
-    }).subscribe({
+    }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         this.saving.set(null);
         this.published.emit({
@@ -254,7 +257,7 @@ export class PublishForkDialogComponent implements OnChanges {
     this.agentsApi.publish(target.forkKey, {
       mode: 'new-agent',
       newKey: key
-    }).subscribe({
+    }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         this.saving.set(null);
         this.published.emit({

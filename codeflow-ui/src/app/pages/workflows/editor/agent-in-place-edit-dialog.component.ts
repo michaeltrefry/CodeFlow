@@ -14,7 +14,7 @@ import { FormsModule } from '@angular/forms';
 import { AgentsApi } from '../../../core/agents.api';
 import { formatHttpError } from '../../../core/format-error';
 import { AgentConfig } from '../../../core/models';
-import { AgentEditorComponent } from '../../agents/agent-editor.component';
+import { AgentFormComponent } from '../../agents/agent-form.component';
 import { ButtonComponent } from '../../../ui/button.component';
 import { ChipComponent } from '../../../ui/chip.component';
 import { DialogComponent } from '../../../ui/dialog.component';
@@ -45,7 +45,7 @@ type ModalPhase = 'warn' | 'edit' | 'saving';
     CommonModule,
     FormsModule,
     DialogComponent,
-    AgentEditorComponent,
+    AgentFormComponent,
     ButtonComponent,
     ChipComponent
   ],
@@ -88,13 +88,12 @@ type ModalPhase = 'warn' | 'edit' | 'saving';
               <cf-chip mono>will fork from {{ target.agentKey }} v{{ target.agentVersion }}</cf-chip>
             }
           </div>
-          <cf-agent-editor
+          <cf-agent-form
             #editor
-            [embedded]="true"
             [key]="target.agentKey"
             [initialConfig]="target.initialConfig"
             [initialType]="target.initialType"
-            (saveRequested)="onSaveRequested($event)"></cf-agent-editor>
+            (saveRequested)="onSaveRequested($event)"></cf-agent-form>
           @if (error()) {
             <div class="banner error">{{ error() }}</div>
           }
@@ -149,8 +148,8 @@ export class AgentInPlaceEditDialogComponent implements OnChanges {
   @Output() saved = new EventEmitter<InPlaceEditResult>();
   @Output() warningSuppressed = new EventEmitter<void>();
 
-  readonly phase = signal<ModalPhase>('warn');
-  readonly error = signal<string | null>(null);
+  protected readonly phase = signal<ModalPhase>('warn');
+  protected readonly error = signal<string | null>(null);
   dontWarnAgain = false;
 
   ngOnChanges(changes: SimpleChanges): void {
