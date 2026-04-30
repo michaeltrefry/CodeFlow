@@ -114,13 +114,17 @@ public sealed class DefaultIntentClarityAssessorTests
     }
 
     [Fact]
-    public void UnsupportedMode_ReturnsClearAssessment()
+    public void UnsupportedMode_WrongInputShape_ReturnsClearAssessment()
     {
+        // The assessor never throws when a producer hands the wrong input shape for the mode —
+        // configuration mistakes pass through (clear) rather than blocking the work. Phase 3
+        // lands the GreenfieldDraft handler, so we assert wrong-shape pass-through against it
+        // by passing a ReplayEditPreflightInput.
         var result = Assessor().Assess(
             PreflightMode.GreenfieldDraft,
             new ReplayEditPreflightInput(Array.Empty<ReplayEditPreflightEdit>(), false, false));
 
-        result.IsClear.Should().BeTrue("phase 3 lands later; until then unsupported modes pass through");
+        result.IsClear.Should().BeTrue("wrong input shape for the mode passes through clear");
         result.OverallScore.Should().Be(1.0);
     }
 
@@ -255,6 +259,149 @@ public sealed class DefaultIntentClarityAssessorTests
         var input = new AssistantChatPreflightInput("   ", HasPageContext: false, PageContextKind: null);
 
         var result = Assessor().Assess(PreflightMode.AssistantChat, input);
+
+        result.IsClear.Should().BeTrue();
+    }
+
+    // ===== sc-274 phase 3 — workflow-launch heuristics (Brownfield + Greenfield) =====
+    //
+    // Both modes share the same assessor pipeline (placeholder check + word-count floor) but
+    // differ in where the floor sits. Brownfield workflows have the repo for context, so a
+    // 4-word change goal is enough; greenfield drafting has nothing to anchor on, so the
+    // input itself has to carry goal + audience + success criteria, and the floor is 5 words.
+
+    [Theory]
+    [InlineData(PreflightMode.BrownfieldChange)]
+    [InlineData(PreflightMode.GreenfieldDraft)]
+    public void WorkflowLaunch_PurePlaceholder_RefusesWithGoalZero(PreflightMode mode)
+    {
+        var input = new WorkflowLaunchPreflightInput(
+            Input: "TODO",
+            HasRepositoriesInput: mode == PreflightMode.BrownfieldChange,
+            WorkflowKey: "any-workflow");
+
+        var result = Assessor().Assess(mode, input);
+
+        result.IsClear.Should().BeFalse();
+        result.OverallScore.Should().Be(0.0);
+        result.MissingFields.Should().Contain("input.placeholder");
+        result.ClarificationQuestions.Should().ContainSingle()
+            .Which.Should().Contain("What would you like the workflow to do?");
+    }
+
+    [Theory]
+    [InlineData("review PR")]
+    [InlineData("fix the build")]
+    [InlineData("investigate flaky test")]
+    [InlineData("refactor")]
+    public void WorkflowLaunch_Brownfield_TooShortInput_RefusesWithGoalDimension(string content)
+    {
+        var input = new WorkflowLaunchPreflightInput(
+            Input: content,
+            HasRepositoriesInput: true,
+            WorkflowKey: "dev-flow");
+
+        var result = Assessor().Assess(PreflightMode.BrownfieldChange, input);
+
+        result.IsClear.Should().BeFalse();
+        var goal = result.Dimensions.Single(d => d.Dimension == IntentClarityDimensions.Goal);
+        goal.Score.Should().Be(0.2);
+        goal.Reason.Should().NotBeNull();
+        result.MissingFields.Should().Contain("input.too-short");
+        result.ClarificationQuestions.Should().ContainSingle()
+            .Which.Should().Contain("Describe the goal");
+    }
+
+    [Theory]
+    [InlineData("Fix the auth middleware bug where session tokens leak across requests")]
+    [InlineData("Refactor the saga state machine to extract timeout handling into a shared utility")]
+    [InlineData("update the AssistantChatService to log cumulative token usage")]
+    public void WorkflowLaunch_Brownfield_ConcreteInput_PassesThrough(string content)
+    {
+        var input = new WorkflowLaunchPreflightInput(
+            Input: content,
+            HasRepositoriesInput: true,
+            WorkflowKey: "dev-flow");
+
+        var result = Assessor().Assess(PreflightMode.BrownfieldChange, input);
+
+        result.IsClear.Should().BeTrue();
+        result.OverallScore.Should().Be(1.0);
+        result.ClarificationQuestions.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("PRD for auth")]
+    [InlineData("Draft a workflow")]
+    [InlineData("write the doc")]
+    [InlineData("review")]
+    public void WorkflowLaunch_Greenfield_TooShortInput_RefusesWithGoalDimension(string content)
+    {
+        var input = new WorkflowLaunchPreflightInput(
+            Input: content,
+            HasRepositoriesInput: false,
+            WorkflowKey: "prd-intake");
+
+        var result = Assessor().Assess(PreflightMode.GreenfieldDraft, input);
+
+        result.IsClear.Should().BeFalse();
+        var goal = result.Dimensions.Single(d => d.Dimension == IntentClarityDimensions.Goal);
+        goal.Score.Should().Be(0.2);
+        result.MissingFields.Should().Contain("input.too-short");
+        result.ClarificationQuestions.Should().ContainSingle()
+            .Which.Should().Contain("at least 1-2 sentences");
+    }
+
+    [Theory]
+    [InlineData("Draft a PRD for the new authentication flow that supports SSO and MFA")]
+    [InlineData("Design a workflow that takes a PR description and generates a code review checklist")]
+    [InlineData("PRD for the SSO authentication flow with rollout plan")]
+    public void WorkflowLaunch_Greenfield_DescriptiveInput_PassesThrough(string content)
+    {
+        var input = new WorkflowLaunchPreflightInput(
+            Input: content,
+            HasRepositoriesInput: false,
+            WorkflowKey: "prd-intake");
+
+        var result = Assessor().Assess(PreflightMode.GreenfieldDraft, input);
+
+        result.IsClear.Should().BeTrue();
+        result.OverallScore.Should().Be(1.0);
+        result.ClarificationQuestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void WorkflowLaunch_GreenfieldThresholdStricterThanBrownfield()
+    {
+        // Same 4-word input passes brownfield (floor is 3) but refuses greenfield (floor is 4).
+        // Pins the asymmetry the heuristic is built around: brownfield has the repo for context,
+        // greenfield doesn't.
+        const string fourWordInput = "fix the auth bug";
+
+        var brownfield = Assessor().Assess(
+            PreflightMode.BrownfieldChange,
+            new WorkflowLaunchPreflightInput(fourWordInput, HasRepositoriesInput: true, WorkflowKey: "dev"));
+        var greenfield = Assessor().Assess(
+            PreflightMode.GreenfieldDraft,
+            new WorkflowLaunchPreflightInput(fourWordInput, HasRepositoriesInput: false, WorkflowKey: "prd"));
+
+        brownfield.IsClear.Should().BeTrue();
+        greenfield.IsClear.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(PreflightMode.BrownfieldChange)]
+    [InlineData(PreflightMode.GreenfieldDraft)]
+    public void WorkflowLaunch_EmptyInput_PassesThroughForUpstreamValidation(PreflightMode mode)
+    {
+        // Endpoint rejects empty input with 400 BadRequest before preflight; assessor returns
+        // clear so it doesn't shadow the more specific upstream error.
+        var input = new WorkflowLaunchPreflightInput(
+            Input: "   ",
+            HasRepositoriesInput: mode == PreflightMode.BrownfieldChange,
+            WorkflowKey: "any");
+
+        var result = Assessor().Assess(mode, input);
 
         result.IsClear.Should().BeTrue();
     }

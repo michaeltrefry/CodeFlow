@@ -138,6 +138,27 @@ interface RepositoryInputRow {
         }
       }
 
+      @if (preflightError(); as pf) {
+        <div class="trace-preflight" data-testid="preflight-banner" role="status">
+          <div class="preflight-head">
+            <span class="preflight-chip">preflight</span>
+            <span class="preflight-metric">
+              clarity {{ (pf.overallScore * 100).toFixed(0) }}% · needs {{ (pf.threshold * 100).toFixed(0) }}%
+            </span>
+          </div>
+          @if (preflightWeakest(); as weakest) {
+            <p class="preflight-reason">{{ weakest.reason }}</p>
+          }
+          @if (pf.clarificationQuestions.length > 0) {
+            <ul class="preflight-questions">
+              @for (q of pf.clarificationQuestions; track q) {
+                <li>{{ q }}</li>
+              }
+            </ul>
+          }
+        </div>
+      }
+
       @if (error()) {
         <div class="trace-failure"><strong>Submit failed:</strong> {{ error() }}</div>
       }
@@ -152,6 +173,63 @@ interface RepositoryInputRow {
     </div>
   `,
   styles: [`
+    /* sc-274 phase 3 — workflow launch preflight clarification banner. Mirrors the
+       chat-panel + replay-panel banner styling so the three preflight surfaces feel
+       consistent: warn-tinted (not error-tinted), score/threshold metric, lowest-dimension
+       reason, bulleted clarification questions. Appears above the submit button. */
+    .trace-preflight {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border: 1px solid var(--sem-amber, #d29922);
+      border-radius: var(--radius-md, 8px);
+      background: color-mix(in oklab, var(--sem-amber, #d29922) 10%, var(--surface, #131519));
+    }
+    .trace-preflight .preflight-head {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .trace-preflight .preflight-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--sem-amber, #d29922);
+      border: 1px solid var(--sem-amber, #d29922);
+      border-radius: 3px;
+      line-height: 1.3;
+    }
+    .trace-preflight .preflight-metric {
+      font-size: 11px;
+      color: var(--text-muted, #9aa3b2);
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    }
+    .trace-preflight .preflight-reason {
+      margin: 0;
+      font-size: var(--fs-sm, 12px);
+      color: var(--text-muted, #9aa3b2);
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .trace-preflight .preflight-questions {
+      margin: 0;
+      padding-left: 18px;
+      font-size: var(--fs-md, 13px);
+      color: var(--text, #E7E9EE);
+      line-height: 1.4;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .trace-preflight .preflight-questions li {
+      overflow-wrap: anywhere;
+    }
+
     .repository-editor {
       display: flex;
       flex-direction: column;
@@ -202,6 +280,27 @@ export class TraceSubmitComponent implements OnInit {
   readonly workflowDetail = signal<WorkflowDetail | null>(null);
   readonly submitting = signal(false);
   readonly error = signal<string | null>(null);
+  /**
+   * sc-274 phase 3 — populated when the launch endpoint returns a 422 preflight refusal
+   * before workflow lookup. Drives the preflight banner (clarification questions + score/
+   * threshold + lowest-dimension reason). Cleared on the next submit attempt — mutually
+   * exclusive with {@link error} (the generic error path stays for non-preflight failures).
+   */
+  readonly preflightError = signal<WorkflowPreflightRefusal | null>(null);
+
+  /** sc-274 phase 3 — convenience for the template: the lowest-scoring dimension with a reason. */
+  readonly preflightWeakest = computed(() => {
+    const refusal = this.preflightError();
+    if (!refusal) return null;
+    let weakest: WorkflowPreflightRefusal['dimensions'][number] | null = null;
+    for (const dim of refusal.dimensions) {
+      if (!weakest || dim.score < weakest.score) {
+        weakest = dim;
+      }
+    }
+    return weakest && weakest.reason ? weakest : null;
+  });
+
   readonly inputValues = signal<Record<string, string>>({});
   readonly inputErrors = signal<Record<string, string>>({});
 
@@ -393,6 +492,9 @@ export class TraceSubmitComponent implements OnInit {
 
     this.submitting.set(true);
     this.error.set(null);
+    // sc-274 phase 3 — clear any prior preflight refusal so the banner doesn't linger over
+    // a refined retry.
+    this.preflightError.set(null);
 
     this.tracesApi.create({
       workflowKey: this.workflowKey()!,
@@ -419,10 +521,59 @@ export class TraceSubmitComponent implements OnInit {
       },
       error: err => {
         this.submitting.set(false);
+        // sc-274 phase 3 — peek at the response body for an assistant-preflight-style
+        // refusal shape; route to the structured banner instead of the generic error text
+        // when matched. Other 4xx/5xx fall through to extractSubmitError unchanged.
+        const preflight = tryParseWorkflowPreflightRefusal(err);
+        if (preflight) {
+          this.preflightError.set(preflight);
+          return;
+        }
         this.error.set(extractSubmitError(err));
       }
     });
   }
+}
+
+/**
+ * sc-274 phase 3 — parsed body of a workflow-launch preflight 422. Mirrors
+ * <c>WorkflowPreflightRefusalResponse</c> on the server.
+ */
+export interface WorkflowPreflightRefusal {
+  workflowKey: string;
+  code: 'workflow-preflight-ambiguous';
+  mode: string;
+  overallScore: number;
+  threshold: number;
+  dimensions: Array<{ dimension: string; score: number; reason: string | null }>;
+  missingFields: string[];
+  clarificationQuestions: string[];
+}
+
+function tryParseWorkflowPreflightRefusal(err: unknown): WorkflowPreflightRefusal | null {
+  if (!(err instanceof HttpErrorResponse) || err.status !== 422) {
+    return null;
+  }
+  const body = err.error;
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as Partial<WorkflowPreflightRefusal>;
+  if (candidate.code !== 'workflow-preflight-ambiguous') {
+    return null;
+  }
+  return {
+    workflowKey: candidate.workflowKey ?? '',
+    code: 'workflow-preflight-ambiguous',
+    mode: candidate.mode ?? 'GreenfieldDraft',
+    overallScore: candidate.overallScore ?? 0,
+    threshold: candidate.threshold ?? 0,
+    dimensions: Array.isArray(candidate.dimensions) ? candidate.dimensions : [],
+    missingFields: Array.isArray(candidate.missingFields) ? candidate.missingFields : [],
+    clarificationQuestions: Array.isArray(candidate.clarificationQuestions)
+      ? candidate.clarificationQuestions
+      : [],
+  };
 }
 
 const keepEmptyRows = true;

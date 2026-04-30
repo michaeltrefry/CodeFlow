@@ -5,6 +5,8 @@ using CodeFlow.Api.Validation;
 using CodeFlow.Contracts;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Authority.Preflight;
 using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.AspNetCore.Builder;
@@ -254,6 +256,9 @@ public static class TracesEndpoints
         ICurrentUser currentUser,
         LogicNodeScriptHost scriptHost,
         IOptions<WorkspaceOptions> workspaceOptions,
+        IRefusalEventSink refusalSink,
+        IIntentClarityAssessor preflightAssessor,
+        IOptions<PreflightOptions> preflightOptions,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.WorkflowKey))
@@ -270,6 +275,47 @@ public static class TracesEndpoints
             {
                 ["input"] = new[] { "input is required." }
             });
+        }
+
+        // sc-274 phase 3 — ambiguity preflight runs BEFORE workflow lookup / artifact write /
+        // saga publish. Refusing here saves all of that work and gives the launcher a focused
+        // clarification list instead of letting the saga fail downstream with a vague Start
+        // agent output. Mode is inferred from the de-facto code-aware-workflows convention
+        // (presence of a "repositories" key in Inputs); workflows without that key are
+        // assumed to be greenfield drafting. Disabled-mode and assessor failures fall through
+        // to the normal launch path — preflight is observability for ambiguity, never a hard
+        // barrier when the assessor itself misbehaves.
+        if (preflightOptions.Value.Enabled)
+        {
+            var hasRepositoriesInput = request.Inputs is not null
+                && request.Inputs.ContainsKey("repositories");
+            var preflightMode = hasRepositoriesInput
+                ? PreflightMode.BrownfieldChange
+                : PreflightMode.GreenfieldDraft;
+
+            IntentClarityAssessment? assessment = null;
+            try
+            {
+                var preflightInput = new WorkflowLaunchPreflightInput(
+                    Input: request.Input,
+                    HasRepositoriesInput: hasRepositoriesInput,
+                    WorkflowKey: request.WorkflowKey);
+                assessment = preflightAssessor.Assess(preflightMode, preflightInput);
+            }
+            catch
+            {
+                // Preflight failure is observability-only — never block the launch flow because
+                // of an assessor bug. The workflow lookup + saga publish still run below.
+            }
+
+            if (assessment is { IsClear: false })
+            {
+                await EmitWorkflowPreflightRefusalAsync(
+                    refusalSink, request.WorkflowKey, assessment, cancellationToken);
+                return Results.Json(
+                    BuildWorkflowPreflightResponse(request.WorkflowKey, assessment),
+                    statusCode: StatusCodes.Status422UnprocessableEntity);
+            }
         }
 
         Workflow workflow;
@@ -1370,6 +1416,60 @@ public static class TracesEndpoints
                 logger);
         }
     }
+
+    /// <summary>
+    /// sc-274 phase 3 — emit a <see cref="RefusalStages.Preflight"/> refusal when the workflow
+    /// launch assessor refuses the request. Workflow launches don't have a TraceId yet (we're
+    /// refusing BEFORE generating one) and they're not tied to an assistant conversation, so
+    /// both nullable correlation fields are null. The workflow key rides in <c>Path</c> so
+    /// governance queries can slice "preflight refusals on workflow X" without parsing detail.
+    /// Reuses the shared <see cref="PreflightRefusalDetail"/> shape so phase 1 + 2 + 3 all
+    /// write the same DetailJson schema.
+    /// </summary>
+    private static async Task EmitWorkflowPreflightRefusalAsync(
+        IRefusalEventSink sink,
+        string workflowKey,
+        IntentClarityAssessment assessment,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await sink.RecordAsync(
+                new RefusalEvent(
+                    Id: Guid.NewGuid(),
+                    TraceId: null,
+                    AssistantConversationId: null,
+                    Stage: RefusalStages.Preflight,
+                    Code: "workflow-preflight-ambiguous",
+                    Reason: $"Workflow launch did not meet the {assessment.Mode} clarity threshold "
+                            + $"({assessment.OverallScore:0.00} < {assessment.Threshold:0.00}).",
+                    Axis: PreflightRefusalDetail.LowestDimensionAxis(assessment),
+                    Path: workflowKey,
+                    DetailJson: PreflightRefusalDetail.Build(assessment).ToJsonString(),
+                    OccurredAt: DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch
+        {
+            // Refusal recording is observability — never break the launch flow on sink failure.
+            // The HTTP 422 still flows to the caller.
+        }
+    }
+
+    private static WorkflowPreflightRefusalResponse BuildWorkflowPreflightResponse(
+        string workflowKey,
+        IntentClarityAssessment assessment) =>
+        new(
+            WorkflowKey: workflowKey,
+            Code: "workflow-preflight-ambiguous",
+            Mode: assessment.Mode.ToString(),
+            OverallScore: assessment.OverallScore,
+            Threshold: assessment.Threshold,
+            Dimensions: assessment.Dimensions
+                .Select(d => new PreflightDimensionDto(d.Dimension, d.Score, d.Reason))
+                .ToArray(),
+            MissingFields: assessment.MissingFields,
+            ClarificationQuestions: assessment.ClarificationQuestions);
 }
 
 internal static class TraceEventJson

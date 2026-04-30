@@ -882,7 +882,9 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var createTrace = await client.PostAsJsonAsync("/api/traces", new
         {
             workflowKey,
-            input = "raw input"
+            // sc-274 phase 3 — input intentionally longer than the GreenfieldDraft 4-word floor
+            // so preflight passes and the test exercises the start-node script evaluation.
+            input = "raw input value for the trace identity verification test"
         });
         createTrace.StatusCode.Should().Be(HttpStatusCode.Created);
         var tracePayload = await createTrace.Content.ReadFromJsonAsync<CreateTracePayload>();
@@ -940,7 +942,9 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var createTrace = await client.PostAsJsonAsync("/api/traces", new
         {
             workflowKey,
-            input = "raw user input"
+            // sc-274 phase 3 — input intentionally longer than the GreenfieldDraft 4-word floor
+            // so preflight passes; the test exercises start-node setInput script evaluation.
+            input = "raw user input for the script override test"
         });
         createTrace.StatusCode.Should().Be(HttpStatusCode.Created);
         var tracePayload = await createTrace.Content.ReadFromJsonAsync<CreateTracePayload>();
@@ -952,7 +956,8 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         artifacts.Should().Contain(a => a.FileName.EndsWith("scripted-input.txt", StringComparison.Ordinal)
             && a.Content == "normalized",
             "setInput('normalized') must be persisted as a *-scripted-input.txt artifact");
-        artifacts.Should().Contain(a => a.FileName == "input.txt" && a.Content == "raw user input",
+        artifacts.Should().Contain(a => a.FileName == "input.txt"
+            && a.Content == "raw user input for the script override test",
             "the original request body must still be persisted alongside the override");
     }
 
@@ -1006,7 +1011,10 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         var createTrace = await client.PostAsJsonAsync("/api/traces", new
         {
             workflowKey,
-            input = "raw user input",
+            // sc-274 phase 3 — repositories input present means preflight runs in BrownfieldChange
+            // mode (3-word floor); input is intentionally longer than that so preflight passes
+            // and the test reaches the actual repositories-shape validator it's exercising.
+            input = "validate the repositories input shape rejection for this workflow",
             inputs = new
             {
                 repositories = new object[]
@@ -1024,6 +1032,101 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         body.Should().Contain("repositories");
         body.Should().Contain("url");
     }
+
+    /// <summary>
+    /// sc-274 phase 3 — workflow launch preflight short-circuits with HTTP 422 BEFORE workflow
+    /// lookup / artifact write / saga publish when the freeform Start-agent input is too vague
+    /// for the GreenfieldDraft mode (no repositories input → drafting from scratch). The refusal
+    /// lands in the append-only refusal_events stream so governance + bundle export both see
+    /// pre-trace launch refusals as first-class evidence; no trace is created.
+    /// </summary>
+    [Fact]
+    public async Task CreateTrace_GreenfieldVagueInput_PreflightRefusesWith422_AndPersistsRefusal()
+    {
+        var workflowKey = $"sc274-greenfield-vague-{Guid.NewGuid():N}";
+
+        using var client = factory.CreateClient();
+
+        var createTrace = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey,
+            // 3 words, no repositories → GreenfieldDraft (4-word floor) → preflight refuses.
+            // No workflow needed in the DB because preflight runs before workflow lookup.
+            input = "draft a workflow"
+        });
+
+        createTrace.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await createTrace.Content.ReadFromJsonAsync<WorkflowPreflightRefusalPayload>();
+        payload.Should().NotBeNull();
+        payload!.Code.Should().Be("workflow-preflight-ambiguous");
+        payload.Mode.Should().Be("GreenfieldDraft");
+        payload.WorkflowKey.Should().Be(workflowKey);
+        payload.OverallScore.Should().BeLessThan(payload.Threshold);
+        payload.MissingFields.Should().Contain("input.too-short");
+        payload.ClarificationQuestions.Should().NotBeEmpty()
+            .And.Contain(q => q.Contains("at least 1-2 sentences"));
+
+        // Refusal must land in the append-only stream against the workflow key (no trace yet).
+        using var verifyScope = factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var refusal = await db.RefusalEvents.SingleAsync(r => r.Path == workflowKey);
+        refusal.Stage.Should().Be("preflight");
+        refusal.Code.Should().Be("workflow-preflight-ambiguous");
+        refusal.TraceId.Should().BeNull("preflight refuses before a trace exists");
+        refusal.AssistantConversationId.Should().BeNull("workflow launches aren't tied to a conversation");
+        refusal.DetailJson.Should().NotBeNullOrEmpty();
+    }
+
+    /// <summary>
+    /// sc-274 phase 3 — same vague-input check at the brownfield boundary. With a repositories
+    /// input, mode flips to BrownfieldChange (3-word floor), so a 3-word input still refuses
+    /// and the refusal carries Mode=BrownfieldChange in the response payload.
+    /// </summary>
+    [Fact]
+    public async Task CreateTrace_BrownfieldVagueInput_PreflightRefusesWith422_WithBrownfieldMode()
+    {
+        var workflowKey = $"sc274-brownfield-vague-{Guid.NewGuid():N}";
+
+        using var client = factory.CreateClient();
+
+        var createTrace = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey,
+            // 3 words, repositories present → BrownfieldChange (3-word floor) → refuses.
+            input = "fix the build",
+            inputs = new
+            {
+                repositories = new object[]
+                {
+                    new Dictionary<string, string>
+                    {
+                        ["Repo"] = "https://github.com/example/repo.git"
+                    }
+                }
+            }
+        });
+
+        createTrace.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var payload = await createTrace.Content.ReadFromJsonAsync<WorkflowPreflightRefusalPayload>();
+        payload.Should().NotBeNull();
+        payload!.Code.Should().Be("workflow-preflight-ambiguous");
+        payload.Mode.Should().Be("BrownfieldChange");
+        payload.ClarificationQuestions.Should().Contain(q => q.Contains("Describe the goal"));
+    }
+
+    // sc-274 phase 3 — workflow launch preflight refusal payload mirroring
+    // WorkflowPreflightRefusalResponse.
+    private sealed record WorkflowPreflightRefusalPayload(
+        string WorkflowKey,
+        string Code,
+        string Mode,
+        double OverallScore,
+        double Threshold,
+        IReadOnlyList<PreflightDimensionPayload> Dimensions,
+        IReadOnlyList<string> MissingFields,
+        IReadOnlyList<string> ClarificationQuestions);
+
+    private sealed record PreflightDimensionPayload(string Dimension, double Score, string? Reason);
 
     private async Task<IReadOnlyList<(string FileName, string Content)>> ReadTraceArtifactsAsync(Guid traceId)
     {
