@@ -190,6 +190,68 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
+    public async Task Invoke_WithMinimalLlmPackageOmittingOptionalCollections_DoesNotNullReference()
+    {
+        // Regression: the LLM frequently emits packages that include only the fields it has data
+        // for — a single workflow plus a single agent — and silently omits agents[],
+        // agentRoleAssignments[], roles[], skills[], mcpServers[], plus per-workflow tags[]. STJ
+        // happily constructs the WorkflowPackage record with null for those non-nullable
+        // IReadOnlyList<> properties, and both the validator and the importer planner NRE on the
+        // first .Any()/.GroupBy() over a null list. Symptom in chat:
+        //   {"error":"Tool 'save_workflow_package' threw NullReferenceException: ..."}
+        // The importer must coerce nulls to empty collections so a partial package gets a clean
+        // structural verdict instead of a stack trace.
+        const string agentKey = "haa10-minimal-llm-writer";
+        await SeedAgentAsync(agentKey);
+
+        // Hand-craft the JSON the way the LLM does: only the keys it has values for.
+        var workflowKey = "haa10-minimal-llm-flow";
+        var startId = Guid.NewGuid();
+        var agentNodeId = Guid.NewGuid();
+        var minimalPackageJson = $$"""
+        {
+            "schemaVersion": "{{WorkflowPackageDefaults.SchemaVersion}}",
+            "metadata": { "exportedFrom": "llm-test", "exportedAtUtc": "2026-04-30T00:00:00Z" },
+            "entryPoint": { "key": "{{workflowKey}}", "version": 1 },
+            "workflows": [
+                {
+                    "key": "{{workflowKey}}",
+                    "version": 1,
+                    "name": "Minimal LLM emission",
+                    "maxRoundsPerRound": 1,
+                    "category": "Workflow",
+                    "createdAtUtc": "2026-04-30T00:00:00Z",
+                    "nodes": [
+                        { "id": "{{startId}}", "kind": "Start", "outputPorts": ["Completed"], "layoutX": 0, "layoutY": 0 },
+                        { "id": "{{agentNodeId}}", "kind": "Agent", "agentKey": "{{agentKey}}", "agentVersion": 1, "outputPorts": ["Completed"], "layoutX": 200, "layoutY": 0 }
+                    ],
+                    "edges": [
+                        { "fromNodeId": "{{startId}}", "fromPort": "Completed", "toNodeId": "{{agentNodeId}}", "toPort": "in", "rotatesRound": false, "sortOrder": 0 }
+                    ],
+                    "inputs": []
+                }
+            ]
+        }
+        """;
+        var packageElement = JsonDocument.Parse(minimalPackageJson).RootElement;
+        var args = JsonSerializer.SerializeToElement(new { package = packageElement });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse(
+            because: "a partial package missing optional collections must produce a structural verdict, not NullReferenceException");
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("status").GetString().Should().Be("preview_ok");
+        parsed.GetProperty("canApply").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Invoke_WithSelfContainedPackage_ReturnsPreviewOk()
     {
         // Use the resolver against a real seeded workflow + agent so the package is self-

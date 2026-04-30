@@ -27,7 +27,7 @@ public sealed class WorkflowPackageImporter(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);
-        var plan = await BuildImportPlanAsync(package, cancellationToken);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
         return plan.Preview;
     }
 
@@ -35,7 +35,8 @@ public sealed class WorkflowPackageImporter(
         WorkflowPackage package,
         CancellationToken cancellationToken = default)
     {
-        var plan = await BuildImportPlanAsync(package, cancellationToken);
+        ArgumentNullException.ThrowIfNull(package);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
         var preview = plan.Preview;
         if (!preview.CanApply)
         {
@@ -1098,6 +1099,82 @@ public sealed class WorkflowPackageImporter(
 
     private static DateTime UsePackageDateOrNow(DateTime value, DateTime now) =>
         value == default ? now : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Replaces every null <see cref="IReadOnlyList{T}"/> in the package (top-level and nested)
+    /// with an empty array. <see cref="WorkflowPackage"/> uses positional record syntax with
+    /// non-nullable list parameters, but System.Text.Json constructs records by passing null for
+    /// any property the JSON omits — and the LLM-driven `save_workflow_package` tool routinely
+    /// emits packages without the collections it has nothing to contribute to (no agents, no
+    /// roles, no MCP servers, etc.). Without this pass the validator and planner both NRE on
+    /// `.Any()`/`.GroupBy()` over the null lists, which surfaces in chat as "Tool
+    /// 'save_workflow_package' threw NullReferenceException".
+    /// </summary>
+    private static WorkflowPackage NormalizeNulls(WorkflowPackage package) => package with
+    {
+        Workflows = (package.Workflows ?? Array.Empty<WorkflowPackageWorkflow>())
+            .Select(NormalizeWorkflow)
+            .ToArray(),
+        Agents = (package.Agents ?? Array.Empty<WorkflowPackageAgent>())
+            .Select(NormalizeAgent)
+            .ToArray(),
+        AgentRoleAssignments = (package.AgentRoleAssignments ?? Array.Empty<WorkflowPackageAgentRoleAssignment>())
+            .Select(NormalizeAssignment)
+            .ToArray(),
+        Roles = (package.Roles ?? Array.Empty<WorkflowPackageRole>())
+            .Select(NormalizeRole)
+            .ToArray(),
+        Skills = package.Skills ?? Array.Empty<WorkflowPackageSkill>(),
+        McpServers = (package.McpServers ?? Array.Empty<WorkflowPackageMcpServer>())
+            .Select(NormalizeMcpServer)
+            .ToArray(),
+        Manifest = package.Manifest is null ? null : NormalizeManifest(package.Manifest),
+    };
+
+    private static WorkflowPackageWorkflow NormalizeWorkflow(WorkflowPackageWorkflow workflow) => workflow with
+    {
+        Tags = workflow.Tags ?? Array.Empty<string>(),
+        Nodes = (workflow.Nodes ?? Array.Empty<WorkflowPackageWorkflowNode>())
+            .Select(NormalizeNode)
+            .ToArray(),
+        Edges = workflow.Edges ?? Array.Empty<WorkflowPackageWorkflowEdge>(),
+        Inputs = workflow.Inputs ?? Array.Empty<WorkflowPackageWorkflowInput>(),
+    };
+
+    private static WorkflowPackageWorkflowNode NormalizeNode(WorkflowPackageWorkflowNode node) => node with
+    {
+        OutputPorts = node.OutputPorts ?? Array.Empty<string>(),
+    };
+
+    private static WorkflowPackageAgent NormalizeAgent(WorkflowPackageAgent agent) => agent with
+    {
+        Outputs = agent.Outputs ?? Array.Empty<WorkflowPackageAgentOutput>(),
+    };
+
+    private static WorkflowPackageAgentRoleAssignment NormalizeAssignment(WorkflowPackageAgentRoleAssignment assignment) => assignment with
+    {
+        RoleKeys = assignment.RoleKeys ?? Array.Empty<string>(),
+    };
+
+    private static WorkflowPackageRole NormalizeRole(WorkflowPackageRole role) => role with
+    {
+        ToolGrants = role.ToolGrants ?? Array.Empty<WorkflowPackageRoleGrant>(),
+        SkillNames = role.SkillNames ?? Array.Empty<string>(),
+    };
+
+    private static WorkflowPackageMcpServer NormalizeMcpServer(WorkflowPackageMcpServer server) => server with
+    {
+        Tools = server.Tools ?? Array.Empty<WorkflowPackageMcpServerTool>(),
+    };
+
+    private static WorkflowPackageManifest NormalizeManifest(WorkflowPackageManifest manifest) => manifest with
+    {
+        Workflows = manifest.Workflows ?? Array.Empty<WorkflowPackageReference>(),
+        Agents = manifest.Agents ?? Array.Empty<WorkflowPackageReference>(),
+        Roles = manifest.Roles ?? Array.Empty<string>(),
+        Skills = manifest.Skills ?? Array.Empty<string>(),
+        McpServers = manifest.McpServers ?? Array.Empty<string>(),
+    };
 
     private readonly record struct PackageVersionKey(string Key, int Version);
 
