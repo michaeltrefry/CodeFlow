@@ -152,6 +152,26 @@ type ThreadEntry =
         </div>
       }
 
+      @for (chip of pendingMutationChips(); track chip.id) {
+        <div class="ws-prompt mutation-pin" data-testid="pending-mutation-chip">
+          <div class="ws-prompt-title">{{ chip.prompt }}</div>
+          <div class="ws-prompt-actions">
+            <button
+              type="button"
+              class="ws-prompt-btn ghost"
+              [disabled]="streaming()"
+              (click)="onCancelToolCall(chip.id)"
+            >{{ chip.cancelLabel }}</button>
+            <button
+              type="button"
+              class="ws-prompt-btn primary"
+              [disabled]="streaming()"
+              (click)="onConfirmToolCall(chip.id)"
+            >{{ chip.confirmLabel }}</button>
+          </div>
+        </div>
+      }
+
       <cf-chat-composer
         [busy]="streaming()"
         [disabled]="!conversationId() || !!loadFailed()"
@@ -497,6 +517,24 @@ export class ChatPanelComponent {
   /** HAA-16 — flat list of (provider, model) pairs the operator has configured. */
   protected readonly availableModels = computed<LlmProviderModelOption[]>(
     () => this.defaults()?.models ?? [],
+  );
+
+  /**
+   * HAA-20 — Tool-call confirmation chips that are still awaiting the user's click. Surfaced as
+   * a pinned strip above the composer so they don't scroll off-screen when the assistant
+   * continues with a long explanation after the tool result. Once the user clicks Confirm /
+   * Cancel, the chip transitions out of `idle`, drops out of this list, and the inline
+   * resolved-state banner inside the tool-call card carries the result.
+   */
+  protected readonly pendingMutationChips = computed(() =>
+    this.toolCalls()
+      .filter(tc => tc.confirmation?.state === 'idle')
+      .map(tc => ({
+        id: tc.id,
+        prompt: tc.confirmation!.prompt,
+        confirmLabel: tc.confirmation!.confirmLabel ?? 'Confirm',
+        cancelLabel: tc.confirmation!.cancelLabel ?? 'Cancel',
+      })),
   );
 
   /**
