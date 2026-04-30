@@ -78,7 +78,7 @@ export interface AgentFormHeaderState {
     MonacoScriptEditorComponent,
   ],
   template: `
-    <cf-tabs [items]="tabs()" [value]="tab()" (valueChange)="tab.set($any($event))"></cf-tabs>
+    <cf-tabs [items]="tabs()" [value]="tab()" (valueChange)="setTab($event)"></cf-tabs>
 
     <form (submit)="submit($event)">
         @if (tab() === 'identity') {
@@ -938,14 +938,7 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
     this.maxTokens.set(config['maxTokens'] as number | undefined);
     this.temperature.set(config['temperature'] as number | undefined);
-    const rawPins = config['partialPins'];
-    if (Array.isArray(rawPins)) {
-      this.partialPins.set(rawPins
-        .filter((p: any) => p && typeof p.key === 'string' && typeof p.version === 'number')
-        .map((p: any) => ({ key: p.key, version: p.version })));
-    } else {
-      this.partialPins.set([]);
-    }
+    this.partialPins.set(readPromptPartialPins(config['partialPins']));
     const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
     const declaredKinds = new Set<string>();
@@ -1159,6 +1152,12 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     return !!row.template && /\boutput\.[a-zA-Z_]/.test(row.template);
   }
 
+  protected setTab(value: string): void {
+    if (isEditorTab(value)) {
+      this.tab.set(value);
+    }
+  }
+
   submit(event: Event): void {
     event.preventDefault();
 
@@ -1239,6 +1238,25 @@ export class AgentFormComponent implements OnInit, OnDestroy {
 
 function tryParseJson(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return raw; }
+}
+
+function isEditorTab(value: string): value is EditorTab {
+  return value === 'identity'
+    || value === 'prompt'
+    || value === 'preview'
+    || value === 'model'
+    || value === 'outputs';
+}
+
+function readPromptPartialPins(value: unknown): PromptPartialPinDto[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isPromptPartialPin);
+}
+
+function isPromptPartialPin(value: unknown): value is PromptPartialPinDto {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PromptPartialPinDto>;
+  return typeof candidate.key === 'string' && typeof candidate.version === 'number';
 }
 
 function emptyOutputRow(kind: string): OutputRow {

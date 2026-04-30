@@ -36,9 +36,9 @@ export function streamSse<T>(
             const fallbackEvent = await handleErrorResponse(response);
             if (fallbackEvent) {
               subscriber.next(fallbackEvent as T);
+              subscriber.complete();
+              return;
             }
-            subscriber.complete();
-            return;
           }
 
           subscriber.error(new Error(`HTTP ${response.status} ${response.statusText}`));
