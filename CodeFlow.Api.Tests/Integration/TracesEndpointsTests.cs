@@ -711,6 +711,53 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         hitl.SubflowPath.Should().Equal("A", "B", "C");
     }
 
+    [Fact]
+    public async Task GetTraceDescendants_ShouldReturnSubtreeDetailsInOneResponse()
+    {
+        var rootTraceId = Guid.NewGuid();
+        var childTraceId = Guid.NewGuid();
+        var grandchildTraceId = Guid.NewGuid();
+        var rootCorrelationId = Guid.NewGuid();
+        var childCorrelationId = Guid.NewGuid();
+        var grandchildCorrelationId = Guid.NewGuid();
+        var childRoundId = Guid.NewGuid();
+        var grandchildRoundId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.WorkflowSagas.AddRange(
+                NewSaga(rootCorrelationId, rootTraceId, "root-wf", parentTraceId: null, subflowDepth: 0),
+                NewSaga(childCorrelationId, childTraceId, "child-wf", parentTraceId: rootTraceId, subflowDepth: 1),
+                NewSaga(grandchildCorrelationId, grandchildTraceId, "grandchild-wf", parentTraceId: childTraceId, subflowDepth: 2));
+            db.WorkflowSagaDecisions.AddRange(
+                NewDecision(childCorrelationId, childTraceId, childRoundId, "child-agent", ordinal: 0),
+                NewDecision(grandchildCorrelationId, grandchildTraceId, grandchildRoundId, "grandchild-agent", ordinal: 0));
+            db.HitlTasks.Add(NewHitl(grandchildTraceId, grandchildRoundId, "grandchild-human", "grandchild-wf", 1));
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var descendants = await client.GetFromJsonAsync<IReadOnlyList<TraceDescendantPayload>>(
+            $"/api/traces/{rootTraceId}/descendants");
+
+        descendants.Should().NotBeNull();
+        descendants!.Should().HaveCount(2);
+
+        var child = descendants.Single(d => d.Summary.TraceId == childTraceId);
+        child.Summary.ParentTraceId.Should().Be(rootTraceId);
+        child.Detail.WorkflowKey.Should().Be("child-wf");
+        child.Detail.Decisions.Should().ContainSingle(d => d.AgentKey == "child-agent");
+
+        var grandchild = descendants.Single(d => d.Summary.TraceId == grandchildTraceId);
+        grandchild.Summary.ParentTraceId.Should().Be(childTraceId);
+        grandchild.Detail.WorkflowKey.Should().Be("grandchild-wf");
+        grandchild.Detail.Decisions.Should().ContainSingle(d => d.AgentKey == "grandchild-agent");
+        grandchild.Detail.PendingHitl.Should().ContainSingle(h =>
+            h.OriginTraceId == grandchildTraceId
+            && h.SubflowPath!.SequenceEqual(new[] { "child-wf", "grandchild-wf" }));
+    }
+
     private static WorkflowSagaStateEntity NewSaga(
         Guid correlationId,
         Guid traceId,
@@ -743,6 +790,30 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
             Version = 1,
+        };
+    }
+
+    private static WorkflowSagaDecisionEntity NewDecision(
+        Guid correlationId,
+        Guid traceId,
+        Guid roundId,
+        string agentKey,
+        int ordinal)
+    {
+        return new WorkflowSagaDecisionEntity
+        {
+            SagaCorrelationId = correlationId,
+            Ordinal = ordinal,
+            TraceId = traceId,
+            AgentKey = agentKey,
+            AgentVersion = 1,
+            Decision = "Completed",
+            RoundId = roundId,
+            RecordedAtUtc = DateTime.UtcNow,
+            NodeId = Guid.NewGuid(),
+            OutputPortName = "Completed",
+            InputRef = "file:///tmp/input.bin",
+            OutputRef = "file:///tmp/output.bin",
         };
     }
 
@@ -1015,6 +1086,22 @@ public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         IReadOnlyList<HitlTaskPayload> PendingHitl);
 
     private sealed record BulkDeleteResponsePayload(int DeletedCount);
+
+    private sealed record TraceDescendantPayload(
+        TraceSummaryPayload Summary,
+        TraceDescendantDetailPayload Detail);
+
+    private sealed record TraceSummaryPayload(
+        Guid TraceId,
+        Guid? ParentTraceId);
+
+    private sealed record TraceDescendantDetailPayload(
+        Guid TraceId,
+        string WorkflowKey,
+        IReadOnlyList<TraceDecisionPayload> Decisions,
+        IReadOnlyList<HitlTaskPayload> PendingHitl);
+
+    private sealed record TraceDecisionPayload(string AgentKey);
 
     private sealed record HitlTaskPayload(
         long Id,

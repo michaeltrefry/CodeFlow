@@ -31,6 +31,10 @@ public sealed record TraceSummaryDto(
     int? ParentReviewRound = null,
     int? ParentReviewMaxRounds = null);
 
+public sealed record TraceDescendantDto(
+    TraceSummaryDto Summary,
+    TraceDetailDto Detail);
+
 public sealed record TraceDecisionDto(
     string AgentKey,
     int AgentVersion,

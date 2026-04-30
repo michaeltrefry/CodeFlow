@@ -16,6 +16,12 @@ const typescriptWorkerFactory = () =>
 
 let configured = false;
 let stylesLoaded: Promise<void> | undefined;
+let monacoApi: Promise<typeof import('monaco-editor')> | undefined;
+
+export function loadMonacoEditor(): Promise<typeof import('monaco-editor')> {
+  monacoApi ??= import('monaco-editor');
+  return monacoApi;
+}
 
 export function ensureMonacoEditorStyles(): Promise<void> {
   stylesLoaded ??= new Promise<void>((resolve, reject) => {

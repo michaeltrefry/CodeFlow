@@ -11,6 +11,7 @@ import {
   ReplayRequest,
   ReplayResponse,
   TraceBundleManifest,
+  TraceDescendant,
   TraceDetail,
   TraceSummary,
   TraceTokenUsageDto
@@ -26,6 +27,10 @@ export class TracesApi {
 
   get(id: string): Observable<TraceDetail> {
     return this.http.get<TraceDetail>(`/api/traces/${id}`);
+  }
+
+  getDescendants(id: string): Observable<TraceDescendant[]> {
+    return this.http.get<TraceDescendant[]>(`/api/traces/${id}/descendants`);
   }
 
   create(request: CreateTraceRequest): Observable<CreateTraceResponse> {

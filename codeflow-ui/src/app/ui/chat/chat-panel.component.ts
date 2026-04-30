@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, ElementRef, ViewChild, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnDestroy, ViewChild, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { AuthService } from '../../auth/auth.service';
 import {
   AssistantApi,
@@ -413,7 +414,7 @@ type ThreadEntry =
     }
   `],
 })
-export class ChatPanelComponent {
+export class ChatPanelComponent implements OnDestroy {
   private readonly api = inject(AssistantApi);
   private readonly auth = inject(AuthService);
   private readonly workflowsApi = inject(WorkflowsApi);
@@ -421,6 +422,7 @@ export class ChatPanelComponent {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly preferences = inject(AssistantPreferencesService);
+  private readonly destroyRef = inject(DestroyRef);
 
   /**
    * HAA-10: per-tool-call cache of the structured `package` argument the LLM passed to
@@ -698,7 +700,9 @@ export class ChatPanelComponent {
     // HAA-15/16 — load the admin-configured defaults + available models once per mount and seed
     // the cap. Selection preference is layered on top so a user's stored choice survives reloads
     // and only falls back to server defaults when nothing is stored.
-    this.api.getDefaults().subscribe({
+    this.api.getDefaults().pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: defaults => {
         this.defaults.set(defaults);
         this.conversationCap.set(
@@ -805,7 +809,9 @@ export class ChatPanelComponent {
       provider,
       model,
       workspaceOverride,
-    }).subscribe({
+    }).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: evt => this.handleStreamEvent(evt),
       error: err => {
         this.streaming.set(false);
@@ -857,7 +863,9 @@ export class ChatPanelComponent {
     this.conversationInputTokens.set(0);
     this.conversationOutputTokens.set(0);
 
-    this.api.create(scope).subscribe({
+    this.api.create(scope).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: payload => {
         this.applyConversationPayload(payload);
         // Reflect the new id into the URL so reload preserves the same thread. The effect's
@@ -913,7 +921,9 @@ export class ChatPanelComponent {
       return;
     }
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
-    this.workflowsApi.applyPackageImport(pkg).subscribe({
+    this.workflowsApi.applyPackageImport(pkg).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: result => {
         this.pendingSaves.delete(toolCallId);
         this.updateConfirmation(toolCallId, c => ({
@@ -948,7 +958,9 @@ export class ChatPanelComponent {
       return;
     }
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
-    this.tracesApi.replay(cached.originalTraceId, cached.request).subscribe({
+    this.tracesApi.replay(cached.originalTraceId, cached.request).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: result => {
         this.pendingReplays.delete(toolCallId);
         // The replay endpoint returns 200 even when the replay finished as Failed / DriftRefused
@@ -991,7 +1003,9 @@ export class ChatPanelComponent {
       return;
     }
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
-    this.tracesApi.create(req).subscribe({
+    this.tracesApi.create(req).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: result => {
         this.pendingRuns.delete(toolCallId);
         this.updateConfirmation(toolCallId, c => ({
@@ -1137,9 +1151,15 @@ export class ChatPanelComponent {
     this.conversationOutputTokens.set(0);
   }
 
+  ngOnDestroy(): void {
+    this.cancelTurn();
+  }
+
   private loadConversation(scope: AssistantScope): void {
     this.loading.set(true);
-    this.api.getOrCreate(scope).subscribe({
+    this.api.getOrCreate(scope).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: payload => this.applyConversationPayload(payload),
       error: err => {
         this.loading.set(false);
@@ -1150,7 +1170,9 @@ export class ChatPanelComponent {
 
   private loadConversationById(conversationId: string): void {
     this.loading.set(true);
-    this.api.get(conversationId).subscribe({
+    this.api.get(conversationId).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
       next: payload => this.applyConversationPayload(payload),
       error: err => {
         this.loading.set(false);
@@ -1211,7 +1233,7 @@ export class ChatPanelComponent {
  * The cached package payload is held separately on the panel; this helper just produces the
  * view-model the chip renders.
  */
-function buildSaveConfirmationView(
+export function buildSaveConfirmationView(
   resultJson: string,
   pkg: unknown,
 ): ChatToolCallView['confirmation'] | undefined {
@@ -1251,7 +1273,7 @@ function buildSaveConfirmationView(
  * sees what they're authorizing before clicking Run. The actual trace creation happens when the
  * user confirms (POST /api/traces); this helper just produces the chip view.
  */
-function buildRunConfirmationView(
+export function buildRunConfirmationView(
   resultJson: string,
   request: CreateTraceRequest | undefined,
 ): ChatToolCallView['confirmation'] | undefined {
@@ -1292,7 +1314,7 @@ function buildRunConfirmationView(
  * `TracesApi.create()` expects. Returns null if `workflowKey` / `input` aren't present (the
  * tool itself would have errored on those, but we defensively skip stashing here).
  */
-function toCreateTraceRequest(args: Record<string, unknown>): CreateTraceRequest | null {
+export function toCreateTraceRequest(args: Record<string, unknown>): CreateTraceRequest | null {
   const workflowKey = typeof args['workflowKey'] === 'string' ? (args['workflowKey'] as string) : '';
   const input = typeof args['input'] === 'string' ? (args['input'] as string) : '';
   if (!workflowKey || !input) {
@@ -1318,7 +1340,7 @@ function toCreateTraceRequest(args: Record<string, unknown>): CreateTraceRequest
  * past hard drift" hint when the call args set `force: true`. The replay itself happens when
  * the user confirms (POST /api/traces/{id}/replay) using the cached `ReplayRequest`.
  */
-function buildReplayConfirmationView(
+export function buildReplayConfirmationView(
   resultJson: string,
   cached: { originalTraceId: string; request: ReplayRequest } | undefined,
 ): ChatToolCallView['confirmation'] | undefined {
@@ -1358,7 +1380,7 @@ function buildReplayConfirmationView(
  * `ReplayRequest` shape `TracesApi.replay()` expects, paired with the original trace id (used
  * for the URL). Returns null if `traceId` / `edits` aren't present.
  */
-function toReplayRequestCached(
+export function toReplayRequestCached(
   args: Record<string, unknown>,
 ): { originalTraceId: string; request: ReplayRequest } | null {
   const traceId = typeof args['traceId'] === 'string' ? (args['traceId'] as string) : '';

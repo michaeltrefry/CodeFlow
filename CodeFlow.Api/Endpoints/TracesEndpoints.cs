@@ -35,6 +35,9 @@ public static class TracesEndpoints
         group.MapGet("/{id:guid}", GetTraceAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
 
+        group.MapGet("/{id:guid}/descendants", GetTraceDescendantsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesRead);
+
         group.MapPost("/", CreateTraceAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.TracesWrite);
 
@@ -159,54 +162,86 @@ public static class TracesEndpoints
             .OrderBy(e => e.Ordinal)
             .ToListAsync(cancellationToken);
 
-        var detail = new TraceDetailDto(
-            TraceId: saga.TraceId,
-            WorkflowKey: saga.WorkflowKey,
-            WorkflowVersion: saga.WorkflowVersion,
-            CurrentState: saga.CurrentState,
-            CurrentAgentKey: saga.CurrentAgentKey,
-            CurrentRoundId: saga.CurrentRoundId,
-            RoundCount: saga.RoundCount,
-            PinnedAgentVersions: saga.GetPinnedAgentVersions(),
-            ContextInputs: DeserializeContextInputs(saga.InputsJson),
-            Decisions: decisions
-                .Select(entity => new TraceDecisionDto(
-                    AgentKey: entity.AgentKey,
-                    AgentVersion: entity.AgentVersion,
-                    Decision: entity.Decision,
-                    DecisionPayload: ParsePayload(entity.DecisionPayloadJson),
-                    RoundId: entity.RoundId,
-                    RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc),
-                    NodeId: entity.NodeId,
-                    OutputPortName: entity.OutputPortName,
-                    InputRef: entity.InputRef,
-                    OutputRef: entity.OutputRef,
-                    NodeEnteredAtUtc: entity.NodeEnteredAtUtc.HasValue
-                        ? DateTime.SpecifyKind(entity.NodeEnteredAtUtc.Value, DateTimeKind.Utc)
-                        : null))
-                .ToArray(),
-            LogicEvaluations: logicEvaluations
-                .Select(entity => new TraceLogicEvaluationDto(
-                    NodeId: entity.NodeId,
-                    OutputPortName: entity.OutputPortName,
-                    RoundId: entity.RoundId,
-                    Duration: TimeSpan.FromTicks(entity.DurationTicks),
-                    Logs: DeserializeLogs(entity.LogsJson),
-                    FailureKind: entity.FailureKind,
-                    FailureMessage: entity.FailureMessage,
-                    RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc)))
-                .ToArray(),
-            PendingHitl: pendingHitl
-                .Select(task => MapHitl(
-                    task,
-                    originTraceId: task.TraceId,
-                    subflowPath: subflowPaths.TryGetValue(task.TraceId, out var path) ? path : Array.Empty<string>()))
-                .ToArray(),
-            CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
-            UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
-            FailureReason: saga.FailureReason);
+        var detail = MapDetail(
+            saga,
+            decisions,
+            logicEvaluations,
+            pendingHitl,
+            subflowPaths);
 
         return Results.Ok(detail);
+    }
+
+    private static async Task<IResult> GetTraceDescendantsAsync(
+        Guid id,
+        CodeFlowDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var saga = await dbContext.WorkflowSagas
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.TraceId == id, cancellationToken);
+
+        if (saga is null)
+        {
+            return Results.NotFound();
+        }
+
+        var subtreeSagas = await CollectSubtreeSagasAsync(dbContext, saga, cancellationToken);
+        var descendants = subtreeSagas
+            .Where(s => s.TraceId != saga.TraceId)
+            .OrderBy(s => s.SubflowDepth)
+            .ThenBy(s => s.CreatedAtUtc)
+            .ToArray();
+
+        if (descendants.Length == 0)
+        {
+            return Results.Ok(Array.Empty<TraceDescendantDto>());
+        }
+
+        var correlationIds = descendants.Select(s => s.CorrelationId).ToArray();
+        var traceIds = descendants.Select(s => s.TraceId).ToArray();
+
+        var decisions = await dbContext.WorkflowSagaDecisions
+            .AsNoTracking()
+            .Where(d => correlationIds.Contains(d.SagaCorrelationId))
+            .OrderBy(d => d.Ordinal)
+            .ToListAsync(cancellationToken);
+
+        var logicEvaluations = await dbContext.WorkflowSagaLogicEvaluations
+            .AsNoTracking()
+            .Where(e => correlationIds.Contains(e.SagaCorrelationId))
+            .OrderBy(e => e.Ordinal)
+            .ToListAsync(cancellationToken);
+
+        var pendingHitl = await dbContext.HitlTasks
+            .AsNoTracking()
+            .Where(task => traceIds.Contains(task.TraceId) && task.State == HitlTaskState.Pending)
+            .OrderBy(task => task.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        var subflowPaths = BuildSubflowPaths(saga.TraceId, subtreeSagas);
+        var decisionsByCorrelationId = decisions
+            .GroupBy(d => d.SagaCorrelationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<WorkflowSagaDecisionEntity>)group.ToArray());
+        var evaluationsByCorrelationId = logicEvaluations
+            .GroupBy(e => e.SagaCorrelationId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<WorkflowSagaLogicEvaluationEntity>)group.ToArray());
+        var hitlByTraceId = pendingHitl
+            .GroupBy(task => task.TraceId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<HitlTaskEntity>)group.ToArray());
+
+        var response = descendants
+            .Select(descendant => new TraceDescendantDto(
+                Summary: MapSummary(descendant),
+                Detail: MapDetail(
+                    descendant,
+                    decisionsByCorrelationId.GetValueOrDefault(descendant.CorrelationId) ?? Array.Empty<WorkflowSagaDecisionEntity>(),
+                    evaluationsByCorrelationId.GetValueOrDefault(descendant.CorrelationId) ?? Array.Empty<WorkflowSagaLogicEvaluationEntity>(),
+                    hitlByTraceId.GetValueOrDefault(descendant.TraceId) ?? Array.Empty<HitlTaskEntity>(),
+                    subflowPaths)))
+            .ToArray();
+
+        return Results.Ok(response);
     }
 
     private static async Task<IResult> CreateTraceAsync(
@@ -1061,6 +1096,58 @@ public static class TracesEndpoints
         ParentNodeId: saga.ParentNodeId,
         ParentReviewRound: saga.ParentReviewRound,
         ParentReviewMaxRounds: saga.ParentReviewMaxRounds);
+
+    private static TraceDetailDto MapDetail(
+        WorkflowSagaStateEntity saga,
+        IReadOnlyList<WorkflowSagaDecisionEntity> decisions,
+        IReadOnlyList<WorkflowSagaLogicEvaluationEntity> logicEvaluations,
+        IReadOnlyList<HitlTaskEntity> pendingHitl,
+        IReadOnlyDictionary<Guid, IReadOnlyList<string>> subflowPaths) => new(
+        TraceId: saga.TraceId,
+        WorkflowKey: saga.WorkflowKey,
+        WorkflowVersion: saga.WorkflowVersion,
+        CurrentState: saga.CurrentState,
+        CurrentAgentKey: saga.CurrentAgentKey,
+        CurrentRoundId: saga.CurrentRoundId,
+        RoundCount: saga.RoundCount,
+        PinnedAgentVersions: saga.GetPinnedAgentVersions(),
+        ContextInputs: DeserializeContextInputs(saga.InputsJson),
+        Decisions: decisions
+            .Select(entity => new TraceDecisionDto(
+                AgentKey: entity.AgentKey,
+                AgentVersion: entity.AgentVersion,
+                Decision: entity.Decision,
+                DecisionPayload: ParsePayload(entity.DecisionPayloadJson),
+                RoundId: entity.RoundId,
+                RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc),
+                NodeId: entity.NodeId,
+                OutputPortName: entity.OutputPortName,
+                InputRef: entity.InputRef,
+                OutputRef: entity.OutputRef,
+                NodeEnteredAtUtc: entity.NodeEnteredAtUtc.HasValue
+                    ? DateTime.SpecifyKind(entity.NodeEnteredAtUtc.Value, DateTimeKind.Utc)
+                    : null))
+            .ToArray(),
+        LogicEvaluations: logicEvaluations
+            .Select(entity => new TraceLogicEvaluationDto(
+                NodeId: entity.NodeId,
+                OutputPortName: entity.OutputPortName,
+                RoundId: entity.RoundId,
+                Duration: TimeSpan.FromTicks(entity.DurationTicks),
+                Logs: DeserializeLogs(entity.LogsJson),
+                FailureKind: entity.FailureKind,
+                FailureMessage: entity.FailureMessage,
+                RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc)))
+            .ToArray(),
+        PendingHitl: pendingHitl
+            .Select(task => MapHitl(
+                task,
+                originTraceId: task.TraceId,
+                subflowPath: subflowPaths.TryGetValue(task.TraceId, out var path) ? path : Array.Empty<string>()))
+            .ToArray(),
+        CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
+        UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
+        FailureReason: saga.FailureReason);
 
     private static HitlTaskDto MapHitl(HitlTaskEntity task) =>
         MapHitl(task, originTraceId: null, subflowPath: null);
