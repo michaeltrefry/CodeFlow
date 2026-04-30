@@ -1,5 +1,7 @@
 using CodeFlow.Api.Mcp;
+using CodeFlow.Api.WorkflowPackages.Admission;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime.Authority.Admission;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 using System.Text.Json;
@@ -14,9 +16,11 @@ public sealed class WorkflowPackageImporter(
     IAgentRoleRepository agentRoleRepository,
     ISkillRepository skillRepository,
     IMcpServerRepository mcpServerRepository,
-    IMcpEndpointPolicy mcpEndpointPolicy) : IWorkflowPackageImporter
+    IMcpEndpointPolicy mcpEndpointPolicy,
+    WorkflowPackageImportValidator? admissionValidator = null) : IWorkflowPackageImporter
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private readonly WorkflowPackageImportValidator admissionValidator = admissionValidator ?? new WorkflowPackageImportValidator();
 
     public async Task<WorkflowPackageImportPreview> PreviewAsync(
         WorkflowPackage package,
@@ -70,8 +74,20 @@ public sealed class WorkflowPackageImporter(
         WorkflowPackage package,
         CancellationToken cancellationToken)
     {
-        ValidatePackage(package);
+        // sc-272 PR2: package import is the canonical "self-contained dependency closure"
+        // boundary. The validator replaces the static ValidatePackage throw path so partial
+        // packages never reach the apply loop. The exception message is preserved on
+        // rejection for back-compat with API callers that match on it.
+        var admission = admissionValidator.Validate(package);
+        if (admission is Rejected<AdmittedPackageImport> rejected)
+        {
+            throw new WorkflowPackageResolutionException(rejected.Reason.Reason);
+        }
 
+        // Future: thread `_ = ((Accepted<AdmittedPackageImport>)admission).Value` through the
+        // plan so the apply loop's contract is "consume admitted package only". For PR2 the
+        // executor still operates on `package` because the admitted value is structurally
+        // equivalent and the change is invisible at this level.
         var items = new List<WorkflowPackageImportItem>();
         var warnings = new List<string>();
 
@@ -262,65 +278,10 @@ public sealed class WorkflowPackageImporter(
         return new VersionedImportPlan(nextWorkflowVersionMap, items);
     }
 
-    private static void ValidatePackage(WorkflowPackage package)
-    {
-        if (!string.Equals(package.SchemaVersion, WorkflowPackageDefaults.SchemaVersion, StringComparison.Ordinal))
-        {
-            throw new WorkflowPackageResolutionException(
-                $"Workflow package schema '{package.SchemaVersion}' is not supported.");
-        }
-
-        if (!package.Workflows.Any(workflow =>
-                string.Equals(workflow.Key, package.EntryPoint.Key, StringComparison.Ordinal) &&
-                workflow.Version == package.EntryPoint.Version))
-        {
-            throw new WorkflowPackageResolutionException(
-                $"Workflow package entry point '{package.EntryPoint.Key}' v{package.EntryPoint.Version} is missing from workflows.");
-        }
-
-        var workflowKeys = package.Workflows
-            .Select(workflow => new PackageVersionKey(workflow.Key, workflow.Version))
-            .ToHashSet();
-        var agentKeys = package.Agents
-            .Select(agent => new PackageVersionKey(agent.Key, agent.Version))
-            .ToHashSet();
-
-        foreach (var workflow in package.Workflows)
-        {
-            foreach (var node in workflow.Nodes)
-            {
-                if (!string.IsNullOrWhiteSpace(node.AgentKey))
-                {
-                    if (node.AgentVersion is null)
-                    {
-                        throw new WorkflowPackageResolutionException(
-                            $"Workflow '{workflow.Key}' v{workflow.Version} has agent node '{node.Id}' without a concrete agent version.");
-                    }
-
-                    if (!agentKeys.Contains(new PackageVersionKey(node.AgentKey!, node.AgentVersion.Value)))
-                    {
-                        throw new WorkflowPackageResolutionException(
-                            $"Workflow '{workflow.Key}' v{workflow.Version} references missing agent '{node.AgentKey}' v{node.AgentVersion}.");
-                    }
-                }
-
-                if (!string.IsNullOrWhiteSpace(node.SubflowKey))
-                {
-                    if (node.SubflowVersion is null)
-                    {
-                        throw new WorkflowPackageResolutionException(
-                            $"Workflow '{workflow.Key}' v{workflow.Version} has subflow node '{node.Id}' without a concrete subflow version.");
-                    }
-
-                    if (!workflowKeys.Contains(new PackageVersionKey(node.SubflowKey!, node.SubflowVersion.Value)))
-                    {
-                        throw new WorkflowPackageResolutionException(
-                            $"Workflow '{workflow.Key}' v{workflow.Version} references missing subflow '{node.SubflowKey}' v{node.SubflowVersion}.");
-                    }
-                }
-            }
-        }
-    }
+    // sc-272 PR2: dependency-closure validation moved to WorkflowPackageImportValidator.
+    // The validator returns Admission<AdmittedPackageImport>; rejections surface as
+    // WorkflowPackageResolutionException at BuildImportPlanAsync's entrypoint so existing
+    // API surface and tests that match on the exception message continue to work.
 
     private async Task<int?> MaxWorkflowVersionAsync(string workflowKey, CancellationToken cancellationToken) =>
         await dbContext.Workflows
