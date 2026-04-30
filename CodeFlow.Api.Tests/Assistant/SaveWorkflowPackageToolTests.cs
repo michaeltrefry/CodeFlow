@@ -57,10 +57,11 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
-    public async Task Invoke_WithUnresolvablePackage_ReturnsInvalidStatus()
+    public async Task Invoke_WithRefThatExistsNeitherInPackageNorDb_ReturnsPreviewConflicts()
     {
-        // A self-contained package would include the agent in `agents[]`. We deliberately omit
-        // it so the importer's resolution step throws and we surface the missing reference.
+        // A workflow node references an agent that's neither embedded nor in the target library.
+        // The validator no longer treats this as a structural rejection — the planner emits a
+        // Conflict plan item so the LLM can see which specific ref failed to resolve.
         var package = BuildPackage(
             entryKey: "lonely-flow",
             entryVersion: 1,
@@ -78,19 +79,60 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
         var result = await tool.InvokeAsync(args, CancellationToken.None);
 
         result.IsError.Should().BeFalse(
-            because: "an unresolvable package is a reportable verdict for the LLM, not a tool failure");
+            because: "a conflict-laden preview is a reportable verdict for the LLM, not a tool failure");
 
         var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
-        parsed.GetProperty("status").GetString().Should().Be("invalid");
-        // The importer's PreviewAsync surfaces self-containment failures via the exception
-        // message (the MissingReferences list is populated only by the resolver / export path).
-        // The message must point the LLM at the offending key so it can re-emit a fixed package.
-        parsed.GetProperty("message").GetString()
-            .Should().Contain("missing-agent",
-                because: "the LLM must see which agent is missing to fix the package");
-        parsed.GetProperty("hint").GetString()
-            .Should().Contain("include every referenced entity",
-                because: "the assistant should be reminded of the self-containment rule");
+        parsed.GetProperty("status").GetString().Should().Be("preview_conflicts");
+        parsed.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        parsed.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+
+        var conflictMessages = parsed.GetProperty("items").EnumerateArray()
+            .Where(item => item.GetProperty("action").GetString() == "Conflict")
+            .Select(item => item.GetProperty("message").GetString() ?? string.Empty)
+            .ToArray();
+        conflictMessages.Should().Contain(message => message != null && message.Contains("missing-agent"),
+            because: "the LLM must see which agent failed to resolve so it can fix the package");
+    }
+
+    [Fact]
+    public async Task Invoke_WithRefOmittedButExistsInDb_ReturnsPreviewOkWithReuse()
+    {
+        // The assistant's common case after a get_workflow_package call: it embeds the new
+        // workflow but doesn't re-embed the existing agent (since the truncated tool result
+        // can't reproduce the agent's full system prompt verbatim). The importer must resolve
+        // the unembedded ref against the DB and treat it as Reuse.
+        const string agentKey = "haa10-resolver-fallback-writer";
+        await SeedAgentAsync(agentKey);
+
+        var package = BuildPackage(
+            entryKey: "lonely-flow",
+            entryVersion: 1,
+            agentKeyForFirstNode: agentKey,
+            agentVersion: 1,
+            includeAgentInPackage: false);
+        var args = JsonSerializer.SerializeToElement(new { package = JsonSerializer.SerializeToElement(package) });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("status").GetString().Should().Be("preview_ok");
+        parsed.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        parsed.GetProperty("reuseCount").GetInt32().Should().BeGreaterThan(0,
+            because: "the existing agent should have been resolved from the DB and reported as Reuse");
+
+        var reuseItems = parsed.GetProperty("items").EnumerateArray()
+            .Where(item => item.GetProperty("action").GetString() == "Reuse"
+                && item.GetProperty("kind").GetString() == "Agent")
+            .ToArray();
+        reuseItems.Should().Contain(item => item.GetProperty("key").GetString() == agentKey,
+            because: "the unembedded agent ref should appear as a DB-resolved Reuse item");
     }
 
     [Fact]

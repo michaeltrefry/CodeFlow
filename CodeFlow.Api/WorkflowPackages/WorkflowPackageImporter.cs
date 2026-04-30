@@ -94,6 +94,12 @@ public sealed class WorkflowPackageImporter(
         var agentPlan = await PlanAgentImportsAsync(package, cancellationToken);
         items.AddRange(agentPlan.Items);
 
+        var unembeddedAgentPlan = await PlanUnembeddedAgentReferencesAsync(package, cancellationToken);
+        items.AddRange(unembeddedAgentPlan);
+
+        var unembeddedSubflowPlan = await PlanUnembeddedSubflowReferencesAsync(package, cancellationToken);
+        items.AddRange(unembeddedSubflowPlan);
+
         var workflowPlan = await PlanWorkflowImportsAsync(package, agentPlan.VersionMap, cancellationToken);
         items.AddRange(workflowPlan.Items);
 
@@ -278,10 +284,125 @@ public sealed class WorkflowPackageImporter(
         return new VersionedImportPlan(nextWorkflowVersionMap, items);
     }
 
-    // sc-272 PR2: dependency-closure validation moved to WorkflowPackageImportValidator.
-    // The validator returns Admission<AdmittedPackageImport>; rejections surface as
-    // WorkflowPackageResolutionException at BuildImportPlanAsync's entrypoint so existing
-    // API surface and tests that match on the exception message continue to work.
+    // sc-272 PR2: structural validation lives in WorkflowPackageImportValidator (schema
+    // version, entry-point presence, version-pin completeness). Closure validation —
+    // every node ref resolves to either an embedded copy or an existing DB row — happens
+    // here in the planner so the import surface can fall back to the local library
+    // instead of demanding byte-perfect re-embedding of unchanged dependencies.
+
+    /// <summary>
+    /// Walk every workflow node's agent slots (the generic AgentKey plus the three Swarm
+    /// slots). For each ref that isn't represented in <c>package.Agents</c>, resolve it
+    /// against the local DB: a hit becomes a <c>Reuse</c> plan item; a miss becomes a
+    /// <c>Conflict</c>. Embedded agents are handled by <see cref="PlanAgentImportsAsync"/>.
+    /// </summary>
+    private async Task<IReadOnlyList<WorkflowPackageImportItem>> PlanUnembeddedAgentReferencesAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken)
+    {
+        var embedded = package.Agents
+            .Select(agent => new PackageVersionKey(agent.Key, agent.Version))
+            .ToHashSet();
+
+        var unembedded = new HashSet<PackageVersionKey>();
+        foreach (var workflow in package.Workflows)
+        {
+            foreach (var node in workflow.Nodes)
+            {
+                CollectAgentRef(node.AgentKey, node.AgentVersion, embedded, unembedded);
+                CollectAgentRef(node.ContributorAgentKey, node.ContributorAgentVersion, embedded, unembedded);
+                CollectAgentRef(node.SynthesizerAgentKey, node.SynthesizerAgentVersion, embedded, unembedded);
+                CollectAgentRef(node.CoordinatorAgentKey, node.CoordinatorAgentVersion, embedded, unembedded);
+            }
+        }
+
+        if (unembedded.Count == 0)
+        {
+            return Array.Empty<WorkflowPackageImportItem>();
+        }
+
+        var items = new List<WorkflowPackageImportItem>(unembedded.Count);
+        foreach (var reference in unembedded.OrderBy(r => r.Key, StringComparer.Ordinal).ThenBy(r => r.Version))
+        {
+            var existing = await agentConfigRepository.TryGetAsync(reference.Key, reference.Version, cancellationToken);
+            items.Add(existing is null
+                ? Conflict(
+                    WorkflowPackageImportResourceKind.Agent,
+                    reference.Key,
+                    reference.Version,
+                    $"Workflow node references agent '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.")
+                : ReuseExternal(
+                    WorkflowPackageImportResourceKind.Agent,
+                    reference.Key,
+                    reference.Version,
+                    "Reusing existing target-library agent (not embedded in package)."));
+        }
+
+        return items;
+
+        static void CollectAgentRef(
+            string? key,
+            int? version,
+            HashSet<PackageVersionKey> embedded,
+            HashSet<PackageVersionKey> unembedded)
+        {
+            if (string.IsNullOrWhiteSpace(key) || version is null) return;
+            var pvk = new PackageVersionKey(key, version.Value);
+            if (embedded.Contains(pvk)) return;
+            unembedded.Add(pvk);
+        }
+    }
+
+    /// <summary>
+    /// Walk every workflow node's subflow ref. For each ref that isn't represented in
+    /// <c>package.Workflows</c>, resolve against the local DB: hit → <c>Reuse</c>,
+    /// miss → <c>Conflict</c>. Embedded workflows are handled by
+    /// <see cref="PlanWorkflowImportsAsync"/>.
+    /// </summary>
+    private async Task<IReadOnlyList<WorkflowPackageImportItem>> PlanUnembeddedSubflowReferencesAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken)
+    {
+        var embedded = package.Workflows
+            .Select(workflow => new PackageVersionKey(workflow.Key, workflow.Version))
+            .ToHashSet();
+
+        var unembedded = new HashSet<PackageVersionKey>();
+        foreach (var workflow in package.Workflows)
+        {
+            foreach (var node in workflow.Nodes)
+            {
+                if (string.IsNullOrWhiteSpace(node.SubflowKey) || node.SubflowVersion is null) continue;
+                var pvk = new PackageVersionKey(node.SubflowKey!, node.SubflowVersion.Value);
+                if (embedded.Contains(pvk)) continue;
+                unembedded.Add(pvk);
+            }
+        }
+
+        if (unembedded.Count == 0)
+        {
+            return Array.Empty<WorkflowPackageImportItem>();
+        }
+
+        var items = new List<WorkflowPackageImportItem>(unembedded.Count);
+        foreach (var reference in unembedded.OrderBy(r => r.Key, StringComparer.Ordinal).ThenBy(r => r.Version))
+        {
+            var existing = await workflowRepository.TryGetAsync(reference.Key, reference.Version, cancellationToken);
+            items.Add(existing is null
+                ? Conflict(
+                    WorkflowPackageImportResourceKind.Workflow,
+                    reference.Key,
+                    reference.Version,
+                    $"Workflow node references subflow '{reference.Key}' v{reference.Version} but the package omits it and the target library has no such version.")
+                : ReuseExternal(
+                    WorkflowPackageImportResourceKind.Workflow,
+                    reference.Key,
+                    reference.Version,
+                    "Reusing existing target-library workflow (not embedded in package)."));
+        }
+
+        return items;
+    }
 
     private async Task<int?> MaxWorkflowVersionAsync(string workflowKey, CancellationToken cancellationToken) =>
         await dbContext.Workflows
@@ -818,6 +939,13 @@ public sealed class WorkflowPackageImporter(
 
     private static WorkflowPackageImportItem Reuse(WorkflowPackageImportResourceKind kind, string key, int? version) =>
         new(kind, key, version, WorkflowPackageImportAction.Reuse, "Matching target resource already exists.");
+
+    private static WorkflowPackageImportItem ReuseExternal(
+        WorkflowPackageImportResourceKind kind,
+        string key,
+        int? version,
+        string message) =>
+        new(kind, key, version, WorkflowPackageImportAction.Reuse, message);
 
     private static WorkflowPackageImportItem CreateVersionBump(
         WorkflowPackageImportResourceKind kind,

@@ -28,23 +28,26 @@ public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) :
 
     public string Description =>
         "Validate a drafted workflow package against the library and offer to save it. The tool " +
-        "runs a self-containment preview only; it does NOT save. The chat UI surfaces a 'Save' " +
-        "confirmation chip — only the user clicking that chip persists the package. " +
-        "Required: `package` (a complete codeflow.workflow-package.v1 document with every " +
-        "referenced agent, role, skill, MCP server, and subflow embedded at its existing " +
-        "version). Enum fields (workflow category, node kind, input kind, agent kind, MCP " +
-        "transport, etc.) accept the canonical PascalCase string names you see in `get_workflow` " +
-        "and `get_workflow_package` output (e.g. \"Workflow\", \"Agent\", \"Text\"). When in doubt " +
-        "about the shape, call `get_workflow_package` on any existing workflow first and mirror " +
-        "its layout. After invoking this tool, do NOT call it again or take further action; wait " +
-        "for the user's next message.";
+        "runs a preview only; it does NOT save. The chat UI surfaces a 'Save' confirmation chip — " +
+        "only the user clicking that chip persists the package. " +
+        "Required: `package` (a codeflow.workflow-package.v1 document carrying the new or changed " +
+        "workflows/agents/roles/skills/MCP servers you want to land). You do NOT need to embed " +
+        "unchanged dependencies that already exist in the target library — the importer resolves " +
+        "any (key, version) referenced by a node but omitted from the package against the local DB " +
+        "and reports it as a Reuse in the preview. Only embed an entity when you're creating it or " +
+        "intentionally bumping it. Enum fields (workflow category, node kind, input kind, agent " +
+        "kind, MCP transport, etc.) accept the canonical PascalCase strings you see in " +
+        "`get_workflow` / `get_workflow_package` output (e.g. \"Workflow\", \"Agent\", \"Text\"). When " +
+        "in doubt about the shape, call `get_workflow_package` on any existing workflow first and " +
+        "mirror its layout. After invoking this tool, do NOT call it again or take further action; " +
+        "wait for the user's next message.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
             ""package"": {
                 ""type"": ""object"",
-                ""description"": ""A complete codeflow.workflow-package.v1 document. Must include every referenced agent / subflow / role / skill / MCP server at its existing version — the importer does not resolve from the database.""
+                ""description"": ""A codeflow.workflow-package.v1 document carrying the new or changed entities. Refs to entities that already exist in the target library may be omitted — the importer resolves them from the local DB and reports them as Reuse items in the preview.""
             },
             ""note"": {
                 ""type"": ""string"",
@@ -98,9 +101,11 @@ public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) :
                         referencedBy = r.ReferencedBy,
                     })
                     .ToArray(),
-                hint = "Workflow packages must include every referenced entity at its existing " +
-                       "version. Look up missing entities (e.g. via get_agent / get_workflow) and " +
-                       "embed them in the corresponding package array, then re-emit the full package.",
+                hint = "The package failed structural validation (schema version, entry-point " +
+                       "presence, or a node carrying an agent/subflow ref without a concrete " +
+                       "version pin). Fix the structural issue and re-emit. Note: refs to " +
+                       "entities that already exist in the target library do NOT need to be " +
+                       "embedded — only embed entities you are creating or intentionally bumping.",
             };
             return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
         }
