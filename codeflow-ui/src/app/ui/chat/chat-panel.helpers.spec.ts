@@ -1,5 +1,7 @@
 import {
+  buildPackagePreviewFailureMessage,
   buildDraftSaveConfirmationView,
+  buildPinnedMutationChip,
   buildReplayConfirmationView,
   buildRunConfirmationView,
   buildSaveConfirmationView,
@@ -69,6 +71,89 @@ describe('chat panel confirmation helpers', () => {
       cancelLabel: 'Cancel',
       state: 'idle',
     });
+  });
+
+  it('keeps the pinned save chip visible after a successful save with a workflow link', () => {
+    const chip = buildPinnedMutationChip({
+      id: 'save-1',
+      name: 'draft_workflow_package',
+      status: 'success',
+      confirmation: {
+        kind: 'save_workflow_package',
+        prompt: 'Save Shortcut Pre-Reqs?',
+        confirmLabel: 'Save',
+        cancelLabel: 'Cancel',
+        state: 'success',
+        applied: { kind: 'workflow', key: 'shortcut-pre-reqs', version: 3 },
+      },
+    });
+
+    expect(chip).toEqual({
+      id: 'save-1',
+      state: 'success',
+      title: 'Saved shortcut-pre-reqs v3 to the library.',
+      message: 'The workflow is ready to load from the workflow library.',
+      confirmLabel: 'Save',
+      cancelLabel: 'Cancel',
+      canConfirm: false,
+      canCancel: false,
+      linkUrl: '/workflows/shortcut-pre-reqs',
+      linkLabel: 'Open workflow',
+    });
+  });
+
+  it('keeps failed save chips retryable', () => {
+    const chip = buildPinnedMutationChip({
+      id: 'save-1',
+      name: 'draft_workflow_package',
+      status: 'success',
+      confirmation: {
+        kind: 'save_workflow_package',
+        prompt: 'Save Shortcut Pre-Reqs?',
+        state: 'error',
+        errorMessage: 'Import failed.',
+      },
+    });
+
+    expect(chip).toMatchObject({
+      title: 'Workflow save failed.',
+      message: 'Import failed.',
+      confirmLabel: 'Retry',
+      cancelLabel: 'Dismiss',
+      canConfirm: true,
+      canCancel: true,
+    });
+  });
+
+  it('summarizes package preview conflicts before applying a save', () => {
+    expect(buildPackagePreviewFailureMessage({
+      entryPoint: { key: 'shortcut-pre-reqs', version: 1 },
+      canApply: false,
+      createCount: 0,
+      reuseCount: 0,
+      conflictCount: 2,
+      warningCount: 0,
+      warnings: [],
+      items: [
+        {
+          kind: 'Workflow',
+          key: 'shortcut-pre-reqs',
+          version: 1,
+          action: 'Conflict',
+          message: 'A workflow with this key and version already exists with different content.',
+        },
+        {
+          kind: 'Agent',
+          key: 'planner',
+          version: 1,
+          action: 'Conflict',
+          message: 'An agent with this key and version already exists with different config.',
+        },
+      ],
+    })).toBe(
+      'Workflow package cannot be saved: Workflow shortcut-pre-reqs v1 conflicts. '
+      + 'A workflow with this key and version already exists with different content. (1 more conflict)',
+    );
   });
 
   it('builds a run confirmation with workflow version and resolved input count', () => {
