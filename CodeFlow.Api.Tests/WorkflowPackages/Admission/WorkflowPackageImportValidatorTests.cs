@@ -82,8 +82,10 @@ public sealed class WorkflowPackageImportValidatorTests
     }
 
     [Fact]
-    public void Validate_AgentReferenceMissingFromPackage_Rejects()
+    public void Validate_AgentReferenceNotEmbedded_Admits_PlannerHandlesClosure()
     {
+        // The validator no longer enforces embedded-vs-DB closure — that responsibility
+        // moved to the planner so unchanged dependencies don't have to be re-embedded.
         var validator = new WorkflowPackageImportValidator();
         var workflow = NewWorkflow() with
         {
@@ -104,13 +106,11 @@ public sealed class WorkflowPackageImportValidatorTests
 
         var admission = validator.Validate(package);
 
-        var rejected = admission.Should().BeOfType<Rejected<AdmittedPackageImport>>().Subject;
-        rejected.Reason.Code.Should().Be("package-agent-missing");
-        rejected.Reason.Path.Should().Be("missingAgent@5");
+        admission.Should().BeOfType<Accepted<AdmittedPackageImport>>();
     }
 
     [Fact]
-    public void Validate_SubflowReferenceMissingFromPackage_Rejects()
+    public void Validate_SubflowReferenceNotEmbedded_Admits_PlannerHandlesClosure()
     {
         var validator = new WorkflowPackageImportValidator();
         var workflow = NewWorkflow() with
@@ -134,8 +134,7 @@ public sealed class WorkflowPackageImportValidatorTests
 
         var admission = validator.Validate(package);
 
-        admission.Should().BeOfType<Rejected<AdmittedPackageImport>>()
-            .Which.Reason.Code.Should().Be("package-subflow-missing");
+        admission.Should().BeOfType<Accepted<AdmittedPackageImport>>();
     }
 
     [Fact]

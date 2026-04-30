@@ -489,8 +489,12 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
-    public async Task PreviewPackageImport_RejectsIncompleteDependencyClosure()
+    public async Task PreviewPackageImport_OmittedAgentResolvedFromDb_ReportsReuse()
     {
+        // Closure of unembedded refs is resolved against the local library, not rejected
+        // outright. Stripping the agent from the package's agents[] is now valid as long as
+        // the same (key, version) exists in the target DB — common case for the assistant
+        // re-emitting a delta package without re-embedding unchanged dependencies.
         using var client = factory.CreateClient();
         await SeedAgentAsync(client, "wf-missing-closure-writer");
 
@@ -526,9 +530,73 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             "/api/workflows/package/preview",
             new StringContent(package.ToJsonString(), Encoding.UTF8, "application/json"));
 
-        preview.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var body = await preview.Content.ReadAsStringAsync();
-        body.Should().Contain("references missing agent");
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        document.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        document.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Agent" &&
+                item.GetProperty("key").GetString() == "wf-missing-closure-writer" &&
+                item.GetProperty("action").GetString() == "Reuse");
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_OmittedAgentNotInDb_ReportsConflict()
+    {
+        // When an unembedded ref doesn't resolve in the DB either, the planner emits a
+        // per-resource Conflict item so the LLM (or human importer) can see exactly which
+        // ref failed to resolve. The preview endpoint still returns 200 OK so the conflict
+        // detail is observable.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-resolvable-writer");
+
+        var startId = Guid.NewGuid();
+        var create = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "unresolvable-flow",
+            name = "Unresolvable flow",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-resolvable-writer",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var packageJson = await client.GetStringAsync("/api/workflows/unresolvable-flow/1/package");
+        var package = JsonNode.Parse(packageJson)!.AsObject();
+        package["agents"] = new JsonArray();
+        // Re-key the workflow node to point at an agent neither in the package nor in the DB.
+        var node = package["workflows"]![0]!["nodes"]![0]!.AsObject();
+        node["agentKey"] = "wf-totally-fictional-writer";
+        node["agentVersion"] = 99;
+
+        var preview = await client.PostAsync(
+            "/api/workflows/package/preview",
+            new StringContent(package.ToJsonString(), Encoding.UTF8, "application/json"));
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+        document.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        document.RootElement.GetProperty("conflictCount").GetInt32().Should().BeGreaterThan(0);
+        document.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Agent" &&
+                item.GetProperty("key").GetString() == "wf-totally-fictional-writer" &&
+                item.GetProperty("version").GetInt32() == 99 &&
+                item.GetProperty("action").GetString() == "Conflict");
     }
 
     [Fact]
