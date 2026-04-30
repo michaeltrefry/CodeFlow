@@ -1,5 +1,7 @@
 using CodeFlow.Contracts;
+using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
+using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using FluentAssertions;
@@ -7,6 +9,7 @@ using MassTransit;
 using MassTransit.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System.Net;
 using System.Reflection;
 using System.Text;
@@ -1308,6 +1311,252 @@ public sealed class AgentInvocationConsumerTests
         tasks.Should().HaveCount(1);
         tasks[0].InputRef.Should().Be(inputRef.ToString());
         tasks[0].NodeId.Should().Be(nodeId);
+    }
+
+    [Fact]
+    public async Task Consumer_WhenHitlTaskCreated_PublishesHitlTaskPendingEventWithActionUrl()
+    {
+        // sc-53: AgentInvocationConsumer publishes a HitlTaskPendingEvent after a HITL row is
+        // created. The event carries the saga context and the canonical action URL so the
+        // notification dispatcher (sc-52) can fan out without reaching back into persistence.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var inputRef = new Uri("file:///tmp/hitl-input-1.bin");
+
+        var agentConfig = new AgentConfig(
+            Key: "human-reviewer",
+            Version: 4,
+            Kind: AgentKind.Hitl,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: """{"type":"hitl"}""",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question to reviewer", "text/plain")))
+            .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
+                Output: "unused",
+                Decision: new AgentDecision("Completed"),
+                Transcript: [])))
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(opts => opts.UseInMemoryDatabase($"hitl-emit-{Guid.NewGuid():N}"))
+            .AddSingleton<IOptions<NotificationOptions>>(Options.Create(new NotificationOptions
+            {
+                PublicBaseUrl = "https://codeflow.example.com",
+            }))
+            .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            var request = new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: "review-flow",
+                WorkflowVersion: 12,
+                NodeId: nodeId,
+                AgentKey: agentConfig.Key,
+                AgentVersion: agentConfig.Version,
+                InputRef: inputRef,
+                ContextInputs: new Dictionary<string, JsonElement>());
+
+            await harness.Bus.Publish(request);
+
+            (await harness.Consumed.Any<AgentInvokeRequested>()).Should().BeTrue();
+            (await harness.Published.Any<HitlTaskPendingEvent>()).Should().BeTrue();
+
+            var published = harness.Published
+                .Select<HitlTaskPendingEvent>()
+                .Single()
+                .Context.Message;
+
+            published.TraceId.Should().Be(traceId);
+            published.RoundId.Should().Be(roundId);
+            published.NodeId.Should().Be(nodeId);
+            published.WorkflowKey.Should().Be("review-flow");
+            published.WorkflowVersion.Should().Be(12);
+            published.AgentKey.Should().Be(agentConfig.Key);
+            published.AgentVersion.Should().Be(agentConfig.Version);
+            published.HitlTaskId.Should().BeGreaterThan(0,
+                "the entity must be persisted before publish so the event carries the real DB-assigned id");
+            published.InputPreview.Should().Be("Question to reviewer");
+            published.InputRef.Should().Be(inputRef);
+            published.Severity.Should().Be(NotificationSeverity.Normal);
+            published.Kind.Should().Be(NotificationEventKind.HitlTaskPending);
+            published.ActionUrl.ToString().Should().StartWith("https://codeflow.example.com/hitl?task=");
+            published.ActionUrl.ToString().Should().Contain($"trace={traceId:D}");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_WhenHitlRequestRedelivered_DoesNotRepublishHitlTaskPendingEvent()
+    {
+        // sc-53 idempotency: the duplicate-create short-circuit returns null so the publish
+        // path is skipped on redelivery. The MassTransit test harness keeps published messages
+        // in an in-memory list; the count must stay at 1.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var inputRef = new Uri("file:///tmp/hitl-input-1.bin");
+
+        var agentConfig = new AgentConfig(
+            Key: "human-reviewer",
+            Version: 1,
+            Kind: AgentKind.Hitl,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: """{"type":"hitl"}""",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+
+        // Pin the in-memory DB name OUTSIDE the AddDbContext lambda so the harness's consume
+        // scope and the test's read scope see the same database. (The lambda fires once per
+        // DbContext creation, so any Guid.NewGuid() inside it would diverge across scopes.)
+        var dbName = $"hitl-redeliver-{Guid.NewGuid():N}";
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question", "text/plain")))
+            .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
+                Output: "unused",
+                Decision: new AgentDecision("Completed"),
+                Transcript: [])))
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(opts => opts.UseInMemoryDatabase(dbName))
+            .AddSingleton<IOptions<NotificationOptions>>(Options.Create(new NotificationOptions
+            {
+                PublicBaseUrl = "https://codeflow.example.com",
+            }))
+            .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            var request = new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: "review-flow",
+                WorkflowVersion: 12,
+                NodeId: nodeId,
+                AgentKey: agentConfig.Key,
+                AgentVersion: agentConfig.Version,
+                InputRef: inputRef,
+                ContextInputs: new Dictionary<string, JsonElement>());
+
+            await harness.Bus.Publish(request);
+            (await harness.Published.Any<HitlTaskPendingEvent>()).Should().BeTrue();
+            harness.Published.Select<HitlTaskPendingEvent>().Should().HaveCount(1);
+
+            await harness.Bus.Publish(request);
+
+            // Allow the redelivery's consume to complete; the in-memory inbox dedupes by
+            // MessageId, so this is a fresh consume, not a no-op. We're asserting the
+            // application-level dedupe (existing-row branch returns null and skips publish).
+            await Task.Delay(200);
+
+            harness.Published.Select<HitlTaskPendingEvent>().Should().HaveCount(1,
+                "the duplicate-task short-circuit in CreateHitlTaskAsync must skip the publish");
+
+            using var scope = provider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var tasks = await db.HitlTasks.Where(t => t.TraceId == traceId).ToListAsync();
+            tasks.Should().HaveCount(1, "the redelivery short-circuit also prevents a duplicate row");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Consumer_WhenPublicBaseUrlMissing_StillCreatesHitlTaskAndDoesNotCrash()
+    {
+        // PublicBaseUrl unset → DefaultHitlNotificationActionUrlBuilder throws on Build. The
+        // emit path catches that, logs, and continues so the saga's HITL behaviour is
+        // unaffected. No HitlTaskPendingEvent is published.
+        var traceId = Guid.NewGuid();
+        var agentConfig = new AgentConfig(
+            Key: "human-reviewer",
+            Version: 1,
+            Kind: AgentKind.Hitl,
+            Configuration: new AgentInvocationConfiguration("openai", "gpt-5.4"),
+            ConfigJson: """{"type":"hitl"}""",
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "codex");
+
+        var dbName = $"hitl-no-baseurl-{Guid.NewGuid():N}";
+        await using var provider = new ServiceCollection()
+            .AddSingleton<IAgentConfigRepository>(new FakeAgentConfigRepository(agentConfig))
+            .AddSingleton<IArtifactStore>(new RecordingArtifactStore(("Question", "text/plain")))
+            .AddSingleton<IAgentInvoker>(new FakeAgentInvoker(new AgentInvocationResult(
+                Output: "unused",
+                Decision: new AgentDecision("Completed"),
+                Transcript: [])))
+            .AddSingleton<IRoleResolutionService>(new FakeRoleResolutionService())
+            .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
+            .AddDbContext<CodeFlowDbContext>(opts => opts.UseInMemoryDatabase(dbName))
+            .AddSingleton<IOptions<NotificationOptions>>(Options.Create(new NotificationOptions
+            {
+                PublicBaseUrl = null,
+            }))
+            .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddMassTransitTestHarness(x =>
+            {
+                x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            })
+            .BuildServiceProvider(true);
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        try
+        {
+            var request = new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: Guid.NewGuid(),
+                WorkflowKey: "wf",
+                WorkflowVersion: 1,
+                NodeId: Guid.NewGuid(),
+                AgentKey: agentConfig.Key,
+                AgentVersion: agentConfig.Version,
+                InputRef: new Uri("file:///tmp/x.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>());
+
+            await harness.Bus.Publish(request);
+            (await harness.Consumed.Any<AgentInvokeRequested>()).Should().BeTrue();
+
+            await Task.Delay(150);
+            harness.Published.Select<HitlTaskPendingEvent>().Should().BeEmpty();
+
+            using var scope = provider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var tasks = await db.HitlTasks.Where(t => t.TraceId == traceId).ToListAsync();
+            tasks.Should().ContainSingle("missing notification config must not block HITL task creation");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
     }
 
     private sealed class FakeAgentConfigRepository(AgentConfig agentConfig) : IAgentConfigRepository

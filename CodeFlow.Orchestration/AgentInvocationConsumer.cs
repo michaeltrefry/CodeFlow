@@ -1,4 +1,6 @@
 using CodeFlow.Contracts;
+using CodeFlow.Contracts.Notifications;
+using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Orchestration.TokenTracking;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
@@ -49,6 +51,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     private readonly IPromptPartialRepository promptPartialRepository;
     private readonly ITokenUsageRecordRepository? tokenUsageRecords;
     private readonly IAuthoritySnapshotRecorder? authoritySnapshotRecorder;
+    private readonly IHitlNotificationActionUrlBuilder? hitlActionUrlBuilder;
 
     public AgentInvocationConsumer(
         IAgentConfigRepository agentConfigRepository,
@@ -58,7 +61,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         CodeFlowDbContext dbContext,
         IPromptPartialRepository promptPartialRepository,
         ITokenUsageRecordRepository? tokenUsageRecords = null,
-        IAuthoritySnapshotRecorder? authoritySnapshotRecorder = null)
+        IAuthoritySnapshotRecorder? authoritySnapshotRecorder = null,
+        IHitlNotificationActionUrlBuilder? hitlActionUrlBuilder = null)
     {
         this.agentConfigRepository = agentConfigRepository ?? throw new ArgumentNullException(nameof(agentConfigRepository));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
@@ -70,6 +74,10 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         // building a full DI graph keep working. Production wires them through HostExtensions.
         this.tokenUsageRecords = tokenUsageRecords;
         this.authoritySnapshotRecorder = authoritySnapshotRecorder;
+        // Null when notifications are unconfigured (e.g. test fixtures without a public base
+        // URL); CreateHitlTaskAsync silently skips the publish in that case so legacy tests
+        // that construct the consumer directly continue to pass.
+        this.hitlActionUrlBuilder = hitlActionUrlBuilder;
     }
 
     public async Task Consume(ConsumeContext<AgentInvokeRequested> context)
@@ -104,7 +112,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             if (agentConfig.Kind == AgentKind.Hitl)
             {
-                await CreateHitlTaskAsync(message, input, context.CancellationToken);
+                var (created, preview) = await CreateHitlTaskAsync(message, input, context.CancellationToken);
+                if (created is not null)
+                {
+                    await PublishHitlTaskPendingAsync(context, message, created, preview, context.CancellationToken);
+                }
                 return;
             }
 
@@ -658,7 +670,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         };
     }
 
-    private async Task CreateHitlTaskAsync(
+    private async Task<(HitlTaskEntity? Created, string? Preview)> CreateHitlTaskAsync(
         AgentInvokeRequested message,
         string? input,
         CancellationToken cancellationToken)
@@ -679,7 +691,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
         if (existing is not null)
         {
-            return;
+            // Re-delivery of the same AgentInvokeRequested — the HITL row already exists, so
+            // the original publish (or a prior redelivery's publish) already fired. Returning
+            // null here keeps notifications idempotent at the saga level; the dispatcher's
+            // unique index in sc-51 is the second line of defence.
+            return (null, preview);
         }
 
         var entity = new HitlTaskEntity
@@ -699,6 +715,64 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
         dbContext.HitlTasks.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+
+        return (entity, preview);
+    }
+
+    private async Task PublishHitlTaskPendingAsync(
+        ConsumeContext<AgentInvokeRequested> context,
+        AgentInvokeRequested message,
+        HitlTaskEntity entity,
+        string? preview,
+        CancellationToken cancellationToken)
+    {
+        if (hitlActionUrlBuilder is null)
+        {
+            // Notification subsystem not wired (e.g. legacy test harness without a public base
+            // URL configured) — skip the publish silently so the saga's HITL behaviour matches
+            // pre-sc-53 expectations.
+            return;
+        }
+
+        Uri actionUrl;
+        try
+        {
+            actionUrl = hitlActionUrlBuilder.BuildForPendingTask(entity.Id, entity.TraceId);
+        }
+        catch (Exception ex)
+        {
+            // The URL builder throws when PublicBaseUrl is not configured. Failing the consumer
+            // would just trigger a retry over a row that already exists, so swallow the
+            // exception, attach a span event for visibility, and skip the publish. Operators
+            // see the misconfiguration via the absence of notifications + the span event.
+            Activity.Current?.AddEvent(new ActivityEvent(
+                "hitl.notification.publish_skipped",
+                tags: new ActivityTagsCollection
+                {
+                    { "exception.message", ex.Message },
+                    { "hitl.task_id", entity.Id }
+                }));
+            return;
+        }
+
+        var evt = new HitlTaskPendingEvent(
+            EventId: Guid.NewGuid(),
+            OccurredAtUtc: DateTimeOffset.UtcNow,
+            ActionUrl: actionUrl,
+            Severity: NotificationSeverity.Normal,
+            HitlTaskId: entity.Id,
+            TraceId: message.TraceId,
+            RoundId: message.RoundId,
+            NodeId: message.NodeId,
+            WorkflowKey: message.WorkflowKey,
+            WorkflowVersion: message.WorkflowVersion,
+            AgentKey: message.AgentKey,
+            AgentVersion: message.AgentVersion,
+            HitlTaskCreatedAtUtc: new DateTimeOffset(DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc)),
+            InputPreview: preview,
+            InputRef: message.InputRef);
+
+        await context.Publish(evt, cancellationToken);
     }
 
     private static async Task<string?> ReadInputAsync(
