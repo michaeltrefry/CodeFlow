@@ -1,9 +1,11 @@
 import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { HttpErrorResponse } from '@angular/common/http';
 import { formatHttpError } from '../../core/format-error';
 import { TracesApi } from '../../core/traces.api';
 import {
+  PreflightRefusalResponse,
   RecordedDecisionRef,
   ReplayDriftLevel,
   ReplayEdit,
@@ -107,6 +109,28 @@ interface EditRowState {
                 }
               </tbody>
             </table>
+          }
+
+          @if (preflightRefusal(); as preflight) {
+            <div class="preflight-banner" data-testid="preflight-banner">
+              <div class="preflight-head">
+                <cf-chip variant="warn" dot mono>preflight</cf-chip>
+                <strong>Edits need clarification before replay</strong>
+                <span class="muted xsmall mono">
+                  score {{ preflight.overallScore | number:'1.2-2' }} · need {{ preflight.threshold | number:'1.2-2' }}
+                </span>
+              </div>
+              <ul class="preflight-questions">
+                @for (q of preflight.clarificationQuestions; track $index) {
+                  <li>{{ q }}</li>
+                }
+              </ul>
+              @if (preflightLowestDimension(); as worst) {
+                <div class="muted xsmall preflight-reason">
+                  Lowest dimension: <code class="mono">{{ worst.dimension }}</code> ({{ worst.score | number:'1.2-2' }}){{ worst.reason ? ' — ' + worst.reason : '' }}
+                </div>
+              }
+            </div>
           }
 
           <div class="replay-actions">
@@ -265,6 +289,32 @@ interface EditRowState {
       background: var(--err-bg, rgba(255, 80, 80, 0.07));
       border-color: var(--err-border, rgba(255, 80, 80, 0.25));
     }
+    .preflight-banner {
+      margin: 0 16px 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--warn-border, rgba(255, 200, 0, 0.25));
+      background: var(--warn-bg, rgba(255, 200, 0, 0.06));
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .preflight-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .preflight-questions {
+      margin: 0;
+      padding-left: 18px;
+      list-style: disc;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .preflight-questions li { line-height: 1.4; }
+    .preflight-reason { padding-top: 2px; }
     .drift-banner-head {
       display: flex;
       gap: 10px;
@@ -316,6 +366,18 @@ export class TraceReplayPanelComponent implements OnChanges {
   readonly replayResult = signal<ReplayResponse | null>(null);
   readonly baseline = signal<ReplayResponse | null>(null);
   readonly edits = signal<EditRowState[]>([]);
+
+  /** sc-274 phase 1: most recent preflight refusal payload from the backend (cleared on a
+   *  successful replay or when the author edits any row). Banner above the action row
+   *  surfaces the clarification questions inline so the author fixes the input without
+   *  leaving the panel. */
+  readonly preflightRefusal = signal<PreflightRefusalResponse | null>(null);
+
+  readonly preflightLowestDimension = computed(() => {
+    const dims = this.preflightRefusal()?.dimensions ?? [];
+    if (dims.length === 0) return null;
+    return [...dims].sort((a, b) => a.score - b.score)[0];
+  });
 
   /** Per-agent declared output ports, walked across the workflow + any subflows present in the
    *  loaded definition. The backend has the authoritative subflow walker; the UI only needs the
@@ -414,6 +476,10 @@ export class TraceReplayPanelComponent implements OnChanges {
       });
     }
 
+    // sc-274 phase 1: any new replay attempt clears the previous preflight refusal —
+    // the author has either fixed something or wants to re-evaluate fresh.
+    this.preflightRefusal.set(null);
+
     this.api.replay(this.traceId, { edits: dirtyEdits, force }).subscribe({
       next: res => {
         this.replayResult.set(res);
@@ -421,9 +487,28 @@ export class TraceReplayPanelComponent implements OnChanges {
       },
       error: (err: unknown) => {
         this.running.set(false);
+        if (this.tryHandlePreflightRefusal(err)) {
+          // Preflight refusal renders inline; suppress the generic error banner.
+          this.replayError.set(null);
+          return;
+        }
         this.replayError.set(formatHttpError(err, 'Unknown error'));
       }
     });
+  }
+
+  /** Detects the sc-274 preflight 422 response and routes it into the dedicated
+   *  clarification banner instead of the generic error surface. Returns true when the
+   *  error matches so the caller can suppress the fallback message. */
+  private tryHandlePreflightRefusal(err: unknown): boolean {
+    if (!(err instanceof HttpErrorResponse)) return false;
+    if (err.status !== 422) return false;
+    const body = err.error;
+    if (!body || typeof body !== 'object') return false;
+    const code = (body as Record<string, unknown>)['code'];
+    if (code !== 'preflight-ambiguous') return false;
+    this.preflightRefusal.set(body as PreflightRefusalResponse);
+    return true;
   }
 
   resetEdits(): void {
@@ -433,6 +518,7 @@ export class TraceReplayPanelComponent implements OnChanges {
       newOutput: '',
       outputDirty: false,
     })));
+    this.preflightRefusal.set(null);
     if (this.baseline()) {
       this.replayResult.set(this.baseline());
     }

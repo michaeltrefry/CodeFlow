@@ -66,6 +66,18 @@ public static class ApiServiceCollectionExtensions
         // validator; the endpoint resolves it per request via Minimal API DI.
         services.AddSingleton<CodeFlow.Orchestration.Replay.Admission.ReplayRequestValidator>();
 
+        // sc-274 phase 1: ambiguity preflight assessor. Stateless deterministic heuristics —
+        // singleton with options binding so future phases (assistant chat, workflow launch)
+        // share the same instance and config surface. Bridge IOptions<...> -> direct ctor
+        // arg here so the runtime project doesn't need to take a Microsoft.Extensions.Options
+        // dependency.
+        services.Configure<CodeFlow.Runtime.Authority.Preflight.PreflightOptions>(
+            configuration.GetSection("Preflight"));
+        services.AddSingleton<CodeFlow.Runtime.Authority.Preflight.IIntentClarityAssessor>(sp =>
+            new CodeFlow.Runtime.Authority.Preflight.DefaultIntentClarityAssessor(
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<
+                    CodeFlow.Runtime.Authority.Preflight.PreflightOptions>>().Value));
+
         // sc-271: trace evidence bundle export. Scoped because the builder reads through the
         // per-request DbContext to collect saga + decision + refusal + authority + token-usage
         // rows; the artifact store is a singleton so it doesn't pull the lifetime down.
