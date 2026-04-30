@@ -24,6 +24,7 @@ import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
 import { ChatToolbarComponent } from './chat-toolbar.component';
+import { extractWorkflowPackagesFromMarkdown } from './markdown';
 
 /** HAA-10: name of the assistant tool whose preview-ok result triggers a Save confirmation chip. */
 const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
@@ -1227,6 +1228,7 @@ export class ChatPanelComponent implements OnDestroy {
       }
       case 'assistant-message-persisted': {
         this.history.update(h => [...h, evt.message]);
+        this.surfaceDraftPackageSavePrompts(evt.message);
         this.pending.set(null);
         this.scrollToBottom();
         break;
@@ -1311,6 +1313,53 @@ export class ChatPanelComponent implements OnDestroy {
     this.scrollToBottom({ force: true });
   }
 
+  /**
+   * A well-behaved assistant should call `save_workflow_package`, whose preview result creates
+   * the Save chip. In practice the model can also emit a complete `cf-workflow-package` block
+   * and then talk as if the chip already exists. Keep the UI resilient by offering the same
+   * confirmation directly from the drafted package. This does not depend on page context or
+   * workspace selection.
+   */
+  private surfaceDraftPackageSavePrompts(message: AssistantMessage): void {
+    if (message.role !== 'assistant') {
+      return;
+    }
+
+    const packages = extractWorkflowPackagesFromMarkdown(message.content);
+    if (packages.length === 0) {
+      return;
+    }
+
+    const hasSaveToolCall = this.toolCalls().some(
+      card => card.name === SAVE_WORKFLOW_PACKAGE_TOOL || card.confirmation?.kind === 'save_workflow_package',
+    );
+    if (hasSaveToolCall) {
+      return;
+    }
+
+    const cards: ChatToolCallView[] = [];
+    for (let i = 0; i < packages.length; i++) {
+      const id = `draft-package:${message.id}:${i}`;
+      const pkg = packages[i];
+      const confirmation = buildDraftSaveConfirmationView(pkg);
+      if (!confirmation) {
+        continue;
+      }
+      this.pendingSaves.set(id, pkg);
+      cards.push({
+        id,
+        name: 'draft_workflow_package',
+        status: 'success',
+        resultPreview: 'Workflow package detected in the assistant response. Confirm to save it to the library.',
+        confirmation,
+      });
+    }
+
+    if (cards.length > 0) {
+      this.toolCalls.update(list => [...list, ...cards]);
+    }
+  }
+
   private syncConversationOverrideInUrl(conversationId: string): void {
     if (this.route.snapshot.queryParamMap.get('assistantConversation') === conversationId) {
       return;
@@ -1379,6 +1428,10 @@ export function buildSaveConfirmationView(
     cancelLabel: 'Cancel',
     state: 'idle',
   };
+}
+
+export function buildDraftSaveConfirmationView(pkg: unknown): ChatToolCallView['confirmation'] | undefined {
+  return buildSaveConfirmationView(JSON.stringify({ status: 'preview_ok' }), pkg);
 }
 
 /**
