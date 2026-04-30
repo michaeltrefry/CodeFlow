@@ -2,6 +2,7 @@
   <Project Path="CodeFlow.Contracts.Tests/CodeFlow.Contracts.Tests.csproj" />
   <Project Path="CodeFlow.Contracts/CodeFlow.Contracts.csproj" />
   <Project Path="CodeFlow.Api/CodeFlow.Api.csproj" />
+  <Project Path="CodeFlow.Architecture.Tests/CodeFlow.Architecture.Tests.csproj" />
   <Folder Name="/SolutionFolder/">
     <File Path=".gitignore" />
     <File Path="docker-compose.yml" />
