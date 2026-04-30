@@ -1,12 +1,10 @@
 import {
   ChangeDetectionStrategy,
   Component,
-  EventEmitter,
-  Input,
-  Output,
   booleanAttribute,
   computed,
-  signal,
+  input,
+  output,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -28,15 +26,15 @@ import { LLM_PROVIDER_DISPLAY_NAMES, LlmProviderKey, LlmProviderModelOption } fr
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CommonModule, FormsModule],
   template: `
-    <div class="toolbar" [attr.data-chromeless]="chromeless ? 'true' : null">
+    <div class="toolbar" [attr.data-chromeless]="chromeless() ? 'true' : null">
       @if (showSelectors()) {
         <div class="selectors">
           <label class="select-wrap" [title]="'Provider'">
             <span class="select-label">Provider</span>
             <select
               class="select"
-              [disabled]="disabled || providerOptions().length === 0"
-              [ngModel]="provider ?? ''"
+              [disabled]="disabled() || providerOptions().length === 0"
+              [ngModel]="provider() ?? ''"
               (ngModelChange)="onProviderChange($event)"
               aria-label="Assistant provider"
             >
@@ -50,8 +48,8 @@ import { LLM_PROVIDER_DISPLAY_NAMES, LlmProviderKey, LlmProviderModelOption } fr
             <span class="select-label">Model</span>
             <select
               class="select mono"
-              [disabled]="disabled || modelOptions().length === 0"
-              [ngModel]="model ?? ''"
+              [disabled]="disabled() || modelOptions().length === 0"
+              [ngModel]="model() ?? ''"
               (ngModelChange)="onModelChange($event)"
               aria-label="Assistant model"
             >
@@ -67,12 +65,12 @@ import { LLM_PROVIDER_DISPLAY_NAMES, LlmProviderKey, LlmProviderModelOption } fr
         <div class="tokens" [attr.data-state]="tokenState()" [attr.aria-label]="tokenAriaLabel()">
           <span class="token-chip" title="Input tokens (this conversation)">
             <span class="token-arrow">↑</span>
-            <span class="token-num">{{ formatNum(inputTokens) }}</span>
+            <span class="token-num">{{ formatNum(inputTokens()) }}</span>
             <span class="token-suffix">in</span>
           </span>
           <span class="token-chip" title="Output tokens (this conversation)">
             <span class="token-arrow">↓</span>
-            <span class="token-num">{{ formatNum(outputTokens) }}</span>
+            <span class="token-num">{{ formatNum(outputTokens()) }}</span>
             <span class="token-suffix">out</span>
           </span>
           @if (capDisplay()) {
@@ -183,68 +181,65 @@ import { LLM_PROVIDER_DISPLAY_NAMES, LlmProviderKey, LlmProviderModelOption } fr
 })
 export class ChatToolbarComponent {
   /** Available (provider, model) options. Empty array = nothing configured. */
-  @Input() set models(value: ReadonlyArray<LlmProviderModelOption>) {
-    this.modelsSig.set(value ?? []);
-  }
+  readonly models = input<ReadonlyArray<LlmProviderModelOption>>([]);
 
   /** Current provider selection. Null = use server default. */
-  @Input() provider: LlmProviderKey | null = null;
+  readonly provider = input<LlmProviderKey | null>(null);
 
   /** Current model selection. Null = use server default for the chosen provider. */
-  @Input() model: string | null = null;
+  readonly model = input<string | null>(null);
 
   /** Cumulative input tokens captured against the conversation. */
-  @Input() inputTokens = 0;
+  readonly inputTokens = input(0);
 
   /** Cumulative output tokens captured against the conversation. */
-  @Input() outputTokens = 0;
+  readonly outputTokens = input(0);
 
   /** Conversation-level cap from admin settings; null = uncapped. */
-  @Input() cap: number | null = null;
+  readonly cap = input<number | null>(null);
 
   /** Disables the dropdowns (e.g. while a turn is streaming or while loading defaults). */
-  @Input() disabled = false;
+  readonly disabled = input(false);
 
   /**
    * Which parts of the toolbar to render. Lets the chat-panel render the selectors and the
    * token chip in different surfaces depending on layout (e.g. tokens inline next to the send
    * button, selectors in a separate strip below).
    */
-  @Input() displayMode: 'all' | 'selectors-only' | 'tokens-only' = 'all';
+  readonly displayMode = input<'all' | 'selectors-only' | 'tokens-only'>('all');
 
   /**
    * Drop the toolbar's own border/background/padding so it can be projected inline (e.g. inside
    * the composer's actions row) without a duplicate chrome.
    */
-  @Input({ transform: booleanAttribute }) chromeless = false;
+  readonly chromeless = input(false, { transform: booleanAttribute });
 
-  @Output() readonly selectionChanged = new EventEmitter<{
+  readonly selectionChanged = output<{
     provider: LlmProviderKey | null;
     model: string | null;
   }>();
 
   protected showSelectors(): boolean {
-    return this.displayMode === 'all' || this.displayMode === 'selectors-only';
+    return this.displayMode() === 'all' || this.displayMode() === 'selectors-only';
   }
 
   protected showTokens(): boolean {
-    return this.displayMode === 'all' || this.displayMode === 'tokens-only';
+    return this.displayMode() === 'all' || this.displayMode() === 'tokens-only';
   }
-
-  private readonly modelsSig = signal<ReadonlyArray<LlmProviderModelOption>>([]);
 
   protected readonly providerOptions = computed<LlmProviderKey[]>(() => {
     const seen = new Set<LlmProviderKey>();
-    for (const m of this.modelsSig()) {
+    for (const m of this.models()) {
       seen.add(m.provider);
     }
     return [...seen];
   });
 
   protected readonly modelOptions = computed<string[]>(() => {
-    const list = this.modelsSig();
-    if (this.provider) {
-      return list.filter(m => m.provider === this.provider).map(m => m.model);
+    const list = this.models();
+    const provider = this.provider();
+    if (provider) {
+      return list.filter(m => m.provider === provider).map(m => m.model);
     }
     // No provider selected — surface every model so the operator can still pin one and let the
     // backend infer the provider from the (provider, model) pair on the wire.
@@ -252,28 +247,31 @@ export class ChatToolbarComponent {
   });
 
   protected readonly tokenState = computed<'idle' | 'warn' | 'full'>(() => {
-    const cap = this.cap;
+    const cap = this.cap();
     if (!cap || cap <= 0) return 'idle';
-    const total = this.inputTokens + this.outputTokens;
+    const total = this.inputTokens() + this.outputTokens();
     if (total >= cap) return 'full';
     if (total >= cap * 0.8) return 'warn';
     return 'idle';
   });
 
   protected readonly capDisplay = computed<string | null>(() => {
-    return this.cap && this.cap > 0 ? this.formatNum(this.cap) : null;
+    const cap = this.cap();
+    return cap && cap > 0 ? this.formatNum(cap) : null;
   });
 
   protected capTitle(): string {
-    if (!this.cap) return '';
-    const total = this.inputTokens + this.outputTokens;
-    return `${this.formatNum(total)} of ${this.formatNum(this.cap)} tokens used`;
+    const cap = this.cap();
+    if (!cap) return '';
+    const total = this.inputTokens() + this.outputTokens();
+    return `${this.formatNum(total)} of ${this.formatNum(cap)} tokens used`;
   }
 
   protected tokenAriaLabel(): string {
-    const total = this.inputTokens + this.outputTokens;
+    const cap = this.cap();
+    const total = this.inputTokens() + this.outputTokens();
     const base = `${this.formatNum(total)} tokens used`;
-    return this.cap ? `${base} of ${this.formatNum(this.cap)} cap` : base;
+    return cap ? `${base} of ${this.formatNum(cap)} cap` : base;
   }
 
   protected providerDisplayName(key: LlmProviderKey): string {
@@ -295,9 +293,9 @@ export class ChatToolbarComponent {
   protected onModelChange(value: string): void {
     const model = value || null;
     // If a model is picked but no provider, infer the provider from the (provider, model) row.
-    let provider = this.provider;
+    let provider = this.provider();
     if (model && !provider) {
-      const row = this.modelsSig().find(m => m.model === model);
+      const row = this.models().find(m => m.model === model);
       provider = row?.provider ?? null;
     }
     this.selectionChanged.emit({ provider, model });

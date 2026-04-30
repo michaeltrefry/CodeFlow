@@ -4,19 +4,8 @@ import { AuthService } from './auth.service';
 import { hasAuthConfigured } from './auth.config';
 
 /**
- * Redirect anonymous users into the OAuth code flow instead of rendering a half-loaded page
- * that will just fail its XHRs with 401 and surface a confusing error banner. The server
- * remains authoritative — this is UX only.
- *
- * Implementation notes:
- * - We MUST await `auth.ready()` before deciding. The router fires this guard during initial
- *   navigation, before AppComponent's `auth.load()` has resolved. Without this wait, the guard
- *   sees `currentUser()===null` even for a logged-in user and incorrectly bounces to Keycloak.
- * - We MUST NOT redirect to '/' (or any other guarded path) on the unauthenticated branch:
- *   '/' redirects to '/traces' which has the same guard, which would re-enter and lock up the
- *   router in a synchronous loop until Chrome shows "Page Unresponsive".
- * - `auth.login()` triggers `initCodeFlow()` which navigates the window to Keycloak; returning
- *   `false` cancels the in-progress navigation so nothing else happens locally.
+ * Keeps guarded pages from rendering before auth bootstrap completes, then sends anonymous
+ * users into the OAuth code flow. The server remains authoritative; this is UX only.
  */
 export const authenticatedGuard: CanActivateFn = async (): Promise<boolean> => {
   const auth = inject(AuthService);
@@ -40,6 +29,7 @@ export const authenticatedGuard: CanActivateFn = async (): Promise<boolean> => {
     return true;
   }
 
+  // initCodeFlow() leaves the app for Keycloak; cancel this local navigation.
   auth.login();
   return false;
 };

@@ -20,11 +20,15 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "editor.main.css",
+                "input": "node_modules/monaco-editor/min/vs/editor",
+                "output": "assets/monaco-editor/vs/editor"
               }
             ],
             "styles": [
-              "src/styles.scss",
-              "node_modules/monaco-editor/min/vs/editor/editor.main.css"
+              "src/styles.scss"
             ],
             "scripts": [],
             "loader": {
@@ -35,7 +39,19 @@
             "production": {
               "outputHashing": "all",
               "optimization": true,
-              "sourceMap": false
+              "sourceMap": false,
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "650kB",
+                  "maximumError": "800kB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "160kB",
+                  "maximumError": "200kB"
+                }
+              ]
             },
             "development": {
               "optimization": false,

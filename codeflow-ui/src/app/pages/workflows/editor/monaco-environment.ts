@@ -15,6 +15,35 @@ const typescriptWorkerFactory = () =>
   });
 
 let configured = false;
+let stylesLoaded: Promise<void> | undefined;
+
+export function ensureMonacoEditorStyles(): Promise<void> {
+  stylesLoaded ??= new Promise<void>((resolve, reject) => {
+    if (typeof document === 'undefined') {
+      resolve();
+      return;
+    }
+
+    const existingLink = document.getElementById('cf-monaco-editor-styles') as HTMLLinkElement | null;
+    if (existingLink) {
+      resolve();
+      return;
+    }
+
+    const link = document.createElement('link');
+    link.id = 'cf-monaco-editor-styles';
+    link.rel = 'stylesheet';
+    link.href = new URL('assets/monaco-editor/vs/editor/editor.main.css', document.baseURI).toString();
+    link.onload = () => resolve();
+    link.onerror = () => {
+      stylesLoaded = undefined;
+      link.remove();
+      reject(new Error('Failed to load Monaco editor styles.'));
+    };
+    document.head.appendChild(link);
+  });
+  return stylesLoaded;
+}
 
 export function ensureMonacoEnvironment(): void {
   if (configured) return;

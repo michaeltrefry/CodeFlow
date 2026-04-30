@@ -30,7 +30,7 @@ import {
   summarizeDiff,
   WorkflowVersionDiff,
 } from './workflow-version-diff';
-import { ensureMonacoEnvironment } from './monaco-environment';
+import { ensureMonacoEditorStyles, ensureMonacoEnvironment } from './monaco-environment';
 
 interface VersionItem {
   version: number;
@@ -381,6 +381,7 @@ export class WorkflowVersionHistoryDialogComponent implements OnChanges, AfterVi
 
     if (!this.monacoApi) {
       try {
+        await ensureMonacoEditorStyles();
         ensureMonacoEnvironment();
         this.monacoApi = await import('monaco-editor');
       } catch {
@@ -433,4 +434,3 @@ export class WorkflowVersionHistoryDialogComponent implements OnChanges, AfterVi
     this.monacoEditors = [];
   }
 }
-
