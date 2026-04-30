@@ -35,7 +35,8 @@ public sealed class DefaultIntentClarityAssessor : IIntentClarityAssessor
         return mode switch
         {
             PreflightMode.ReplayEdit when input is ReplayEditPreflightInput replay => AssessReplayEdit(replay),
-            // Phases 2/3 land here. Until then, an unsupported mode means "no preflight" — return
+            PreflightMode.AssistantChat when input is AssistantChatPreflightInput chat => AssessAssistantChat(chat),
+            // Phase 3 lands here. Until then, an unsupported mode means "no preflight" — return
             // a fully clear assessment so the caller can let the work through unchanged.
             _ => new IntentClarityAssessment(
                 Mode: mode,
@@ -138,6 +139,235 @@ public sealed class DefaultIntentClarityAssessor : IIntentClarityAssessor
             MissingFields: missing,
             ClarificationQuestions: questions);
     }
+
+    /// <summary>
+    /// sc-274 phase 2 — assistant chat is the highest-base-rate freeform surface, so the
+    /// heuristic set is intentionally narrow: only refuse when the message LOOKS like an
+    /// action request (imperative verb at start) but lacks enough scope to act on. Question-
+    /// shaped prompts, info requests ("explain", "describe"), greetings, and casual
+    /// acknowledgements all pass through unchanged. False-positives feel naggy here in a way
+    /// they don't on the replay endpoint, so we under-refuse rather than over-refuse.
+    /// </summary>
+    private IntentClarityAssessment AssessAssistantChat(AssistantChatPreflightInput input)
+    {
+        var threshold = ThresholdFor(PreflightMode.AssistantChat);
+        var trimmed = (input.Content ?? string.Empty).Trim();
+
+        // Empty / whitespace messages are caught by request validation upstream (400 BadRequest).
+        // Treat as clear here so the assessor doesn't swallow the more specific upstream error.
+        if (trimmed.Length == 0)
+        {
+            return ClearAssessment(PreflightMode.AssistantChat, threshold);
+        }
+
+        // Pure-placeholder check runs FIRST so a message that's literally "TODO" or "FIXME"
+        // refuses regardless of question shape. Placeholders are the strongest "this isn't
+        // a real prompt" signal.
+        if (PurePlaceholderPattern.IsMatch(trimmed))
+        {
+            var dims = new[]
+            {
+                new IntentClarityDimensionScore(IntentClarityDimensions.Goal, 0.0,
+                    "message is a placeholder token (TODO/FIXME/TBD/WIP) — no actual request to act on"),
+                Clear(IntentClarityDimensions.Constraints),
+                Clear(IntentClarityDimensions.SuccessCriteria),
+                Clear(IntentClarityDimensions.Context),
+            };
+            return new IntentClarityAssessment(
+                Mode: PreflightMode.AssistantChat,
+                OverallScore: 0.0,
+                Threshold: threshold,
+                IsClear: false,
+                Dimensions: dims,
+                MissingFields: ["content.placeholder"],
+                ClarificationQuestions: ["What would you like help with?"]);
+        }
+
+        // Skip preflight for question-shaped or info-request prompts. The model handles those
+        // fine without a scope; they're the dominant case and refusing them would feel naggy.
+        if (LooksLikeQuestionOrInfoRequest(trimmed))
+        {
+            return ClearAssessment(PreflightMode.AssistantChat, threshold);
+        }
+
+        var goalScore = 1.0;
+        var contextScore = 1.0;
+        string? goalReason = null;
+        string? contextReason = null;
+        var missing = new List<string>();
+        var questions = new List<string>();
+
+        var firstWord = ExtractFirstWord(trimmed);
+        var startsWithActionVerb = firstWord is not null && ActionVerbs.Contains(firstWord);
+        var wordCount = CountWords(trimmed);
+
+        // Vague action — imperative verb at start, no scope noun, AND one of: very short
+        // (≤2 words), uses a vague pronoun (this/it/that), or uses a placeholder noun
+        // (thing/stuff). Each of those signals tells us "this isn't actionable yet"; without
+        // them, plain noun phrases like "build a website" are left for the model to handle
+        // (it will either generate or ask its own clarifying question — the preflight gate
+        // is for the cases where there's nothing for the model to even start with).
+        if (startsWithActionVerb && !ContainsScopeNoun(trimmed))
+        {
+            var veryShort = wordCount <= 2;
+            var hasPronoun = ContainsPronounReference(trimmed);
+            var hasPlaceholderNoun = PlaceholderNounPattern.IsMatch(trimmed);
+
+            if (veryShort || hasPronoun || hasPlaceholderNoun)
+            {
+                goalScore = 0.2;
+                goalReason = $"action verb '{firstWord}' with no specific scope (file, component, role, or named entity)";
+                missing.Add("content.scope");
+                questions.Add($"What specifically should I {firstWord}? Name a file, component, workflow, or trace.");
+
+                // Paired clarification — when the message also uses a vague pronoun and the
+                // page context can't resolve it, surface that too. Doesn't fire as its own
+                // heuristic (false-positive risk on conversational replies like "this is
+                // broken" mid-thread); only piggy-backs on the vague-action refusal.
+                if (hasPronoun && !PageContextResolvesPronouns(input))
+                {
+                    contextScore = 0.4;
+                    contextReason = "message uses 'this' / 'it' / 'that' but no page context pins which entity you mean";
+                    missing.Add("content.pronoun-without-context");
+                    questions.Add("Which trace, workflow, or agent are you referring to? Open it and ask again, or tell me the id.");
+                }
+            }
+        }
+
+        var dimensions = new[]
+        {
+            new IntentClarityDimensionScore(IntentClarityDimensions.Goal, goalScore, goalReason),
+            Clear(IntentClarityDimensions.Constraints),
+            Clear(IntentClarityDimensions.SuccessCriteria),
+            new IntentClarityDimensionScore(IntentClarityDimensions.Context, contextScore, contextReason),
+        };
+
+        var overall = dimensions.Min(d => d.Score);
+        return new IntentClarityAssessment(
+            Mode: PreflightMode.AssistantChat,
+            OverallScore: overall,
+            Threshold: threshold,
+            IsClear: overall >= threshold,
+            Dimensions: dimensions,
+            MissingFields: missing,
+            ClarificationQuestions: questions);
+    }
+
+    private static IntentClarityDimensionScore Clear(string dimension) =>
+        new(dimension, 1.0, null);
+
+    private static IntentClarityAssessment ClearAssessment(PreflightMode mode, double threshold) =>
+        new(
+            Mode: mode,
+            OverallScore: 1.0,
+            Threshold: threshold,
+            IsClear: true,
+            Dimensions: Array.Empty<IntentClarityDimensionScore>(),
+            MissingFields: Array.Empty<string>(),
+            ClarificationQuestions: Array.Empty<string>());
+
+    private static readonly Regex PurePlaceholderPattern = new(
+        @"^(todo|fixme|tbd|wip|xxx|placeholder|test|asdf|asdfgh|\?+|\.+)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Unambiguous interrogatives + info-request verbs. These signal a question or
+    /// information request even without a trailing <c>?</c>. Kept separate from the auxiliary
+    /// pattern below because words like "do" are also imperatives ("do that") — those need
+    /// the pronoun follow-up to be recognized as questions.
+    /// </summary>
+    private static readonly Regex InterrogativeStartPattern = new(
+        @"^(what|why|how|when|where|who|whom|which|whose|explain|describe|tell|show|list|find|search|summari[sz]e|recap|recall|read|view|look|help)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Auxiliaries that are only questions when paired with a subject pronoun. "Do you know"
+    /// is a question; "do that" is an imperative. The trailing <c>?</c> short-circuit catches
+    /// any phrasing this pattern misses.
+    /// </summary>
+    private static readonly Regex AuxiliaryQuestionPattern = new(
+        @"^(can|could|would|should|do|does|did|is|are|was|were|will|may|might)\s+(you|we|i|they|he|she|it)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex PronounReferencePattern = new(
+        @"\b(this|that|it|these|those)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Tokens that stand in for an unspecified noun ("do the thing", "make the stuff work").
+    /// They look like nouns to a part-of-speech check but carry no scope, so paired with an
+    /// action verb they're a refusal signal.
+    /// </summary>
+    private static readonly Regex PlaceholderNounPattern = new(
+        @"\b(thing|things|stuff|something|anything|whatever)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex WordPattern = new(
+        @"[\p{L}\p{N}_]+", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Imperative verbs that signal "do something". We deliberately keep this list short and
+    /// concrete — adding too many verbs (especially polysemous ones like "run" / "show") would
+    /// catch info-requests too. "Run" is intentionally absent because "run X" is usually
+    /// scope-bearing; it shows up via the question/info-request bypass instead.
+    /// </summary>
+    private static readonly HashSet<string> ActionVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "fix", "make", "change", "update", "refactor", "improve", "write", "add", "remove",
+        "delete", "build", "rename", "rewrite", "redo", "do",
+    };
+
+    /// <summary>
+    /// Tokens that mark the message as carrying a concrete scope — file extensions, path
+    /// separators, identifier-like CamelCase or snake_case tokens, or recognized CodeFlow
+    /// concept nouns. If any of these appear, the message has enough surface area to act on
+    /// even if the verb is vague.
+    /// </summary>
+    private static readonly Regex ScopeNounPattern = new(
+        @"(\.[a-z0-9]{1,5}\b|/[a-z0-9_\-/.]+|[A-Z][a-z]+[A-Z]|[a-z]+_[a-z]+|\b(trace|workflow|agent|node|edge|port|saga|tool|endpoint|schema|migration|test|component|service|repository|entity|controller|model|prompt|template|role|policy|envelope|gate|loop|hub|router|chip|panel|page|view|column|table|index|query|api)\b)",
+        RegexOptions.Compiled);
+
+    private static bool LooksLikeQuestionOrInfoRequest(string trimmed)
+    {
+        if (trimmed.EndsWith('?'))
+        {
+            return true;
+        }
+        return InterrogativeStartPattern.IsMatch(trimmed) || AuxiliaryQuestionPattern.IsMatch(trimmed);
+    }
+
+    private static bool ContainsPronounReference(string trimmed) =>
+        PronounReferencePattern.IsMatch(trimmed);
+
+    private static bool ContainsScopeNoun(string trimmed) =>
+        ScopeNounPattern.IsMatch(trimmed);
+
+    /// <summary>
+    /// Page contexts that pin a single entity ("the trace I'm viewing", "the workflow I'm
+    /// editing") let the model resolve pronouns implicitly. List-style or homepage contexts
+    /// don't, so pronouns dangle.
+    /// </summary>
+    private static bool PageContextResolvesPronouns(AssistantChatPreflightInput input)
+    {
+        if (!input.HasPageContext || string.IsNullOrWhiteSpace(input.PageContextKind))
+        {
+            return false;
+        }
+        return input.PageContextKind switch
+        {
+            "trace" or "workflow-editor" or "agent-editor" => true,
+            _ => false,
+        };
+    }
+
+    private static string? ExtractFirstWord(string trimmed)
+    {
+        var match = WordPattern.Match(trimmed);
+        return match.Success ? match.Value.ToLowerInvariant() : null;
+    }
+
+    private static int CountWords(string trimmed) =>
+        WordPattern.Matches(trimmed).Count;
 
     private double ThresholdFor(PreflightMode mode) => mode switch
     {

@@ -11,7 +11,7 @@ import {
   ConversationResponse,
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
-import { AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
+import { AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
 import { formatHttpError } from '../../core/format-error';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
@@ -113,6 +113,26 @@ type ThreadEntry =
         }
         @if (turnError()) {
           <p class="chat-panel-error">{{ turnError() }}</p>
+        }
+        @if (preflightError(); as pf) {
+          <div class="chat-panel-preflight" data-testid="preflight-banner" role="status">
+            <div class="preflight-head">
+              <span class="preflight-chip">preflight</span>
+              <span class="preflight-metric">
+                clarity {{ (pf.overallScore * 100).toFixed(0) }}% · needs {{ (pf.threshold * 100).toFixed(0) }}%
+              </span>
+            </div>
+            @if (preflightWeakest(); as weakest) {
+              <p class="preflight-reason">{{ weakest.reason }}</p>
+            }
+            @if (pf.clarificationQuestions.length > 0) {
+              <ul class="preflight-questions">
+                @for (q of pf.clarificationQuestions; track q) {
+                  <li>{{ q }}</li>
+                }
+              </ul>
+            }
+          </div>
         }
       </div>
 
@@ -301,6 +321,62 @@ type ThreadEntry =
     .chat-panel-error {
       color: var(--sem-red, #f85149);
     }
+    /* sc-274 phase 2 — preflight clarification banner. Warn-tinted (not error-tinted) because
+       this is "you didn't say enough yet" feedback, not a failure. Mirrors the replay panel's
+       preflight banner so the two surfaces feel consistent. */
+    .chat-panel-preflight {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 4px 0 0;
+      padding: 10px 12px;
+      border: 1px solid var(--sem-amber, #d29922);
+      border-radius: var(--radius-md, 8px);
+      background: color-mix(in oklab, var(--sem-amber, #d29922) 10%, var(--surface, #131519));
+    }
+    .chat-panel-preflight .preflight-head {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chat-panel-preflight .preflight-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--sem-amber, #d29922);
+      border: 1px solid var(--sem-amber, #d29922);
+      border-radius: 3px;
+      line-height: 1.3;
+    }
+    .chat-panel-preflight .preflight-metric {
+      font-size: 11px;
+      color: var(--text-muted, #9aa3b2);
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    }
+    .chat-panel-preflight .preflight-reason {
+      margin: 0;
+      font-size: var(--fs-sm, 12px);
+      color: var(--text-muted, #9aa3b2);
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .chat-panel-preflight .preflight-questions {
+      margin: 0;
+      padding-left: 18px;
+      font-size: var(--fs-md, 13px);
+      color: var(--text, #E7E9EE);
+      line-height: 1.4;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .chat-panel-preflight .preflight-questions li {
+      overflow-wrap: anywhere;
+    }
     .chat-panel-chips {
       display: flex;
       flex-wrap: wrap;
@@ -477,6 +553,26 @@ export class ChatPanelComponent implements OnDestroy {
   protected readonly streaming = signal(false);
   protected readonly loadFailed = signal<string | null>(null);
   protected readonly turnError = signal<string | null>(null);
+  /**
+   * sc-274 phase 2 — populated when the server returns a 422 preflight refusal before opening
+   * the SSE stream. Drives the preflight banner (clarification questions + score/threshold +
+   * lowest-dimension reason). Cleared on the next send attempt and on cancel — mutually
+   * exclusive with {@link turnError} (the stream-error path stays for non-preflight failures).
+   */
+  protected readonly preflightError = signal<AssistantPreflightRefusal | null>(null);
+
+  /** sc-274 phase 2 — convenience for the template: the lowest-scoring dimension with a reason. */
+  protected readonly preflightWeakest = computed(() => {
+    const refusal = this.preflightError();
+    if (!refusal) return null;
+    let weakest: AssistantPreflightRefusal['dimensions'][number] | null = null;
+    for (const dim of refusal.dimensions) {
+      if (!weakest || dim.score < weakest.score) {
+        weakest = dim;
+      }
+    }
+    return weakest && weakest.reason ? weakest : null;
+  });
   /**
    * The scope returned by the server for the conversation that's actually loaded. Drives the
    * panel's header text + scope attribute so an entity-scoped thread surfaced in the homepage
@@ -794,6 +890,9 @@ export class ChatPanelComponent implements OnDestroy {
       return;
     }
     this.turnError.set(null);
+    // sc-274 phase 2 — clear any prior preflight refusal so the banner doesn't linger over a
+    // new (and presumably refined) attempt.
+    this.preflightError.set(null);
     this.optimisticUser.set(content);
     this.toolCalls.set([]);
     this.pending.set({ serverId: null, content: '', provider: null, model: null });
@@ -840,6 +939,9 @@ export class ChatPanelComponent implements OnDestroy {
     this.pendingSaves.clear();
     this.pendingRuns.clear();
     this.pendingReplays.clear();
+    // sc-274 phase 2 — cancel also clears preflight; the user may have hit cancel because the
+    // banner surfaced a needed clarification and they want to start over.
+    this.preflightError.set(null);
   }
 
   protected startNewConversation(): void {
@@ -857,6 +959,7 @@ export class ChatPanelComponent implements OnDestroy {
     this.loading.set(true);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.preflightError.set(null);
     this.history.set([]);
     this.conversationId.set(null);
     this.loadedScope.set(null);
@@ -1133,6 +1236,16 @@ export class ChatPanelComponent implements OnDestroy {
         this.pending.set(null);
         break;
       }
+      case 'preflight-refused': {
+        // sc-274 phase 2 — server rejected the prompt before opening the SSE stream. Drop the
+        // optimistic user bubble + the in-flight assistant pending so the UI doesn't show a
+        // half-rendered turn that never happened, and surface the clarification banner.
+        this.preflightError.set(evt.payload);
+        this.optimisticUser.set(null);
+        this.pending.set(null);
+        this.streaming.set(false);
+        break;
+      }
       case 'done':
         // Terminal — nothing to render. Subscription completes naturally.
         break;
@@ -1146,6 +1259,7 @@ export class ChatPanelComponent implements OnDestroy {
     this.history.set([]);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.preflightError.set(null);
     this.toolCalls.set([]);
     this.conversationInputTokens.set(0);
     this.conversationOutputTokens.set(0);

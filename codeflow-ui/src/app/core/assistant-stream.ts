@@ -17,6 +17,9 @@ import { streamSse } from './sse-stream';
  *     content + provider/model/invocationId.
  *   - <c>done</c>: terminal — stream is closing.
  *   - <c>error</c>: terminal failure with a free-form message.
+ *   - <c>preflight-refused</c>: sc-274 phase 2 — server short-circuited before the SSE
+ *     stream opened because ambiguity preflight refused the prompt. Carries the parsed
+ *     422 body so the UI can render clarification questions inline.
  */
 export type AssistantStreamEvent =
   | { kind: 'user-message-persisted'; message: AssistantMessage }
@@ -36,7 +39,25 @@ export type AssistantStreamEvent =
   | { kind: 'tool-result'; id: string; name: string; result: string; isError: boolean }
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
   | { kind: 'done' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'preflight-refused'; payload: AssistantPreflightRefusal };
+
+/**
+ * sc-274 phase 2 — parsed body of a preflight 422 from the assistant chat endpoint. Mirrors
+ * <c>AssistantPreflightRefusalResponse</c> on the server. Drives the chat panel's preflight
+ * banner: clarification questions, lowest-dimension reason, and the score / threshold
+ * metric.
+ */
+export interface AssistantPreflightRefusal {
+  conversationId: string;
+  code: 'assistant-preflight-ambiguous';
+  mode: string;
+  overallScore: number;
+  threshold: number;
+  dimensions: Array<{ dimension: string; score: number; reason: string | null }>;
+  missingFields: string[];
+  clarificationQuestions: string[];
+}
 
 /**
  * Streams a single chat turn against <c>POST /api/assistant/conversations/{id}/messages</c>.
@@ -96,9 +117,49 @@ export function streamAssistantTurn(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       accessToken: auth.getValidAccessToken(),
+      handleErrorResponse: handlePreflightRefusal,
     },
     parseSseFrame,
   );
+}
+
+/**
+ * sc-274 phase 2 — turns a 422 with a preflight body into a synthetic stream event so the
+ * normal stream-event handler can render the clarification banner. Other error statuses
+ * (and 422s without the preflight code) fall through to the default error path.
+ */
+async function handlePreflightRefusal(response: Response): Promise<AssistantStreamEvent | null> {
+  if (response.status !== 422) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as Partial<AssistantPreflightRefusal>;
+  if (candidate.code !== 'assistant-preflight-ambiguous') {
+    return null;
+  }
+  return {
+    kind: 'preflight-refused',
+    payload: {
+      conversationId: candidate.conversationId ?? '',
+      code: 'assistant-preflight-ambiguous',
+      mode: candidate.mode ?? 'AssistantChat',
+      overallScore: candidate.overallScore ?? 0,
+      threshold: candidate.threshold ?? 0,
+      dimensions: Array.isArray(candidate.dimensions) ? candidate.dimensions : [],
+      missingFields: Array.isArray(candidate.missingFields) ? candidate.missingFields : [],
+      clarificationQuestions: Array.isArray(candidate.clarificationQuestions)
+        ? candidate.clarificationQuestions
+        : [],
+    },
+  };
 }
 
 function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStreamEvent | null {

@@ -93,6 +93,73 @@ describe('streamAssistantTurn', () => {
     await expect(collect(streamAssistantTurn('conversation-1', 'Hello', authWithToken(null))))
       .rejects.toThrow('HTTP 401 Unauthorized');
   });
+
+  // sc-274 phase 2 — assistant-preflight-ambiguous 422 short-circuits the SSE stream and is
+  // surfaced as a synthetic preflight-refused event so the chat panel renders the
+  // clarification banner instead of going through the generic error path.
+  it('parses 422 assistant-preflight-ambiguous response into a preflight-refused event', async () => {
+    const refusalBody = {
+      conversationId: 'conv-42',
+      code: 'assistant-preflight-ambiguous',
+      mode: 'AssistantChat',
+      overallScore: 0.2,
+      threshold: 0.4,
+      dimensions: [
+        { dimension: 'goal', score: 0.2, reason: 'action verb without scope' },
+        { dimension: 'constraints', score: 1.0, reason: null },
+        { dimension: 'success_criteria', score: 1.0, reason: null },
+        { dimension: 'context', score: 1.0, reason: null },
+      ],
+      missingFields: ['content.scope'],
+      clarificationQuestions: ['What specifically should I fix?'],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        body: null,
+        json: () => Promise.resolve(refusalBody),
+      } as unknown as Response),
+    );
+
+    const events = await collect(streamAssistantTurn('conv-42', 'fix it', authWithToken(null)));
+
+    expect(events).toEqual<AssistantStreamEvent[]>([
+      {
+        kind: 'preflight-refused',
+        payload: {
+          conversationId: 'conv-42',
+          code: 'assistant-preflight-ambiguous',
+          mode: 'AssistantChat',
+          overallScore: 0.2,
+          threshold: 0.4,
+          dimensions: refusalBody.dimensions,
+          missingFields: ['content.scope'],
+          clarificationQuestions: ['What specifically should I fix?'],
+        },
+      },
+    ]);
+  });
+
+  it('falls through to the error path when a 422 lacks the assistant-preflight-ambiguous code', async () => {
+    // Validation 422s (e.g. ProblemDetails-shape from a malformed request) must not be
+    // mistaken for a preflight refusal — the banner would then render with empty fields.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        body: null,
+        json: () => Promise.resolve({ status: 422, detail: 'validation failed' }),
+      } as unknown as Response),
+    );
+
+    await expect(collect(streamAssistantTurn('conv-1', 'fix it', authWithToken(null))))
+      .rejects.toThrow('HTTP 422 Unprocessable Entity');
+  });
 });
 
 function authWithToken(token: string | null): AuthService {

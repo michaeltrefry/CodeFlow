@@ -42,3 +42,25 @@ public sealed record ReplayEditPreflightEdit(
     string? Decision,
     string? Output,
     bool HasPayload);
+
+/// <summary>
+/// sc-274 phase 2 — homepage assistant chat preflight input. The freeform user message
+/// plus the page-context shape the client sent. Page context is captured as
+/// presence/kind/selection booleans rather than the full record so the assessor stays in
+/// the runtime layer and doesn't depend on <c>CodeFlow.Api</c>'s <c>AssistantPageContext</c>.
+/// </summary>
+/// <param name="Content">The user-typed prompt. Trimmed by the caller before the assessor runs.</param>
+/// <param name="HasPageContext">
+/// True when the client sent any page context at all. False means the user is on the homepage
+/// or has no current entity selection — pronouns like "this" / "it" cannot be implicitly
+/// resolved by the model.
+/// </param>
+/// <param name="PageContextKind">
+/// The <c>kind</c> field from the page context (e.g. <c>trace</c>, <c>workflow-editor</c>,
+/// <c>agent-editor</c>, <c>library</c>). Used to decide whether pronouns can resolve — a
+/// kind like <c>home</c> or <c>traces-list</c> doesn't pin a specific entity.
+/// </param>
+public sealed record AssistantChatPreflightInput(
+    string Content,
+    bool HasPageContext,
+    string? PageContextKind);

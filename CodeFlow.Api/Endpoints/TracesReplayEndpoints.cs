@@ -341,7 +341,9 @@ public static class TracesReplayEndpoints
     /// sc-274 phase 1 — emit a <see cref="RefusalStages.Preflight"/> refusal when the
     /// ambiguity assessor refuses the replay edits. The refusal carries the per-dimension
     /// scores + clarification questions in <c>DetailJson</c> so governance queries can
-    /// reconstruct what the author saw without re-running the assessor.
+    /// reconstruct what the author saw without re-running the assessor. Detail-blob shape
+    /// lives in <see cref="PreflightRefusalDetail"/> so phase 2 (assistant chat) writes the
+    /// same schema.
     /// </summary>
     private static async Task EmitPreflightRefusalAsync(
         IRefusalEventSink sink,
@@ -351,24 +353,6 @@ public static class TracesReplayEndpoints
     {
         try
         {
-            var detail = new JsonObject
-            {
-                ["mode"] = assessment.Mode.ToString(),
-                ["score"] = assessment.OverallScore,
-                ["threshold"] = assessment.Threshold,
-                ["dimensions"] = new JsonArray(assessment.Dimensions
-                    .Select(d => (JsonNode)new JsonObject
-                    {
-                        ["dimension"] = d.Dimension,
-                        ["score"] = d.Score,
-                        ["reason"] = d.Reason,
-                    }).ToArray()),
-                ["missingFields"] = new JsonArray(
-                    assessment.MissingFields.Select(f => (JsonNode)JsonValue.Create(f)!).ToArray()),
-                ["clarificationQuestions"] = new JsonArray(
-                    assessment.ClarificationQuestions.Select(q => (JsonNode)JsonValue.Create(q)!).ToArray()),
-            };
-
             await sink.RecordAsync(
                 new RefusalEvent(
                     Id: Guid.NewGuid(),
@@ -378,11 +362,9 @@ public static class TracesReplayEndpoints
                     Code: "preflight-ambiguous",
                     Reason: $"Replay edits did not meet the {assessment.Mode} clarity threshold "
                             + $"({assessment.OverallScore:0.00} < {assessment.Threshold:0.00}).",
-                    Axis: assessment.Dimensions
-                        .OrderBy(d => d.Score)
-                        .FirstOrDefault()?.Dimension,
+                    Axis: PreflightRefusalDetail.LowestDimensionAxis(assessment),
                     Path: null,
-                    DetailJson: detail.ToJsonString(),
+                    DetailJson: PreflightRefusalDetail.Build(assessment).ToJsonString(),
                     OccurredAt: DateTimeOffset.UtcNow),
                 cancellationToken);
         }
