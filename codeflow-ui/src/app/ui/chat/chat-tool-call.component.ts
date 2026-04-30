@@ -67,12 +67,19 @@ export interface ChatToolCallView {
       <div class="tool-call-body">
         @if (view().confirmation; as confirmation) {
           <section class="tool-call-section tool-call-confirm-section" data-testid="tool-confirmation">
-            <cf-chat-confirmation-chip
-              [view]="chipView()"
-              [disabled]="confirmation.state === 'applying'"
-              (confirm)="onConfirm()"
-              (cancel)="onCancel()"
-            />
+            <!-- HAA-20: while the chip is awaiting the user (state === 'idle'), the chat-panel
+                 renders a pinned copy above the composer so it doesn't scroll out of reach when
+                 the assistant continues with a long explanation. We only render the inline chip
+                 once the user has acted, so the resolved-state banner below carries the
+                 outcome in the original tool-call card. -->
+            @if (confirmation.state !== 'idle') {
+              <cf-chat-confirmation-chip
+                [view]="chipView()"
+                [disabled]="confirmation.state === 'applying'"
+                (confirm)="onConfirm()"
+                (cancel)="onCancel()"
+              />
+            }
             @if (confirmation.state === 'applying') {
               <p class="tool-confirmation-status">Saving…</p>
             }
