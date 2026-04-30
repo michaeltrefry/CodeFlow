@@ -1,6 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { Router, RouterLink } from '@angular/router';
+import { RouterLink } from '@angular/router';
 import { AgentRolesApi } from '../../../core/agent-roles.api';
 import { useAsyncList } from '../../../core/async-state';
 import { AgentRole } from '../../../core/models';
@@ -45,13 +45,17 @@ import { ChipComponent } from '../../../ui/chip.component';
             </thead>
             <tbody>
               @for (role of roles(); track role.id) {
-                <tr (click)="open(role.id)">
+                <tr [routerLink]="['/settings/roles', role.id]">
                   <td class="mono" style="font-weight: 500">{{ role.key }}</td>
                   <td>{{ role.displayName }}</td>
                   <td class="muted small">{{ role.description ?? '—' }}</td>
                   <td class="muted small">{{ role.updatedAtUtc | date:'medium' }}</td>
                   <td class="actions">
-                    <button type="button" cf-button size="sm">Edit</button>
+                    <button type="button"
+                            cf-button
+                            size="sm"
+                            [routerLink]="['/settings/roles', role.id]"
+                            (click)="$event.stopPropagation()">Edit</button>
                   </td>
                 </tr>
               }
@@ -64,7 +68,6 @@ import { ChipComponent } from '../../../ui/chip.component';
 })
 export class RolesListComponent {
   private readonly api = inject(AgentRolesApi);
-  private readonly router = inject(Router);
   private readonly rolesList = useAsyncList(
     () => this.api.list(),
     { errorMessage: 'Failed to load roles' },
@@ -77,6 +80,4 @@ export class RolesListComponent {
   constructor() {
     this.rolesList.reload();
   }
-
-  open(id: number): void { this.router.navigate(['/settings/roles', id]); }
 }

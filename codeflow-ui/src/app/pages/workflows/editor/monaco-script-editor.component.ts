@@ -17,7 +17,7 @@ import {
   inject
 } from '@angular/core';
 import { ThemeService } from '../../../core/theme.service';
-import { ensureMonacoEnvironment } from './monaco-environment';
+import { ensureMonacoEditorStyles, ensureMonacoEnvironment } from './monaco-environment';
 import { getSnippetsForContext, ScriptSnippet, SnippetContext, SnippetKind } from './script-snippets';
 import { buildTemplateSuggestions, isInsideScribanTag } from './template-completion';
 
@@ -139,6 +139,7 @@ export class MonacoScriptEditorComponent implements AfterViewInit, OnChanges, On
 
   async ngAfterViewInit(): Promise<void> {
     try {
+      await ensureMonacoEditorStyles();
       ensureMonacoEnvironment();
       const monaco = await import('monaco-editor');
       this.monacoApi = monaco;

@@ -156,7 +156,7 @@ function defaultStartInput(): WorkflowInput {
 }
 
 @Component({
-  selector: 'app-workflow-canvas',
+  selector: 'cf-workflow-canvas',
   standalone: true,
   imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
   providers: [WorkflowCanvasDialogOrchestrator],

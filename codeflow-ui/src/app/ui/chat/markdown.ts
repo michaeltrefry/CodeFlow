@@ -10,6 +10,15 @@ marked.setOptions({
   async: false,
 });
 
+DOMPurify.addHook('afterSanitizeAttributes', node => {
+  if (!(node instanceof HTMLAnchorElement)) return;
+  if (node.getAttribute('target') !== '_blank') return;
+
+  const rel = new Set((node.getAttribute('rel') ?? '').split(/\s+/).filter(Boolean));
+  rel.add('noopener');
+  node.setAttribute('rel', [...rel].join(' '));
+});
+
 const WORKFLOW_PACKAGE_LANG = 'cf-workflow-package';
 
 /**
@@ -82,5 +91,8 @@ export function renderMarkdown(source: string): string {
     return '';
   }
   const html = marked.parse(source, { renderer }) as string;
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ['rel', 'target'],
+  });
 }

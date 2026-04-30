@@ -17,6 +17,13 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('alert(2)');
   });
 
+  it('adds noopener to assistant-rendered links that open a new tab', () => {
+    const html = renderMarkdown('<a href="https://example.com" target="_blank" rel="noreferrer">docs</a>');
+
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer noopener"');
+  });
+
   it('renders valid workflow packages as summarized details blocks', () => {
     const html = renderMarkdown([
       '```cf-workflow-package',

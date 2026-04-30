@@ -1,6 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { Router, RouterLink } from '@angular/router';
+import { RouterLink } from '@angular/router';
 import { McpServersApi } from '../../../core/mcp-servers.api';
 import { useAsyncList } from '../../../core/async-state';
 import { McpServer } from '../../../core/models';
@@ -48,7 +48,7 @@ import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
             </thead>
             <tbody>
               @for (server of servers(); track server.id) {
-                <tr (click)="open(server.id)">
+                <tr [routerLink]="['/settings/mcp-servers', server.id]">
                   <td class="mono" style="font-weight: 500">{{ server.key }}</td>
                   <td>{{ server.displayName }}</td>
                   <td><cf-chip mono>{{ server.transport }}</cf-chip></td>
@@ -99,7 +99,6 @@ import { ChipComponent, ChipVariant } from '../../../ui/chip.component';
 })
 export class McpServersListComponent {
   private readonly api = inject(McpServersApi);
-  private readonly router = inject(Router);
   private readonly serversList = useAsyncList(
     () => this.api.list(),
     { errorMessage: 'Failed to load MCP servers' },
@@ -113,8 +112,6 @@ export class McpServersListComponent {
   readonly unhealthy = computed(() => this.servers().find(s => s.healthStatus === 'Unhealthy' && s.lastVerificationError));
 
   constructor() { this.reload(); }
-
-  open(id: number): void { this.router.navigate(['/settings/mcp-servers', id]); }
 
   healthVariant(server: McpServer): ChipVariant {
     if (server.healthStatus === 'Healthy') return 'ok';
