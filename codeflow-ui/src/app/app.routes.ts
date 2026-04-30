@@ -28,6 +28,7 @@ export const routes: Routes = [
   },
   {
     path: 'agents/:key/edit',
+    canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/agents/agent-editor.component').then(m => m.AgentEditorComponent)
   },
   {

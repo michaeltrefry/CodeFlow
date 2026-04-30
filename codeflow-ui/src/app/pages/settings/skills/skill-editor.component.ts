@@ -1,6 +1,7 @@
 import { Component, inject, input, numberAttribute, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { formatHttpError } from '../../../core/format-error';
 import { SkillsApi } from '../../../core/skills.api';
 import { Skill } from '../../../core/models';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
@@ -107,7 +108,7 @@ export class SkillEditorComponent implements OnInit {
           this.saving.set(false);
         },
         error: err => {
-          this.error.set(this.formatError(err));
+          this.error.set(formatHttpError(err, 'Save failed'));
           this.saving.set(false);
         }
       });
@@ -121,7 +122,7 @@ export class SkillEditorComponent implements OnInit {
           this.router.navigate(['/settings/skills', skill.id]);
         },
         error: err => {
-          this.error.set(this.formatError(err));
+          this.error.set(formatHttpError(err, 'Save failed'));
           this.saving.set(false);
         }
       });
@@ -136,22 +137,10 @@ export class SkillEditorComponent implements OnInit {
     this.api.archive(existingId).subscribe({
       next: () => this.router.navigate(['/settings/skills']),
       error: err => {
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err, 'Save failed'));
         this.saving.set(false);
       }
     });
   }
 
-  private formatError(err: unknown): string {
-    if (err && typeof err === 'object') {
-      const httpErr = err as { error?: unknown; message?: string };
-      if (httpErr.error && typeof httpErr.error === 'object') {
-        return JSON.stringify(httpErr.error);
-      }
-      if (httpErr.message) {
-        return httpErr.message;
-      }
-    }
-    return 'Save failed';
-  }
 }

@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { formatHttpError } from '../../core/format-error';
 import { WorkflowPackageDocument, WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowPackageReference, WorkflowsApi } from '../../core/workflows.api';
 import { WORKFLOW_CATEGORIES, WorkflowCategory, WorkflowSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
@@ -867,16 +868,7 @@ export class WorkflowsListComponent {
   }
 
   private errorMessage(err: unknown, fallback: string): string {
-    const error = err as { error?: unknown; message?: string };
-    if (error?.error && typeof error.error === 'object' && 'errors' in error.error) {
-      const validation = error.error as { errors?: Record<string, string[]> };
-      const first = Object.values(validation.errors ?? {}).flat()[0];
-      if (first) {
-        return first;
-      }
-    }
-
-    return error?.message ?? fallback;
+    return formatHttpError(err, fallback);
   }
 
   clearFilters(): void {

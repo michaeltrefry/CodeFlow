@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { HttpErrorResponse } from '@angular/common/http';
+import { formatHttpError } from '../../core/format-error';
 import { TracesApi } from '../../core/traces.api';
 import {
   RecordedDecisionRef,
@@ -393,7 +393,7 @@ export class TraceReplayPanelComponent implements OnChanges {
       },
       error: (err: unknown) => {
         this.loading.set(false);
-        this.loadError.set(this.errorMessage(err));
+        this.loadError.set(formatHttpError(err, 'Unknown error'));
       }
     });
   }
@@ -421,7 +421,7 @@ export class TraceReplayPanelComponent implements OnChanges {
       },
       error: (err: unknown) => {
         this.running.set(false);
-        this.replayError.set(this.errorMessage(err));
+        this.replayError.set(formatHttpError(err, 'Unknown error'));
       }
     });
   }
@@ -494,14 +494,4 @@ export class TraceReplayPanelComponent implements OnChanges {
     return out.length > 0 ? out : undefined;
   }
 
-  private errorMessage(err: unknown): string {
-    if (err instanceof HttpErrorResponse) {
-      const errors = err.error?.errors;
-      if (errors && typeof errors === 'object') {
-        return Object.values(errors).flat().join('; ');
-      }
-      return err.error?.title ?? err.error?.error ?? err.message ?? `HTTP ${err.status}`;
-    }
-    return (err as Error)?.message ?? 'Unknown error';
-  }
 }

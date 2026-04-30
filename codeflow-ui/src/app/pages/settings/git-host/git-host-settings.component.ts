@@ -2,6 +2,7 @@ import { Component, inject, signal, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { GitHostApi } from '../../../core/git-host.api';
+import { formatHttpError } from '../../../core/format-error';
 import { GitHostMode, GitHostSettingsResponse, GitHostVerifyResponse } from '../../../core/models';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
 import { ButtonComponent } from '../../../ui/button.component';
@@ -205,7 +206,7 @@ export class GitHostSettingsComponent implements OnInit {
           this.saving.set(false);
         },
         error: err => {
-          this.error.set(this.formatError(err));
+          this.error.set(formatHttpError(err));
           this.saving.set(false);
         },
       });
@@ -225,7 +226,7 @@ export class GitHostSettingsComponent implements OnInit {
         this.verifying.set(false);
       },
       error: err => {
-        this.verifyError.set(this.formatError(err));
+        this.verifyError.set(formatHttpError(err));
         this.verifying.set(false);
       },
     });
@@ -239,7 +240,7 @@ export class GitHostSettingsComponent implements OnInit {
         this.loading.set(false);
       },
       error: err => {
-        this.error.set(this.formatError(err));
+        this.error.set(formatHttpError(err));
         this.loading.set(false);
       },
     });
@@ -254,35 +255,4 @@ export class GitHostSettingsComponent implements OnInit {
     this.lastVerifiedAtUtc.set(response.lastVerifiedAtUtc ?? null);
   }
 
-  private formatError(err: unknown): string {
-    // ASP.NET ValidationProblemDetails: { errors: { fieldName: ["msg", ...], ... }, title, ... }.
-    // Surface field-level messages (joined) when present so token / baseUrl etc. show their
-    // specific complaint rather than the generic "One or more validation errors occurred."
-    if (err && typeof err === 'object' && 'error' in err) {
-      const body = (err as { error: unknown }).error;
-      if (body && typeof body === 'object') {
-        const errors = (body as { errors?: unknown }).errors;
-        if (errors && typeof errors === 'object') {
-          const messages: string[] = [];
-          for (const value of Object.values(errors as Record<string, unknown>)) {
-            if (Array.isArray(value)) {
-              for (const m of value) {
-                if (typeof m === 'string') messages.push(m);
-              }
-            }
-          }
-          if (messages.length > 0) {
-            return messages.join('; ');
-          }
-        }
-        if ('title' in body) {
-          return String((body as { title: unknown }).title);
-        }
-      }
-      if (typeof body === 'string') {
-        return body;
-      }
-    }
-    return 'Request failed.';
-  }
 }
