@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Authority.Admission;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -12,11 +13,16 @@ namespace CodeFlow.Runtime.Workspace;
 public sealed class VcsHostToolService
 {
     private readonly IVcsProviderFactory factory;
+    private readonly DeliveryRequestValidator deliveryValidator;
 
-    public VcsHostToolService(IVcsProviderFactory factory)
+    public VcsHostToolService(
+        IVcsProviderFactory factory,
+        DeliveryRequestValidator? deliveryValidator = null,
+        Func<DateTimeOffset>? nowProvider = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         this.factory = factory;
+        this.deliveryValidator = deliveryValidator ?? new DeliveryRequestValidator(nowProvider);
     }
 
     public async Task<ToolResult> OpenPullRequestAsync(
@@ -26,26 +32,36 @@ public sealed class VcsHostToolService
     {
         ArgumentNullException.ThrowIfNull(toolCall);
 
-        var owner = GetRequiredString(toolCall.Arguments, "owner");
-        var name = GetRequiredString(toolCall.Arguments, "name");
-        var head = GetRequiredString(toolCall.Arguments, "head");
-        var baseRef = GetRequiredString(toolCall.Arguments, "base");
-        var title = GetRequiredString(toolCall.Arguments, "title");
-        var body = GetOptionalString(toolCall.Arguments, "body") ?? string.Empty;
-        if (!IsAllowedRepository(context, owner, name))
+        // sc-272 PR2: vcs.open_pr is the canonical delivery boundary. Admission consolidates
+        // the trace-context check, the envelope RepoScopes check, and the new envelope
+        // Delivery target check; the executor here only sees an AuthorizedDeliveryRequest.
+        var admission = deliveryValidator.Validate(new DeliveryAdmissionRequest(
+            Owner: GetRequiredString(toolCall.Arguments, "owner"),
+            Name: GetRequiredString(toolCall.Arguments, "name"),
+            Head: GetRequiredString(toolCall.Arguments, "head"),
+            BaseBranch: GetRequiredString(toolCall.Arguments, "base"),
+            Title: GetRequiredString(toolCall.Arguments, "title"),
+            Body: GetOptionalString(toolCall.Arguments, "body"),
+            Context: context));
+
+        if (admission is Rejected<AuthorizedDeliveryRequest> rejected)
         {
-            return BuildRepoNotAllowed(toolCall.Id, owner, name);
+            return RejectionResult(toolCall.Id, rejected.Reason);
         }
-        if (CheckEnvelopeRepoScope(context, owner, name, RepoAccess.Write) is { } envelopeRefusal)
-        {
-            return envelopeRefusal(toolCall.Id);
-        }
+
+        var admitted = ((Accepted<AuthorizedDeliveryRequest>)admission).Value;
 
         try
         {
             var provider = await factory.CreateAsync(cancellationToken);
             var pr = await provider.OpenPullRequestAsync(
-                owner, name, head, baseRef, title, body, cancellationToken);
+                admitted.Owner,
+                admitted.Name,
+                admitted.Head,
+                admitted.BaseBranch,
+                admitted.Title,
+                admitted.Body,
+                cancellationToken);
 
             return new ToolResult(
                 toolCall.Id,
@@ -134,6 +150,39 @@ public sealed class VcsHostToolService
             ["message"] = $"Repository '{owner}/{name}' is not declared for this trace.",
         };
         return new ToolResult(callId, payload.ToJsonString(), IsError: true);
+    }
+
+    /// <summary>
+    /// sc-272 PR2: builds a tool-result refusal payload from a <see cref="Rejection"/>
+    /// minted by an admission validator. Shape matches the workspace-mutation refusal
+    /// payload shape so <see cref="RefusalPayloadParser"/> picks it up as a Stage = Tool
+    /// <see cref="RefusalEvent"/> on the existing <see cref="ToolRegistry"/> path.
+    /// </summary>
+    private static ToolResult RejectionResult(string callId, Rejection rejection)
+    {
+        var refusalJson = new JsonObject
+        {
+            ["code"] = rejection.Code,
+            ["reason"] = rejection.Reason,
+            ["axis"] = rejection.Axis,
+        };
+        if (rejection.Path is not null)
+        {
+            refusalJson["path"] = rejection.Path;
+        }
+        if (rejection.Detail is not null)
+        {
+            refusalJson["detail"] = rejection.Detail.DeepClone();
+        }
+
+        return new ToolResult(
+            callId,
+            new JsonObject
+            {
+                ["ok"] = false,
+                ["refusal"] = refusalJson,
+            }.ToJsonString(),
+            IsError: true);
     }
 
     /// <summary>

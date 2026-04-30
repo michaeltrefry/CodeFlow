@@ -221,12 +221,16 @@ public sealed class EnvelopeEnforcementTests : IDisposable
             BuildOpenPrCall(),
             BuildVcsContext("foo", "bar", envelope));
 
+        // sc-272 PR2 moved this check into DeliveryRequestValidator. Custom fields now ride
+        // in the standardized refusal `detail` payload alongside the canonical Code/Axis/Path.
         result.IsError.Should().BeTrue();
         var refusal = JsonNode.Parse(result.Content)!["refusal"]!.AsObject();
         refusal["code"]!.GetValue<string>().Should().Be("envelope-repo-scope");
         refusal["axis"]!.GetValue<string>().Should().Be(BlockedBy.Axes.RepoScopes);
-        refusal["repo"]!.GetValue<string>().Should().Be("foo/bar");
-        refusal["requiredAccess"]!.GetValue<string>().Should().Be(nameof(RepoAccess.Write));
+        refusal["path"]!.GetValue<string>().Should().Be("foo/bar");
+        var detail = refusal["detail"]!.AsObject();
+        detail["repo"]!.GetValue<string>().Should().Be("foo/bar");
+        detail["requiredAccess"]!.GetValue<string>().Should().Be(nameof(RepoAccess.Write));
         stub.LastOpenPrCall.Should().BeNull();
     }
 

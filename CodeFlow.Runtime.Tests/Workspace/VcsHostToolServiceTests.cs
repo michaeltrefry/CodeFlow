@@ -176,16 +176,22 @@ public sealed class VcsHostToolServiceTests
     }
 
     [Fact]
-    public async Task OpenPullRequest_WhenRepoNotDeclared_ReturnsToolError()
+    public async Task OpenPullRequest_WhenRepoNotDeclared_ReturnsAdmissionRefusal()
     {
+        // sc-272 PR2: vcs.open_pr now goes through DeliveryRequestValidator. The
+        // "repo not declared" rejection rides the same refusal-payload path the rest of
+        // the workspace tool refusals use, so ToolRegistry's sink picks it up as a
+        // Stage = Tool RefusalEvent (vs the previous freeform error payload that was
+        // invisible to the refusal-evidence stream).
         var stub = new StubProvider();
         var service = new VcsHostToolService(new SingleProviderFactory(stub));
 
         var result = await service.OpenPullRequestAsync(BuildOpenPrCall(), BuildContext("foo", "allowed"));
 
         result.IsError.Should().BeTrue();
-        var payload = JsonNode.Parse(result.Content)!.AsObject();
-        payload["error"]!.GetValue<string>().Should().Be("repo_not_allowed");
+        var refusal = JsonNode.Parse(result.Content)!["refusal"]!.AsObject();
+        refusal["code"]!.GetValue<string>().Should().Be("delivery-repo-not-declared");
+        refusal["axis"]!.GetValue<string>().Should().Be("delivery");
         stub.LastOpenPrCall.Should().BeNull();
     }
 
