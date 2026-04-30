@@ -2,6 +2,7 @@ import {
   AfterViewInit,
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   HostListener,
   Injector,
@@ -14,6 +15,7 @@ import {
   signal
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PageContextService } from '../../../core/page-context.service';
@@ -1479,6 +1481,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly injector = inject(Injector);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly pageContext = inject(PageContextService);
   readonly dialogs = inject(WorkflowCanvasDialogOrchestrator);
 
@@ -1866,7 +1869,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.selectedSynthesizerDocsLoading.set(true);
     this.selectedSynthesizerDocsError.set(null);
 
-    request$.subscribe({
+    request$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: version => {
         const selected = this.selectedNode();
         if (!selected || selected.editor.id !== nodeEditorId
@@ -1918,7 +1921,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.selectedAgentDocsLoading.set(true);
     this.selectedAgentDocsError.set(null);
 
-    request$.subscribe({
+    request$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: version => {
         const selected = this.selectedNode();
         if (!selected || selected.editor.id !== nodeEditorId || selected.editor.agentKey !== agentKey) return;
@@ -1951,11 +1954,11 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       // localStorage unavailable; default off.
     }
 
-    this.agentsApi.list().subscribe({
+    this.agentsApi.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: agents => this.agents.set(agents),
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
     });
-    this.api.list().subscribe({
+    this.api.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: workflows => {
         this.workflows.set(workflows);
         this.preloadTerminalPortsForCandidates(workflows);
@@ -1998,7 +2001,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         this.loadAgentDocsForNode(picked ?? null);
         this.loadSynthesizerDocsForNode(picked ?? null);
         if ((picked?.kind === 'Subflow' || picked?.kind === 'ReviewLoop') && picked.subflowKey) {
-          this.api.getLatest(picked.subflowKey).subscribe({
+          this.api.getLatest(picked.subflowKey).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
             next: detail => this.selectedSubflowDetail.set(detail),
             error: () => this.selectedSubflowDetail.set(null)
           });
@@ -2079,7 +2082,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (key) {
       this.hasExistingKey.set(true);
       this.workflowKey.set(key);
-      this.api.getLatest(key).subscribe({
+      this.api.getLatest(key).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
         next: async detail => {
           this.workflowName.set(detail.name);
           this.maxRoundsPerRound.set(detail.maxRoundsPerRound);
@@ -2442,7 +2445,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    this.api.getLatest(value).subscribe({
+    this.api.getLatest(value).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: detail => this.selectedSubflowDetail.set(detail),
       error: () => this.selectedSubflowDetail.set(null)
     });
@@ -2491,7 +2494,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const currentKey = this.workflowKey().trim();
     for (const wf of workflows) {
       if (wf.key === currentKey) continue;
-      this.api.getTerminalPorts(wf.key, wf.latestVersion).subscribe({
+      this.api.getTerminalPorts(wf.key, wf.latestVersion).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
         next: ports => {
           this.terminalPortsByKey.update(prev => ({ ...prev, [wf.key]: ports }));
         },
@@ -2517,7 +2520,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const subflowKey = node.subflowKey;
     if (!subflowKey) return;
 
-    this.api.getTerminalPorts(subflowKey, node.subflowVersion ?? null).subscribe({
+    this.api.getTerminalPorts(subflowKey, node.subflowVersion ?? null).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: terminals => {
         let ports = terminals.slice();
         if (node.kind === 'ReviewLoop') {
@@ -2549,7 +2552,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
     if (!value) return;
 
-    this.agentsApi.getLatest(value).subscribe({
+    this.agentsApi.getLatest(value).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: version => {
         const declared = version.config?.outputs;
         if (!declared || declared.length === 0) return;
@@ -2880,7 +2883,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const request$ = node.synthesizerAgentVersion && node.synthesizerAgentVersion > 0
       ? this.agentsApi.getVersion(node.synthesizerAgentKey, node.synthesizerAgentVersion)
       : this.agentsApi.getLatest(node.synthesizerAgentKey);
-    request$.subscribe({
+    request$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: version => {
         const declared = version.config?.outputs;
         if (!declared || declared.length === 0) return;
@@ -2973,7 +2976,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       input: inputValue,
       context: {},
       workflow: {}
-    }).subscribe({
+    }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: response => {
         this.transformPreviewRendered.set(response.rendered);
         this.transformPreviewError.set(null);
@@ -3024,7 +3027,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.api.validateScript({
       script,
       direction: slot === 'input' ? 'Input' : 'Output'
-    }).subscribe({
+    }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         if (result.ok) {
           errorSig.set(null);
@@ -3081,7 +3084,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       ? this.api.addVersion(key, payload)
       : this.api.create(payload);
 
-    request$.subscribe({
+    request$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         this.saving.set(false);
         this.statusMessage.set(`Saved ${result.key} v${result.version}`);
@@ -3108,7 +3111,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
     this.dataflowLoading.set(true);
     this.dataflowError.set(null);
-    this.api.getDataflow(key, version).subscribe({
+    this.api.getDataflow(key, version).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: snapshot => {
         this.dataflowSnapshot.set(snapshot);
         this.dataflowVersion.set(version);
