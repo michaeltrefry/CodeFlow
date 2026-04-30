@@ -8,6 +8,7 @@ import { AgentRolesApi } from '../../../core/agent-roles.api';
 import {
   AgentRole,
   AssistantSettingsResponse,
+  LLM_PROVIDER_DISPLAY_NAMES,
   LLM_PROVIDER_KEYS,
   LlmProviderKey,
   LlmProviderResponse,
@@ -52,17 +53,17 @@ interface ProviderFormState {
 
 const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: string; supportsApiVersion: boolean }> = {
   openai: {
-    displayName: 'OpenAI',
+    displayName: LLM_PROVIDER_DISPLAY_NAMES.openai,
     placeholder: 'https://api.openai.com/v1/responses',
     supportsApiVersion: false,
   },
   anthropic: {
-    displayName: 'Anthropic',
+    displayName: LLM_PROVIDER_DISPLAY_NAMES.anthropic,
     placeholder: 'https://api.anthropic.com/v1/messages',
     supportsApiVersion: true,
   },
   lmstudio: {
-    displayName: 'LM Studio (local)',
+    displayName: LLM_PROVIDER_DISPLAY_NAMES.lmstudio,
     placeholder: 'http://localhost:1234/v1/responses',
     supportsApiVersion: false,
   },
@@ -338,7 +339,7 @@ export class LlmProvidersComponent implements OnInit {
   }
 
   protected providerDisplayName(key: LlmProviderKey): string {
-    return PROVIDER_META[key].displayName;
+    return LLM_PROVIDER_DISPLAY_NAMES[key];
   }
 
   protected patchAssistant(patch: Partial<AssistantSettingsState>): void {

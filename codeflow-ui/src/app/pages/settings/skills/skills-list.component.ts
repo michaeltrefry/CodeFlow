@@ -1,5 +1,6 @@
-import { Component, inject, signal } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { Component, inject } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { useAsyncList } from '../../../core/async-state';
 import { relativeTime } from '../../../core/format-time';
 import { SkillsApi } from '../../../core/skills.api';
 import { Skill } from '../../../core/models';
@@ -52,20 +53,17 @@ import { ChipComponent } from '../../../ui/chip.component';
 })
 export class SkillsListComponent {
   private readonly api = inject(SkillsApi);
-  private readonly router = inject(Router);
+  private readonly skillsList = useAsyncList(
+    () => this.api.list(),
+    { errorMessage: 'Failed to load skills' },
+  );
 
-  readonly skills = signal<Skill[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly skills = this.skillsList.items;
+  readonly loading = this.skillsList.loading;
+  readonly error = this.skillsList.error;
 
   constructor() {
-    this.api.list().subscribe({
-      next: skills => { this.skills.set(skills); this.loading.set(false); },
-      error: err => {
-        this.error.set(err?.message ?? 'Failed to load skills');
-        this.loading.set(false);
-      },
-    });
+    this.skillsList.reload();
   }
 
   preview(skill: Skill): string {

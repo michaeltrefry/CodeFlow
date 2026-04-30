@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
+import { useAsyncList } from '../../core/async-state';
 import { relativeTime } from '../../core/format-time';
 import { AgentSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
@@ -93,11 +94,14 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
 })
 export class AgentsListComponent {
   private readonly agentsApi = inject(AgentsApi);
-  private readonly router = inject(Router);
+  private readonly agentsList = useAsyncList(
+    () => this.agentsApi.list(),
+    { errorMessage: 'Failed to load agents' },
+  );
 
-  readonly agents = signal<AgentSummary[]>([]);
-  readonly loading = signal(true);
-  readonly error = signal<string | null>(null);
+  readonly agents = this.agentsList.items;
+  readonly loading = this.agentsList.loading;
+  readonly error = this.agentsList.error;
   readonly filter = signal<AgentFilter>('all');
 
   readonly visibleAgents = computed(() => {
@@ -117,14 +121,7 @@ export class AgentsListComponent {
   constructor() { this.reload(); }
 
   reload(): void {
-    this.loading.set(true);
-    this.agentsApi.list().subscribe({
-      next: results => { this.agents.set(results); this.loading.set(false); },
-      error: err => {
-        this.error.set(err?.message ?? 'Failed to load agents');
-        this.loading.set(false);
-      },
-    });
+    this.agentsList.reload();
   }
 
   relTime = relativeTime;

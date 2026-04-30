@@ -13,6 +13,8 @@ import {
   AgentVersion,
   AgentVersionSummary,
   HostTool,
+  LLM_PROVIDER_DISPLAY_NAMES,
+  LlmProviderKey,
   McpServer,
 } from '../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-picker/tool-picker.component';
@@ -514,14 +516,10 @@ export class AgentDetailComponent implements OnInit {
 
   readonly displayName = computed<string>(() => (this.config()?.['name'] as string) ?? '');
   readonly description = computed<string>(() => (this.config()?.['description'] as string) ?? '');
-  readonly provider = computed<string>(() => (this.config()?.['provider'] as string) ?? '');
+  readonly provider = computed<LlmProviderKey | ''>(() => this.config()?.provider ?? '');
   readonly providerLabel = computed<string>(() => {
-    switch (this.provider()) {
-      case 'openai': return 'OpenAI';
-      case 'anthropic': return 'Anthropic';
-      case 'lmstudio': return 'LM Studio (local)';
-      default: return this.provider();
-    }
+    const provider = this.provider();
+    return provider ? LLM_PROVIDER_DISPLAY_NAMES[provider] : '';
   });
   readonly model = computed<string>(() => (this.config()?.['model'] as string) ?? '');
   readonly temperature = computed<number | undefined>(() => this.config()?.['temperature'] as number | undefined);
