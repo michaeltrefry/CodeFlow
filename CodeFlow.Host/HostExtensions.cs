@@ -49,6 +49,7 @@ public static class HostExtensions
         services.AddCodeFlowBus(configuration, x =>
         {
             x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
+            x.AddConsumer<HitlTaskPendingEventNotificationConsumer>();
 
             x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity, WorkflowSagaStateMachineDefinition>()
                 .EntityFrameworkRepository(r =>
@@ -124,6 +125,8 @@ public static class HostExtensions
         // Notification subsystem (epic 48). Provider adapters (Slack/Email/SMS, sc-54/55/56)
         // register their own INotificationProvider implementations; the registry below picks
         // them up via DI enumeration.
+        services.AddOptions<NotificationOptions>()
+            .Bind(configuration.GetSection(NotificationOptions.SectionName));
         services.AddScoped<INotificationProviderConfigRepository, NotificationProviderConfigRepository>();
         services.AddScoped<INotificationRouteRepository, NotificationRouteRepository>();
         services.AddScoped<INotificationTemplateRepository, NotificationTemplateRepository>();
@@ -131,6 +134,7 @@ public static class HostExtensions
         services.AddScoped<INotificationTemplateRenderer, ScribanNotificationTemplateRenderer>();
         services.AddScoped<INotificationProviderRegistry, NotificationProviderRegistry>();
         services.AddScoped<INotificationDispatcher, NotificationDispatcher>();
+        services.AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>();
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
