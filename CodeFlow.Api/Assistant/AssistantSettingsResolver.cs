@@ -59,7 +59,7 @@ public sealed class AssistantSettingsResolver(
         return new AssistantRuntimeConfig(
             Provider: provider,
             Model: model,
-            MaxTokens: options.MaxTokens > 0 ? options.MaxTokens : 4096,
+            MaxTokens: options.MaxTokens > 0 ? options.MaxTokens : 32768,
             MaxTurns: options.MaxTurns > 0 ? options.MaxTurns : 10,
             MaxTokensPerConversation: maxPerConversation,
             AssignedAgentRoleId: dbDefaults?.AssignedAgentRoleId);

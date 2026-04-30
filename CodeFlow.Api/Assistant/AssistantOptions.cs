@@ -19,7 +19,7 @@ public sealed class AssistantOptions
 
     public string Model { get; set; } = string.Empty;
 
-    public int MaxTokens { get; set; } = 4096;
+    public int MaxTokens { get; set; } = 32768;
 
     /// <summary>
     /// Maximum tool-loop turns per user message. Unused while HAA-1 ships without tools — kept
