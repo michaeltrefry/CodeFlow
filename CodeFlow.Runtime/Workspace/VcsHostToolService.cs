@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Authority;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -35,6 +36,10 @@ public sealed class VcsHostToolService
         {
             return BuildRepoNotAllowed(toolCall.Id, owner, name);
         }
+        if (CheckEnvelopeRepoScope(context, owner, name, RepoAccess.Write) is { } envelopeRefusal)
+        {
+            return envelopeRefusal(toolCall.Id);
+        }
 
         try
         {
@@ -68,6 +73,10 @@ public sealed class VcsHostToolService
         if (!IsAllowedRepository(context, owner, name))
         {
             return BuildRepoNotAllowed(toolCall.Id, owner, name);
+        }
+        if (CheckEnvelopeRepoScope(context, owner, name, RepoAccess.Read) is { } envelopeRefusal)
+        {
+            return envelopeRefusal(toolCall.Id);
         }
 
         try
@@ -125,6 +134,101 @@ public sealed class VcsHostToolService
             ["message"] = $"Repository '{owner}/{name}' is not declared for this trace.",
         };
         return new ToolResult(callId, payload.ToJsonString(), IsError: true);
+    }
+
+    /// <summary>
+    /// sc-269 PR3: when the resolved envelope expresses <c>RepoScopes</c>, require the
+    /// requested <c>(owner, name)</c> to map to a scope grant of at least the requested
+    /// access level. Returns <c>null</c> when the envelope is silent (no opinion expressed)
+    /// or when a matching scope grant is found; otherwise returns a refusal-builder closure
+    /// so the caller can inject the tool-call id into the structured payload.
+    /// </summary>
+    private static Func<string, ToolResult>? CheckEnvelopeRepoScope(
+        ToolExecutionContext? context,
+        string owner,
+        string name,
+        RepoAccess required)
+    {
+        var scopes = context?.Envelope?.RepoScopes;
+        if (scopes is null)
+        {
+            return null;
+        }
+
+        var identityKey = ResolveIdentityKey(context, owner, name);
+
+        foreach (var scope in scopes)
+        {
+            // Scope grants compare by identity key when one is known. If the caller doesn't have
+            // an identity in context (no repos[] declared, no workspace.RepoUrl), fall back to a
+            // case-insensitive owner/name suffix match against the scope's path so an envelope
+            // tier that names "owner/name" still gates the operation. Access is satisfied when
+            // the scope grant's access level is >= the required level (Write covers Read).
+            var identityMatch = identityKey is not null
+                && string.Equals(scope.RepoIdentityKey, identityKey, StringComparison.OrdinalIgnoreCase);
+            var pathMatch = scope.Path is { Length: > 0 }
+                && scope.Path.EndsWith($"{owner}/{name}", StringComparison.OrdinalIgnoreCase);
+            if (!identityMatch && !pathMatch)
+            {
+                continue;
+            }
+
+            if (scope.Access >= required)
+            {
+                return null;
+            }
+        }
+
+        return callId => new ToolResult(
+            callId,
+            new JsonObject
+            {
+                ["ok"] = false,
+                ["refusal"] = new JsonObject
+                {
+                    ["code"] = "envelope-repo-scope",
+                    ["reason"] =
+                        $"Repository '{owner}/{name}' is not granted '{required}' access by the run's RepoScopes envelope axis.",
+                    ["axis"] = BlockedBy.Axes.RepoScopes,
+                    ["repo"] = $"{owner}/{name}",
+                    ["requiredAccess"] = required.ToString()
+                }
+            }.ToJsonString(),
+            IsError: true);
+    }
+
+    private static string? ResolveIdentityKey(ToolExecutionContext? context, string owner, string name)
+    {
+        if (context?.Repositories is { Count: > 0 } repos)
+        {
+            foreach (var repo in repos)
+            {
+                if (string.Equals(repo.Owner, owner, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(repo.Name, name, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(repo.RepoIdentityKey))
+                {
+                    return repo.RepoIdentityKey;
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(context?.Workspace?.RepoIdentityKey))
+        {
+            return context.Workspace.RepoIdentityKey;
+        }
+
+        if (!string.IsNullOrWhiteSpace(context?.Workspace?.RepoUrl))
+        {
+            try
+            {
+                return RepoReference.Parse(context.Workspace.RepoUrl).IdentityKey;
+            }
+            catch (ArgumentException)
+            {
+            }
+        }
+
+        return null;
     }
 
     private static ToolResult BuildError(string callId, Exception ex)
