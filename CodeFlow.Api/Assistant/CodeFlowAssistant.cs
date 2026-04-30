@@ -136,18 +136,27 @@ public sealed class CodeFlowAssistant(
         }
 
         // Merge the built-in IAssistantTool registry with adapters for the assigned agent role's
-        // host + MCP grants (if any). Demo policy still wins — if NoTools is in effect the merge
-        // is filtered down to nothing.
+        // host + MCP grants (if any). The merge is gated only on a role being assigned — host
+        // tools require a resolved workspace (the factory drops them when null), but MCP tools do
+        // not (the MCP server runs the work), so a workspace creation failure must NOT suppress
+        // MCP grants too. Demo policy still wins — if NoTools is in effect the merge is filtered
+        // down to nothing downstream.
         var dispatcher = toolDispatcher;
-        if (config.AssignedAgentRoleId is { } roleId && roleId > 0 && resolvedWorkspace is { } workspace)
+        if (config.AssignedAgentRoleId is { } roleId && roleId > 0)
         {
             try
             {
                 var resolved = await roleResolution.ResolveByRoleAsync(roleId, cancellationToken);
-                var roleTools = roleToolFactory.Build(workspace.Context, resolved);
+                var roleTools = roleToolFactory.Build(resolvedWorkspace?.Context, resolved);
                 if (roleTools.Count > 0)
                 {
                     dispatcher = MergeDispatcher(toolDispatcher, roleTools);
+                }
+                if (resolved.EnableHostTools && resolvedWorkspace is null)
+                {
+                    logger.LogWarning(
+                        "Agent role {RoleId} grants host tools, but no workspace was resolved for assistant conversation {ConversationId}. MCP grants (if any) are still active; host tools are unavailable for this turn.",
+                        roleId, conversationId);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

@@ -115,6 +115,7 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IAssistantTool, FindWorkflowsUsingAgentTool>();
         services.AddScoped<IAssistantTool, SearchPromptsTool>();
         services.AddScoped<IAssistantTool, ListAgentRolesTool>();
+        services.AddScoped<IAssistantTool, GetAgentRoleTool>();
 
         // HAA-5: trace introspection tools.
         services.AddScoped<IAssistantTool, ListTracesTool>();
