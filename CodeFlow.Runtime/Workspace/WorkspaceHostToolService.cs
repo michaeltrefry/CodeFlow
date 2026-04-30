@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -54,23 +55,37 @@ public sealed class WorkspaceHostToolService
         var commands = WorkspacePatchDocument.Parse(patchText);
         var changedFiles = new List<string>();
 
-        foreach (var command in commands.Commands)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            switch (command)
+            foreach (var command in commands.Commands)
             {
-                case AddFilePatchCommand add:
-                    changedFiles.Add(ApplyAdd(workspace.RootPath, add));
-                    break;
-                case DeleteFilePatchCommand delete:
-                    changedFiles.Add(ApplyDelete(workspace.RootPath, delete));
-                    break;
-                case UpdateFilePatchCommand update:
-                    changedFiles.AddRange(ApplyUpdate(workspace.RootPath, update));
-                    break;
-                default:
-                    throw new InvalidOperationException($"Unsupported patch command '{command.GetType().Name}'.");
+                cancellationToken.ThrowIfCancellationRequested();
+                switch (command)
+                {
+                    case AddFilePatchCommand add:
+                        changedFiles.Add(ApplyAdd(workspace.RootPath, add, options));
+                        break;
+                    case DeleteFilePatchCommand delete:
+                        changedFiles.Add(ApplyDelete(workspace.RootPath, delete, options));
+                        break;
+                    case UpdateFilePatchCommand update:
+                        changedFiles.AddRange(ApplyUpdate(workspace.RootPath, update, options));
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unsupported patch command '{command.GetType().Name}'.");
+                }
             }
+        }
+        catch (WorkspaceMutationRefusal refusal)
+        {
+            return RefusalResult(toolCall.Id, refusal);
+        }
+        catch (PathConfinementException ex)
+        {
+            return RefusalResult(toolCall.Id, new WorkspaceMutationRefusal(
+                code: "path-confinement",
+                reason: ex.Message,
+                path: null));
         }
 
         await Task.CompletedTask;
@@ -97,6 +112,31 @@ public sealed class WorkspaceHostToolService
         var workspace = RequireWorkspace(context);
         var command = GetRequiredString(toolCall.Arguments, "command");
         var args = GetOptionalStringArray(toolCall.Arguments, "args");
+
+        if (!CommandIsAllowed(command, options.CommandAllowlist))
+        {
+            var allowedNames = options.CommandAllowlist is null
+                ? Array.Empty<string>()
+                : options.CommandAllowlist.Where(static name => !string.IsNullOrWhiteSpace(name)).ToArray();
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["ok"] = false,
+                    ["refusal"] = new JsonObject
+                    {
+                        ["code"] = "command-allowlist",
+                        ["reason"] = $"Command '{command}' is not in the workspace command allowlist.",
+                        ["axis"] = "command-allowlist",
+                        ["command"] = command,
+                        ["allowed"] = new JsonArray(allowedNames
+                            .Select(static name => (JsonNode?)JsonValue.Create(name))
+                            .ToArray())
+                    }
+                }.ToJsonString(),
+                IsError: true);
+        }
+
         var workingDirectory = GetOptionalString(toolCall.Arguments, "workingDirectory");
         var timeoutSeconds = GetOptionalPositiveInt(toolCall.Arguments, "timeoutSeconds");
         var effectiveTimeout = TimeSpan.FromSeconds(Math.Min(
@@ -131,12 +171,17 @@ public sealed class WorkspaceHostToolService
             IsError: result.ExitCode != 0 || result.TimedOut);
     }
 
-    private static string ApplyAdd(string workspaceRoot, AddFilePatchCommand command)
+    private static string ApplyAdd(string workspaceRoot, AddFilePatchCommand command, WorkspaceOptions options)
     {
         var resolvedPath = PathConfinement.Resolve(workspaceRoot, command.Path);
+        RefuseIfSymlinkChain(workspaceRoot, command.Path, options);
+
         if (File.Exists(resolvedPath) || Directory.Exists(resolvedPath))
         {
-            throw new InvalidOperationException($"Cannot add '{command.Path}' because it already exists.");
+            throw new WorkspaceMutationRefusal(
+                code: "destination-exists",
+                reason: $"Cannot add '{command.Path}' because it already exists.",
+                path: command.Path);
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(resolvedPath)!);
@@ -144,28 +189,47 @@ public sealed class WorkspaceHostToolService
         return command.Path;
     }
 
-    private static string ApplyDelete(string workspaceRoot, DeleteFilePatchCommand command)
+    private static string ApplyDelete(string workspaceRoot, DeleteFilePatchCommand command, WorkspaceOptions options)
     {
         var resolvedPath = PathConfinement.Resolve(workspaceRoot, command.Path);
+        RefuseIfSymlinkChain(workspaceRoot, command.Path, options);
+
         if (!File.Exists(resolvedPath))
         {
-            throw new InvalidOperationException($"Cannot delete '{command.Path}' because it does not exist.");
+            throw new WorkspaceMutationRefusal(
+                code: "source-missing",
+                reason: $"Cannot delete '{command.Path}' because it does not exist.",
+                path: command.Path);
         }
+
+        VerifyPreimage(resolvedPath, command.Path, command.PreimageSha256);
 
         File.Delete(resolvedPath);
         return command.Path;
     }
 
-    private static IReadOnlyList<string> ApplyUpdate(string workspaceRoot, UpdateFilePatchCommand command)
+    private static IReadOnlyList<string> ApplyUpdate(string workspaceRoot, UpdateFilePatchCommand command, WorkspaceOptions options)
     {
         var sourcePath = PathConfinement.Resolve(workspaceRoot, command.Path);
+        RefuseIfSymlinkChain(workspaceRoot, command.Path, options);
+
         if (!File.Exists(sourcePath))
         {
-            throw new InvalidOperationException($"Cannot update '{command.Path}' because it does not exist.");
+            throw new WorkspaceMutationRefusal(
+                code: "source-missing",
+                reason: $"Cannot update '{command.Path}' because it does not exist.",
+                path: command.Path);
         }
+
+        VerifyPreimage(sourcePath, command.Path, command.PreimageSha256);
 
         var destinationRelativePath = command.MoveToPath ?? command.Path;
         var destinationPath = PathConfinement.Resolve(workspaceRoot, destinationRelativePath);
+        if (!string.Equals(destinationRelativePath, command.Path, StringComparison.Ordinal))
+        {
+            RefuseIfSymlinkChain(workspaceRoot, destinationRelativePath, options);
+        }
+
         var originalText = File.ReadAllText(sourcePath);
         var newline = DetectNewline(originalText);
         var hadTrailingNewline = HasTrailingNewline(originalText);
@@ -177,8 +241,10 @@ public sealed class WorkspaceHostToolService
         {
             if (File.Exists(destinationPath))
             {
-                throw new InvalidOperationException(
-                    $"Cannot move '{command.Path}' to '{destinationRelativePath}' because the destination already exists.");
+                throw new WorkspaceMutationRefusal(
+                    code: "destination-exists",
+                    reason: $"Cannot move '{command.Path}' to '{destinationRelativePath}' because the destination already exists.",
+                    path: destinationRelativePath);
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
@@ -193,6 +259,152 @@ public sealed class WorkspaceHostToolService
         return string.Equals(command.Path, destinationRelativePath, StringComparison.Ordinal)
             ? [destinationRelativePath]
             : [command.Path, destinationRelativePath];
+    }
+
+    private static void RefuseIfSymlinkChain(string workspaceRoot, string relativePath, WorkspaceOptions options)
+    {
+        if (options.SymlinkPolicy == WorkspaceSymlinkPolicy.AllowAll)
+        {
+            return;
+        }
+
+        if (PathConfinement.ContainsSymlink(workspaceRoot, relativePath))
+        {
+            throw new WorkspaceMutationRefusal(
+                code: "symlink-refused",
+                reason: $"Path '{relativePath}' resolves through a symlink; symlink mutation is refused by workspace policy.",
+                path: relativePath);
+        }
+    }
+
+    private static void VerifyPreimage(string filePath, string declaredRelativePath, string? expectedSha256)
+    {
+        if (expectedSha256 is null)
+        {
+            return;
+        }
+
+        var expected = expectedSha256.Trim().ToLowerInvariant();
+        if (!IsHexSha256(expected))
+        {
+            throw new WorkspaceMutationRefusal(
+                code: "preimage-malformed",
+                reason: $"Preimage SHA-256 for '{declaredRelativePath}' must be a 64-character hex string.",
+                path: declaredRelativePath);
+        }
+
+        using var stream = File.OpenRead(filePath);
+        var hashBytes = SHA256.HashData(stream);
+        var actual = Convert.ToHexString(hashBytes).ToLowerInvariant();
+
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new WorkspaceMutationRefusal(
+                code: "preimage-mismatch",
+                reason: $"Preimage SHA-256 for '{declaredRelativePath}' does not match the file on disk.",
+                path: declaredRelativePath,
+                detail: new JsonObject
+                {
+                    ["expected"] = expected,
+                    ["actual"] = actual
+                });
+        }
+    }
+
+    private static bool CommandIsAllowed(string command, IList<string>? allowlist)
+    {
+        if (allowlist is null)
+        {
+            return true;
+        }
+
+        var trimmed = allowlist.Where(static name => !string.IsNullOrWhiteSpace(name)).ToArray();
+        if (trimmed.Length == 0)
+        {
+            return true;
+        }
+
+        var requested = NormalizeCommandForMatch(command);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        foreach (var allowed in trimmed)
+        {
+            if (string.Equals(NormalizeCommandForMatch(allowed), requested, comparison))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string NormalizeCommandForMatch(string command)
+    {
+        var trimmed = command.Trim();
+        var basename = Path.GetFileName(trimmed);
+        if (string.IsNullOrEmpty(basename))
+        {
+            return trimmed;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var ext = Path.GetExtension(basename);
+            if (!string.IsNullOrEmpty(ext))
+            {
+                return basename[..^ext.Length];
+            }
+        }
+
+        return basename;
+    }
+
+    private static bool IsHexSha256(string value)
+    {
+        if (value.Length != 64)
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            var isHex = ch is >= '0' and <= '9' or >= 'a' and <= 'f';
+            if (!isHex)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static ToolResult RefusalResult(string callId, WorkspaceMutationRefusal refusal)
+    {
+        var refusalJson = new JsonObject
+        {
+            ["code"] = refusal.Code,
+            ["reason"] = refusal.Reason,
+            ["axis"] = "workspace-mutation"
+        };
+        if (refusal.Path is not null)
+        {
+            refusalJson["path"] = refusal.Path;
+        }
+        if (refusal.Detail is not null)
+        {
+            refusalJson["detail"] = refusal.Detail.DeepClone();
+        }
+
+        return new ToolResult(
+            callId,
+            new JsonObject
+            {
+                ["ok"] = false,
+                ["refusal"] = refusalJson
+            }.ToJsonString(),
+            IsError: true);
     }
 
     private static IReadOnlyList<string> ApplyLineChanges(
@@ -254,14 +466,18 @@ public sealed class WorkspaceHostToolService
     {
         if (index >= sourceLines.Count)
         {
-            throw new InvalidOperationException(
-                $"Patch for '{filePath}' references line '{expected}' past the end of the file.");
+            throw new WorkspaceMutationRefusal(
+                code: "context-mismatch",
+                reason: $"Patch for '{filePath}' references line '{expected}' past the end of the file.",
+                path: filePath);
         }
 
         if (!string.Equals(sourceLines[index], expected, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException(
-                $"Patch context mismatch for '{filePath}'. Expected '{expected}' but found '{sourceLines[index]}'.");
+            throw new WorkspaceMutationRefusal(
+                code: "context-mismatch",
+                reason: $"Patch context mismatch for '{filePath}'. Expected '{expected}' but found '{sourceLines[index]}'.",
+                path: filePath);
         }
     }
 
@@ -634,7 +850,9 @@ internal sealed class WorkspacePatchDocument
     {
         var path = lines[index]["*** Delete File: ".Length..];
         index += 1;
-        return new DeleteFilePatchCommand(path);
+
+        var preimage = TryReadPreimageLine(lines, ref index);
+        return new DeleteFilePatchCommand(path, preimage);
     }
 
     private static UpdateFilePatchCommand ParseUpdate(string[] lines, ref int index)
@@ -648,6 +866,8 @@ internal sealed class WorkspacePatchDocument
             moveTo = lines[index]["*** Move to: ".Length..];
             index += 1;
         }
+
+        var preimage = TryReadPreimageLine(lines, ref index);
 
         var changeLines = new List<string>();
         while (index < lines.Length && !lines[index].StartsWith("*** ", StringComparison.Ordinal))
@@ -669,7 +889,20 @@ internal sealed class WorkspacePatchDocument
             index += 1;
         }
 
-        return new UpdateFilePatchCommand(path, moveTo, changeLines);
+        return new UpdateFilePatchCommand(path, moveTo, changeLines, preimage);
+    }
+
+    private static string? TryReadPreimageLine(string[] lines, ref int index)
+    {
+        const string Header = "*** Preimage SHA-256: ";
+        if (index >= lines.Length || !lines[index].StartsWith(Header, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var value = lines[index][Header.Length..].Trim();
+        index += 1;
+        return value;
     }
 }
 
@@ -677,9 +910,27 @@ internal abstract record WorkspacePatchCommand;
 
 internal sealed record AddFilePatchCommand(string Path, IReadOnlyList<string> Lines) : WorkspacePatchCommand;
 
-internal sealed record DeleteFilePatchCommand(string Path) : WorkspacePatchCommand;
+internal sealed record DeleteFilePatchCommand(string Path, string? PreimageSha256) : WorkspacePatchCommand;
 
 internal sealed record UpdateFilePatchCommand(
     string Path,
     string? MoveToPath,
-    IReadOnlyList<string> ChangeLines) : WorkspacePatchCommand;
+    IReadOnlyList<string> ChangeLines,
+    string? PreimageSha256) : WorkspacePatchCommand;
+
+internal sealed class WorkspaceMutationRefusal : Exception
+{
+    public WorkspaceMutationRefusal(string code, string reason, string? path = null, JsonObject? detail = null)
+        : base(reason)
+    {
+        Code = code;
+        Reason = reason;
+        Path = path;
+        Detail = detail;
+    }
+
+    public string Code { get; }
+    public string Reason { get; }
+    public string? Path { get; }
+    public JsonObject? Detail { get; }
+}

@@ -54,7 +54,27 @@ public sealed class WorkspaceOptions
 
     public TimeSpan GitCommandTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// Allowlist of process names <c>run_command</c> may invoke. <c>null</c> or empty means no
+    /// allowlist enforcement (back-compat default). Names are matched case-insensitively against
+    /// the <c>command</c> argument's basename without extension on Windows, and exactly on Unix.
+    /// </summary>
+    public IList<string>? CommandAllowlist { get; set; }
+
+    /// <summary>
+    /// Policy for symlink targets encountered during workspace mutation
+    /// (<c>apply_patch</c>'s Add/Update/Delete). <see cref="WorkspaceSymlinkPolicy.RefuseForMutation"/>
+    /// matches Protostar's behavior and is the recommended default; reads remain unaffected.
+    /// </summary>
+    public WorkspaceSymlinkPolicy SymlinkPolicy { get; set; } = WorkspaceSymlinkPolicy.RefuseForMutation;
+
     public string CachePath => Path.Combine(Root, CacheDirectoryName);
 
     public string WorkPath => Path.Combine(Root, WorkDirectoryName);
+}
+
+public enum WorkspaceSymlinkPolicy
+{
+    AllowAll = 0,
+    RefuseForMutation = 1
 }
