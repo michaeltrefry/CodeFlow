@@ -1,5 +1,6 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectionStrategy, Component, Input, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, Input, OnInit, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { catchError, finalize, of } from 'rxjs';
 import {
@@ -235,6 +236,7 @@ export class HomeRailComponent implements OnInit {
   private readonly assistantApi = inject(AssistantApi);
   private readonly tracesApi = inject(TracesApi);
   private readonly workflowsApi = inject(WorkflowsApi);
+  private readonly destroyRef = inject(DestroyRef);
 
   // Signals: each section tracks its own loading + error so a single fetch failure doesn't
   // collapse the whole rail. Empty-state branches read from the loaded data signals.
@@ -306,6 +308,7 @@ export class HomeRailComponent implements OnInit {
           return of({ conversations: [] });
         }),
         finalize(() => this.conversationsLoading.set(false)),
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(response => this.conversations.set(response.conversations));
   }
@@ -315,6 +318,7 @@ export class HomeRailComponent implements OnInit {
       .getTokenUsageSummary()
       .pipe(
         catchError(() => of(null as AssistantTokenUsageSummary | null)),
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(summary => this.tokenSummary.set(summary));
   }
@@ -330,6 +334,7 @@ export class HomeRailComponent implements OnInit {
           return of([] as TraceSummary[]);
         }),
         finalize(() => this.tracesLoading.set(false)),
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(traces => this.recentTracesData.set(traces));
   }
@@ -345,6 +350,7 @@ export class HomeRailComponent implements OnInit {
           return of([] as RecentWorkflow[]);
         }),
         finalize(() => this.workflowsLoading.set(false)),
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(workflows => this.recentWorkflowsData.set(workflows));
   }

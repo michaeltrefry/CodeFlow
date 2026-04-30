@@ -1,5 +1,6 @@
-import { Component, computed, inject, input, signal, OnInit } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input, signal, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
 import { AgentsApi } from '../../core/agents.api';
@@ -484,52 +485,53 @@ export class AgentDetailComponent implements OnInit {
   private readonly hostToolsApi = inject(HostToolsApi);
   private readonly mcpApi = inject(McpServersApi);
   private readonly router = inject(Router);
-  readonly key = input.required<string>();
+  private readonly destroyRef = inject(DestroyRef);
+  protected readonly key = input.required<string>();
 
-  readonly versions = signal<AgentVersionSummary[]>([]);
-  readonly viewing = signal<AgentVersion | null>(null);
-  readonly retired = signal(false);
-  readonly retiring = signal(false);
-  readonly retireError = signal<string | null>(null);
+  protected readonly versions = signal<AgentVersionSummary[]>([]);
+  protected readonly viewing = signal<AgentVersion | null>(null);
+  protected readonly retired = signal(false);
+  protected readonly retiring = signal(false);
+  protected readonly retireError = signal<string | null>(null);
 
-  readonly rolesLoading = signal(false);
-  readonly allRoles = signal<AgentRole[]>([]);
-  readonly assignedRoles = signal<AgentRole[]>([]);
-  readonly assignmentsSaving = signal(false);
-  readonly assignError = signal<string | null>(null);
+  protected readonly rolesLoading = signal(false);
+  protected readonly allRoles = signal<AgentRole[]>([]);
+  protected readonly assignedRoles = signal<AgentRole[]>([]);
+  protected readonly assignmentsSaving = signal(false);
+  protected readonly assignError = signal<string | null>(null);
 
-  readonly hostTools = signal<HostTool[]>([]);
-  readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
-  readonly grantsByRole = signal<Record<number, AgentRoleGrant[]>>({});
+  protected readonly hostTools = signal<HostTool[]>([]);
+  protected readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
+  protected readonly grantsByRole = signal<Record<number, AgentRoleGrant[]>>({});
 
-  readonly tab = signal<DetailTab>('identity');
-  readonly expandedOutputs = signal<Set<number>>(new Set<number>());
-  readonly jsonCopied = signal(false);
+  protected readonly tab = signal<DetailTab>('identity');
+  protected readonly expandedOutputs = signal<Set<number>>(new Set<number>());
+  protected readonly jsonCopied = signal(false);
 
-  readonly config = computed<AgentConfig | null>(() => this.viewing()?.config ?? null);
+  protected readonly config = computed<AgentConfig | null>(() => this.viewing()?.config ?? null);
 
-  readonly type = computed<'agent' | 'hitl'>(() => {
+  protected readonly type = computed<'agent' | 'hitl'>(() => {
     const fromVersion = this.viewing()?.type;
     if (fromVersion === 'hitl') return 'hitl';
     const fromConfig = this.config()?.['type'];
     return fromConfig === 'hitl' ? 'hitl' : 'agent';
   });
 
-  readonly displayName = computed<string>(() => (this.config()?.['name'] as string) ?? '');
-  readonly description = computed<string>(() => (this.config()?.['description'] as string) ?? '');
-  readonly provider = computed<LlmProviderKey | ''>(() => this.config()?.provider ?? '');
-  readonly providerLabel = computed<string>(() => {
+  protected readonly displayName = computed<string>(() => (this.config()?.['name'] as string) ?? '');
+  protected readonly description = computed<string>(() => (this.config()?.['description'] as string) ?? '');
+  protected readonly provider = computed<LlmProviderKey | ''>(() => this.config()?.provider ?? '');
+  protected readonly providerLabel = computed<string>(() => {
     const provider = this.provider();
     return provider ? LLM_PROVIDER_DISPLAY_NAMES[provider] : '';
   });
-  readonly model = computed<string>(() => (this.config()?.['model'] as string) ?? '');
-  readonly temperature = computed<number | undefined>(() => this.config()?.['temperature'] as number | undefined);
-  readonly maxTokens = computed<number | undefined>(() => this.config()?.['maxTokens'] as number | undefined);
-  readonly systemPrompt = computed<string>(() => (this.config()?.['systemPrompt'] as string) ?? '');
-  readonly promptTemplate = computed<string>(() => (this.config()?.['promptTemplate'] as string) ?? '');
-  readonly outputTemplate = computed<string>(() => (this.config()?.['outputTemplate'] as string) ?? '');
+  protected readonly model = computed<string>(() => (this.config()?.['model'] as string) ?? '');
+  protected readonly temperature = computed<number | undefined>(() => this.config()?.['temperature'] as number | undefined);
+  protected readonly maxTokens = computed<number | undefined>(() => this.config()?.['maxTokens'] as number | undefined);
+  protected readonly systemPrompt = computed<string>(() => (this.config()?.['systemPrompt'] as string) ?? '');
+  protected readonly promptTemplate = computed<string>(() => (this.config()?.['promptTemplate'] as string) ?? '');
+  protected readonly outputTemplate = computed<string>(() => (this.config()?.['outputTemplate'] as string) ?? '');
 
-  readonly outputs = computed<ReadOnlyOutputRow[]>(() => {
+  protected readonly outputs = computed<ReadOnlyOutputRow[]>(() => {
     const cfg = this.config();
     if (!cfg) return [];
     const templates = (cfg['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
@@ -545,7 +547,7 @@ export class AgentDetailComponent implements OnInit {
     return [];
   });
 
-  readonly fallbackTemplates = computed<ReadOnlyFallbackRow[]>(() => {
+  protected readonly fallbackTemplates = computed<ReadOnlyFallbackRow[]>(() => {
     const cfg = this.config();
     if (!cfg) return [];
     const templates = (cfg['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
@@ -558,13 +560,13 @@ export class AgentDetailComponent implements OnInit {
       .map(([port, template]) => ({ port, template: String(template ?? '') }));
   });
 
-  readonly configJson = computed<string>(() => {
+  protected readonly configJson = computed<string>(() => {
     const cfg = this.config();
     if (!cfg) return '';
     try { return JSON.stringify(cfg, null, 2); } catch { return ''; }
   });
 
-  readonly tabs = computed<TabItem[]>(() => {
+  protected readonly tabs = computed<TabItem[]>(() => {
     const items: TabItem[] = [
       { value: 'identity', label: 'Identity' },
       { value: 'prompt', label: this.type() === 'hitl' ? 'Output template' : 'Prompt & output' },
@@ -578,7 +580,7 @@ export class AgentDetailComponent implements OnInit {
     return items;
   });
 
-  readonly effectiveGrants = computed<AgentRoleGrant[]>(() => {
+  protected readonly effectiveGrants = computed<AgentRoleGrant[]>(() => {
     const grants = this.grantsByRole();
     const seen = new Set<string>();
     const out: AgentRoleGrant[] = [];
@@ -594,7 +596,7 @@ export class AgentDetailComponent implements OnInit {
     return out;
   });
 
-  readonly grantedHostTools = computed<HostTool[]>(() => {
+  protected readonly grantedHostTools = computed<HostTool[]>(() => {
     const granted = new Set(
       this.effectiveGrants()
         .filter(g => g.category === 'Host')
@@ -603,7 +605,7 @@ export class AgentDetailComponent implements OnInit {
     return this.hostTools().filter(t => granted.has(t.name.toLowerCase()));
   });
 
-  readonly grantedMcpCatalogs = computed<McpServerToolCatalog[]>(() => {
+  protected readonly grantedMcpCatalogs = computed<McpServerToolCatalog[]>(() => {
     const grantedByServer = new Map<string, Set<string>>();
     for (const grant of this.effectiveGrants()) {
       if (grant.category !== 'Mcp') continue;
@@ -631,7 +633,7 @@ export class AgentDetailComponent implements OnInit {
 
   ngOnInit(): void {
     const key = this.key();
-    this.api.versions(key).subscribe({
+    this.api.versions(key).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: versions => {
         this.versions.set(versions);
         if (versions.length) {
@@ -650,7 +652,7 @@ export class AgentDetailComponent implements OnInit {
       assignedRoles: this.rolesApi.getRolesForAgent(agentKey),
       hostTools: this.hostToolsApi.list(),
       mcpServers: this.mcpApi.list(),
-    }).subscribe({
+    }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: ({ allRoles, assignedRoles, hostTools, mcpServers }) => {
         this.allRoles.set(allRoles.filter(r => !r.isArchived));
         this.assignedRoles.set(assignedRoles);
@@ -668,12 +670,14 @@ export class AgentDetailComponent implements OnInit {
       this.mcpCatalogs.set([]);
       return;
     }
-    forkJoin(servers.map(s => this.mcpApi.getTools(s.id))).subscribe(toolLists => {
-      this.mcpCatalogs.set(servers.map<McpServerToolCatalog>((server, i) => ({
-        server,
-        tools: toolLists[i],
-      })));
-    });
+    forkJoin(servers.map(s => this.mcpApi.getTools(s.id)))
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(toolLists => {
+        this.mcpCatalogs.set(servers.map<McpServerToolCatalog>((server, i) => ({
+          server,
+          tools: toolLists[i],
+        })));
+      });
   }
 
   private loadGrantsForRoles(roles: AgentRole[]): void {
@@ -681,11 +685,13 @@ export class AgentDetailComponent implements OnInit {
       this.grantsByRole.set({});
       return;
     }
-    forkJoin(roles.map(r => this.rolesApi.getGrants(r.id))).subscribe(lists => {
-      const map: Record<number, AgentRoleGrant[]> = {};
-      roles.forEach((r, i) => { map[r.id] = lists[i]; });
-      this.grantsByRole.set(map);
-    });
+    forkJoin(roles.map(r => this.rolesApi.getGrants(r.id)))
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(lists => {
+        const map: Record<number, AgentRoleGrant[]> = {};
+        roles.forEach((r, i) => { map[r.id] = lists[i]; });
+        this.grantsByRole.set(map);
+      });
   }
 
   isAssigned(roleId: number): boolean {
@@ -701,7 +707,7 @@ export class AgentDetailComponent implements OnInit {
 
     this.assignmentsSaving.set(true);
     this.assignError.set(null);
-    this.rolesApi.replaceAssignments(this.key(), nextIds).subscribe({
+    this.rolesApi.replaceAssignments(this.key(), nextIds).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: next => {
         this.assignedRoles.set(next);
         this.loadGrantsForRoles(next);
@@ -715,7 +721,7 @@ export class AgentDetailComponent implements OnInit {
   }
 
   select(version: number): void {
-    this.api.getVersion(this.key(), version).subscribe({
+    this.api.getVersion(this.key(), version).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: v => {
         this.viewing.set(v);
         this.retired.set(v.isRetired);
@@ -771,7 +777,7 @@ export class AgentDetailComponent implements OnInit {
     }
     this.retiring.set(true);
     this.retireError.set(null);
-    this.api.retire(key).subscribe({
+    this.api.retire(key).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: () => {
         this.retiring.set(false);
         this.router.navigate(['/agents']);

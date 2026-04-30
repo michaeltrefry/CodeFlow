@@ -74,7 +74,10 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
   imports: [RouterOutlet, RouterLink, RouterLinkActive, IconComponent, ChipComponent, TweaksPanelComponent, AssistantSidebarComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="shell" [attr.data-nav]="theme.navCollapsed() ? 'collapsed' : 'expanded'">
+    @if (publicSurface()) {
+      <router-outlet />
+    } @else {
+      <div class="shell" [attr.data-nav]="theme.navCollapsed() ? 'collapsed' : 'expanded'">
       <aside class="nav">
         <div class="nav-brand">
           <cf-icon class="brand-mark" name="codeflowApp" [sizeOverride]="22"></cf-icon>
@@ -148,7 +151,8 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
           <cf-assistant-sidebar />
         </div>
       </div>
-    </div>
+      </div>
+    }
 
     @if (tweaksOpen()) {
       <cf-tweaks-panel (closeRequest)="tweaksOpen.set(false)"></cf-tweaks-panel>
@@ -178,6 +182,8 @@ export class AppShellComponent {
     const match = TITLE_FOR_ROUTE.find(x => x.match(u));
     return match?.title ?? 'Home';
   });
+
+  readonly publicSurface = computed(() => !this.auth.loading() && this.auth.currentUser() === null);
 
   readonly userName = computed(() => {
     const u = this.auth.currentUser();

@@ -1,4 +1,5 @@
-import { Component, inject, input, signal, OnInit, OnDestroy } from '@angular/core';
+import { Component, DestroyRef, inject, input, signal, OnInit, OnDestroy } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -292,22 +293,23 @@ const RESERVED_VARIABLES = new Set(['input']);
 export class AgentTestComponent implements OnInit, OnDestroy {
   private readonly auth = inject(AuthService);
   private readonly agentsApi = inject(AgentsApi);
+  private readonly destroyRef = inject(DestroyRef);
 
-  readonly key = input.required<string>();
+  protected readonly key = input.required<string>();
 
-  readonly input = signal('');
-  readonly agentVersion = signal<number | null>(null);
+  protected readonly input = signal('');
+  protected readonly agentVersion = signal<number | null>(null);
 
-  readonly variables = signal<VariableEntry[]>([]);
-  readonly customCount = signal(0);
-  readonly configError = signal<string | null>(null);
+  protected readonly variables = signal<VariableEntry[]>([]);
+  protected readonly customCount = signal(0);
+  protected readonly configError = signal<string | null>(null);
 
-  readonly running = signal(false);
-  readonly log = signal<LogEntry[]>([]);
-  readonly cumulativeUsage = signal<AgentTestTokenUsage | null>(null);
-  readonly toolCallCount = signal(0);
-  readonly finalOutput = signal<string | null>(null);
-  readonly finalDecision = signal<string | null>(null);
+  protected readonly running = signal(false);
+  protected readonly log = signal<LogEntry[]>([]);
+  protected readonly cumulativeUsage = signal<AgentTestTokenUsage | null>(null);
+  protected readonly toolCallCount = signal(0);
+  protected readonly finalOutput = signal<string | null>(null);
+  protected readonly finalDecision = signal<string | null>(null);
 
   private nextEntryId = 0;
   private streamSub?: Subscription;
@@ -335,7 +337,7 @@ export class AgentTestComponent implements OnInit, OnDestroy {
       ? this.agentsApi.getVersion(this.key(), version)
       : this.agentsApi.getLatest(this.key());
 
-    request$.subscribe({
+    request$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: agent => this.applyDetectedVariables(agent.config),
       error: err => this.configError.set(err?.message ?? 'Failed to load agent config')
     });
