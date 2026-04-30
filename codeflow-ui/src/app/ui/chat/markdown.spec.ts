@@ -1,4 +1,4 @@
-import { renderMarkdown } from './markdown';
+import { extractWorkflowPackagesFromMarkdown, renderMarkdown } from './markdown';
 
 describe('renderMarkdown', () => {
   it('renders common markdown with streaming-friendly line breaks', () => {
@@ -58,5 +58,26 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('class="cf-workflow-package"');
     expect(html).toContain('language-json');
     expect(html).toContain('{"schemaVersion":');
+  });
+
+  it('extracts valid workflow package blocks for save confirmations', () => {
+    const pkg = {
+      schemaVersion: 'codeflow.workflow-package.v1',
+      entryPoint: { key: 'shortcut-pre-reqs', version: 1 },
+      workflows: [{ key: 'shortcut-pre-reqs', name: 'Shortcut Pre-Reqs', nodes: [], edges: [] }],
+      agents: [],
+    };
+
+    const packages = extractWorkflowPackagesFromMarkdown([
+      'Ready to save:',
+      '```cf-workflow-package',
+      JSON.stringify(pkg),
+      '```',
+      '```json',
+      JSON.stringify({ schemaVersion: 'codeflow.workflow-package.v1' }),
+      '```',
+    ].join('\n'));
+
+    expect(packages).toEqual([pkg]);
   });
 });

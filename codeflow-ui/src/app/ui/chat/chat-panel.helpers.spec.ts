@@ -1,4 +1,5 @@
 import {
+  buildDraftSaveConfirmationView,
   buildReplayConfirmationView,
   buildRunConfirmationView,
   buildSaveConfirmationView,
@@ -43,6 +44,31 @@ describe('chat panel confirmation helpers', () => {
     expect(buildSaveConfirmationView('not json', pkg)).toBeUndefined();
     expect(buildSaveConfirmationView(JSON.stringify({ status: 'error' }), pkg)).toBeUndefined();
     expect(buildSaveConfirmationView(JSON.stringify({ status: 'preview_ok' }), undefined)).toBeUndefined();
+  });
+
+  it('builds a save confirmation directly from a drafted workflow package', () => {
+    const confirmation = buildDraftSaveConfirmationView({
+      schemaVersion: 'codeflow.workflow-package.v1',
+      entryPoint: { key: 'shortcut-pre-reqs', version: 1 },
+      workflows: [
+        {
+          key: 'shortcut-pre-reqs',
+          version: 1,
+          name: 'Shortcut Pre-Reqs',
+          nodes: [],
+          edges: [],
+        },
+      ],
+      agents: [],
+    });
+
+    expect(confirmation).toEqual({
+      kind: 'save_workflow_package',
+      prompt: 'Save Shortcut Pre-Reqs (shortcut-pre-reqs v1) to the library?',
+      confirmLabel: 'Save',
+      cancelLabel: 'Cancel',
+      state: 'idle',
+    });
   });
 
   it('builds a run confirmation with workflow version and resolved input count', () => {

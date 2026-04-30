@@ -96,3 +96,47 @@ export function renderMarkdown(source: string): string {
     ADD_ATTR: ['rel', 'target'],
   });
 }
+
+/**
+ * Extract complete workflow packages the assistant emitted as `cf-workflow-package` fenced
+ * blocks. This is intentionally separate from rendering so the chat panel can offer a Save
+ * confirmation even when the model forgot to call `save_workflow_package` after drafting JSON.
+ */
+export function extractWorkflowPackagesFromMarkdown(source: string): unknown[] {
+  if (!source) {
+    return [];
+  }
+
+  const packages: unknown[] = [];
+  const seen = new Set<string>();
+  const visit = (tokens: Array<{ type?: string; lang?: string; text?: string; tokens?: unknown[] }>): void => {
+    for (const token of tokens) {
+      if (token.type === 'code') {
+        const lang = (token.lang ?? '').trim().split(/\s+/)[0];
+        if (lang !== WORKFLOW_PACKAGE_LANG) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(token.text ?? '');
+          if (summarizeWorkflowPackage(parsed)) {
+            const key = JSON.stringify(parsed);
+            if (!seen.has(key)) {
+              seen.add(key);
+              packages.push(parsed);
+            }
+          }
+        } catch {
+          // Ignore partial or malformed blocks; markdown rendering already shows them as code.
+        }
+      }
+
+      if (Array.isArray(token.tokens)) {
+        visit(token.tokens as Array<{ type?: string; lang?: string; text?: string; tokens?: unknown[] }>);
+      }
+    }
+  };
+
+  visit(marked.lexer(source) as Array<{ type?: string; lang?: string; text?: string; tokens?: unknown[] }>);
+  return packages;
+}
