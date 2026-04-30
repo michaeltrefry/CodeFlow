@@ -58,7 +58,6 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
                  *ngFor="let output of data.outputs | keyvalueimpure: sortByIndex"
                  [class.implicit-failed]="output.key === 'Failed'"
                  [class.wired]="output.key === 'Failed' && data.failedHasConnection"
-                 [hidden]="output.key === 'Failed' && !data.failedHasConnection && !data.showImplicitFailed()"
                  [attr.data-testid]="'output-' + output.key">
               <span class="wf-port-label output">{{ output.value?.label }}</span>
               <div class="wf-port-wrap"

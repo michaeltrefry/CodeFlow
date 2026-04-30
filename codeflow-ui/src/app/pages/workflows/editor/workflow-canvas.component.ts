@@ -222,8 +222,28 @@ function defaultStartInput(): WorkflowInput {
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
     <div class="editor-layout">
-      <main class="canvas-wrapper">
+      <main class="canvas-wrapper" [class.show-implicit-failed]="showImplicitFailed()">
         <div class="toolbar">
+          <div class="toolbar-actions">
+            <button type="button" cf-button variant="default" size="sm"
+                    [active]="showImplicitFailed()"
+                    (click)="toggleImplicitFailed()"
+                    title="Show implicit Failed port on every node (Shift+F)"
+                    accesskey="f">
+              {{ showImplicitFailed() ? 'Hide failed ports' : 'Show failed ports' }}
+            </button>
+            <button type="button" cf-button variant="default" size="sm"
+                    (click)="historyOpen.set(true)"
+                    [disabled]="!hasExistingKey()"
+                    title="Compare versions of this workflow">
+              History
+            </button>
+            <button type="button" cf-button variant="default" size="sm" (click)="tidy()">Tidy up</button>
+            <button type="button" cf-button variant="default" size="sm" (click)="cancel()">Cancel</button>
+            <button type="button" cf-button variant="primary" size="sm" (click)="save()" [disabled]="saving()">
+              {{ saving() ? 'Saving…' : 'Save version' }}
+            </button>
+          </div>
           <div class="toolbar-fields">
             <label class="tb-field">
               <span class="tb-label">Name</span>
@@ -255,26 +275,6 @@ function defaultStartInput(): WorkflowInput {
                 placeholder="Add tag…"
                 (tagsChange)="workflowTags.set($event)"></cf-tag-input>
             </label>
-          </div>
-          <div class="toolbar-actions">
-            <button type="button" cf-button variant="ghost" size="sm"
-                    [class.active]="showImplicitFailed()"
-                    (click)="toggleImplicitFailed()"
-                    title="Show implicit Failed port on every node (Shift+F)"
-                    accesskey="f">
-              {{ showImplicitFailed() ? 'Hide Failed ports' : 'Show Failed ports' }}
-            </button>
-            <button type="button" cf-button variant="ghost" size="sm"
-                    (click)="historyOpen.set(true)"
-                    [disabled]="!hasExistingKey()"
-                    title="Compare versions of this workflow">
-              History
-            </button>
-            <button type="button" cf-button variant="ghost" size="sm" (click)="tidy()">Tidy up</button>
-            <button type="button" cf-button variant="ghost" size="sm" (click)="cancel()">Cancel</button>
-            <button type="button" cf-button variant="primary" size="sm" (click)="save()" [disabled]="saving()">
-              {{ saving() ? 'Saving…' : 'Save version' }}
-            </button>
           </div>
         </div>
         @if (error()) {
@@ -1256,35 +1256,34 @@ function defaultStartInput(): WorkflowInput {
     }
     .toolbar {
       display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      padding: 0.75rem 1rem;
+      flex-direction: column;
+      gap: 0.6rem;
+      padding: 0.65rem 1rem 0.75rem;
       border-bottom: 1px solid var(--border);
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .toolbar-fields {
-      display: flex;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      flex: 1;
-      min-width: 0;
     }
     .toolbar-actions {
       display: flex;
       gap: 0.4rem;
       align-items: center;
-      padding-bottom: 1px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .toolbar-fields {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      min-width: 0;
     }
     .tb-field {
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
-      min-width: 160px;
+      gap: 0.2rem;
+      min-width: 0;
+      flex: 1 1 110px;
     }
-    .tb-field.tb-narrow { min-width: 110px; max-width: 160px; }
-    .tb-field.tb-tags { flex: 1; min-width: 260px; }
+    .tb-field.tb-narrow { flex: 0 1 100px; min-width: 0; max-width: 110px; }
+    .tb-field.tb-tags { flex: 2 1 180px; min-width: 0; }
     .tb-label {
       font-size: 0.72rem;
       font-weight: 500;
@@ -2275,12 +2274,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     } catch {
       // localStorage may be unavailable (private mode); the toggle still works in-session.
     }
-    // Re-render every node so its `[hidden]` binding picks up the new toggle state.
-    if (this.editor && this.area) {
-      for (const node of this.editor.getNodes() as WorkflowEditorNode[]) {
-        void this.area.update('node', node.id);
-      }
-    }
+    // Visibility is driven by the .show-implicit-failed class on the canvas wrapper (see
+    // globals.scss). Angular re-renders that class binding when the signal flips, so each
+    // node's implicit-Failed row toggles via CSS without needing per-node re-renders here
+    // (which Angular Elements wouldn't honor on a same-reference setInput anyway).
   }
 
   /**

@@ -315,6 +315,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn-lg { height: 36px; font-size: var(--fs-lg); padding: 0 16px; }
 .btn-icon { width: 30px; padding: 0; justify-content: center; }
 
+.btn[data-active="true"] {
+  background: var(--accent-weak);
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+  color: var(--accent-ink);
+}
+
 /* ---------- chip / tag ---------- */
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
@@ -769,6 +775,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .wf-port:hover { transform: scale(1.2); background: var(--_kind); }
 .wf-port-label { color: var(--text-2); font-family: var(--font-mono); font-size: 11px; }
 .wf-port-label.output { color: var(--text-2); }
+
+/* Workflow editor: hide unwired implicit-Failed rows unless the author has toggled
+   "Show failed ports". Wired Failed rows always show. Drives the toggle via a class
+   on the canvas-wrapper because Angular Elements does not re-fire ngOnChanges when
+   a per-node prop changes by reference identity (see toggleImplicitFailed). The
+   selector intentionally skips the node element tag — Rete's Angular plugin mounts
+   each node as a uniquely-named custom element (`node-<uuid>`), so we match by the
+   stable internal class chain instead. */
+.canvas-wrapper:not(.show-implicit-failed) .wf-node-row.output.implicit-failed:not(.wired) {
+  display: none;
+}
 
 .wf-node-foot {
   padding: 7px 12px;
