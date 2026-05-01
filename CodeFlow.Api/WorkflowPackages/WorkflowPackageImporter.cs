@@ -63,7 +63,7 @@ public sealed class WorkflowPackageImporter(
         {
             // RunImportInTransactionAsync rolled back when commit=true encounters validation
             // errors; surface as the same exception type the endpoint already maps to a 400.
-            throw new WorkflowPackageResolutionException(FormatValidationFailure(validationErrors));
+            throw new WorkflowPackageResolutionException(FormatValidationFailure(validationErrors), validationErrors);
         }
 
         return new WorkflowPackageImportApplyResult(preview.EntryPoint, preview.Items, preview.Warnings);
