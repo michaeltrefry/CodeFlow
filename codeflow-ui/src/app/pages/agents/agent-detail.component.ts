@@ -654,7 +654,7 @@ export class AgentDetailComponent implements OnInit {
       mcpServers: this.mcpApi.list(),
     }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: ({ allRoles, assignedRoles, hostTools, mcpServers }) => {
-        this.allRoles.set(allRoles.filter(r => !r.isArchived));
+        this.allRoles.set(allRoles.filter(r => !r.isArchived && !r.isRetired));
         this.assignedRoles.set(assignedRoles);
         this.hostTools.set(hostTools);
         this.loadGrantsForRoles(assignedRoles);

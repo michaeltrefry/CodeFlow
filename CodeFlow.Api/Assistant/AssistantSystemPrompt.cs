@@ -398,6 +398,10 @@ public static class AssistantSystemPrompt
         Workflow-level:
         - Workflow `key` is non-empty, slug-shaped (lowercase, dash-separated). `name` is
           non-empty.
+        - Never reuse retired library items in a new workflow. Do not reference retired
+          workflows as Subflow/ReviewLoop children, retired agents in agent-bearing or swarm
+          nodes, or retired roles in `agentRoleAssignments[]`. Treat retired items as
+          unavailable for new authoring even though old traces may still resolve them.
         - `maxRoundsPerRound` is an integer from 1 to 50. Use 3 unless the user specifies
           another value.
         - `inputs[]`: every entry has a non-empty `key` (unique within the workflow) and a

@@ -74,6 +74,12 @@ public static class WorkflowsEndpoints
         group.MapPut("/{key}", CreateVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
+        group.MapPost("/{key}/retire", RetireWorkflowAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
+        group.MapPost("/retire", RetireWorkflowsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
+
         group.MapPost("/validate-script", ValidateScript)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsWrite);
 
@@ -619,6 +625,12 @@ public static class WorkflowsEndpoints
         }
 
         var normalizedKey = request.Key!.Trim();
+        var existingWorkflow = await repository.GetLatestAsync(normalizedKey, cancellationToken);
+        if (existingWorkflow is { IsRetired: true })
+        {
+            return ApiResults.Conflict($"Workflow '{normalizedKey}' is retired. Create a new workflow with a different key.");
+        }
+
         var existing = await dbContext.Workflows
             .AsNoTracking()
             .AnyAsync(workflow => workflow.Key == normalizedKey, cancellationToken);
@@ -699,13 +711,15 @@ public static class WorkflowsEndpoints
         }
 
         var normalizedKey = key.Trim();
-        var existing = await dbContext.Workflows
-            .AsNoTracking()
-            .AnyAsync(workflow => workflow.Key == normalizedKey, cancellationToken);
+        var existingWorkflow = await repository.GetLatestAsync(normalizedKey, cancellationToken);
 
-        if (!existing)
+        if (existingWorkflow is null)
         {
             return ApiResults.NotFound($"Workflow '{normalizedKey}' does not exist. Use POST to create.");
+        }
+        if (existingWorkflow.IsRetired)
+        {
+            return ApiResults.Conflict($"Workflow '{normalizedKey}' is retired. Create a new workflow with a different key.");
         }
 
         var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
@@ -871,6 +885,7 @@ public static class WorkflowsEndpoints
         var latestByKey = await dbContext.Workflows
             .AsNoTracking()
             .Where(w => needsResolution.Contains(w.Key))
+            .Where(w => !w.IsRetired)
             .GroupBy(w => w.Key)
             .Select(g => new { Key = g.Key, Latest = g.Max(w => w.Version) })
             .ToDictionaryAsync(x => x.Key, x => x.Latest, StringComparer.Ordinal, cancellationToken);
@@ -976,7 +991,8 @@ public static class WorkflowsEndpoints
         NodeCount: workflow.Nodes.Count,
         EdgeCount: workflow.Edges.Count,
         InputCount: workflow.Inputs.Count,
-        CreatedAtUtc: workflow.CreatedAtUtc);
+        CreatedAtUtc: workflow.CreatedAtUtc,
+        IsRetired: workflow.IsRetired);
 
     private static WorkflowDetailDto MapDetail(Workflow workflow) => new(
         Key: workflow.Key,
@@ -986,6 +1002,7 @@ public static class WorkflowsEndpoints
         Category: workflow.Category,
         Tags: workflow.TagsOrEmpty,
         CreatedAtUtc: workflow.CreatedAtUtc,
+        IsRetired: workflow.IsRetired,
         Nodes: workflow.Nodes
             .Select(node => new WorkflowNodeDto(
                 Id: node.Id,
@@ -1039,4 +1056,87 @@ public static class WorkflowsEndpoints
             .ToArray(),
         WorkflowVarsReads: workflow.WorkflowVarsReads,
         WorkflowVarsWrites: workflow.WorkflowVarsWrites);
+
+    private static async Task<IResult> RetireWorkflowAsync(
+        string key,
+        IWorkflowRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var keyValidation = AgentConfigValidator.ValidateKey(key);
+        if (!keyValidation.IsValid)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["key"] = new[] { keyValidation.Error! }
+            });
+        }
+
+        var normalizedKey = key.Trim();
+        var found = await repository.RetireAsync(normalizedKey, cancellationToken);
+        if (!found)
+        {
+            return ApiResults.NotFound($"Workflow '{normalizedKey}' does not exist.");
+        }
+
+        return Results.Ok(new { key = normalizedKey, isRetired = true });
+    }
+
+    private static async Task<IResult> RetireWorkflowsAsync(
+        BulkRetireKeysRequest request,
+        IWorkflowRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var validation = ValidateBulkKeys(request);
+        if (validation.ErrorResult is not null)
+        {
+            return validation.ErrorResult;
+        }
+
+        var retired = await repository.RetireManyAsync(validation.Keys, cancellationToken);
+        var retiredSet = retired.ToHashSet(StringComparer.Ordinal);
+        var missing = validation.Keys
+            .Where(key => !retiredSet.Contains(key))
+            .ToArray();
+
+        return Results.Ok(new BulkRetireKeysResponse(retired, missing));
+    }
+
+    private static (IReadOnlyList<string> Keys, IResult? ErrorResult) ValidateBulkKeys(BulkRetireKeysRequest request)
+    {
+        if (request?.Keys is null)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["keys"] = new[] { "Key list is required." }
+            }));
+        }
+
+        var keys = request.Keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (keys.Length == 0)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["keys"] = new[] { "At least one key is required." }
+            }));
+        }
+
+        var errors = keys
+            .Select(key => (Key: key, Validation: AgentConfigValidator.ValidateKey(key)))
+            .Where(item => !item.Validation.IsValid)
+            .ToArray();
+        if (errors.Length > 0)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(errors.ToDictionary(
+                item => $"keys.{item.Key}",
+                item => new[] { item.Validation.Error! },
+                StringComparer.Ordinal)));
+        }
+
+        return (keys, null);
+    }
 }

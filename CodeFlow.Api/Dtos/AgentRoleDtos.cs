@@ -21,6 +21,7 @@ public sealed record AgentRoleResponse(
     DateTime UpdatedAtUtc,
     string? UpdatedBy,
     bool IsArchived,
+    bool IsRetired,
     bool IsSystemManaged = false);
 
 public sealed record AgentRoleGrantRequest(
@@ -32,3 +33,9 @@ public sealed record AgentRoleGrantResponse(
     string ToolIdentifier);
 
 public sealed record AgentAssignmentsRequest(IReadOnlyList<long>? RoleIds);
+
+public sealed record BulkRetireRoleIdsRequest(IReadOnlyList<long>? Ids);
+
+public sealed record BulkRetireRoleIdsResponse(
+    IReadOnlyList<long> RetiredIds,
+    IReadOnlyList<long> MissingIds);

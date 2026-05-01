@@ -20,6 +20,8 @@ public sealed class AgentRoleEntity
 
     public bool IsArchived { get; set; }
 
+    public bool IsRetired { get; set; }
+
     /// <summary>
     /// True for roles seeded by <see cref="SystemAgentRoleSeeder"/> on platform startup.
     /// System-managed roles cannot be archived, renamed, or have their grants edited via the

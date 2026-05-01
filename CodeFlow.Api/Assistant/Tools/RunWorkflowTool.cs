@@ -110,6 +110,16 @@ public sealed class RunWorkflowTool(IWorkflowRepository repository) : IAssistant
             }, AssistantToolJson.SerializerOptions));
         }
 
+        if (workflow.IsRetired)
+        {
+            return new AssistantToolResult(JsonSerializer.Serialize(new
+            {
+                status = "retired",
+                workflow = WorkflowSummary(workflow),
+                message = $"Workflow '{workflow.Key}' is retired and cannot be used for new runs.",
+            }, AssistantToolJson.SerializerOptions));
+        }
+
         var supplied = ReadInputsObject(arguments);
         var validation = ValidateInputs(workflow, supplied);
 

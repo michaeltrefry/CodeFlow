@@ -38,6 +38,12 @@ public static class AgentRolesEndpoints
         group.MapDelete("/{id:long}", ArchiveAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentRolesWrite);
 
+        group.MapPost("/{id:long}/retire", RetireAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentRolesWrite);
+
+        group.MapPost("/retire", RetireManyAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentRolesWrite);
+
         group.MapPut("/{id:long}/tools", ReplaceGrantsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentRolesWrite);
 
@@ -56,9 +62,10 @@ public static class AgentRolesEndpoints
     private static async Task<IResult> ListAsync(
         IAgentRoleRepository repository,
         bool? includeArchived,
+        bool? includeRetired,
         CancellationToken cancellationToken)
     {
-        var roles = await repository.ListAsync(includeArchived ?? false, cancellationToken);
+        var roles = await repository.ListAsync(includeArchived ?? false, includeRetired ?? false, cancellationToken);
         return Results.Ok(roles.Select(Map).ToArray());
     }
 
@@ -184,6 +191,64 @@ public static class AgentRolesEndpoints
             return Results.NotFound();
         }
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> RetireAsync(
+        long id,
+        IAgentRoleRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var existing = await repository.GetAsync(id, cancellationToken);
+        if (existing is null)
+        {
+            return Results.NotFound();
+        }
+
+        try
+        {
+            await repository.RetireAsync(id, cancellationToken);
+        }
+        catch (AgentRoleNotFoundException)
+        {
+            return Results.NotFound();
+        }
+
+        var retired = await repository.GetAsync(id, cancellationToken);
+        return Results.Ok(Map(retired!));
+    }
+
+    private static async Task<IResult> RetireManyAsync(
+        BulkRetireRoleIdsRequest request,
+        IAgentRoleRepository repository,
+        CancellationToken cancellationToken)
+    {
+        if (request?.Ids is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["ids"] = new[] { "Role id list is required." }
+            });
+        }
+
+        var ids = request.Ids
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["ids"] = new[] { "At least one role id is required." }
+            });
+        }
+
+        var retired = await repository.RetireManyAsync(ids, cancellationToken);
+        var retiredSet = retired.ToHashSet();
+        var missing = ids
+            .Where(id => !retiredSet.Contains(id))
+            .ToArray();
+
+        return Results.Ok(new BulkRetireRoleIdsResponse(retired, missing));
     }
 
     private static async Task<IResult> ReplaceGrantsAsync(
@@ -319,5 +384,6 @@ public static class AgentRolesEndpoints
         UpdatedAtUtc: role.UpdatedAtUtc,
         UpdatedBy: role.UpdatedBy,
         IsArchived: role.IsArchived,
+        IsRetired: role.IsRetired,
         IsSystemManaged: role.IsSystemManaged);
 }

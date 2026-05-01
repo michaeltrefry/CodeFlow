@@ -29,6 +29,12 @@ public sealed record AgentVersionDto(
     string? CreatedBy,
     bool IsRetired);
 
+public sealed record BulkRetireKeysRequest(IReadOnlyList<string>? Keys);
+
+public sealed record BulkRetireKeysResponse(
+    IReadOnlyList<string> RetiredKeys,
+    IReadOnlyList<string> MissingKeys);
+
 public sealed record CreateAgentRequest(string? Key, JsonElement? Config);
 
 public sealed record UpdateAgentRequest(JsonElement? Config);

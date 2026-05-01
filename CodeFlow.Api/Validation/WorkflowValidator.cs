@@ -265,6 +265,7 @@ public static class WorkflowValidator
             var existingKeys = await dbContext.Workflows
                 .AsNoTracking()
                 .Where(w => referencedKeys.Contains(w.Key))
+                .Where(w => !w.IsRetired)
                 .Select(w => w.Key)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -289,7 +290,9 @@ public static class WorkflowValidator
                 var versionExists = await dbContext.Workflows
                     .AsNoTracking()
                     .AnyAsync(
-                        w => w.Key == node.SubflowKey!.Trim() && w.Version == pinnedVersion,
+                        w => w.Key == node.SubflowKey!.Trim()
+                            && w.Version == pinnedVersion
+                            && !w.IsRetired,
                         cancellationToken);
 
                 if (!versionExists)
@@ -322,7 +325,7 @@ public static class WorkflowValidator
         {
             var known = await dbContext.Agents
                 .AsNoTracking()
-                .Where(agent => agentKeyedNodes.Contains(agent.Key))
+                .Where(agent => agentKeyedNodes.Contains(agent.Key) && !agent.IsRetired)
                 .Select(agent => agent.Key)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -825,6 +828,7 @@ public static class WorkflowValidator
             var rows = await dbContext.Workflows
                 .AsNoTracking()
                 .Where(w => keysNeedingLatest.Contains(w.Key))
+                .Where(w => !w.IsRetired)
                 .GroupBy(w => w.Key)
                 .Select(g => new { Key = g.Key, Latest = g.Max(w => w.Version) })
                 .ToListAsync(cancellationToken);

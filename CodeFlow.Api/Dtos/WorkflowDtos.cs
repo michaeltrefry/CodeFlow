@@ -12,7 +12,8 @@ public sealed record WorkflowSummaryDto(
     int NodeCount,
     int EdgeCount,
     int InputCount,
-    DateTime CreatedAtUtc);
+    DateTime CreatedAtUtc,
+    bool IsRetired);
 
 /// <summary>
 /// HAA-14 — Workflow summary annotated with the most recent saga activity timestamp. Used by
@@ -79,6 +80,7 @@ public sealed record WorkflowDetailDto(
     WorkflowCategory Category,
     IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
+    bool IsRetired,
     IReadOnlyList<WorkflowNodeDto> Nodes,
     IReadOnlyList<WorkflowEdgeDto> Edges,
     IReadOnlyList<WorkflowInputDto> Inputs,

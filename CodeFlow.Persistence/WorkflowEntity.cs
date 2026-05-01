@@ -14,6 +14,8 @@ public sealed class WorkflowEntity
 
     public WorkflowCategory Category { get; set; }
 
+    public bool IsRetired { get; set; }
+
     /// <summary>
     /// Serialized JSON array of user-defined tag strings. Never null; empty array when no tags.
     /// </summary>

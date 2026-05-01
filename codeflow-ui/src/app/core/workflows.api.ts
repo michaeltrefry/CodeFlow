@@ -276,6 +276,20 @@ export class WorkflowsApi {
     );
   }
 
+  retire(key: string): Observable<{ key: string; isRetired: boolean }> {
+    return this.http.post<{ key: string; isRetired: boolean }>(
+      `/api/workflows/${encodeURIComponent(key)}/retire`,
+      {}
+    );
+  }
+
+  retireMany(keys: string[]): Observable<{ retiredKeys: string[]; missingKeys: string[] }> {
+    return this.http.post<{ retiredKeys: string[]; missingKeys: string[] }>(
+      '/api/workflows/retire',
+      { keys }
+    );
+  }
+
   validateScript(request: ValidateScriptRequest): Observable<ValidateScriptResponse> {
     return this.http.post<ValidateScriptResponse>('/api/workflows/validate-script', request);
   }

@@ -39,6 +39,11 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
             .HasMaxLength(32)
             .IsRequired();
 
+        builder.Property(workflow => workflow.IsRetired)
+            .HasColumnName("is_retired")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.Property(workflow => workflow.TagsJson)
             .HasColumnName("tags_json")
             .HasColumnType("longtext")
@@ -59,5 +64,7 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
 
         builder.HasIndex(workflow => new { workflow.Key, workflow.Version })
             .IsUnique();
+
+        builder.HasIndex(workflow => new { workflow.Key, workflow.IsRetired });
     }
 }

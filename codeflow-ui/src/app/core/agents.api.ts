@@ -50,6 +50,13 @@ export class AgentsApi {
     );
   }
 
+  retireMany(keys: string[]): Observable<{ retiredKeys: string[]; missingKeys: string[] }> {
+    return this.http.post<{ retiredKeys: string[]; missingKeys: string[] }>(
+      '/api/agents/retire',
+      { keys }
+    );
+  }
+
   fork(request: {
     sourceKey: string;
     sourceVersion: number;

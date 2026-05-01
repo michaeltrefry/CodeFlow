@@ -158,6 +158,7 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
             tags = workflow.TagsOrEmpty,
             maxRoundsPerRound = workflow.MaxRoundsPerRound,
             createdAtUtc = workflow.CreatedAtUtc,
+            isRetired = workflow.IsRetired,
             terminalPorts = workflow.TerminalPorts,
             workflowVarsReads = workflow.WorkflowVarsReadsOrEmpty,
             workflowVarsWrites = workflow.WorkflowVarsWritesOrEmpty,
@@ -725,7 +726,7 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
     public async Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         var includeArchived = AssistantToolJson.ReadOptionalBool(arguments, "includeArchived", defaultValue: false);
-        var roles = await repository.ListAsync(includeArchived, cancellationToken);
+        var roles = await repository.ListAsync(includeArchived, includeRetired: false, cancellationToken);
 
         var payload = new
         {
@@ -738,6 +739,7 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
                     displayName = r.DisplayName,
                     description = r.Description,
                     isArchived = r.IsArchived,
+                    isRetired = r.IsRetired,
                     isSystemManaged = r.IsSystemManaged,
                 })
                 .ToArray()
@@ -817,6 +819,7 @@ public sealed class GetAgentRoleTool(IAgentRoleRepository roleRepository, ISkill
             displayName = role.DisplayName,
             description = role.Description,
             isArchived = role.IsArchived,
+            isRetired = role.IsRetired,
             isSystemManaged = role.IsSystemManaged,
             grantCount = grants.Count,
             skillCount = skillNames.Count,

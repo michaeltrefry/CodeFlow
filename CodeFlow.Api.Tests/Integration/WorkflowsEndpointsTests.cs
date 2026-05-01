@@ -116,6 +116,70 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task Retire_HidesFromListButKeepsVersionAccessibleAndBlocksNewUse()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-retire-start");
+
+        var key = $"wf-retire-{Guid.NewGuid():N}";
+        var create = await CreateSingleNodeWorkflowAsync(client, key, "wf-retire-start");
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var retire = await client.PostAsync($"/api/workflows/{key}/retire", content: null);
+        retire.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryPayload>>("/api/workflows");
+        list!.Select(w => w.Key).Should().NotContain(key);
+
+        var detail = await client.GetFromJsonAsync<WorkflowDetailPayload>($"/api/workflows/{key}/1");
+        detail.Should().NotBeNull();
+        detail!.IsRetired.Should().BeTrue();
+
+        var run = await client.PostAsJsonAsync("/api/traces", new
+        {
+            workflowKey = key,
+            input = "Implement the requested change in the repository.",
+            inputs = new
+            {
+                repositories = new[]
+                {
+                    new { url = "https://example.com/repo.git", branch = "main" }
+                }
+            },
+        });
+        run.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var update = await CreateSingleNodeWorkflowVersionAsync(client, key, "wf-retire-start");
+        update.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task BulkRetire_HidesSelectedWorkflows()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-bulk-retire-start");
+
+        var keyA = $"wf-bulk-retire-a-{Guid.NewGuid():N}";
+        var keyB = $"wf-bulk-retire-b-{Guid.NewGuid():N}";
+        (await CreateSingleNodeWorkflowAsync(client, keyA, "wf-bulk-retire-start")).StatusCode
+            .Should().Be(HttpStatusCode.Created);
+        (await CreateSingleNodeWorkflowAsync(client, keyB, "wf-bulk-retire-start")).StatusCode
+            .Should().Be(HttpStatusCode.Created);
+
+        var retire = await client.PostAsJsonAsync("/api/workflows/retire", new
+        {
+            keys = new[] { keyA, keyB, "missing-workflow-key" },
+        });
+        retire.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = (await retire.Content.ReadFromJsonAsync<BulkKeyRetireDto>())!;
+        result.RetiredKeys.Should().BeEquivalentTo(new[] { keyA, keyB });
+        result.MissingKeys.Should().Contain("missing-workflow-key");
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryPayload>>("/api/workflows");
+        list!.Select(w => w.Key).Should().NotContain(new[] { keyA, keyB });
+    }
+
+    [Fact]
     public async Task ExportPackage_ReturnsJsonDownloadForSelectedWorkflowVersion()
     {
         using var client = factory.CreateClient();
@@ -1457,6 +1521,63 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         response.EnsureSuccessStatusCode();
     }
 
+    private static Task<HttpResponseMessage> CreateSingleNodeWorkflowAsync(
+        HttpClient client,
+        string key,
+        string agentKey)
+    {
+        var startId = Guid.NewGuid();
+        return client.PostAsJsonAsync("/api/workflows", new
+        {
+            key,
+            name = key,
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+    }
+
+    private static Task<HttpResponseMessage> CreateSingleNodeWorkflowVersionAsync(
+        HttpClient client,
+        string key,
+        string agentKey)
+    {
+        var startId = Guid.NewGuid();
+        return client.PutAsJsonAsync($"/api/workflows/{key}", new
+        {
+            name = key,
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+    }
+
     private static WorkflowPackage BuildSingleAgentPackage(
         string workflowKey,
         string agentKey,
@@ -1582,6 +1703,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string Key,
         int Version,
         string Name,
+        bool IsRetired,
         IReadOnlyList<NodePayload> Nodes,
         IReadOnlyList<EdgePayload> Edges);
 
@@ -1601,6 +1723,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     private sealed record WorkflowSummaryPayload(string Key, int LatestVersion, string Name);
 
     private sealed record AgentSummaryPayload(string Key, int LatestVersion, string Type);
+    private sealed record BulkKeyRetireDto(IReadOnlyList<string> RetiredKeys, IReadOnlyList<string> MissingKeys);
 
     [Fact]
     public async Task Post_ThenGet_RoundTripsScriptedAgentNode()

@@ -283,6 +283,54 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         return true;
     }
 
+    public async Task<IReadOnlyList<string>> RetireManyAsync(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+
+        var normalizedKeys = keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(NormalizeKey)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (normalizedKeys.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var entities = await dbContext.Agents
+            .Where(agent => normalizedKeys.Contains(agent.Key))
+            .ToListAsync(cancellationToken);
+
+        if (entities.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var changed = false;
+        foreach (var entity in entities)
+        {
+            if (!entity.IsRetired)
+            {
+                entity.IsRetired = true;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return entities
+            .Select(entity => entity.Key)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public async Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default)
     {
         var normalizedKey = NormalizeKey(key);
