@@ -28,8 +28,11 @@ jobs:
       - name: Build .NET solution (Release)
         run: dotnet build CodeFlow.slnx --configuration Release --no-restore
 
+      # sc-453: DockerRequired tests pull real images from docker.io and exercise the local
+      # Docker daemon; CI runners can't reliably run them, so they're opt-in locally with
+      # `dotnet test --filter "Category=DockerRequired"`.
       - name: Run Runtime tests
-        run: dotnet test CodeFlow.Runtime.Tests/CodeFlow.Runtime.Tests.csproj --no-build --configuration Release
+        run: dotnet test CodeFlow.Runtime.Tests/CodeFlow.Runtime.Tests.csproj --no-build --configuration Release --filter "Category!=DockerRequired"
 
       - name: Run Contracts tests
         run: dotnet test CodeFlow.Contracts.Tests/CodeFlow.Contracts.Tests.csproj --no-build --configuration Release
