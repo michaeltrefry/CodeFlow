@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { useAsyncList } from '../../core/async-state';
 import { relativeTime } from '../../core/format-time';
 import { TracesApi } from '../../core/traces.api';
@@ -31,8 +32,36 @@ import { IconComponent } from '../../ui/icon.component';
       } @else if (error()) {
         <cf-card><cf-chip variant="err" dot>{{ error() }}</cf-chip></cf-card>
       } @else if (tasks().length === 0) {
-        <cf-card><cf-chip variant="ok" dot>No pending human reviews.</cf-chip></cf-card>
+        @if (notFoundFallback(); as fallback) {
+          <cf-card>
+            <cf-chip variant="warn" dot>HITL task #{{ fallback.taskId }} is no longer pending</cf-chip>
+            @if (fallback.traceId) {
+              <p class="muted small" style="margin-top: 8px">
+                It may already be decided or cancelled. Open the originating trace to see what happened.
+              </p>
+              <div class="row" style="margin-top: 8px">
+                <a [routerLink]="['/traces', fallback.traceId]" cf-button variant="primary" icon="chevR">Open trace</a>
+              </div>
+            }
+          </cf-card>
+        } @else {
+          <cf-card><cf-chip variant="ok" dot>No pending human reviews.</cf-chip></cf-card>
+        }
       } @else {
+        @if (notFoundFallback(); as fallback) {
+          <cf-card>
+            <cf-chip variant="warn" dot>HITL task #{{ fallback.taskId }} is no longer pending</cf-chip>
+            @if (fallback.traceId) {
+              <p class="muted small" style="margin-top: 8px">
+                It may already be decided or cancelled. Open the originating trace to see what happened, or pick another pending task below.
+              </p>
+              <div class="row" style="margin-top: 8px">
+                <a [routerLink]="['/traces', fallback.traceId]" cf-button variant="primary" icon="chevR">Open trace</a>
+              </div>
+            }
+          </cf-card>
+        }
+
         <div style="display: grid; grid-template-columns: 1fr 460px; gap: 16px; align-items: flex-start">
           <div class="hitl-grid">
             @for (task of tasks(); track task.id) {
@@ -128,11 +157,36 @@ import { IconComponent } from '../../ui/icon.component';
 export class HitlQueueComponent {
   private readonly api = inject(TracesApi);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  // sc-62 — notification action URL is `/hitl?task={id}&trace={guid}`. The query params drive
+  // queue selection on first load: if the task is in the pending list, we select it; if it's
+  // not (decided/cancelled in the meantime), we surface a fallback chip with a link to the
+  // originating trace so the reviewer doesn't land on an empty/wrong page.
+  private readonly queryParams = toSignal(this.route.queryParamMap, { requireSync: true });
+
+  private readonly deepLinkTaskId = computed<number | null>(() => {
+    const raw = this.queryParams().get('task');
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  });
+
+  private readonly deepLinkTraceId = computed<string | null>(() =>
+    this.queryParams().get('trace') || null);
+
   private readonly hitlList = useAsyncList(
     () => this.api.pendingHitl(),
     {
       errorMessage: 'Failed to load pending reviews',
       onLoaded: tasks => {
+        // Deep-link wins over the default first-row selection so notification recipients
+        // land on the exact task that triggered their notification.
+        const deepLink = this.deepLinkTaskId();
+        if (deepLink !== null && tasks.some(t => t.id === deepLink)) {
+          this.selectedId.set(deepLink);
+          return;
+        }
         if (this.selectedId() === null && tasks.length > 0) {
           this.selectedId.set(tasks[0].id);
         }
@@ -150,6 +204,17 @@ export class HitlQueueComponent {
     const id = this.selectedId();
     if (id === null) return this.tasks()[0] ?? null;
     return this.tasks().find(t => t.id === id) ?? null;
+  });
+
+  // True when a deep-link `task` was given but isn't in the pending list (likely decided or
+  // cancelled since the notification fired). The template surfaces a fallback card linking to
+  // the trace so the reviewer still has somewhere to land.
+  readonly notFoundFallback = computed<{ taskId: number; traceId: string | null } | null>(() => {
+    if (this.loading()) return null;
+    const taskId = this.deepLinkTaskId();
+    if (taskId === null) return null;
+    if (this.tasks().some(t => t.id === taskId)) return null;
+    return { taskId, traceId: this.deepLinkTraceId() };
   });
 
   constructor() { this.reload(); }

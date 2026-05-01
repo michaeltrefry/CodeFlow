@@ -44,7 +44,25 @@ Or in `appsettings.*.json`:
 }
 ```
 
-The admin diagnostics endpoint (`GET /api/admin/notifications/diagnostics`) reports `actionUrlsConfigured: false` until this is set, and the admin notifications page surfaces a banner. With it set, action URLs look like `{baseUrl}/hitl?task={id}&trace={guid}`.
+The admin diagnostics endpoint (`GET /api/admin/notifications/diagnostics`) reports `actionUrlsConfigured: false` until this is set, and the admin notifications page surfaces a banner.
+
+### Action URL shape (canonical)
+
+With `PublicBaseUrl` set, every HITL notification embeds a URL of exactly this form:
+
+```
+{baseUrl}/hitl?task={hitlTaskId}&trace={traceGuid:D}
+```
+
+This is a pinned contract (sc-62). Historical notifications already in reviewer inboxes embed this shape, so changing it would break working deep-links. Only `DefaultHitlNotificationActionUrlBuilder` is allowed to construct it; providers must never build their own URLs.
+
+What happens when a reviewer clicks:
+
+| Task state on click | Behaviour |
+| --- | --- |
+| Still `Pending` and in the queue | The queue page pre-selects that row in the detail pane. |
+| Already `Decided` or `Cancelled` | The queue surfaces a fallback chip with a link to `/traces/{traceId}` so the reviewer can see what happened. |
+| Trace expired or not visible | The fallback degrades gracefully — the chip explains the task isn't pending and the trace link 404s if the row is truly gone. |
 
 ## Configuring providers
 
