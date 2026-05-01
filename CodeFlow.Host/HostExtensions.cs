@@ -6,6 +6,7 @@ using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Orchestration.Notifications.Providers.Email;
 using CodeFlow.Orchestration.Notifications.Providers.Slack;
+using CodeFlow.Orchestration.Notifications.Providers.Sms;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Authority;
@@ -157,6 +158,19 @@ public static class HostExtensions
         services.AddSingleton<EmailNotificationProviderFactory>();
         services.AddSingleton<INotificationProviderFactory>(sp =>
             sp.GetRequiredService<EmailNotificationProviderFactory>());
+
+        // SMS provider (sc-56). v1 ships Twilio behind the Sms-channel factory; future SMS
+        // engines (Vonage, SNS, Plivo) plug in by refactoring the factory to dispatch on an
+        // engine selector (mirrors EmailNotificationProviderFactory's SES vs SMTP split).
+        services.AddHttpClient(SmsNotificationProviderFactory.TwilioHttpClientName, client =>
+        {
+            client.BaseAddress = SmsNotificationProviderFactory.TwilioDefaultBaseAddress;
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddSingleton<SmsNotificationProviderFactory>();
+        services.AddSingleton<INotificationProviderFactory>(sp =>
+            sp.GetRequiredService<SmsNotificationProviderFactory>());
+
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
