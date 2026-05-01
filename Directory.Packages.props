@@ -5,9 +5,11 @@
 
   <ItemGroup>
     <PackageVersion Include="Anthropic" Version="10.4.0" />
+    <PackageVersion Include="AWSSDK.SimpleEmailV2" Version="3.7.401.10" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="FluentAssertions" Version="8.3.0" />
     <PackageVersion Include="Jint" Version="4.4.0" />
+    <PackageVersion Include="MailKit" Version="4.13.0" />
     <PackageVersion Include="MassTransit" Version="8.4.1" />
     <PackageVersion Include="MassTransit.EntityFrameworkCore" Version="8.4.1" />
     <PackageVersion Include="MassTransit.RabbitMQ" Version="8.4.1" />

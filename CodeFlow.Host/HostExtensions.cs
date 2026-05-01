@@ -4,6 +4,7 @@ using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Notifications;
+using CodeFlow.Orchestration.Notifications.Providers.Email;
 using CodeFlow.Orchestration.Notifications.Providers.Slack;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
@@ -148,6 +149,14 @@ public static class HostExtensions
         services.AddSingleton<SlackNotificationProviderFactory>();
         services.AddSingleton<INotificationProviderFactory>(sp =>
             sp.GetRequiredService<SlackNotificationProviderFactory>());
+
+        // Email provider (sc-55). One factory dispatches between the SES (AWS SDK) and SMTP
+        // (MailKit) engines based on each config row's AdditionalConfigJson. SES provider
+        // instances build their own AmazonSimpleEmailServiceV2Client; SMTP instances open one
+        // SmtpClient per send.
+        services.AddSingleton<EmailNotificationProviderFactory>();
+        services.AddSingleton<INotificationProviderFactory>(sp =>
+            sp.GetRequiredService<EmailNotificationProviderFactory>());
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
