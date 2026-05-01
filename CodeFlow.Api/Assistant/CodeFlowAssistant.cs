@@ -538,36 +538,53 @@ public sealed class CodeFlowAssistant(
             }
             finalUsage = null;
 
-            // Echo the assistant turn (text + tool_use blocks) back into history so the model has
-            // a coherent transcript when we send tool results.
-            var assistantBlocks = new List<ContentBlockParam>();
-            if (assistantTextThisTurn.Length > 0)
-            {
-                assistantBlocks.Add((TextBlockParam)new TextBlockParam { Text = assistantTextThisTurn.ToString() });
-            }
-            // Order tool uses by content-block index so the transcript matches what the model emitted.
-            foreach (var (_, pending) in pendingToolUses.OrderBy(kvp => kvp.Key))
-            {
-                assistantBlocks.Add((ToolUseBlockParam)new ToolUseBlockParam
-                {
-                    ID = pending.Id,
-                    Name = pending.Name,
-                    Input = ParseToolInputAsDictionary(pending.JsonBuffer.ToString()),
-                });
-            }
-            messages.Add(new MessageParam { Role = Role.Assistant, Content = assistantBlocks });
-
-            // Dispatch each tool and collect results; emit Started+Completed events so the UI can
-            // render in-flight tool cards. A user-role message carrying tool_result blocks goes
-            // back to the model on the next iteration.
-            var resultBlocks = new List<ContentBlockParam>();
+            // CE-3: dispatch tools FIRST so we can decide whether to redact each tool_use's Input
+            // before it lands in the in-turn assistant transcript. The streamed UI events still
+            // carry the original args (the UI tool-call cards display what the model emitted);
+            // only the transcript fed to the next provider call gets the redacted Input.
+            //
+            // Reordering is safe: Anthropic's protocol cares about the *final* messages array
+            // ordering (assistant tool_use turn immediately followed by user tool_result turn),
+            // and we still preserve that order when we append below.
+            var dispatched = new List<(PendingAnthropicToolUse Pending, JsonElement OriginalArgs, AssistantToolResult Result)>(pendingToolUses.Count);
             foreach (var (_, pending) in pendingToolUses.OrderBy(kvp => kvp.Key))
             {
                 var args = ParseToolArguments(pending.JsonBuffer.ToString());
                 yield return new AssistantToolCallStarted(pending.Id, pending.Name, args);
                 var result = await dispatcher.InvokeAsync(pending.Name, args, cancellationToken);
                 yield return new AssistantToolCallCompleted(pending.Id, pending.Name, result.ResultJson, result.IsError);
+                dispatched.Add((pending, args, result));
+            }
 
+            // Echo the assistant turn (text + tool_use blocks) back into history so the model has
+            // a coherent transcript when we send tool results. tool_use Input is redacted for
+            // workflow-package tools that succeeded — the giant package JSON is dead weight after
+            // the tool wrote it to disk and would re-bill on every subsequent loop iteration.
+            var assistantBlocks = new List<ContentBlockParam>();
+            if (assistantTextThisTurn.Length > 0)
+            {
+                assistantBlocks.Add((TextBlockParam)new TextBlockParam { Text = assistantTextThisTurn.ToString() });
+            }
+            foreach (var (pending, originalArgs, result) in dispatched)
+            {
+                var inputForTranscript = !result.IsError && WorkflowPackageRedaction.IsRedactableTool(pending.Name)
+                    ? WorkflowPackageRedaction.RedactArgsAsDictionary(pending.Name, originalArgs)
+                    : ParseToolInputAsDictionary(pending.JsonBuffer.ToString());
+                assistantBlocks.Add((ToolUseBlockParam)new ToolUseBlockParam
+                {
+                    ID = pending.Id,
+                    Name = pending.Name,
+                    Input = inputForTranscript,
+                });
+            }
+            messages.Add(new MessageParam { Role = Role.Assistant, Content = assistantBlocks });
+
+            // tool_result blocks go in a user-role message that immediately follows the assistant
+            // turn. ToolUseID has to match the assistant block's ID exactly — redaction touches
+            // only Input, never ID, so this still resolves.
+            var resultBlocks = new List<ContentBlockParam>();
+            foreach (var (pending, _, result) in dispatched)
+            {
                 resultBlocks.Add((ToolResultBlockParam)new ToolResultBlockParam
                 {
                     ToolUseID = pending.Id,
@@ -799,18 +816,38 @@ public sealed class CodeFlowAssistant(
                 yield return new AssistantTokenUsage(config.Provider, responseModel, turnUsageJson);
             }
 
+            // CE-3: dispatch tools FIRST so we can redact giant args before they land in the
+            // assistant turn that's about to be appended. The streamed UI events carry the
+            // original args; only the transcript bytes that re-flow into the next OpenAI call
+            // get the redacted form.
+            var dispatchedOpenAi = new List<(PendingOpenAiToolCall Pending, JsonElement OriginalArgs, AssistantToolResult Result)>(pendingToolCalls.Count);
+            foreach (var (_, pending) in pendingToolCalls.OrderBy(kvp => kvp.Key))
+            {
+                var args = ParseToolArguments(pending.JsonBuffer.ToString());
+                var id = pending.Id ?? string.Empty;
+                var name = pending.Name ?? string.Empty;
+                yield return new AssistantToolCallStarted(id, name, args);
+                var result = await dispatcher.InvokeAsync(name, args, cancellationToken);
+                yield return new AssistantToolCallCompleted(id, name, result.ResultJson, result.IsError);
+                dispatchedOpenAi.Add((pending, args, result));
+            }
+
             // Build a single AssistantChatMessage that carries (a) any text the model emitted
-            // before the tool calls and (b) the tool_calls themselves. OpenAI requires the tool
-            // result messages to come AFTER an assistant message that announces those tool calls.
-            var toolCalls = pendingToolCalls
-                .OrderBy(kvp => kvp.Key)
-                .Select(kvp =>
+            // before the tool calls and (b) the tool_calls themselves with potentially-redacted
+            // args. OpenAI requires the tool result messages to come AFTER an assistant message
+            // that announces those tool calls.
+            var toolCalls = dispatchedOpenAi
+                .Select(d =>
                 {
-                    var p = kvp.Value;
+                    var p = d.Pending;
+                    var name = p.Name ?? throw new InvalidOperationException("OpenAI tool call missing function name.");
+                    var argsJsonForTranscript = !d.Result.IsError && WorkflowPackageRedaction.IsRedactableTool(name)
+                        ? WorkflowPackageRedaction.RedactArgsAsJsonString(name, d.OriginalArgs)
+                        : p.JsonBuffer.ToString();
                     return ChatToolCall.CreateFunctionToolCall(
                         p.Id ?? throw new InvalidOperationException("OpenAI tool call missing id."),
-                        p.Name ?? throw new InvalidOperationException("OpenAI tool call missing function name."),
-                        BinaryData.FromBytes(Encoding.UTF8.GetBytes(p.JsonBuffer.ToString())));
+                        name,
+                        BinaryData.FromBytes(Encoding.UTF8.GetBytes(argsJsonForTranscript)));
                 })
                 .ToArray();
 
@@ -821,16 +858,11 @@ public sealed class CodeFlowAssistant(
             }
             chatMessages.Add(assistantTurn);
 
-            foreach (var (_, pending) in pendingToolCalls.OrderBy(kvp => kvp.Key))
+            // tool result messages reference the original tool_call id (preserved through
+            // redaction).
+            foreach (var d in dispatchedOpenAi)
             {
-                var args = ParseToolArguments(pending.JsonBuffer.ToString());
-                var id = pending.Id ?? string.Empty;
-                var name = pending.Name ?? string.Empty;
-                yield return new AssistantToolCallStarted(id, name, args);
-                var result = await dispatcher.InvokeAsync(name, args, cancellationToken);
-                yield return new AssistantToolCallCompleted(id, name, result.ResultJson, result.IsError);
-
-                chatMessages.Add(new ToolChatMessage(id, result.ResultJson));
+                chatMessages.Add(new ToolChatMessage(d.Pending.Id ?? string.Empty, d.Result.ResultJson));
             }
 
             _ = finishReason; // available for future logging
