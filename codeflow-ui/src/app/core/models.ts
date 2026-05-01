@@ -346,6 +346,103 @@ export interface AssistantSettingsWriteRequest {
   assignedAgentRoleId: number | null;
 }
 
+// --- Notification subsystem (epic 48) ----------------------------------------------------
+
+export type NotificationChannel = 'Email' | 'Sms' | 'Slack';
+
+export const NOTIFICATION_CHANNELS: readonly NotificationChannel[] = ['Email', 'Sms', 'Slack'] as const;
+
+export type NotificationEventKind = 'HitlTaskPending';
+
+export const NOTIFICATION_EVENT_KINDS: readonly NotificationEventKind[] = ['HitlTaskPending'] as const;
+
+export type NotificationSeverity = 'Info' | 'Normal' | 'High' | 'Urgent';
+
+export const NOTIFICATION_SEVERITIES: readonly NotificationSeverity[] = ['Info', 'Normal', 'High', 'Urgent'] as const;
+
+export type NotificationCredentialAction = 'Preserve' | 'Replace' | 'Clear';
+
+export interface NotificationCredentialUpdateRequest {
+  action: NotificationCredentialAction;
+  value?: string | null;
+}
+
+export interface NotificationProviderResponse {
+  id: string;
+  displayName: string;
+  channel: NotificationChannel;
+  endpointUrl?: string | null;
+  fromAddress?: string | null;
+  hasCredential: boolean;
+  additionalConfigJson?: string | null;
+  enabled: boolean;
+  isArchived: boolean;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+}
+
+export interface NotificationProviderWriteRequest {
+  displayName: string;
+  channel: NotificationChannel;
+  endpointUrl?: string | null;
+  fromAddress?: string | null;
+  additionalConfigJson?: string | null;
+  enabled: boolean;
+  credential?: NotificationCredentialUpdateRequest;
+}
+
+export interface NotificationRecipientDto {
+  channel: NotificationChannel;
+  address: string;
+  displayName?: string | null;
+}
+
+export interface NotificationTemplateRefDto {
+  templateId: string;
+  version: number;
+}
+
+export interface NotificationRouteResponse {
+  routeId: string;
+  eventKind: NotificationEventKind;
+  providerId: string;
+  recipients: NotificationRecipientDto[];
+  template: NotificationTemplateRefDto;
+  minimumSeverity: NotificationSeverity;
+  enabled: boolean;
+}
+
+export interface NotificationRouteWriteRequest {
+  eventKind: NotificationEventKind;
+  providerId: string;
+  recipients: NotificationRecipientDto[];
+  template: NotificationTemplateRefDto;
+  minimumSeverity: NotificationSeverity;
+  enabled: boolean;
+}
+
+export interface NotificationTemplateResponse {
+  templateId: string;
+  version: number;
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+}
+
+export interface NotificationDiagnosticsResponse {
+  publicBaseUrl?: string | null;
+  providerCount: number;
+  routeCount: number;
+  actionUrlsConfigured: boolean;
+}
+
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
 
 export type WorkflowInputKind = 'Text' | 'Json';
