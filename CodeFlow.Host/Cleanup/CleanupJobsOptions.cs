@@ -4,11 +4,11 @@ public sealed class CleanupJobsOptions
 {
     public const string SectionName = "CleanupJobs";
 
-    public bool TraceRetentionEnabled { get; set; }
+    public bool TraceRetentionEnabled { get; set; } = true;
 
     public int TraceRetentionDays { get; set; } = 90;
 
-    public bool RetiredObjectCleanupEnabled { get; set; }
+    public bool RetiredObjectCleanupEnabled { get; set; } = true;
 
     public int SweepIntervalMinutes { get; set; } = 60;
 
