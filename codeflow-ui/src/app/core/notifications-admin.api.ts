@@ -4,10 +4,13 @@ import { Observable } from 'rxjs';
 import {
   NotificationDiagnosticsResponse,
   NotificationProviderResponse,
+  NotificationProviderValidationResponse,
   NotificationProviderWriteRequest,
   NotificationRouteResponse,
   NotificationRouteWriteRequest,
   NotificationTemplateResponse,
+  NotificationTestSendRequest,
+  NotificationTestSendResponse,
 } from './models';
 
 /**
@@ -33,6 +36,25 @@ export class NotificationsAdminApi {
 
   archiveProvider(id: string): Observable<void> {
     return this.http.delete<void>(`/api/admin/notification-providers/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * sc-58 — credential check. Calls the provider's ValidateAsync without sending a message.
+   * Useful as a "did I paste the right token" sanity check before saving a config.
+   */
+  validateProvider(id: string): Observable<NotificationProviderValidationResponse> {
+    return this.http.post<NotificationProviderValidationResponse>(
+      `/api/admin/notification-providers/${encodeURIComponent(id)}/validate`, {});
+  }
+
+  /**
+   * sc-58 — sends a synthetic notification through the provider so admins can verify
+   * credentials, destinations, rendered copy, and the canonical action URL. Bypasses the
+   * dispatcher (no audit row, no dedupe).
+   */
+  testSendProvider(id: string, request: NotificationTestSendRequest): Observable<NotificationTestSendResponse> {
+    return this.http.post<NotificationTestSendResponse>(
+      `/api/admin/notification-providers/${encodeURIComponent(id)}/test-send`, request);
   }
 
   listRoutes(): Observable<NotificationRouteResponse[]> {

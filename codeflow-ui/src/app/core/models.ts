@@ -443,6 +443,33 @@ export interface NotificationDiagnosticsResponse {
   actionUrlsConfigured: boolean;
 }
 
+// sc-58 — validate + test-send DTOs.
+export interface NotificationProviderValidationResponse {
+  isValid: boolean;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotificationTestSendRequest {
+  recipient: NotificationRecipientDto;
+  template?: NotificationTemplateRefDto | null;
+}
+
+export interface NotificationTestDeliveryDto {
+  status: string;
+  providerMessageId?: string | null;
+  normalizedDestination?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotificationTestSendResponse {
+  subject?: string | null;
+  body: string;
+  actionUrl: string;
+  delivery: NotificationTestDeliveryDto;
+}
+
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
 
 export type WorkflowInputKind = 'Text' | 'Json';
