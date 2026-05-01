@@ -12,13 +12,22 @@ export function formatHttpError(err: unknown, fallback = 'Request failed.'): str
 
     const message = (err as { message?: unknown }).message;
     if (typeof message === 'string' && message.trim().length > 0) {
-      return message;
+      const trimmedMessage = message.trim();
+      if (!isAngularTransportMessage(trimmedMessage)) {
+        return trimmedMessage;
+      }
     }
 
     const status = (err as { status?: unknown }).status;
     if (typeof status === 'number') {
       const statusText = (err as { statusText?: unknown }).statusText;
-      return typeof statusText === 'string' && statusText.trim().length > 0
+      if (status === 400) {
+        return 'Bad request (HTTP 400). The server rejected the request but did not return validation details.';
+      }
+
+      return typeof statusText === 'string'
+        && statusText.trim().length > 0
+        && statusText.trim().toUpperCase() !== 'OK'
         ? `HTTP ${status} ${statusText}`
         : `HTTP ${status}`;
     }
@@ -31,9 +40,23 @@ export function formatHttpError(err: unknown, fallback = 'Request failed.'): str
   return fallback;
 }
 
+function isAngularTransportMessage(message: string): boolean {
+  return message.startsWith('Http failure response for ');
+}
+
 function formatErrorBody(body: unknown): string | null {
   if (typeof body === 'string') {
-    return body.trim().length > 0 ? body : null;
+    const trimmed = body.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+
+    const parsed = parseJsonObject(trimmed);
+    if (parsed) {
+      return formatErrorBody(parsed);
+    }
+
+    return trimmed;
   }
 
   if (!body || typeof body !== 'object') {
@@ -98,4 +121,17 @@ function fieldMessage(value: unknown): string | null {
   }
 
   return null;
+}
+
+function parseJsonObject(value: string): object | null {
+  if (!value.startsWith('{')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }

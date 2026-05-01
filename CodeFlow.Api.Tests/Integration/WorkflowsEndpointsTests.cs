@@ -563,6 +563,59 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task ApplyPackageImportFromDraft_ReturnsWorkflowValidationDetails_WhenSnapshotFailsSaveRules()
+    {
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var draftDir = Path.Combine(factory.AssistantWorkspaceRoot, conversationId.ToString("N"));
+        Directory.CreateDirectory(draftDir);
+        var snapshotId = Guid.NewGuid();
+        var snapshotPath = Path.Combine(draftDir, $"snapshot-{snapshotId:N}.cf-workflow-package.json");
+        var package = BuildSingleAgentPackage(
+            workflowKey: "draft-no-start",
+            agentKey: "draft-no-start-agent",
+            nodes: new[]
+            {
+                PackageNode(Guid.NewGuid(), WorkflowNodeKind.Agent, "draft-no-start-agent"),
+            },
+            edges: Array.Empty<WorkflowPackageWorkflowEdge>());
+        await File.WriteAllTextAsync(
+            snapshotPath,
+            JsonSerializer.Serialize(package, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId, snapshotId });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var body = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        var errors = body.RootElement.GetProperty("errors");
+        errors.GetProperty("package")[0].GetString()
+            .Should().Contain("Workflow package import failed validation");
+        errors.GetProperty("workflows.draft-no-start")[0].GetString()
+            .Should().Contain("exactly one Start node");
+        File.Exists(snapshotPath).Should().BeTrue(
+            because: "failed applies should leave the snapshot available for inspection or retry");
+    }
+
+    [Fact]
     public async Task ApplyPackageImportFromDraft_RejectsMissingSnapshotId()
     {
         // The endpoint must require both fields. Without snapshotId the apply would be

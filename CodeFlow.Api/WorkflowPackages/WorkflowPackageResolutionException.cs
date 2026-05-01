@@ -6,12 +6,14 @@ public sealed class WorkflowPackageResolutionException : Exception
         : base(message)
     {
         MissingReferences = Array.Empty<MissingPackageReference>();
+        ValidationErrors = Array.Empty<WorkflowPackageValidationError>();
     }
 
     public WorkflowPackageResolutionException(string message, Exception innerException)
         : base(message, innerException)
     {
         MissingReferences = Array.Empty<MissingPackageReference>();
+        ValidationErrors = Array.Empty<WorkflowPackageValidationError>();
     }
 
     public WorkflowPackageResolutionException(
@@ -20,6 +22,16 @@ public sealed class WorkflowPackageResolutionException : Exception
         : base(message)
     {
         MissingReferences = missingReferences ?? Array.Empty<MissingPackageReference>();
+        ValidationErrors = Array.Empty<WorkflowPackageValidationError>();
+    }
+
+    public WorkflowPackageResolutionException(
+        string message,
+        IReadOnlyList<WorkflowPackageValidationError> validationErrors)
+        : base(message)
+    {
+        MissingReferences = Array.Empty<MissingPackageReference>();
+        ValidationErrors = validationErrors ?? Array.Empty<WorkflowPackageValidationError>();
     }
 
     /// <summary>
@@ -27,6 +39,12 @@ public sealed class WorkflowPackageResolutionException : Exception
     /// graph. Empty for non-self-containment failures (parse errors, config nulls, etc.).
     /// </summary>
     public IReadOnlyList<MissingPackageReference> MissingReferences { get; }
+
+    /// <summary>
+    /// Per-workflow authoring validation errors collected while importing a package. Empty for
+    /// structural package resolution failures.
+    /// </summary>
+    public IReadOnlyList<WorkflowPackageValidationError> ValidationErrors { get; }
 }
 
 /// <summary>

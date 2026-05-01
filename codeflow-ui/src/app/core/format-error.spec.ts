@@ -26,4 +26,28 @@ describe('formatHttpError', () => {
     expect(formatHttpError({ status: 404, statusText: 'Not Found' })).toBe('HTTP 404 Not Found');
     expect(formatHttpError(null, 'Save failed')).toBe('Save failed');
   });
+
+  it('parses validation problem details when Angular receives the body as text', () => {
+    expect(formatHttpError({
+      error: JSON.stringify({
+        title: 'One or more validation errors occurred.',
+        errors: {
+          package: ['Workflow package import failed validation.'],
+          'workflows.draft-save': ['Workflow must contain exactly one Start node.'],
+        },
+      }),
+    })).toBe(
+      'Workflow package import failed validation.; Workflow must contain exactly one Start node.'
+    );
+  });
+
+  it('does not show Angular transport wording for empty 400 responses', () => {
+    expect(formatHttpError({
+      status: 400,
+      statusText: 'OK',
+      message: 'Http failure response for /api/workflows/package/apply-from-draft: 400 OK',
+    })).toBe(
+      'Bad request (HTTP 400). The server rejected the request but did not return validation details.'
+    );
+  });
 });

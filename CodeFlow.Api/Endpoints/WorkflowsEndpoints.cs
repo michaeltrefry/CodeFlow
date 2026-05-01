@@ -205,10 +205,7 @@ public static class WorkflowsEndpoints
         }
         catch (WorkflowPackageResolutionException exception)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["package"] = new[] { exception.Message }
-            });
+            return WorkflowPackageImportValidationProblem(exception);
         }
     }
 
@@ -224,10 +221,7 @@ public static class WorkflowsEndpoints
         }
         catch (WorkflowPackageResolutionException exception)
         {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["package"] = new[] { exception.Message }
-            });
+            return WorkflowPackageImportValidationProblem(exception);
         }
     }
 
@@ -342,14 +336,49 @@ public static class WorkflowsEndpoints
         }
         catch (WorkflowPackageResolutionException exception)
         {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+    }
+
+    public sealed record ApplyPackageImportFromDraftRequest(Guid ConversationId, Guid SnapshotId);
+
+    private static IResult WorkflowPackageImportValidationProblem(WorkflowPackageResolutionException exception)
+    {
+        if (exception.ValidationErrors.Count == 0)
+        {
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
                 ["package"] = new[] { exception.Message }
             });
         }
+
+        var problems = new Dictionary<string, string[]>
+        {
+            ["package"] = new[]
+            {
+                "Workflow package import failed validation. Fix the listed workflow errors and retry."
+            }
+        };
+
+        foreach (var group in exception.ValidationErrors.GroupBy(error => error.WorkflowKey, StringComparer.Ordinal))
+        {
+            problems[$"workflows.{group.Key}"] = group
+                .Select(FormatWorkflowPackageValidationError)
+                .ToArray();
+        }
+
+        return Results.ValidationProblem(problems);
     }
 
-    public sealed record ApplyPackageImportFromDraftRequest(Guid ConversationId, Guid SnapshotId);
+    private static string FormatWorkflowPackageValidationError(WorkflowPackageValidationError error)
+    {
+        if (error.RuleIds is not { Count: > 0 })
+        {
+            return error.Message;
+        }
+
+        return $"{error.Message} (rules: {string.Join(", ", error.RuleIds)})";
+    }
 
     private static IResult ValidateScript(
         ValidateScriptRequest request,
