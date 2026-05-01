@@ -53,6 +53,28 @@ describe('ChatComposerComponent', () => {
     expect(sent).toEqual(['Run the workflow']);
   });
 
+  it('sends on a Send button click without relying on form submission', () => {
+    // Regression: <cf-button type="submit"> is a custom element, so the browser does NOT trigger
+    // form submission when it's clicked — only the explicit (click) handler does. Without the
+    // (click) wiring on the Send button the only working send path was the textarea's Enter key.
+    const sent: string[] = [];
+    component.send.subscribe(value => sent.push(value));
+
+    const textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+    textarea.value = 'click-fire';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    const buttons = Array.from(fixture.nativeElement.querySelectorAll('cf-button')) as HTMLElement[];
+    const submitButton = buttons.find(button => button.textContent?.trim() === 'Send');
+    expect(submitButton).toBeTruthy();
+    submitButton!.click();
+    fixture.detectChanges();
+
+    expect(sent).toEqual(['click-fire']);
+    expect(textarea.value).toBe('');
+  });
+
   it('blocks blank or busy sends and exposes cancel while busy', () => {
     const sent: string[] = [];
     const cancelled: void[] = [];

@@ -46,8 +46,12 @@ export class PageContextService {
 
   private fromRoute(url: string): PageContext {
     const route = url || '/';
-    if (route === '/' || route === '') return { kind: 'home' };
-    if (route === '/traces' || route.startsWith('/traces?')) return { kind: 'traces-list' };
+    // Compare on path-only so query params (e.g. `?assistantConversation=…` set by chat-panel
+    // when forking or resuming a thread) don't reclassify the homepage as `other` and pop the
+    // assistant sidebar back open on top of the home pane's primary chat.
+    const path = route.split('?')[0].split('#')[0];
+    if (path === '/' || path === '') return { kind: 'home' };
+    if (path === '/traces') return { kind: 'traces-list' };
     return { kind: 'other', route };
   }
 }

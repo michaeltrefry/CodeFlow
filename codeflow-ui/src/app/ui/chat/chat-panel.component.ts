@@ -113,7 +113,10 @@ interface PinnedMutationChip {
           @for (entry of thread(); track entry.kind === 'message' ? 'm:' + (entry.id ?? entry.role + entry.content.length) : 't:' + entry.id) {
             @switch (entry.kind) {
               @case ('message') {
-                <cf-chat-message [message]="entry" />
+                <cf-chat-message
+                  [message]="entry"
+                  (forkRequested)="onForkRequested($event)"
+                />
               }
               @case ('tool') {
                 <cf-chat-tool-call
@@ -969,6 +972,44 @@ export class ChatPanelComponent implements OnDestroy {
     // sc-274 phase 2 — cancel also clears preflight; the user may have hit cancel because the
     // banner surfaced a needed clarification and they want to start over.
     this.preflightError.set(null);
+  }
+
+  /**
+   * Forks the current conversation at the message the user clicked. Mirrors
+   * {@link startNewConversation}: cancel any in-flight turn, swap in the forked thread, and
+   * reflect the new id in the URL. The forked thread starts on a fresh server-assigned synthetic
+   * trace id, so token totals begin at zero — surface them as such.
+   */
+  protected onForkRequested(messageId: string): void {
+    const currentId = this.conversationId();
+    if (!currentId || this.loading() || this.streaming()) {
+      return;
+    }
+    const previousId = currentId;
+    this.cancelTurn();
+    this.loading.set(true);
+    this.loadFailed.set(null);
+    this.turnError.set(null);
+    this.preflightError.set(null);
+    this.history.set([]);
+    this.conversationId.set(null);
+    this.loadedScope.set(null);
+    this.conversationInputTokens.set(0);
+    this.conversationOutputTokens.set(0);
+
+    this.api.fork(currentId, messageId).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: payload => {
+        this.applyConversationPayload(payload);
+        this.syncConversationOverrideInUrl(payload.conversation.id);
+      },
+      error: err => {
+        this.loading.set(false);
+        this.conversationId.set(previousId);
+        this.loadFailed.set(formatHttpError(err));
+      },
+    });
   }
 
   protected startNewConversation(): void {

@@ -30,6 +30,7 @@ public static class AssistantEndpoints
         group.MapPost("/conversations/new", CreateConversationAsync);
         group.MapGet("/conversations", ListConversationsAsync);
         group.MapGet("/conversations/{id:guid}", GetConversationAsync);
+        group.MapPost("/conversations/{id:guid}/fork", ForkConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
 
         // HAA-14: aggregated token usage across the user's assistant conversations. Drives the
@@ -213,6 +214,53 @@ public static class AssistantEndpoints
         {
             conversation = MapConversation(conversation),
             messages = Array.Empty<object>()
+        });
+    }
+
+    /// <summary>
+    /// Forks an existing conversation at <paramref name="throughMessageId"/>: creates a new
+    /// conversation under the same scope owned by the same user and copies every message up to
+    /// and including the named pivot. The user lands on a fresh thread that mirrors the prior
+    /// transcript without affecting the original. Auth mirrors <c>GetConversationAsync</c> /
+    /// <c>PostMessageAsync</c>: the source conversation must be owned by the calling user, and
+    /// demo callers can fork their own homepage threads.
+    /// </summary>
+    private static async Task<IResult> ForkConversationAsync(
+        Guid id,
+        ForkConversationRequest request,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository repository,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ThroughMessageId == Guid.Empty)
+        {
+            return ApiResults.BadRequest("throughMessageId is required.");
+        }
+
+        var source = await repository.GetByIdAsync(id, cancellationToken);
+        if (source is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(source.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(source.UserId, userId, StringComparison.Ordinal))
+        {
+            return Results.NotFound();
+        }
+
+        var fork = await repository.ForkAsync(id, request.ThroughMessageId, cancellationToken);
+        if (fork is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(new
+        {
+            conversation = MapConversation(fork.Conversation),
+            messages = fork.Messages.Select(MapMessage).ToArray()
         });
     }
 
@@ -595,6 +643,8 @@ public static class AssistantEndpoints
 }
 
 public sealed record ConversationScopeRequest(ScopeRequest? Scope);
+
+public sealed record ForkConversationRequest(Guid ThroughMessageId);
 
 public sealed record ScopeRequest(string? Kind, string? EntityType, string? EntityId);
 

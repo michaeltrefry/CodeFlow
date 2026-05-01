@@ -31,6 +31,7 @@ import { ButtonComponent } from '../button.component';
           size="sm"
           type="submit"
           [disabled]="disabled || !canSend()"
+          (click)="onSubmit($event)"
         >
           {{ busy ? 'Streaming…' : 'Send' }}
         </cf-button>

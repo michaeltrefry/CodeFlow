@@ -73,6 +73,25 @@ public interface IAssistantConversationRepository
         Guid conversationId,
         string? signature,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a new conversation owned by the same user under the same scope as
+    /// <paramref name="sourceConversationId"/>, copying every message up to and including
+    /// <paramref name="throughMessageId"/>. Sequence numbers, roles, content, provider/model and
+    /// invocation ids are preserved on the copies; ids and timestamps are minted fresh. Token
+    /// totals on the new conversation start at zero so the live chip reflects the forked turn
+    /// budget rather than the source's history. Returns null when either id does not resolve or
+    /// when the message does not belong to the source conversation.
+    /// </summary>
+    Task<AssistantConversationFork?> ForkAsync(
+        Guid sourceConversationId,
+        Guid throughMessageId,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>Result of a successful <see cref="IAssistantConversationRepository.ForkAsync"/> call.</summary>
+public sealed record AssistantConversationFork(
+    AssistantConversation Conversation,
+    IReadOnlyList<AssistantMessage> Messages);
 
 public sealed record AssistantConversationTokenTotals(long InputTokensTotal, long OutputTokensTotal);

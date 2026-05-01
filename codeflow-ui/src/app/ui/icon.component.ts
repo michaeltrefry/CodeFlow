@@ -6,7 +6,7 @@ export type IconName =
   | 'settings' | 'mcp' | 'roles' | 'skills' | 'git' | 'inventory'
   | 'search' | 'bell' | 'plus' | 'chevL' | 'chevR' | 'chevD' | 'close'
   | 'panelL' | 'trash' | 'play' | 'check' | 'x' | 'alert'
-  | 'logic' | 'bot' | 'copy' | 'refresh' | 'back';
+  | 'logic' | 'bot' | 'copy' | 'refresh' | 'back' | 'fork' | 'download';
 
 @Component({
   selector: 'cf-icon',
@@ -162,6 +162,19 @@ export type IconName =
       }
       @case ('back') {
         <svg [attr.width]="size(14)" [attr.height]="size(14)" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3 2 7l4 4M2 7h10"/></svg>
+      }
+      @case ('fork') {
+        <svg [attr.width]="size(12)" [attr.height]="size(12)" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="3" cy="3" r="1.25"/>
+          <circle cx="9" cy="3" r="1.25"/>
+          <circle cx="6" cy="9.5" r="1.25"/>
+          <path d="M3 4.25v1.25c0 .8.6 1.5 1.5 1.5h3c.9 0 1.5-.7 1.5-1.5V4.25M6 7v1.25"/>
+        </svg>
+      }
+      @case ('download') {
+        <svg [attr.width]="size(12)" [attr.height]="size(12)" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 1.75v6M3.5 5.5 6 8l2.5-2.5M2.25 9.75h7.5"/>
+        </svg>
       }
     }
   `,
