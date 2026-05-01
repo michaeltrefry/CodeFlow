@@ -107,7 +107,7 @@
         {
           "id": "5ca45000-0001-0001-0001-000000000002",
           "kind": "ReviewLoop",
-          "outputPorts": ["Approved", "Exhausted"],
+          "outputPorts": ["Approved"],
           "layoutX": 350,
           "layoutY": 200,
           "subflowKey": "swarm-candidate-loop",

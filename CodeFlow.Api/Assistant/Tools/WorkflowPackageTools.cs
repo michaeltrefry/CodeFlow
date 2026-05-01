@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 
 namespace CodeFlow.Api.Assistant.Tools;
 
@@ -22,32 +23,66 @@ namespace CodeFlow.Api.Assistant.Tools;
 /// click and (b) the import path, audit, validation, and permission checks are the same as a
 /// regular library import.
 /// </remarks>
-public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) : IAssistantTool
+public sealed class SaveWorkflowPackageTool : IAssistantTool
 {
+    private readonly IWorkflowPackageImporter importer;
+    private readonly ToolWorkspaceContext? workspace;
+
+    /// <summary>
+    /// Constructor used by the per-turn factory. <paramref name="workspace"/> is non-null when
+    /// the conversation has a writable workspace — in that mode the tool also accepts a zero-arg
+    /// invocation and reads the package from <c>draft.cf-workflow-package.json</c> in the
+    /// workspace, so the LLM doesn't have to re-emit the full payload.
+    /// </summary>
+    public SaveWorkflowPackageTool(IWorkflowPackageImporter importer, ToolWorkspaceContext? workspace = null)
+    {
+        ArgumentNullException.ThrowIfNull(importer);
+        this.importer = importer;
+        this.workspace = workspace;
+    }
+
     public string Name => "save_workflow_package";
 
     public string Description =>
         "Validate a drafted workflow package against the library and offer to save it. The tool " +
-        "runs a preview only; it does NOT save. The chat UI surfaces a 'Save' confirmation chip — " +
-        "only the user clicking that chip persists the package. " +
-        "Required: `package` (a codeflow.workflow-package.v1 document carrying the new or changed " +
-        "workflows/agents/roles/skills/MCP servers you want to land). You do NOT need to embed " +
-        "unchanged dependencies that already exist in the target library — the importer resolves " +
-        "any (key, version) referenced by a node but omitted from the package against the local DB " +
-        "and reports it as a Reuse in the preview. Only embed an entity when you're creating it or " +
-        "intentionally bumping it. Enum fields (workflow category, node kind, input kind, agent " +
-        "kind, MCP transport, etc.) accept the canonical PascalCase strings you see in " +
-        "`get_workflow` / `get_workflow_package` output (e.g. \"Workflow\", \"Agent\", \"Text\"). When " +
-        "in doubt about the shape, call `get_workflow_package` on any existing workflow first and " +
-        "mirror its layout. After invoking this tool, do NOT call it again or take further action; " +
-        "wait for the user's next message.";
+        "runs a preview AND the same validation the import endpoint runs at apply time; it does " +
+        "NOT save. The chat UI surfaces a 'Save' confirmation chip — only the user clicking that " +
+        "chip persists the package. " +
+        (workspace is not null
+            ? "There are TWO ways to invoke this tool: (1) pass a `package` object to validate it " +
+              "directly, OR (2) call with no arguments to validate the conversation's draft package " +
+              "saved via `set_workflow_package_draft`. Form (2) is strongly preferred for refinement " +
+              "loops because the LLM does not have to re-emit the full payload on every save attempt. "
+            : "Required: `package` (a codeflow.workflow-package.v1 document). ") +
+        "You do NOT need to embed unchanged dependencies that already exist in the target library " +
+        "— the importer resolves any (key, version) referenced by a node but omitted from the " +
+        "package against the local DB and reports it as a Reuse in the preview. Only embed an " +
+        "entity when you're creating it or intentionally bumping it. Enum fields accept the " +
+        "canonical PascalCase strings you see in `get_workflow` / `get_workflow_package` output. " +
+        "After invoking this tool, do NOT call it again or take further action; wait for the " +
+        "user's next message.";
 
-    public JsonElement InputSchema => AssistantToolJson.Schema(@"{
+    public JsonElement InputSchema => AssistantToolJson.Schema(workspace is not null
+        ? @"{
         ""type"": ""object"",
         ""properties"": {
             ""package"": {
                 ""type"": ""object"",
-                ""description"": ""A codeflow.workflow-package.v1 document carrying the new or changed entities. Refs to entities that already exist in the target library may be omitted — the importer resolves them from the local DB and reports them as Reuse items in the preview.""
+                ""description"": ""Optional. A codeflow.workflow-package.v1 document. Omit to use the conversation's draft (saved via set_workflow_package_draft) — preferred for refinement loops to avoid re-emitting the payload.""
+            },
+            ""note"": {
+                ""type"": ""string"",
+                ""description"": ""Optional human-facing note explaining why this save is being offered. Echoed back in the result for the chat UI.""
+            }
+        },
+        ""additionalProperties"": false
+    }"
+        : @"{
+        ""type"": ""object"",
+        ""properties"": {
+            ""package"": {
+                ""type"": ""object"",
+                ""description"": ""A codeflow.workflow-package.v1 document carrying the new or changed entities.""
             },
             ""note"": {
                 ""type"": ""string"",
@@ -60,25 +95,75 @@ public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) :
 
     public async Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty("package", out var packageElement)
-            || packageElement.ValueKind != JsonValueKind.Object)
+        WorkflowPackage? package;
+        var packageSource = "inline";
+        // Holds the parsed JSON for the draft path so we can snapshot it after validation
+        // succeeds without re-serializing the typed `package` (which would re-order fields and
+        // break byte-for-byte equality with what the LLM saw).
+        JsonNode? draftNodeForSnapshot = null;
+
+        // Distinguish three argument shapes carefully:
+        //   - `package` absent entirely → draft path (or error if no workspace)
+        //   - `package` present and an object → inline path
+        //   - `package` present but null / string / array / number → hard error (do NOT silently
+        //     fall through to the draft path; that would let a malformed inline save apply a
+        //     stale draft from disk while the user thinks they're saving the value they sent)
+        JsonElement packageElement = default;
+        var packagePropertyPresent = arguments.ValueKind == JsonValueKind.Object
+            && arguments.TryGetProperty("package", out packageElement);
+
+        if (packagePropertyPresent && packageElement.ValueKind == JsonValueKind.Object)
+        {
+            try
+            {
+                package = packageElement.Deserialize<WorkflowPackage>(AssistantToolJson.SerializerOptions);
+            }
+            catch (JsonException ex)
+            {
+                return Error($"Could not parse `package` as a workflow package document: {ex.Message}");
+            }
+        }
+        else if (packagePropertyPresent)
+        {
+            return Error(
+                $"Argument `package` is present but its JSON kind is `{packageElement.ValueKind}`. "
+                + "It must be a workflow package object, or omitted entirely to use the conversation's draft.");
+        }
+        else if (workspace is not null)
+        {
+            // Zero-arg form: read the conversation's draft from disk.
+            try
+            {
+                draftNodeForSnapshot = await WorkflowPackageDraftStore.ReadAsync(workspace, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return Error($"Failed to read draft package from workspace: {ex.Message}");
+            }
+
+            if (draftNodeForSnapshot is null)
+            {
+                return Error("No draft package has been saved for this conversation. Call `set_workflow_package_draft` first, or pass a `package` argument directly.");
+            }
+
+            try
+            {
+                package = draftNodeForSnapshot.Deserialize<WorkflowPackage>(AssistantToolJson.SerializerOptions);
+            }
+            catch (JsonException ex)
+            {
+                return Error($"Could not parse the conversation's draft as a workflow package document: {ex.Message}");
+            }
+            packageSource = "draft";
+        }
+        else
         {
             return Error("Argument `package` is required and must be an object (a workflow package document).");
         }
 
-        WorkflowPackage? package;
-        try
-        {
-            package = packageElement.Deserialize<WorkflowPackage>(AssistantToolJson.SerializerOptions);
-        }
-        catch (JsonException ex)
-        {
-            return Error($"Could not parse `package` as a workflow package document: {ex.Message}");
-        }
-
         if (package is null)
         {
-            return Error("Argument `package` deserialized to null.");
+            return Error("Workflow package deserialized to null.");
         }
 
         WorkflowPackageImportPreview preview;
@@ -110,7 +195,72 @@ public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) :
             return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
         }
 
+        // Run the same validators the apply endpoint runs, in a rollback-only transaction.
+        // Without this, the assistant would tell the user "preview validated, click Save" and
+        // then the click would fail at apply time on rules the apply endpoint enforces (Start
+        // node present, every node reachable, declared port hygiene, etc.).
+        if (preview.CanApply)
+        {
+            WorkflowPackageValidationResult validation;
+            try
+            {
+                validation = await importer.ValidateAsync(package, cancellationToken);
+            }
+            catch (WorkflowPackageResolutionException ex)
+            {
+                var payload = new
+                {
+                    status = "invalid",
+                    message = ex.Message,
+                    hint = "The package was rejected during validation. Fix the issue and re-emit.",
+                };
+                return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
+            }
+
+            if (!validation.IsValid)
+            {
+                var payload = new
+                {
+                    status = "invalid",
+                    message = "The package would be rejected at save time. Fix the listed errors and re-emit.",
+                    errors = validation.Errors
+                        .Select(e => new
+                        {
+                            workflowKey = e.WorkflowKey,
+                            message = e.Message,
+                            ruleIds = e.RuleIds ?? Array.Empty<string>(),
+                        })
+                        .ToArray(),
+                    hint = "These are the same rules the visual editor and the import endpoint " +
+                           "enforce. Common offenders: missing Start node, a node not reachable " +
+                           "from Start, maxRoundsPerRound out of [1..50], or an edge using a port " +
+                           "the source node doesn't declare.",
+                };
+                return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
+            }
+        }
+
         var note = AssistantToolJson.ReadOptionalString(arguments, "note");
+
+        // Snapshot binding for the draft path: copy the validated draft bytes to an immutable
+        // per-save snapshot file, return its id, and have the chat UI carry the id through to
+        // the apply endpoint. Without this the user could approve one package while the live
+        // draft.cf-workflow-package.json file gets patched/overwritten before they click Save,
+        // and the apply endpoint would import the *current* draft, not the one they confirmed.
+        // Only snapshot when preview.CanApply (the chip will only render in that case).
+        Guid? draftSnapshotId = null;
+        if (packageSource == "draft" && preview.CanApply && draftNodeForSnapshot is not null && workspace is not null)
+        {
+            try
+            {
+                draftSnapshotId = await WorkflowPackageDraftStore.WriteSnapshotAsync(
+                    workspace, draftNodeForSnapshot, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return Error($"Could not snapshot the draft for confirmation: {ex.Message}");
+            }
+        }
 
         var summary = new
         {
@@ -136,6 +286,16 @@ public sealed class SaveWorkflowPackageTool(IWorkflowPackageImporter importer) :
                 })
                 .ToArray(),
             canApply = preview.CanApply,
+            // Tells the chat UI which apply path to use on the Save chip:
+            //   "inline" → POST /api/workflows/package/apply with the cached package payload
+            //   "draft"  → POST /api/workflows/package/apply-from-draft with conversationId + snapshotId
+            // The "draft" path keeps the full payload server-side so refinement loops don't
+            // round-trip the package through the LLM or the browser; the snapshot id binds the
+            // chip to the exact bytes that were validated, immune to subsequent draft mutations.
+            packageSource,
+            // null on the inline path; populated GUID on the draft path when preview.CanApply.
+            // Format as "N" (32 hex chars no dashes) for compact transport in the chip cache.
+            snapshotId = draftSnapshotId?.ToString("N"),
             note,
             message = preview.CanApply
                 ? "Preview validated. The user must click the 'Save' chip in chat to confirm — do not call this tool again or take further action until the user responds."

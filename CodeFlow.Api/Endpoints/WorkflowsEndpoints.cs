@@ -1,3 +1,5 @@
+using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
@@ -5,6 +7,8 @@ using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Orchestration.Scripting;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
+using CodeFlow.Runtime.Workspace;
 using Jint;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -56,6 +60,9 @@ public static class WorkflowsEndpoints
             .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
 
         group.MapPost("/package/apply", ApplyPackageImportAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
+
+        group.MapPost("/package/apply-from-draft", ApplyPackageImportFromDraftAsync)
             .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
 
         group.MapGet("/{key}", GetLatestAsync)
@@ -223,6 +230,126 @@ public static class WorkflowsEndpoints
             });
         }
     }
+
+    /// <summary>
+    /// Applies the draft package stored in the calling user's assistant conversation workspace.
+    /// The chat-panel calls this when the user clicks the Save chip on a `save_workflow_package`
+    /// tool call that was invoked WITHOUT a package argument (the draft path). Keeping the
+    /// payload server-side means refinement loops never round-trip the package through the LLM
+    /// or the browser.
+    /// <para/>
+    /// The chip carries an immutable <c>snapshotId</c> minted by <c>save_workflow_package</c>
+    /// when it validated the draft. The endpoint loads the snapshot file (NOT the live draft)
+    /// so a draft mutation between preview and confirmation can't make the user import a
+    /// different package than the one they approved.
+    /// </summary>
+    private static async Task<IResult> ApplyPackageImportFromDraftAsync(
+        ApplyPackageImportFromDraftRequest request,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantWorkspaceProvider workspaceProvider,
+        IWorkflowPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.ConversationId == Guid.Empty)
+        {
+            return ApiResults.BadRequest("conversationId is required.");
+        }
+
+        if (request.SnapshotId == Guid.Empty)
+        {
+            return ApiResults.BadRequest(
+                "snapshotId is required. The save chip must carry the snapshot id minted by `save_workflow_package` so the apply matches the bytes the user confirmed.");
+        }
+
+        var conversation = await conversations.GetByIdAsync(request.ConversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            // Same shape as the assistant endpoints: don't leak existence to a non-owner.
+            return Results.NotFound();
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(request.ConversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var snapshotPath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, request.SnapshotId);
+        if (!File.Exists(snapshotPath))
+        {
+            // Snapshot files only exist between save_workflow_package returning preview_ok and
+            // a successful apply (or until the conversation workspace is reset). A miss here
+            // means the snapshot was already applied, was created in a different conversation,
+            // or never existed — surface as a clean 400 so the chip shows "Save failed" not 500.
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[]
+                {
+                    "Snapshot not found for this conversation. The Save chip may have already been used, or the assistant has not yet validated a draft. Ask the assistant to save the draft again."
+                }
+            });
+        }
+
+        WorkflowPackage? package;
+        try
+        {
+            await using var stream = File.OpenRead(snapshotPath);
+            package = await JsonSerializer.DeserializeAsync<WorkflowPackage>(
+                stream,
+                AssistantToolJson.SerializerOptions,
+                cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { $"The draft snapshot on disk could not be parsed: {ex.Message}" }
+            });
+        }
+
+        if (package is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { "The draft snapshot on disk deserialized to null." }
+            });
+        }
+
+        try
+        {
+            var result = await importer.ApplyAsync(package, cancellationToken);
+            // Snapshot consumed — clean up so the workspace doesn't accumulate them. A failure
+            // here is non-fatal (the import already succeeded); silently swallow IO errors so
+            // a stale-FS read doesn't undo a successful library write.
+            try { WorkflowPackageDraftStore.DeleteSnapshot(workspace, request.SnapshotId); }
+            catch (IOException) { /* best-effort cleanup; ignore */ }
+            return Results.Ok(result);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { exception.Message }
+            });
+        }
+    }
+
+    public sealed record ApplyPackageImportFromDraftRequest(Guid ConversationId, Guid SnapshotId);
 
     private static IResult ValidateScript(
         ValidateScriptRequest request,

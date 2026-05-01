@@ -335,6 +335,12 @@ export interface AssistantSettingsResponse {
    * assistant's tool surface. Null means "built-in tools only".
    */
   assignedAgentRoleId: number | null;
+  /**
+   * Free-form operator-authored guidance appended to the curated system prompt at chat-turn
+   * build time. Lets an admin describe additional tools granted via the assigned agent role,
+   * scope rules, persona tweaks, or any other instance-specific behavior.
+   */
+  instructions: string | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
@@ -344,6 +350,196 @@ export interface AssistantSettingsWriteRequest {
   model: string | null;
   maxTokensPerConversation: number | null;
   assignedAgentRoleId: number | null;
+  instructions: string | null;
+}
+
+// --- Notification subsystem (epic 48) ----------------------------------------------------
+
+export type NotificationChannel = 'Email' | 'Sms' | 'Slack';
+
+export const NOTIFICATION_CHANNELS: readonly NotificationChannel[] = ['Email', 'Sms', 'Slack'] as const;
+
+export type NotificationEventKind = 'HitlTaskPending';
+
+export const NOTIFICATION_EVENT_KINDS: readonly NotificationEventKind[] = ['HitlTaskPending'] as const;
+
+export type NotificationSeverity = 'Info' | 'Normal' | 'High' | 'Urgent';
+
+export const NOTIFICATION_SEVERITIES: readonly NotificationSeverity[] = ['Info', 'Normal', 'High', 'Urgent'] as const;
+
+export type NotificationCredentialAction = 'Preserve' | 'Replace' | 'Clear';
+
+export interface NotificationCredentialUpdateRequest {
+  action: NotificationCredentialAction;
+  value?: string | null;
+}
+
+export interface NotificationProviderResponse {
+  id: string;
+  displayName: string;
+  channel: NotificationChannel;
+  endpointUrl?: string | null;
+  fromAddress?: string | null;
+  hasCredential: boolean;
+  additionalConfigJson?: string | null;
+  enabled: boolean;
+  isArchived: boolean;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+}
+
+export interface NotificationProviderWriteRequest {
+  displayName: string;
+  channel: NotificationChannel;
+  endpointUrl?: string | null;
+  fromAddress?: string | null;
+  additionalConfigJson?: string | null;
+  enabled: boolean;
+  credential?: NotificationCredentialUpdateRequest;
+}
+
+export interface NotificationRecipientDto {
+  channel: NotificationChannel;
+  address: string;
+  displayName?: string | null;
+}
+
+export interface NotificationTemplateRefDto {
+  templateId: string;
+  version: number;
+}
+
+export interface NotificationRouteResponse {
+  routeId: string;
+  eventKind: NotificationEventKind;
+  providerId: string;
+  recipients: NotificationRecipientDto[];
+  template: NotificationTemplateRefDto;
+  minimumSeverity: NotificationSeverity;
+  enabled: boolean;
+}
+
+export interface NotificationRouteWriteRequest {
+  eventKind: NotificationEventKind;
+  providerId: string;
+  recipients: NotificationRecipientDto[];
+  template: NotificationTemplateRefDto;
+  minimumSeverity: NotificationSeverity;
+  enabled: boolean;
+}
+
+export interface NotificationTemplateResponse {
+  templateId: string;
+  version: number;
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+  createdAtUtc: string;
+  createdBy?: string | null;
+  updatedAtUtc: string;
+  updatedBy?: string | null;
+}
+
+// sc-63 — template authoring DTOs.
+export interface NotificationTemplateWriteRequest {
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+}
+
+export interface NotificationTemplatePreviewRequest {
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+}
+
+export interface NotificationTemplatePreviewResponse {
+  subject?: string | null;
+  body?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotificationDiagnosticsResponse {
+  publicBaseUrl?: string | null;
+  providerCount: number;
+  routeCount: number;
+  actionUrlsConfigured: boolean;
+}
+
+// sc-58 — validate + test-send DTOs.
+export interface NotificationProviderValidationResponse {
+  isValid: boolean;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotificationTestSendRequest {
+  recipient: NotificationRecipientDto;
+  template?: NotificationTemplateRefDto | null;
+}
+
+export interface NotificationTestDeliveryDto {
+  status: string;
+  providerMessageId?: string | null;
+  normalizedDestination?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotificationTestSendResponse {
+  subject?: string | null;
+  body: string;
+  actionUrl: string;
+  delivery: NotificationTestDeliveryDto;
+}
+
+// sc-59 — delivery audit listing.
+export type NotificationDeliveryStatus = 'Unknown' | 'Sent' | 'Failed' | 'Skipped' | 'Retrying' | 'Suppressed';
+
+export const NOTIFICATION_DELIVERY_STATUSES: readonly NotificationDeliveryStatus[] = [
+  'Sent',
+  'Failed',
+  'Skipped',
+  'Retrying',
+  'Suppressed',
+] as const;
+
+export interface NotificationDeliveryAttemptResponse {
+  id: number;
+  eventId: string;
+  eventKind: NotificationEventKind;
+  routeId: string;
+  providerId: string;
+  status: NotificationDeliveryStatus;
+  attemptNumber: number;
+  attemptedAtUtc: string;
+  completedAtUtc?: string | null;
+  normalizedDestination: string;
+  providerMessageId?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  createdAtUtc: string;
+}
+
+export interface NotificationDeliveryAttemptListResponse {
+  items: NotificationDeliveryAttemptResponse[];
+  nextBeforeId?: number | null;
+}
+
+export interface NotificationDeliveryAttemptListQuery {
+  eventId?: string | null;
+  providerId?: string | null;
+  routeId?: string | null;
+  status?: NotificationDeliveryStatus | null;
+  sinceUtc?: string | null;
+  beforeId?: number | null;
+  limit?: number | null;
 }
 
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';

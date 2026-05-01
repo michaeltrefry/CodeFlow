@@ -62,7 +62,10 @@ public sealed class AssistantSettingsResolver(
             MaxTokens: options.MaxTokens > 0 ? options.MaxTokens : 32768,
             MaxTurns: options.MaxTurns > 0 ? options.MaxTurns : 10,
             MaxTokensPerConversation: maxPerConversation,
-            AssignedAgentRoleId: dbDefaults?.AssignedAgentRoleId);
+            AssignedAgentRoleId: dbDefaults?.AssignedAgentRoleId,
+            OperatorInstructions: string.IsNullOrWhiteSpace(dbDefaults?.Instructions)
+                ? null
+                : dbDefaults!.Instructions);
     }
 
     private static string FirstNonBlank(params string?[] values)

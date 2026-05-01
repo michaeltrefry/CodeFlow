@@ -1,3 +1,4 @@
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
@@ -283,6 +284,298 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         agents!.Should().Contain(agentSummary =>
             agentSummary.Key == "wf-apply-target-writer" &&
             agentSummary.LatestVersion == 1);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithoutStartNode()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-no-start",
+            agentKey: "import-no-start-agent",
+            nodes: new[]
+            {
+                PackageNode(Guid.NewGuid(), WorkflowNodeKind.Agent, "import-no-start-agent"),
+            },
+            edges: Array.Empty<WorkflowPackageWorkflowEdge>());
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("exactly one Start node");
+
+        var imported = await client.GetAsync("/api/workflows/import-no-start");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithDisconnectedNodes()
+    {
+        using var client = factory.CreateClient();
+        var startId = Guid.NewGuid();
+        var islandId = Guid.NewGuid();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-island-flow",
+            agentKey: "import-island-agent",
+            nodes: new[]
+            {
+                PackageNode(startId, WorkflowNodeKind.Start, "import-island-agent"),
+                PackageNode(islandId, WorkflowNodeKind.Agent, "import-island-agent"),
+            },
+            edges: Array.Empty<WorkflowPackageWorkflowEdge>());
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("not reachable from the Start node");
+
+        var imported = await client.GetAsync("/api/workflows/import-island-flow");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithInvalidMaxRounds()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-bad-rounds",
+            agentKey: "import-bad-rounds-agent",
+            maxRoundsPerRound: 0);
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("maxRoundsPerRound");
+
+        var imported = await client.GetAsync("/api/workflows/import-bad-rounds");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowBlockedBySaveTimePipeline()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-protected-var",
+            agentKey: "import-protected-var-agent",
+            nodes: new[]
+            {
+                PackageNode(
+                    Guid.NewGuid(),
+                    WorkflowNodeKind.Start,
+                    "import-protected-var-agent",
+                    mirrorOutputToWorkflowVar: "__loop.hijack"),
+            });
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("framework-managed");
+
+        var imported = await client.GetAsync("/api/workflows/import-protected-var");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImportFromDraft_AppliesSnapshotFromConversationWorkspace()
+    {
+        // The homepage assistant's `save_workflow_package` zero-arg path snapshots the validated
+        // draft to an immutable per-save file and returns its id; the chip POSTs the
+        // {conversationId, snapshotId} pair. The endpoint loads the snapshot (NOT the live
+        // draft) so refinement loops never round-trip the package and the apply binds to the
+        // exact bytes that were validated.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "draft-apply-writer");
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var draftDir = Path.Combine(factory.AssistantWorkspaceRoot, conversationId.ToString("N"));
+        Directory.CreateDirectory(draftDir);
+        var snapshotId = Guid.NewGuid();
+        var snapshotPath = Path.Combine(draftDir, $"snapshot-{snapshotId:N}.cf-workflow-package.json");
+        var package = BuildSingleAgentPackage(
+            workflowKey: "draft-apply-flow",
+            agentKey: "draft-apply-writer");
+        await File.WriteAllTextAsync(
+            snapshotPath,
+            JsonSerializer.Serialize(package, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId, snapshotId });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        var imported = await client.GetAsync("/api/workflows/draft-apply-flow");
+        imported.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Snapshot was consumed and cleaned up so the workspace doesn't accumulate per-save
+        // files indefinitely.
+        File.Exists(snapshotPath).Should().BeFalse(
+            because: "successful apply must clean up the snapshot file it consumed");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImportFromDraft_BindsToSnapshot_NotLiveDraft()
+    {
+        // The exact regression Codex flagged: if the chip carried only conversationId and the
+        // server re-read the live draft, a draft mutation (patch / overwrite) between the
+        // assistant's save_workflow_package call and the user's chip click would silently
+        // redirect the apply to a different package. Stage a "validated" snapshot of package A
+        // alongside a *different* live draft of package B; the apply must import A.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "snapshot-binding-writer");
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var draftDir = Path.Combine(factory.AssistantWorkspaceRoot, conversationId.ToString("N"));
+        Directory.CreateDirectory(draftDir);
+        var serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        // Snapshot: package A, the bytes the user "approved" via the chip preview.
+        var snapshotId = Guid.NewGuid();
+        var snapshotPath = Path.Combine(draftDir, $"snapshot-{snapshotId:N}.cf-workflow-package.json");
+        var packageA = BuildSingleAgentPackage(
+            workflowKey: "snapshot-binding-package-a",
+            agentKey: "snapshot-binding-writer");
+        await File.WriteAllTextAsync(snapshotPath, JsonSerializer.Serialize(packageA, serializerOptions));
+
+        // Live draft: package B, what the LLM mutated to AFTER the chip was rendered.
+        var draftPath = Path.Combine(draftDir, "draft.cf-workflow-package.json");
+        var packageB = BuildSingleAgentPackage(
+            workflowKey: "snapshot-binding-package-b",
+            agentKey: "snapshot-binding-writer");
+        await File.WriteAllTextAsync(draftPath, JsonSerializer.Serialize(packageB, serializerOptions));
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId, snapshotId });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // The user-confirmed package (A) landed in the library; the post-preview live draft
+        // (B) did NOT, even though it sits next to the snapshot on disk.
+        var importedA = await client.GetAsync("/api/workflows/snapshot-binding-package-a");
+        importedA.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "the snapshot the user confirmed must apply, not the post-preview live draft");
+
+        var importedB = await client.GetAsync("/api/workflows/snapshot-binding-package-b");
+        importedB.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            because: "the live draft must not be applied — only the snapshot bytes the user approved");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImportFromDraft_RejectsRequestForUnownedConversation()
+    {
+        // Owner check guards the endpoint: a different user's conversation must surface as
+        // 404 (don't leak existence) rather than applying their workspace draft.
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "some-other-user",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId, snapshotId = Guid.NewGuid() });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImportFromDraft_ReturnsValidationProblem_WhenSnapshotMissing()
+    {
+        // The conversation exists, the snapshotId parses, but no snapshot file is on disk —
+        // either it was already consumed by an earlier apply or it never existed. Surface a
+        // clean validation error rather than 500.
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId, snapshotId = Guid.NewGuid() });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("Snapshot not found");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImportFromDraft_RejectsMissingSnapshotId()
+    {
+        // The endpoint must require both fields. Without snapshotId the apply would be
+        // ambiguous (live draft vs. validated bytes); refuse the request.
+        using var client = factory.CreateClient();
+
+        var apply = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-draft",
+            new { conversationId = Guid.NewGuid() });
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("snapshotId");
     }
 
     [Fact]
@@ -1110,6 +1403,75 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         });
         response.EnsureSuccessStatusCode();
     }
+
+    private static WorkflowPackage BuildSingleAgentPackage(
+        string workflowKey,
+        string agentKey,
+        int maxRoundsPerRound = 3,
+        IReadOnlyList<WorkflowPackageWorkflowNode>? nodes = null,
+        IReadOnlyList<WorkflowPackageWorkflowEdge>? edges = null)
+    {
+        var startId = Guid.NewGuid();
+        var workflowNodes = nodes ?? new[]
+        {
+            PackageNode(startId, WorkflowNodeKind.Start, agentKey),
+        };
+
+        var workflow = new WorkflowPackageWorkflow(
+            Key: workflowKey,
+            Version: 1,
+            Name: workflowKey,
+            MaxRoundsPerRound: maxRoundsPerRound,
+            Category: WorkflowCategory.Workflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: workflowNodes,
+            Edges: edges ?? Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agent = new WorkflowPackageAgent(
+            Key: agentKey,
+            Version: 1,
+            Kind: AgentKind.Agent,
+            Config: JsonNode.Parse("""
+                {
+                  "type": "agent",
+                  "provider": "openai",
+                  "model": "gpt-test",
+                  "outputs": [{ "kind": "Completed" }]
+                }
+                """),
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "test",
+            Outputs: new[] { new WorkflowPackageAgentOutput("Completed", null, null) });
+
+        return new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference(workflow.Key, workflow.Version),
+            Workflows: new[] { workflow },
+            Agents: new[] { agent },
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+    }
+
+    private static WorkflowPackageWorkflowNode PackageNode(
+        Guid id,
+        WorkflowNodeKind kind,
+        string agentKey,
+        string? mirrorOutputToWorkflowVar = null) =>
+        new(
+            Id: id,
+            Kind: kind,
+            AgentKey: agentKey,
+            AgentVersion: 1,
+            OutputScript: null,
+            OutputPorts: new[] { "Completed" },
+            LayoutX: 0,
+            LayoutY: 0,
+            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar);
 
     private async Task SeedMcpRoleAsync(string agentKey)
     {

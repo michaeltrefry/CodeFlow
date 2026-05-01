@@ -30,4 +30,13 @@ public interface INotificationDeliveryAttemptRepository
         string providerId,
         string normalizedDestination,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Audit listing for the admin surface (sc-59). Returns rows in descending
+    /// (<c>attempted_at_utc</c>, <c>id</c>) order so the most recent attempts surface first;
+    /// <see cref="NotificationDeliveryAttemptListFilter.BeforeId"/> drives cursor pagination.
+    /// </summary>
+    Task<IReadOnlyList<NotificationDeliveryAttemptRecord>> ListAsync(
+        NotificationDeliveryAttemptListFilter filter,
+        CancellationToken cancellationToken = default);
 }

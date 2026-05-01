@@ -48,6 +48,7 @@ public static class LlmProvidersEndpoints
             Model: settings?.Model,
             MaxTokensPerConversation: settings?.MaxTokensPerConversation,
             AssignedAgentRoleId: settings?.AssignedAgentRoleId,
+            Instructions: settings?.Instructions,
             UpdatedBy: settings?.UpdatedBy,
             UpdatedAtUtc: settings?.UpdatedAtUtc));
     }
@@ -88,6 +89,10 @@ public static class LlmProvidersEndpoints
                 }
             }
         }
+        if (request.Instructions is { Length: > MaxInstructionsLength })
+        {
+            errors["instructions"] = new[] { $"Instructions must be {MaxInstructionsLength} characters or fewer." };
+        }
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
@@ -98,6 +103,7 @@ public static class LlmProvidersEndpoints
             Model: request.Model,
             MaxTokensPerConversation: request.MaxTokensPerConversation,
             AssignedAgentRoleId: request.AssignedAgentRoleId,
+            Instructions: request.Instructions,
             UpdatedBy: currentUser.Id), cancellationToken);
 
         return Results.Ok(new AssistantSettingsResponse(
@@ -105,9 +111,17 @@ public static class LlmProvidersEndpoints
             Model: saved.Model,
             MaxTokensPerConversation: saved.MaxTokensPerConversation,
             AssignedAgentRoleId: saved.AssignedAgentRoleId,
+            Instructions: saved.Instructions,
             UpdatedBy: saved.UpdatedBy,
             UpdatedAtUtc: saved.UpdatedAtUtc));
     }
+
+    /// <summary>
+    /// Hard cap on the operator-authored instructions overlay. Big enough for several paragraphs
+    /// describing role-granted tools / scope rules; small enough to keep the system prompt under
+    /// the model's effective context budget.
+    /// </summary>
+    private const int MaxInstructionsLength = 16_000;
 
     private static async Task<IResult> ListAsync(
         ILlmProviderSettingsRepository repository,

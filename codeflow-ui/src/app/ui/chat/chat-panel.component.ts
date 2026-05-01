@@ -15,7 +15,7 @@ import { AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTarg
 import { formatHttpError } from '../../core/format-error';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
-import { WorkflowsApi } from '../../core/workflows.api';
+import { WorkflowPackageImportPreview, WorkflowsApi } from '../../core/workflows.api';
 import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { TracesApi } from '../../core/traces.api';
 import { CreateTraceRequest, LlmProviderKey, LlmProviderModelOption, ReplayRequest } from '../../core/models';
@@ -52,6 +52,19 @@ interface PendingAssistantTurn {
 type ThreadEntry =
   | ({ kind: 'message' } & ChatMessageView)
   | ({ kind: 'tool' } & ChatToolCallView);
+
+interface PinnedMutationChip {
+  id: string;
+  state: NonNullable<ChatToolCallView['confirmation']>['state'];
+  title: string;
+  message: string | null;
+  confirmLabel: string;
+  cancelLabel: string;
+  canConfirm: boolean;
+  canCancel: boolean;
+  linkUrl: string | null;
+  linkLabel: string | null;
+}
 
 /**
  * Embeddable assistant chat panel. Connects to the HAA-1 assistant API for the supplied
@@ -175,21 +188,35 @@ type ThreadEntry =
       }
 
       @for (chip of pendingMutationChips(); track chip.id) {
-        <div class="ws-prompt mutation-pin" data-testid="pending-mutation-chip">
-          <div class="ws-prompt-title">{{ chip.prompt }}</div>
+        <div
+          class="ws-prompt mutation-pin"
+          [attr.data-state]="chip.state"
+          data-testid="pending-mutation-chip"
+        >
+          <div class="ws-prompt-title">{{ chip.title }}</div>
+          @if (chip.message) {
+            <div class="ws-prompt-hint">{{ chip.message }}</div>
+          }
           <div class="ws-prompt-actions">
-            <button
-              type="button"
-              class="ws-prompt-btn ghost"
-              [disabled]="streaming()"
-              (click)="onCancelToolCall(chip.id)"
-            >{{ chip.cancelLabel }}</button>
-            <button
-              type="button"
-              class="ws-prompt-btn primary"
-              [disabled]="streaming()"
-              (click)="onConfirmToolCall(chip.id)"
-            >{{ chip.confirmLabel }}</button>
+            @if (chip.linkUrl) {
+              <a class="ws-prompt-btn primary" [href]="chip.linkUrl">{{ chip.linkLabel }}</a>
+            }
+            @if (chip.canCancel) {
+              <button
+                type="button"
+                class="ws-prompt-btn ghost"
+                [disabled]="streaming()"
+                (click)="onCancelToolCall(chip.id)"
+              >{{ chip.cancelLabel }}</button>
+            }
+            @if (chip.canConfirm) {
+              <button
+                type="button"
+                class="ws-prompt-btn primary"
+                [disabled]="streaming()"
+                (click)="onConfirmToolCall(chip.id)"
+              >{{ chip.confirmLabel }}</button>
+            }
           </div>
         </div>
       }
@@ -433,6 +460,9 @@ type ThreadEntry =
     }
     .ws-prompt-btn {
       appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
       font-size: 11px;
       padding: 4px 10px;
@@ -440,6 +470,7 @@ type ThreadEntry =
       border: 1px solid var(--border, rgba(255,255,255,0.16));
       background: transparent;
       color: var(--text, #E7E9EE);
+      text-decoration: none;
       transition: background 120ms ease, border-color 120ms ease;
     }
     .ws-prompt-btn:hover:not(:disabled) {
@@ -627,13 +658,8 @@ export class ChatPanelComponent implements OnDestroy {
    */
   protected readonly pendingMutationChips = computed(() =>
     this.toolCalls()
-      .filter(tc => tc.confirmation?.state === 'idle')
-      .map(tc => ({
-        id: tc.id,
-        prompt: tc.confirmation!.prompt,
-        confirmLabel: tc.confirmation!.confirmLabel ?? 'Confirm',
-        cancelLabel: tc.confirmation!.cancelLabel ?? 'Cancel',
-      })),
+      .map(tc => buildPinnedMutationChip(tc))
+      .filter((chip): chip is PinnedMutationChip => chip !== null),
   );
 
   /**
@@ -1013,8 +1039,24 @@ export class ChatPanelComponent implements OnDestroy {
   /**
    * HAA-10: POSTs the cached package to the existing /api/workflows/package/apply endpoint
    * (WorkflowsWrite under the logged-in user) and reflects the outcome on the chip.
+   *
+   * Branches on the chip's `packageSource`:
+   *  - `'inline'` (default): the LLM passed a `package` arg; we cached it and POST it directly.
+   *  - `'draft'`: the LLM invoked save_workflow_package without args; the package lives in the
+   *    conversation's workspace draft. Skip the inline preview (the tool already validated it
+   *    server-side) and POST a tiny `{ conversationId }` body to /apply-from-draft, which reads
+   *    the draft and applies it. Saves the round-trip payload through the browser too.
    */
   private applySaveConfirmation(toolCallId: string): void {
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const conf = card?.confirmation;
+    const isDraftSource = conf?.packageSource === 'draft';
+
+    if (isDraftSource) {
+      this.applyDraftSaveConfirmation(toolCallId);
+      return;
+    }
+
     const pkg = this.pendingSaves.get(toolCallId);
     if (!pkg) {
       this.updateConfirmation(toolCallId, c => ({
@@ -1025,22 +1067,127 @@ export class ChatPanelComponent implements OnDestroy {
       return;
     }
     this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
-    this.workflowsApi.applyPackageImport(pkg).pipe(
+    this.workflowsApi.previewPackageImport(pkg).pipe(
       takeUntilDestroyed(this.destroyRef),
     ).subscribe({
-      next: result => {
-        this.pendingSaves.delete(toolCallId);
-        this.updateConfirmation(toolCallId, c => ({
-          ...c,
-          state: 'success',
-          applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
-        }));
+      next: preview => {
+        if (!preview.canApply) {
+          this.updateConfirmation(toolCallId, c => ({
+            ...c,
+            state: 'error',
+            errorMessage: buildPackagePreviewFailureMessage(preview),
+          }));
+          return;
+        }
+
+        this.applyValidatedSaveConfirmation(toolCallId, pkg);
       },
       error: err => {
         this.updateConfirmation(toolCallId, c => ({
           ...c,
           state: 'error',
-          errorMessage: formatHttpError(err),
+          errorMessage: `Save preview failed: ${formatHttpError(err)}`,
+        }));
+      },
+    });
+  }
+
+  /**
+   * Apply path for the draft-source chip: the package lives in the assistant conversation's
+   * workspace as an immutable snapshot file (keyed by the `snapshotId` the tool result carried).
+   * The server reads from the snapshot, not the live draft, so a draft mutation between preview
+   * and confirm cannot redirect this Save to a different package.
+   */
+  private applyDraftSaveConfirmation(toolCallId: string): void {
+    const conversationId = this.conversationId();
+    if (!conversationId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'No active conversation — cannot save the workspace draft.',
+      }));
+      return;
+    }
+
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const snapshotId = card?.confirmation?.snapshotId;
+    if (!snapshotId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Snapshot id missing on this Save chip — re-ask the assistant to save the draft.',
+      }));
+      return;
+    }
+
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.workflowsApi.applyPackageImportFromDraft(conversationId, snapshotId).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: result => {
+        this.workflowsApi.getLatest(result.entryPoint.key).pipe(
+          takeUntilDestroyed(this.destroyRef),
+        ).subscribe({
+          next: () => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'success',
+              applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
+            }));
+          },
+          error: err => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'error',
+              errorMessage:
+                `Save returned success, but CodeFlow could not load workflow `
+                + `${result.entryPoint.key}: ${formatHttpError(err)}`,
+            }));
+          },
+        });
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: `Save from draft failed: ${formatHttpError(err)}`,
+        }));
+      },
+    });
+  }
+
+  private applyValidatedSaveConfirmation(toolCallId: string, pkg: unknown): void {
+    this.workflowsApi.applyPackageImport(pkg).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: result => {
+        this.workflowsApi.getLatest(result.entryPoint.key).pipe(
+          takeUntilDestroyed(this.destroyRef),
+        ).subscribe({
+          next: () => {
+            this.pendingSaves.delete(toolCallId);
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'success',
+              applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
+            }));
+          },
+          error: err => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'error',
+              errorMessage:
+                `Save returned success, but CodeFlow could not load workflow `
+                + `${result.entryPoint.key}: ${formatHttpError(err)}`,
+            }));
+          },
+        });
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: `Save failed: ${formatHttpError(err)}`,
         }));
       },
     });
@@ -1400,18 +1547,46 @@ export function buildSaveConfirmationView(
   resultJson: string,
   pkg: unknown,
 ): ChatToolCallView['confirmation'] | undefined {
-  let parsed: { status?: unknown; entryPoint?: { key?: unknown; version?: unknown } } | null = null;
+  let parsed:
+    | {
+        status?: unknown;
+        packageSource?: unknown;
+        snapshotId?: unknown;
+        entryPoint?: { key?: unknown; version?: unknown };
+      }
+    | null = null;
   try {
     parsed = JSON.parse(resultJson);
   } catch {
     return undefined;
   }
 
-  if (!parsed || parsed.status !== 'preview_ok' || !pkg) {
+  if (!parsed || parsed.status !== 'preview_ok') {
     return undefined;
   }
 
-  const summary = summarizeWorkflowPackage(pkg);
+  // Two valid render paths:
+  //  - inline: the LLM passed a `package` arg; we cached it and POST it on confirm.
+  //  - draft: the LLM invoked save with no args; the package lives server-side in the
+  //    conversation's workspace as an immutable snapshot file. We post `{ conversationId,
+  //    snapshotId }` to `/api/workflows/package/apply-from-draft` so the apply binds to
+  //    the exact bytes that were validated, not whatever the live draft happens to contain.
+  const isDraftSource = parsed.packageSource === 'draft';
+  if (!isDraftSource && !pkg) {
+    return undefined;
+  }
+
+  // Draft path requires the snapshot id from the tool result. Without it the apply would
+  // be ambiguous (live draft vs. validated bytes) — refuse to render the chip at all so the
+  // user can't confirm a save that would be unsafe under draft mutation.
+  const snapshotId = typeof parsed.snapshotId === 'string' && parsed.snapshotId.length > 0
+    ? parsed.snapshotId
+    : undefined;
+  if (isDraftSource && !snapshotId) {
+    return undefined;
+  }
+
+  const summary = pkg ? summarizeWorkflowPackage(pkg) : null;
   const entryKey =
     typeof parsed.entryPoint?.key === 'string' ? parsed.entryPoint.key : summary?.entryPointKey ?? '';
   const entryVersion =
@@ -1426,12 +1601,132 @@ export function buildSaveConfirmationView(
     prompt: label,
     confirmLabel: 'Save',
     cancelLabel: 'Cancel',
+    packageSource: isDraftSource ? 'draft' : 'inline',
+    snapshotId,
     state: 'idle',
   };
 }
 
 export function buildDraftSaveConfirmationView(pkg: unknown): ChatToolCallView['confirmation'] | undefined {
   return buildSaveConfirmationView(JSON.stringify({ status: 'preview_ok' }), pkg);
+}
+
+export function buildPinnedMutationChip(card: ChatToolCallView): PinnedMutationChip | null {
+  const conf = card.confirmation;
+  if (!conf || conf.state === 'cancelled') {
+    return null;
+  }
+
+  const base = {
+    id: card.id,
+    state: conf.state,
+    confirmLabel: conf.confirmLabel ?? 'Confirm',
+    cancelLabel: conf.cancelLabel ?? 'Cancel',
+  };
+
+  if (conf.state === 'idle') {
+    return {
+      ...base,
+      title: conf.prompt,
+      message: null,
+      canConfirm: true,
+      canCancel: true,
+      linkUrl: null,
+      linkLabel: null,
+    };
+  }
+
+  if (conf.state === 'applying') {
+    return {
+      ...base,
+      title: applyingTitle(conf.kind),
+      message: 'Please keep this chat open while CodeFlow applies the change.',
+      canConfirm: false,
+      canCancel: false,
+      linkUrl: null,
+      linkLabel: null,
+    };
+  }
+
+  if (conf.state === 'error') {
+    return {
+      ...base,
+      title: failedTitle(conf.kind),
+      message: conf.errorMessage ?? 'The request failed before CodeFlow returned details.',
+      confirmLabel: 'Retry',
+      cancelLabel: 'Dismiss',
+      canConfirm: true,
+      canCancel: true,
+      linkUrl: null,
+      linkLabel: null,
+    };
+  }
+
+  if (conf.state === 'success' && conf.applied) {
+    if (conf.applied.kind === 'workflow') {
+      return {
+        ...base,
+        title: `Saved ${conf.applied.key} v${conf.applied.version} to the library.`,
+        message: 'The workflow is ready to load from the workflow library.',
+        canConfirm: false,
+        canCancel: false,
+        linkUrl: `/workflows/${encodeURIComponent(conf.applied.key)}`,
+        linkLabel: 'Open workflow',
+      };
+    }
+
+    if (conf.applied.kind === 'trace') {
+      return {
+        ...base,
+        title: `Started trace ${conf.applied.traceId.slice(0, 8)}.`,
+        message: null,
+        canConfirm: false,
+        canCancel: false,
+        linkUrl: `/traces/${encodeURIComponent(conf.applied.traceId)}`,
+        linkLabel: 'Open trace',
+      };
+    }
+
+    return {
+      ...base,
+      title: `Replay ${conf.applied.replayState.toLowerCase()}.`,
+      message: 'Open the trace inspector to review or refine in Replay-with-Edit.',
+      canConfirm: false,
+      canCancel: false,
+      linkUrl: `/traces/${encodeURIComponent(conf.applied.originalTraceId)}`,
+      linkLabel: 'Open trace',
+    };
+  }
+
+  return null;
+}
+
+export function buildPackagePreviewFailureMessage(preview: WorkflowPackageImportPreview): string {
+  const conflicts = preview.items.filter(item => item.action === 'Conflict');
+  if (conflicts.length === 0) {
+    return 'Workflow package cannot be saved as-is.';
+  }
+
+  const first = conflicts[0];
+  const version = first.version === null || first.version === undefined ? '' : ` v${first.version}`;
+  const remaining = conflicts.length > 1 ? ` (${conflicts.length - 1} more conflict${conflicts.length === 2 ? '' : 's'})` : '';
+  return `Workflow package cannot be saved: ${first.kind} ${first.key}${version} conflicts. ${first.message}${remaining}`;
+}
+
+function applyingTitle(kind: NonNullable<ChatToolCallView['confirmation']>['kind']): string {
+  switch (kind) {
+    case 'save_workflow_package': return 'Saving workflow...';
+    case 'run_workflow': return 'Starting workflow run...';
+    case 'propose_replay_with_edit': return 'Starting replay...';
+  }
+}
+
+function failedTitle(kind: NonNullable<ChatToolCallView['confirmation']>['kind']): string {
+  switch (kind) {
+    case 'save_workflow_package': return 'Workflow save failed.';
+    case 'run_workflow': return 'Workflow run failed to start.';
+    case 'propose_replay_with_edit': return 'Replay failed to start.';
+  }
 }
 
 /**

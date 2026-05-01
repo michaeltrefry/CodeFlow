@@ -67,13 +67,56 @@ public sealed class AssistantSystemPromptTests
     [InlineData("output script")]
     [InlineData("setInput")]
     [InlineData("setOutput")]
-    [InlineData("getGlobal")]
-    [InlineData("setGlobal")]
+    [InlineData("setNodePath")]
+    [InlineData("setWorkflow")]
+    [InlineData("setContext")]
     [InlineData("1 MiB")]
     public void DefaultPrompt_CoversScriptingPrimitives(string concept)
     {
         AssistantSystemPrompt.Default.Should().Contain(concept,
             because: $"acceptance criterion requires scripting concept '{concept}'");
+    }
+
+    [Theory]
+    [InlineData("workflow` bag")]
+    [InlineData("context` bag")]
+    [InlineData("submit")]
+    [InlineData("@codeflow/reviewer-base")]
+    [InlineData("@codeflow/producer-base")]
+    [InlineData("partialPins")]
+    [InlineData("rejectionHistory")]
+    [InlineData("mirrorOutputToWorkflowVar")]
+    [InlineData("outputPortReplacements")]
+    public void DefaultPrompt_CoversAuthoringDeclarativeFeatures(string concept)
+    {
+        AssistantSystemPrompt.Default.Should().Contain(concept,
+            because: $"the curated prompt must teach the {concept} primitive — it shipped and is preferred over hand-rolled scripts");
+    }
+
+    [Theory]
+    [InlineData("port-coupling")]
+    [InlineData("missing-role")]
+    [InlineData("prompt-lint")]
+    [InlineData("protected-variable-target")]
+    public void DefaultPrompt_CitesValidatorRuleIds(string ruleId)
+    {
+        AssistantSystemPrompt.Default.Should().Contain(ruleId,
+            because: $"the assistant must cite '{ruleId}' when explaining a save rejection");
+    }
+
+    [Fact]
+    public void DefaultPrompt_DoesNotListPackageSelfContainmentAsSaveValidator()
+    {
+        // Codex audit follow-up: there is no `package-self-containment` rule in the
+        // WorkflowValidator pipeline. The exporter's resolver throws when an in-DB workflow
+        // can't form a closed dependency graph, and the importer's preview surfaces missing
+        // unembedded refs as Conflict items — neither maps to a save-time validator named
+        // package-self-containment. Keep that name out of the validators list so the LLM
+        // doesn't cite a rule that doesn't exist.
+        var prompt = AssistantSystemPrompt.Default;
+        prompt.Should().NotContain("`package-self-containment` (V8)",
+            because: "no save-time validator with that id exists; the resolver's export-time "
+                + "self-containment check is described in the package section instead");
     }
 
     [Theory]
@@ -118,12 +161,13 @@ public sealed class AssistantSystemPromptTests
     [InlineData("codeflow.workflow-package.v1")]
     [InlineData("entryPoint")]
     [InlineData("agentRoleAssignments")]
-    [InlineData("Self-containment")]
+    [InlineData("Embedding rule")]
     [InlineData("cf-workflow-package")]
     public void DefaultPrompt_DescribesPackageEmissionContract(string token)
     {
         // HAA-9 emission contract: the assistant must know the package schema's top-level
-        // shape, the self-containment rule, and the fence language hint the chat UI looks for.
+        // shape, the embedding rule (token economy — only embed entities being created/bumped,
+        // existing refs resolve from the DB), and the fence language hint the chat UI looks for.
         AssistantSystemPrompt.Default.Should().Contain(token,
             because: $"HAA-9 emission contract requires the prompt to mention '{token}'");
     }
@@ -135,6 +179,90 @@ public sealed class AssistantSystemPromptTests
         // without losing earlier decisions, and re-emits the FULL package, never deltas.
         AssistantSystemPrompt.Default.Should().Contain("never deltas",
             because: "the prompt must explicitly forbid emitting partial / diff packages on refinement");
+    }
+
+    [Theory]
+    [InlineData("config.outputs")]
+    [InlineData("package-node-missing-agent-version")]
+    [InlineData("package-node-missing-subflow-version")]
+    public void DefaultPrompt_PinsPackageAdmissionFacts(string token)
+    {
+        // Codex audit (2026-05-01) caught three drift hazards in the prompt: agentVersion /
+        // subflowVersion pins ARE mandatory in packages (admission rejects null), declared
+        // outputs MUST live in `config.outputs` (the package's top-level `agents[].outputs[]`
+        // is exporter-only metadata that the importer ignores), and the embedding-rule
+        // language is the truth — the importer DOES resolve unembedded refs from the local DB.
+        // Pin those facts so a future edit can't quietly reintroduce the misconception.
+        AssistantSystemPrompt.Default.Should().Contain(token,
+            because: $"prompt must teach '{token}' so it doesn't draft packages that fail admission");
+    }
+
+    [Fact]
+    public void DefaultPrompt_DoesNotImplyImporterIgnoresDb()
+    {
+        // The earlier "the importer does not resolve from the DB" wording contradicted the
+        // resolver, which DOES look up unembedded refs against the local DB. Forbid that
+        // misleading sentence so we don't regress; the embedding rule's "Reuse" framing is
+        // the canonical phrasing.
+        AssistantSystemPrompt.Default.Should().NotContain(
+            "importer does not resolve from the DB",
+            because: "the importer DOES resolve unembedded refs against the DB and emits Reuse items");
+        AssistantSystemPrompt.Default.Should().NotContain(
+            "importer does\nnot resolve from the DB",
+            because: "wrap-resilient version of the same lint");
+    }
+
+    [Fact]
+    public void DefaultPrompt_DescribesAllInvalidResultShapes()
+    {
+        // save_workflow_package's `status: "invalid"` payload always carries message + hint,
+        // and may carry errors[] (validator detail) but missingReferences[] is almost always
+        // empty on the import path because importer throws use the no-MissingReferences
+        // exception constructor. Plus a bare { error } when the tool itself fails. Pin each
+        // so the prompt can't regress to the earlier framings.
+        var prompt = AssistantSystemPrompt.Default;
+        prompt.Should().Contain("errors[]",
+            because: "validator-invalid payloads carry errors[]");
+        prompt.Should().Contain("\"error\":",
+            because: "tool-level failures return a bare { error } object with no status field");
+        prompt.Should().Contain("almost always empty",
+            because: "the prompt must explicitly call out that missingReferences[] is empty "
+                + "on the import path so the LLM doesn't anchor remediation on it");
+    }
+
+    [Fact]
+    public void DefaultPrompt_RoutesUnembeddedRefMissesThroughPreviewConflicts()
+    {
+        // Codex audit (2026-05-01 follow-up): on import, an unembedded ref the target
+        // library doesn't have becomes a Conflict item (`status: "preview_conflicts"`),
+        // not `status: "invalid"` with a missingReferences[] array. The prompt must direct
+        // the LLM to resolve unembedded-ref misses by inspecting `items[]` with
+        // `action: "Conflict"`, not by looking for missingReferences[].
+        var prompt = AssistantSystemPrompt.Default;
+        prompt.Should().Contain("preview_conflicts",
+            because: "the conflict-preview branch is where unembedded-ref misses surface");
+        prompt.Should().Contain("unembedded ref",
+            because: "the prompt must explicitly cover the unembedded-ref-not-in-DB case");
+    }
+
+    [Fact]
+    public void DefaultPrompt_FramesToolSurfaceAsExtensible()
+    {
+        // The operator can wire additional tools via an assigned agent role and an admin
+        // overlay (operator instructions). The prompt must not contradict that — pin the
+        // explicit "use whichever tools the runtime advertises" guidance and the
+        // <operator-instructions> handoff so future edits don't reintroduce closed-set
+        // wording like "these are the only tools at your disposal".
+        var prompt = AssistantSystemPrompt.Default;
+        prompt.Should().ContainEquivalentOf("Use whichever tools the");
+        prompt.Should().ContainEquivalentOf("runtime advertises");
+        prompt.Should().Contain("Tools at your disposal",
+            because: "the section header anchors the model's reading of the role-grant + operator-overlay handoff");
+        prompt.Should().Contain("<operator-instructions>",
+            because: "the curated prompt must point the model at the operator-overlay block");
+        prompt.Should().NotContain("only tools at your disposal");
+        prompt.Should().NotContain("these are the only tools",
+            because: "the assistant's tool surface is extended by role grants + operator instructions");
     }
 
     [Fact]

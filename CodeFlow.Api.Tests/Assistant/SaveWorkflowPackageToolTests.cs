@@ -4,6 +4,7 @@ using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Tests.Integration;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -136,6 +137,185 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
+    public async Task Invoke_DraftPath_SnapshotsValidatedBytes_AndIsImmuneToLaterMutation()
+    {
+        // The big Codex finding: the chip must apply EXACTLY the bytes the user saw at preview
+        // time, even if the live draft.cf-workflow-package.json gets patched/overwritten before
+        // the user clicks Save. Drive the workspace-aware save tool with a draft of package A,
+        // then mutate the on-disk live draft to a totally different package B. The save tool's
+        // result must (a) carry a snapshot id and (b) the snapshot file on disk must contain
+        // package A — so a subsequent apply-from-draft against that snapshot id imports A,
+        // never B.
+        const string agentKey = "haa10-snapshot-binding-writer";
+        await SeedAgentAsync(agentKey);
+
+        // Fresh isolated workspace dir for this test (don't pollute the fixture's shared root).
+        var workspaceDir = Path.Combine(
+            Path.GetTempPath(),
+            "cf-snapshot-binding-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspaceDir);
+        var workspace = new ToolWorkspaceContext(Guid.NewGuid(), workspaceDir);
+
+        try
+        {
+            // Stage package A as the live draft.
+            var packageA = await BuildSelfContainedPackageAsync("haa10-snapshot-binding-flow", agentKey);
+            await WorkflowPackageDraftStore.WriteAsync(
+                workspace,
+                JsonNode.Parse(JsonSerializer.Serialize(packageA, JsonSerializerOptions.Web))!,
+                CancellationToken.None);
+
+            // Build a workspace-aware SaveWorkflowPackageTool via the factory and invoke with
+            // no args (the draft-path code we're verifying).
+            await using var scope = factory.Services.CreateAsyncScope();
+            var draftFactory = scope.ServiceProvider.GetRequiredService<WorkflowDraftAssistantToolFactory>();
+            var saveTool = draftFactory.Build(workspace)
+                .OfType<SaveWorkflowPackageTool>()
+                .Single();
+
+            var result = await saveTool.InvokeAsync(JsonDocument.Parse("{}").RootElement, CancellationToken.None);
+
+            result.IsError.Should().BeFalse();
+            var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+            parsed.GetProperty("status").GetString().Should().Be("preview_ok");
+            parsed.GetProperty("packageSource").GetString().Should().Be("draft");
+            var snapshotIdString = parsed.GetProperty("snapshotId").GetString();
+            snapshotIdString.Should().NotBeNullOrEmpty(
+                because: "the draft path must mint a snapshot id so the chip binds to immutable bytes");
+            var snapshotId = Guid.Parse(snapshotIdString!);
+
+            // Snapshot file is on disk and contains package A.
+            var snapshotPath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+            File.Exists(snapshotPath).Should().BeTrue();
+            var snapshotBytes = await File.ReadAllTextAsync(snapshotPath);
+            snapshotBytes.Should().Contain("haa10-snapshot-binding-flow",
+                because: "the snapshot must hold package A's bytes");
+
+            // Now overwrite the LIVE draft with a different package B (simulating the LLM
+            // patching the draft after the chip rendered). The snapshot must NOT change.
+            var packageB = await BuildSelfContainedPackageAsync("haa10-different-flow", agentKey);
+            await WorkflowPackageDraftStore.WriteAsync(
+                workspace,
+                JsonNode.Parse(JsonSerializer.Serialize(packageB, JsonSerializerOptions.Web))!,
+                CancellationToken.None);
+
+            var snapshotBytesAfterMutation = await File.ReadAllTextAsync(snapshotPath);
+            snapshotBytesAfterMutation.Should().Be(snapshotBytes,
+                because: "live-draft mutation must not touch the immutable snapshot");
+            snapshotBytesAfterMutation.Should().NotContain("haa10-different-flow");
+        }
+        finally
+        {
+            if (Directory.Exists(workspaceDir))
+            {
+                Directory.Delete(workspaceDir, recursive: true);
+            }
+        }
+    }
+
+    private async Task<WorkflowPackage> BuildSelfContainedPackageAsync(string workflowKey, string agentKey)
+    {
+        await SeedWorkflowAsync(workflowKey, agentKey: agentKey, agentVersion: 1);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<IWorkflowPackageResolver>();
+        return await resolver.ResolveAsync(workflowKey, 1);
+    }
+
+    [Fact]
+    public async Task Invoke_WithPackagePresentButNotObject_ReturnsHardError_NotDraftFallback()
+    {
+        // Codex finding (medium): when the LLM sends `{ "package": null }` or any non-object
+        // value while a workspace exists, the original code silently fell through to the draft
+        // path and applied whatever was on disk. The user thinks they're saving the value they
+        // sent; they actually validate a stale draft. Must surface as a hard tool error so the
+        // assistant fixes its argument shape rather than ship the wrong package.
+        const string agentKey = "haa10-malformed-arg-writer";
+        await SeedAgentAsync(agentKey);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        // package: null
+        var nullArgs = JsonDocument.Parse("""{ "package": null }""").RootElement;
+        var nullResult = await tool.InvokeAsync(nullArgs, CancellationToken.None);
+        nullResult.IsError.Should().BeTrue(
+            because: "a null `package` value must be rejected, not silently dropped to the draft path");
+        nullResult.ResultJson.Should().Contain("package");
+
+        // package: "garbage"
+        var stringArgs = JsonDocument.Parse("""{ "package": "garbage" }""").RootElement;
+        var stringResult = await tool.InvokeAsync(stringArgs, CancellationToken.None);
+        stringResult.IsError.Should().BeTrue(
+            because: "a non-object `package` value must be rejected, not silently dropped to the draft path");
+
+        // package: []
+        var arrayArgs = JsonDocument.Parse("""{ "package": [] }""").RootElement;
+        var arrayResult = await tool.InvokeAsync(arrayArgs, CancellationToken.None);
+        arrayResult.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Invoke_WithIslandNodePackage_ReturnsInvalid_NotPreviewOk()
+    {
+        // The original user-reported failure mode: the assistant emits a package whose nodes are
+        // present but uneconnected — a Start node and an Agent node with no edge between them.
+        // PreviewAsync alone treated this as preview_ok; only the apply endpoint rejected it.
+        // The tool now runs the same validators the apply endpoint runs and surfaces them as
+        // status:invalid up front so the user is never told "click Save" on a doomed package.
+        const string agentKey = "haa10-island-writer";
+        await SeedAgentAsync(agentKey);
+
+        var startId = Guid.NewGuid();
+        var islandId = Guid.NewGuid();
+        var packageJson = $$"""
+        {
+            "schemaVersion": "{{WorkflowPackageDefaults.SchemaVersion}}",
+            "metadata": { "exportedFrom": "llm-test", "exportedAtUtc": "2026-04-30T00:00:00Z" },
+            "entryPoint": { "key": "haa10-island-flow", "version": 1 },
+            "workflows": [
+                {
+                    "key": "haa10-island-flow",
+                    "version": 1,
+                    "name": "Island flow",
+                    "maxRoundsPerRound": 3,
+                    "category": "Workflow",
+                    "createdAtUtc": "2026-04-30T00:00:00Z",
+                    "nodes": [
+                        { "id": "{{startId}}", "kind": "Start", "agentKey": "{{agentKey}}", "agentVersion": 1, "outputPorts": ["Completed"], "layoutX": 0, "layoutY": 0 },
+                        { "id": "{{islandId}}", "kind": "Agent", "agentKey": "{{agentKey}}", "agentVersion": 1, "outputPorts": ["Completed"], "layoutX": 200, "layoutY": 0 }
+                    ],
+                    "edges": [],
+                    "inputs": []
+                }
+            ]
+        }
+        """;
+        var packageElement = JsonDocument.Parse(packageJson).RootElement;
+        var args = JsonSerializer.SerializeToElement(new { package = packageElement });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse(
+            because: "an invalid package is a reportable verdict for the LLM, not a tool failure");
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("status").GetString().Should().Be("invalid",
+            because: "the validator must run inline so the assistant doesn't tell the user 'click Save' on a doomed package");
+        var errors = parsed.GetProperty("errors").EnumerateArray().ToArray();
+        errors.Should().NotBeEmpty();
+        errors[0].GetProperty("workflowKey").GetString().Should().Be("haa10-island-flow");
+        errors[0].GetProperty("message").GetString().Should().Contain("not reachable from the Start node");
+    }
+
+    [Fact]
     public async Task Invoke_WithStringEnumNames_AcceptsLlmCanonicalShape()
     {
         // Regression: the assistant tool dispatcher previously used a serializer without
@@ -222,7 +402,7 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
                     "category": "Workflow",
                     "createdAtUtc": "2026-04-30T00:00:00Z",
                     "nodes": [
-                        { "id": "{{startId}}", "kind": "Start", "outputPorts": ["Completed"], "layoutX": 0, "layoutY": 0 },
+                        { "id": "{{startId}}", "kind": "Start", "agentKey": "{{agentKey}}", "agentVersion": 1, "outputPorts": ["Completed"], "layoutX": 0, "layoutY": 0 },
                         { "id": "{{agentNodeId}}", "kind": "Agent", "agentKey": "{{agentKey}}", "agentVersion": 1, "outputPorts": ["Completed"], "layoutX": 200, "layoutY": 0 }
                     ],
                     "edges": [
@@ -306,6 +486,7 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
             provider = "anthropic",
             model = "claude-sonnet-4-6",
             systemPrompt = "You write things.",
+            outputs = new[] { new { kind = "Completed" } },
         });
 
         db.Agents.Add(new AgentConfigEntity
@@ -337,10 +518,10 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
                 new WorkflowNodeDraft(
                     Id: startNodeId,
                     Kind: WorkflowNodeKind.Start,
-                    AgentKey: null,
-                    AgentVersion: null,
+                    AgentKey: agentKey,
+                    AgentVersion: agentVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Default" },
+                    OutputPorts: new[] { "Completed" },
                     LayoutX: 0,
                     LayoutY: 0),
                 new WorkflowNodeDraft(
@@ -349,13 +530,13 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
                     AgentKey: agentKey,
                     AgentVersion: agentVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Done" },
+                    OutputPorts: new[] { "Completed" },
                     LayoutX: 200,
                     LayoutY: 0),
             },
             Edges: new[]
             {
-                new WorkflowEdgeDraft(startNodeId, "Default", agentNodeId, "in", false, 0),
+                new WorkflowEdgeDraft(startNodeId, "Completed", agentNodeId, "in", false, 0),
             },
             Inputs: Array.Empty<WorkflowInputDraft>());
 
@@ -391,8 +572,8 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
                 new WorkflowPackageWorkflowNode(
                     Id: startId,
                     Kind: WorkflowNodeKind.Start,
-                    AgentKey: null,
-                    AgentVersion: null,
+                    AgentKey: agentKeyForFirstNode,
+                    AgentVersion: agentVersion,
                     OutputScript: null,
                     OutputPorts: new[] { "Completed" },
                     LayoutX: 0,
@@ -426,10 +607,10 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
                     Key: agentKeyForFirstNode,
                     Version: agentVersion,
                     Kind: AgentKind.Agent,
-                    Config: JsonNode.Parse("""{"provider":"anthropic","model":"claude-sonnet-4-6","systemPrompt":"You write things."}"""),
+                    Config: JsonNode.Parse("""{"provider":"anthropic","model":"claude-sonnet-4-6","systemPrompt":"You write things.","outputs":[{"kind":"Completed"}]}"""),
                     CreatedAtUtc: DateTime.UtcNow,
                     CreatedBy: "haa10-test",
-                    Outputs: Array.Empty<WorkflowPackageAgentOutput>()),
+                    Outputs: new[] { new WorkflowPackageAgentOutput("Completed", null, null) }),
             }
             : Array.Empty<WorkflowPackageAgent>();
 

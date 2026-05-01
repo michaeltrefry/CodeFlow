@@ -36,6 +36,14 @@ public sealed class AssistantSettingsEntity
     /// </summary>
     public long? AssignedAgentRoleId { get; set; }
 
+    /// <summary>
+    /// Free-form operator-authored guidance appended to the curated system prompt at chat-turn
+    /// build time. Lets an admin describe additional tools granted via the assigned agent role,
+    /// scope rules, persona tweaks, or any other instance-specific behavior the curated prompt
+    /// can't know about. Stored verbatim; null/empty means "no overlay".
+    /// </summary>
+    public string? Instructions { get; set; }
+
     public string? UpdatedBy { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }

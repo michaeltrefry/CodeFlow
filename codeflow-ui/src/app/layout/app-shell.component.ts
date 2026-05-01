@@ -42,6 +42,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'skills', label: 'Skills',        icon: 'skills', route: '/settings/skills' },
       { id: 'git',    label: 'Git host',      icon: 'git',    route: '/settings/git-host' },
       { id: 'llm',    label: 'LLM providers', icon: 'bot',    route: '/settings/llm-providers' },
+      { id: 'notify', label: 'Notifications', icon: 'bot',    route: '/settings/notifications' },
     ],
   },
 ];

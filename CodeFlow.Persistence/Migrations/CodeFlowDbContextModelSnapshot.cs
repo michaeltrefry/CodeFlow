@@ -384,6 +384,10 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("assigned_agent_role_id");
 
+                    b.Property<string>("Instructions")
+                        .HasColumnType("longtext")
+                        .HasColumnName("instructions");
+
                     b.Property<long?>("MaxTokensPerConversation")
                         .HasColumnType("bigint")
                         .HasColumnName("max_tokens_per_conversation");

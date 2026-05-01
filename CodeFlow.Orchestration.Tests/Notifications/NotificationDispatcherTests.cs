@@ -372,6 +372,16 @@ public sealed class NotificationDispatcherTests
                 .FirstOrDefault();
             return Task.FromResult(match);
         }
+
+        public Task<IReadOnlyList<NotificationDeliveryAttemptRecord>> ListAsync(
+            NotificationDeliveryAttemptListFilter filter,
+            CancellationToken ct = default)
+        {
+            // Dispatcher tests don't exercise the audit listing — empty list is enough to keep
+            // the interface satisfied. The real impl is integration-tested in
+            // CodeFlow.Api.Tests/Integration/NotificationsEndpointsTests.cs.
+            return Task.FromResult<IReadOnlyList<NotificationDeliveryAttemptRecord>>(Array.Empty<NotificationDeliveryAttemptRecord>());
+        }
     }
 
     private sealed class StubTemplateRenderer : INotificationTemplateRenderer

@@ -156,6 +156,7 @@ public sealed class GetWorkflowPackageToolTests : IClassFixture<CodeFlowApiFacto
             provider = "anthropic",
             model = "claude-sonnet-4-6",
             systemPrompt,
+            outputs = new[] { new { kind = "Completed" } },
         });
 
         db.Agents.Add(new AgentConfigEntity
@@ -187,10 +188,10 @@ public sealed class GetWorkflowPackageToolTests : IClassFixture<CodeFlowApiFacto
                 new WorkflowNodeDraft(
                     Id: startNodeId,
                     Kind: WorkflowNodeKind.Start,
-                    AgentKey: null,
-                    AgentVersion: null,
+                    AgentKey: agentKey,
+                    AgentVersion: agentVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Default" },
+                    OutputPorts: new[] { "Completed" },
                     LayoutX: 0,
                     LayoutY: 0),
                 new WorkflowNodeDraft(
@@ -199,13 +200,13 @@ public sealed class GetWorkflowPackageToolTests : IClassFixture<CodeFlowApiFacto
                     AgentKey: agentKey,
                     AgentVersion: agentVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Done" },
+                    OutputPorts: new[] { "Completed" },
                     LayoutX: 200,
                     LayoutY: 0),
             },
             Edges: new[]
             {
-                new WorkflowEdgeDraft(startNodeId, "Default", agentNodeId, "in", false, 0),
+                new WorkflowEdgeDraft(startNodeId, "Completed", agentNodeId, "in", false, 0),
             },
             Inputs: Array.Empty<WorkflowInputDraft>());
 

@@ -57,6 +57,7 @@ public sealed class CodeFlowAssistant(
     IAnthropicClient anthropicClient,
     IRoleResolutionService roleResolution,
     AgentRoleToolFactory roleToolFactory,
+    WorkflowDraftAssistantToolFactory workflowDraftToolFactory,
     IAssistantWorkspaceProvider workspaceProvider,
     IAssistantConversationRepository conversations,
     ILogger<CodeFlowAssistant> logger) : ICodeFlowAssistant
@@ -77,6 +78,17 @@ public sealed class CodeFlowAssistant(
 
         var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
+        // Operator-authored instructions overlay (LLM Providers admin → Assistant defaults).
+        // Appended after the curated prompt so the operator can describe role-granted tools,
+        // scope rules, persona tweaks, etc. without forking the curated knowledge base.
+        var operatorInstructions = config.OperatorInstructions;
+        if (!string.IsNullOrWhiteSpace(operatorInstructions))
+        {
+            var overlay = BuildOperatorInstructionsBlock(operatorInstructions);
+            systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                ? overlay
+                : systemPrompt + "\n\n" + overlay;
+        }
         // HAA-8: prepend a structured page-context block so the model can resolve "this trace",
         // "this node", etc. without the user pasting IDs. The block is per-turn (it changes as
         // the user navigates) and the most recent value wins.
@@ -92,12 +104,14 @@ public sealed class CodeFlowAssistant(
         // versus the previously-persisted signature and prepend a one-shot notice to the system
         // prompt so the model can re-orient (different repos / files visible).
         //
-        // Gate the resolution on actual need: a workspace is only meaningful when (a) an agent role
-        // is assigned (its host tools operate against the dir) or (b) the user explicitly switched
-        // to a trace workdir. Plain conversations don't need a workspace, and creating one
-        // unconditionally would fail on dev environments where the configured root isn't writable.
+        // Gate the resolution on actual need: a workspace is meaningful when (a) an agent role
+        // is assigned (its host tools operate against the dir), (b) the user explicitly switched
+        // to a trace workdir, or (c) we have a conversation id (the workflow-package draft tools
+        // operate against the per-conversation dir; they degrade silently when creation fails so
+        // dev environments without a writable root simply lose those tools for the turn).
         var workspaceNeeded = workspaceOverride is not null
-            || (config.AssignedAgentRoleId is { } needRoleId && needRoleId > 0);
+            || (config.AssignedAgentRoleId is { } needRoleId && needRoleId > 0)
+            || conversationId != Guid.Empty;
         ResolvedWorkspace? resolvedWorkspace = null;
         if (workspaceNeeded)
         {
@@ -167,6 +181,16 @@ public sealed class CodeFlowAssistant(
                     "Failed to resolve agent role {RoleId} for assistant conversation {ConversationId}; falling back to built-in tools only.",
                     roleId, conversationId);
             }
+        }
+
+        // Workflow package draft tools. The factory always returns a workspace-aware
+        // SaveWorkflowPackageTool (overrides the DI-registered workspace-blind one) and, when
+        // a workspace resolves, the four draft tools (set/get/patch/clear). Use the override
+        // merge so the factory's save tool replaces the DI fallback in the LLM's view.
+        var draftTools = workflowDraftToolFactory.Build(resolvedWorkspace?.Context);
+        if (draftTools.Count > 0)
+        {
+            dispatcher = MergeDispatcherWithOverride(dispatcher, draftTools);
         }
 
         var allowedTools = FilterTools(dispatcher.Tools, toolPolicy);
@@ -245,6 +269,25 @@ public sealed class CodeFlowAssistant(
                 conversationId);
             return null;
         }
+    }
+
+    private static string BuildOperatorInstructionsBlock(string instructions)
+    {
+        // Wrap the operator overlay in a clearly-labeled block so the model can distinguish
+        // platform-curated knowledge from instance-specific guidance. Trim the value defensively;
+        // the repository normalizes blanks to null but operator pastes can still carry trailing
+        // whitespace.
+        var sb = new StringBuilder();
+        sb.AppendLine("<operator-instructions>");
+        sb.AppendLine("Additional guidance from this CodeFlow instance's operator. These instructions");
+        sb.AppendLine("supplement the curated system prompt above and may describe extra tools that have");
+        sb.AppendLine("been granted to you (via the assigned agent role), scope rules, or persona tweaks.");
+        sb.AppendLine("Treat this block as authoritative; it overrides the curated prompt where they");
+        sb.AppendLine("conflict.");
+        sb.AppendLine();
+        sb.AppendLine(instructions.Trim());
+        sb.Append("</operator-instructions>");
+        return sb.ToString();
     }
 
     private static string BuildWorkspaceUnavailableNotice(string reason)
@@ -337,6 +380,25 @@ public sealed class CodeFlowAssistant(
                 merged.Add(tool);
             }
         }
+        return new AssistantToolDispatcher(merged);
+    }
+
+    /// <summary>
+    /// Same as <see cref="MergeDispatcher"/> but with the override priority inverted: tools in
+    /// <paramref name="overrideTools"/> replace any built-in with the same name. Used by the
+    /// workflow-draft factory so its workspace-aware <c>save_workflow_package</c> overrides the
+    /// DI-registered workspace-blind fallback for the LLM's view.
+    /// </summary>
+    private static AssistantToolDispatcher MergeDispatcherWithOverride(
+        AssistantToolDispatcher builtIn,
+        IReadOnlyList<IAssistantTool> overrideTools)
+    {
+        var overrideNames = new HashSet<string>(
+            overrideTools.Select(t => t.Name),
+            StringComparer.Ordinal);
+        var merged = new List<IAssistantTool>(
+            builtIn.Tools.Where(t => !overrideNames.Contains(t.Name)));
+        merged.AddRange(overrideTools);
         return new AssistantToolDispatcher(merged);
     }
 
