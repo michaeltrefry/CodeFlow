@@ -84,6 +84,46 @@ public sealed record NotificationTemplateResponse(
     DateTime UpdatedAtUtc,
     string? UpdatedBy);
 
+// --- Test send (sc-58) --------------------------------------------------------------------
+
+/// <summary>
+/// Result of the validate-only path. Mirrors <c>ProviderValidationResult</c> from the
+/// contracts so the admin UI can render the same shape it already knows from the provider's
+/// own validate path.
+/// </summary>
+public sealed record NotificationProviderValidationResponse(
+    bool IsValid,
+    string? ErrorCode,
+    string? ErrorMessage);
+
+/// <summary>
+/// Request body for the test-send path. The admin UI populates <see cref="Recipient"/>;
+/// <see cref="Template"/> is optional — when null, the endpoint sends a hardcoded "test
+/// notification" body so admins can validate provider + creds + destination even before any
+/// templates are seeded.
+/// </summary>
+public sealed record NotificationTestSendRequest(
+    NotificationRecipientDto Recipient,
+    NotificationTemplateRefDto? Template);
+
+/// <summary>
+/// Response from the test-send path. Combines the rendered outbound message preview with the
+/// provider's delivery result so the admin UI can show both "this is what was sent" and "the
+/// provider said X".
+/// </summary>
+public sealed record NotificationTestSendResponse(
+    string? Subject,
+    string Body,
+    string ActionUrl,
+    NotificationTestDeliveryDto Delivery);
+
+public sealed record NotificationTestDeliveryDto(
+    string Status,
+    string? ProviderMessageId,
+    string? NormalizedDestination,
+    string? ErrorCode,
+    string? ErrorMessage);
+
 // --- Diagnostics --------------------------------------------------------------------------
 
 /// <summary>

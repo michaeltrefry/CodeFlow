@@ -6,6 +6,7 @@ using CodeFlow.Persistence.Notifications;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Endpoints;
@@ -29,6 +30,10 @@ public static class NotificationsEndpoints
         providers.MapPut("/{id}", PutProviderAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
         providers.MapDelete("/{id}", ArchiveProviderAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
+        providers.MapPost("/{id}/validate", ValidateProviderAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
+        providers.MapPost("/{id}/test-send", TestSendAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
 
         var routesGroup = routes.MapGroup("/api/admin/notification-routes");
@@ -130,6 +135,264 @@ public static class NotificationsEndpoints
 
         await repository.ArchiveAsync(id, currentUser.Id, cancellationToken);
         return Results.NoContent();
+    }
+
+    // --- validate + test send (sc-58) -------------------------------------------------
+
+    private static async Task<IResult> ValidateProviderAsync(
+        string id,
+        INotificationProviderConfigRepository configRepo,
+        INotificationProviderRegistry registry,
+        CancellationToken cancellationToken)
+    {
+        var config = await configRepo.GetAsync(id, cancellationToken);
+        if (config is null)
+        {
+            return Results.NotFound();
+        }
+
+        var provider = await registry.GetByIdAsync(id, cancellationToken);
+        if (provider is null)
+        {
+            // The registry returns null when the row is archived/disabled OR when no factory
+            // exists for the channel — both are admin-fixable conditions, surface them as a
+            // structured validation response rather than a 404 so the UI can render the message
+            // alongside the other validation outcomes.
+            return Results.Ok(new NotificationProviderValidationResponse(
+                IsValid: false,
+                ErrorCode: "dispatcher.provider_not_registered",
+                ErrorMessage: $"No active provider available for id '{id}' (archived, disabled, or no factory for channel {config.Channel})."));
+        }
+
+        var result = await provider.ValidateAsync(cancellationToken);
+        return Results.Ok(new NotificationProviderValidationResponse(
+            IsValid: result.IsValid,
+            ErrorCode: result.ErrorCode,
+            ErrorMessage: result.ErrorMessage));
+    }
+
+    private static async Task<IResult> TestSendAsync(
+        string id,
+        NotificationTestSendRequest? request,
+        INotificationProviderConfigRepository configRepo,
+        INotificationProviderRegistry registry,
+        INotificationTemplateRenderer templateRenderer,
+        IHitlNotificationActionUrlBuilder actionUrlBuilder,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.Recipient is null)
+        {
+            return ApiResults.BadRequest("Request body with a recipient is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Recipient.Address))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["recipient.address"] = new[] { "recipient.address is required." },
+            });
+        }
+
+        var config = await configRepo.GetAsync(id, cancellationToken);
+        if (config is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (request.Recipient.Channel != config.Channel)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["recipient.channel"] = new[]
+                {
+                    $"recipient.channel ({request.Recipient.Channel}) must match provider channel ({config.Channel}).",
+                },
+            });
+        }
+
+        var provider = await registry.GetByIdAsync(id, cancellationToken);
+        if (provider is null)
+        {
+            return Results.Ok(new NotificationTestSendResponse(
+                Subject: null,
+                Body: string.Empty,
+                ActionUrl: string.Empty,
+                Delivery: new NotificationTestDeliveryDto(
+                    Status: NotificationDeliveryStatus.Failed.ToString(),
+                    ProviderMessageId: null,
+                    NormalizedDestination: null,
+                    ErrorCode: "dispatcher.provider_not_registered",
+                    ErrorMessage: $"No active provider available for id '{id}' (archived, disabled, or no factory for channel {config.Channel}).")));
+        }
+
+        // Synthetic event used for both the action URL and any template binding. Real saga
+        // ids — they're random GUIDs so they can't collide with anything in the audit log;
+        // HitlTaskId is 0 to make it obvious in any inadvertent log line that this came from
+        // the test path.
+        var nowUtc = DateTimeOffset.UtcNow;
+        Uri actionUrl;
+        try
+        {
+            actionUrl = actionUrlBuilder.BuildForPendingTask(hitlTaskId: 0, traceId: Guid.NewGuid());
+        }
+        catch (InvalidOperationException ex)
+        {
+            // PublicBaseUrl unset — surface the same error the diagnostics endpoint warns about.
+            return Results.Ok(new NotificationTestSendResponse(
+                Subject: null,
+                Body: string.Empty,
+                ActionUrl: string.Empty,
+                Delivery: new NotificationTestDeliveryDto(
+                    Status: NotificationDeliveryStatus.Failed.ToString(),
+                    ProviderMessageId: null,
+                    NormalizedDestination: null,
+                    ErrorCode: "dispatcher.action_url_unconfigured",
+                    ErrorMessage: ex.Message)));
+        }
+
+        var syntheticEvent = new HitlTaskPendingEvent(
+            EventId: Guid.NewGuid(),
+            OccurredAtUtc: nowUtc,
+            ActionUrl: actionUrl,
+            Severity: NotificationSeverity.Normal,
+            HitlTaskId: 0,
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            NodeId: Guid.NewGuid(),
+            WorkflowKey: "test-send",
+            WorkflowVersion: 0,
+            AgentKey: "test-send",
+            AgentVersion: 0,
+            HitlTaskCreatedAtUtc: nowUtc,
+            InputPreview: "(test-send synthetic input)",
+            InputRef: null,
+            SubflowPath: null);
+
+        var recipient = new NotificationRecipient(
+            request.Recipient.Channel,
+            request.Recipient.Address,
+            request.Recipient.DisplayName);
+
+        // The renderer wants a route — synthesise an in-memory one so the renderer can resolve
+        // the template ref. Route id is deterministic + obvious so anything that surfaces in
+        // logs doesn't look like a real configured route.
+        var syntheticRouteId = $"test-send/{id}";
+        NotificationTemplateRef templateRef;
+        NotificationMessage message;
+        try
+        {
+            if (request.Template is not null
+                && !string.IsNullOrWhiteSpace(request.Template.TemplateId)
+                && request.Template.Version > 0)
+            {
+                templateRef = new NotificationTemplateRef(request.Template.TemplateId, request.Template.Version);
+                var syntheticRoute = new NotificationRoute(
+                    RouteId: syntheticRouteId,
+                    EventKind: syntheticEvent.Kind,
+                    ProviderId: id,
+                    Recipients: new[] { recipient },
+                    Template: templateRef,
+                    MinimumSeverity: NotificationSeverity.Info,
+                    Enabled: true);
+                message = await templateRenderer.RenderAsync(syntheticEvent, syntheticRoute, new[] { recipient }, cancellationToken);
+            }
+            else
+            {
+                // No template: synthesise a minimal "test notification" body so admins can
+                // verify provider + destination + creds before any templates are seeded.
+                templateRef = new NotificationTemplateRef("test-send/builtin", 1);
+                message = new NotificationMessage(
+                    EventId: syntheticEvent.EventId,
+                    EventKind: syntheticEvent.Kind,
+                    Channel: config.Channel,
+                    Recipients: new[] { recipient },
+                    Body: $"[CodeFlow] Test notification at {nowUtc:O}. Open: {actionUrl}",
+                    ActionUrl: actionUrl,
+                    Severity: syntheticEvent.Severity,
+                    Subject: $"[CodeFlow] Test notification ({config.Channel})",
+                    Template: templateRef);
+            }
+        }
+        catch (NotificationTemplateNotFoundException ex)
+        {
+            return Results.Ok(new NotificationTestSendResponse(
+                Subject: null,
+                Body: string.Empty,
+                ActionUrl: actionUrl.ToString(),
+                Delivery: new NotificationTestDeliveryDto(
+                    Status: NotificationDeliveryStatus.Failed.ToString(),
+                    ProviderMessageId: null,
+                    NormalizedDestination: null,
+                    ErrorCode: "dispatcher.template_not_found",
+                    ErrorMessage: ex.Message)));
+        }
+        catch (Exception ex)
+        {
+            return Results.Ok(new NotificationTestSendResponse(
+                Subject: null,
+                Body: string.Empty,
+                ActionUrl: actionUrl.ToString(),
+                Delivery: new NotificationTestDeliveryDto(
+                    Status: NotificationDeliveryStatus.Failed.ToString(),
+                    ProviderMessageId: null,
+                    NormalizedDestination: null,
+                    ErrorCode: "dispatcher.template_render_failed",
+                    ErrorMessage: ex.Message)));
+        }
+
+        // Send via the resolved provider directly. Bypasses the dispatcher so this never
+        // writes an audit row; the synthetic event id keeps it isolated from real fan-outs
+        // even if it ever did.
+        var route = new NotificationRoute(
+            RouteId: syntheticRouteId,
+            EventKind: syntheticEvent.Kind,
+            ProviderId: id,
+            Recipients: new[] { recipient },
+            Template: templateRef,
+            MinimumSeverity: NotificationSeverity.Info,
+            Enabled: true);
+
+        NotificationDeliveryResult delivery;
+        try
+        {
+            delivery = await provider.SendAsync(message, route, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Provider impls are supposed to catch transport failures and return Failed; a
+            // leak here means a bug or unmocked exception path — surface it as Failed so the
+            // admin still sees something actionable.
+            loggerFactory.CreateLogger("NotificationsEndpoints.TestSend").LogError(ex,
+                "Provider '{ProviderId}' threw during test-send.", id);
+            delivery = new NotificationDeliveryResult(
+                EventId: syntheticEvent.EventId,
+                RouteId: syntheticRouteId,
+                ProviderId: id,
+                Status: NotificationDeliveryStatus.Failed,
+                AttemptedAtUtc: nowUtc,
+                CompletedAtUtc: DateTimeOffset.UtcNow,
+                AttemptNumber: 1,
+                NormalizedDestination: recipient.Address,
+                ProviderMessageId: null,
+                ErrorCode: "dispatcher.provider_threw",
+                ErrorMessage: ex.Message);
+        }
+
+        return Results.Ok(new NotificationTestSendResponse(
+            Subject: message.Subject,
+            Body: message.Body,
+            ActionUrl: message.ActionUrl.ToString(),
+            Delivery: new NotificationTestDeliveryDto(
+                Status: delivery.Status.ToString(),
+                ProviderMessageId: delivery.ProviderMessageId,
+                NormalizedDestination: delivery.NormalizedDestination,
+                ErrorCode: delivery.ErrorCode,
+                ErrorMessage: delivery.ErrorMessage)));
     }
 
     // --- routes -----------------------------------------------------------------------

@@ -330,6 +330,143 @@ public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFacto
         response[1].GetProperty("version").GetInt32().Should().Be(1);
     }
 
+    // --- sc-58 validate + test-send ----------------------------------------------------
+
+    [Fact]
+    public async Task ValidateProvider_WhenProviderMissing_Returns404()
+    {
+        using var client = factory.CreateClient();
+        var response = await client.PostAsync("/api/admin/notification-providers/never-existed/validate", content: null);
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ValidateProvider_DisabledProvider_ReturnsProviderNotRegistered()
+    {
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-paused", new
+        {
+            displayName = "Slack — paused",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = false,
+            credential = new { action = "Replace", value = "xoxb-paused" },
+        })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsync("/api/admin/notification-providers/slack-paused/validate", content: null);
+        response.EnsureSuccessStatusCode();
+
+        var body = (await response.Content.ReadFromJsonAsync<JsonElement>())!;
+        body.GetProperty("isValid").GetBoolean().Should().BeFalse();
+        body.GetProperty("errorCode").GetString().Should().Be("dispatcher.provider_not_registered");
+    }
+
+    [Fact]
+    public async Task TestSend_WhenProviderMissing_Returns404()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/never-existed/test-send",
+            new
+            {
+                recipient = new { channel = "Slack", address = "C012", displayName = (string?)null },
+                template = (object?)null,
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task TestSend_RecipientChannelMismatch_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-prod", new
+        {
+            displayName = "Slack",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = "xoxb-test" },
+        })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-prod/test-send",
+            new
+            {
+                recipient = new { channel = "Email", address = "ops@example.com", displayName = (string?)null },
+                template = (object?)null,
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TestSend_RecipientAddressMissing_ReturnsValidationProblem()
+    {
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-prod", new
+        {
+            displayName = "Slack",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = "xoxb-test" },
+        })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-prod/test-send",
+            new
+            {
+                recipient = new { channel = "Slack", address = "", displayName = (string?)null },
+                template = (object?)null,
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task TestSend_NoPublicBaseUrl_SurfacesActionUrlUnconfiguredError()
+    {
+        // PublicBaseUrl is unset in CodeFlowApiFactory's in-memory config (sc-53). Test-send
+        // must surface that as a structured error so admins know to configure it before any
+        // real HITL events fire — rather than silently sending a notification with an empty
+        // action URL.
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-prod", new
+        {
+            displayName = "Slack",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = "xoxb-test" },
+        })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-prod/test-send",
+            new
+            {
+                recipient = new { channel = "Slack", address = "C012AB3CD", displayName = (string?)null },
+                template = (object?)null,
+            });
+
+        response.EnsureSuccessStatusCode();
+        var body = (await response.Content.ReadFromJsonAsync<JsonElement>())!;
+        body.GetProperty("delivery").GetProperty("errorCode").GetString().Should().Be("dispatcher.action_url_unconfigured");
+    }
+
     [Fact]
     public async Task GetDiagnostics_ReturnsCountsAndPublicBaseUrlStatus()
     {

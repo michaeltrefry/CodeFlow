@@ -11,10 +11,12 @@ import {
   NotificationDiagnosticsResponse,
   NotificationEventKind,
   NotificationProviderResponse,
+  NotificationProviderValidationResponse,
   NotificationProviderWriteRequest,
   NotificationRouteResponse,
   NotificationRouteWriteRequest,
   NotificationSeverity,
+  NotificationTestSendResponse,
 } from '../../../core/models';
 import { NotificationsAdminApi } from '../../../core/notifications-admin.api';
 import { PageHeaderComponent } from '../../../ui/page-header.component';
@@ -50,6 +52,29 @@ interface RouteEditState {
   enabled: boolean;
   saving: boolean;
   error: string | null;
+}
+
+/**
+ * sc-58 — state for the inline test-send dialog. One per provider at a time; admins target
+ * a single recipient and optionally pin a template ref. Result is held here so the UI can
+ * show the rendered preview alongside the provider's delivery outcome.
+ */
+interface TestSendState {
+  providerId: string;
+  channel: NotificationChannel;
+  recipientAddress: string;
+  recipientDisplayName: string;
+  useTemplate: boolean;
+  templateId: string;
+  templateVersion: number;
+  sending: boolean;
+  result: NotificationTestSendResponse | null;
+  error: string | null;
+}
+
+interface ValidationOutcome {
+  providerId: string;
+  result: NotificationProviderValidationResponse;
 }
 
 @Component({
@@ -167,13 +192,123 @@ interface RouteEditState {
                   <td class="actions">
                     <cf-button kind="ghost" (click)="editProvider(p)">Edit</cf-button>
                     @if (!p.isArchived) {
+                      <cf-button kind="ghost" (click)="validateProvider(p)" [disabled]="validatingProviderId() === p.id">
+                        {{ validatingProviderId() === p.id ? 'Validating…' : 'Validate' }}
+                      </cf-button>
+                      <cf-button kind="ghost" (click)="openTestSend(p)">Test send</cf-button>
                       <cf-button kind="ghost" (click)="archiveProvider(p)">Archive</cf-button>
                     }
                   </td>
                 </tr>
+                @if (validationOutcome(); as outcome) {
+                  @if (outcome.providerId === p.id) {
+                    <tr class="result-row">
+                      <td colspan="8">
+                        @if (outcome.result.isValid) {
+                          <cf-chip tone="ok">Validated</cf-chip>
+                          <span class="muted small">Provider credentials accepted by the upstream service.</span>
+                        } @else {
+                          <cf-chip tone="warn">Validation failed</cf-chip>
+                          <code class="code-inline">{{ outcome.result.errorCode }}</code>
+                          <span class="muted small">{{ outcome.result.errorMessage }}</span>
+                        }
+                        <cf-button kind="ghost" (click)="dismissValidation()">Dismiss</cf-button>
+                      </td>
+                    </tr>
+                  }
+                }
               }
             </tbody>
           </table>
+        }
+
+        @if (testSendState(); as ts) {
+          <div class="edit-panel">
+            <h3>Send test from {{ ts.providerId }} ({{ ts.channel }})</h3>
+            @if (ts.error) {
+              <div class="trace-failure">{{ ts.error }}</div>
+            }
+            <p class="muted small" style="margin-top: 0">
+              Sends a synthetic notification through the provider with a real action URL. No
+              audit row is written. Use this to verify credentials, destination format, and
+              rendered copy before live HITL events fire.
+            </p>
+            <form (submit)="runTestSend($event)">
+              <div class="form-row">
+                <label>Recipient address</label>
+                <input type="text" [(ngModel)]="ts.recipientAddress" name="recipientAddress" required
+                  [placeholder]="recipientPlaceholder(ts.channel)">
+              </div>
+              <div class="form-row">
+                <label>Display name (optional)</label>
+                <input type="text" [(ngModel)]="ts.recipientDisplayName" name="recipientDisplayName">
+              </div>
+              <div class="form-row">
+                <label>Use template</label>
+                <input type="checkbox" [(ngModel)]="ts.useTemplate" name="useTemplate">
+                <span class="muted small">When unchecked, sends a built-in "[CodeFlow] Test notification" body.</span>
+              </div>
+              @if (ts.useTemplate) {
+                <div class="form-row">
+                  <label>Template id</label>
+                  <input type="text" [(ngModel)]="ts.templateId" name="testTemplateId" required
+                    placeholder="hitl-task-pending/slack/default">
+                </div>
+                <div class="form-row">
+                  <label>Template version</label>
+                  <input type="number" [(ngModel)]="ts.templateVersion" name="testTemplateVersion" min="1" required>
+                </div>
+              }
+              <div class="actions">
+                <cf-button type="submit" [disabled]="ts.sending">
+                  {{ ts.sending ? 'Sending…' : 'Send test' }}
+                </cf-button>
+                <cf-button kind="ghost" (click)="cancelTestSend()">Close</cf-button>
+              </div>
+            </form>
+
+            @if (ts.result; as r) {
+              <div style="margin-top: 1rem;">
+                <h4 style="margin: 0 0 0.5rem 0">Result</h4>
+                <div class="form-row">
+                  <label>Status</label>
+                  <div>
+                    @if (r.delivery.status === 'Sent') {
+                      <cf-chip tone="ok">{{ r.delivery.status }}</cf-chip>
+                    } @else {
+                      <cf-chip tone="warn">{{ r.delivery.status }}</cf-chip>
+                    }
+                    @if (r.delivery.providerMessageId) {
+                      <span class="muted small">id: <code class="code-inline">{{ r.delivery.providerMessageId }}</code></span>
+                    }
+                  </div>
+                </div>
+                @if (r.delivery.errorCode) {
+                  <div class="form-row">
+                    <label>Error</label>
+                    <div>
+                      <code class="code-inline">{{ r.delivery.errorCode }}</code>
+                      <span class="muted small">{{ r.delivery.errorMessage }}</span>
+                    </div>
+                  </div>
+                }
+                <div class="form-row">
+                  <label>Action URL</label>
+                  <div><code class="code-inline">{{ r.actionUrl }}</code></div>
+                </div>
+                @if (r.subject) {
+                  <div class="form-row">
+                    <label>Subject</label>
+                    <div>{{ r.subject }}</div>
+                  </div>
+                }
+                <div class="form-row">
+                  <label>Rendered body</label>
+                  <textarea readonly rows="6" style="font-family: ui-monospace, monospace; font-size: 0.85rem">{{ r.body }}</textarea>
+                </div>
+              </div>
+            }
+          </div>
         }
 
         @if (providerEdit(); as edit) {
@@ -419,6 +554,9 @@ export class NotificationsAdminComponent implements OnInit {
 
   readonly providerEdit = signal<ProviderEditState | null>(null);
   readonly routeEdit = signal<RouteEditState | null>(null);
+  readonly testSendState = signal<TestSendState | null>(null);
+  readonly validatingProviderId = signal<string | null>(null);
+  readonly validationOutcome = signal<ValidationOutcome | null>(null);
 
   includeArchivedProviders = false;
 
@@ -538,6 +676,94 @@ export class NotificationsAdminComponent implements OnInit {
       },
       error: (e) => this.loadError.set(formatHttpError(e)),
     });
+  }
+
+  validateProvider(p: NotificationProviderResponse): void {
+    // sc-58 — credential check only, no message sent. The result lands in the inline
+    // validation chip on the provider's row. One outstanding validation at a time.
+    this.validatingProviderId.set(p.id);
+    this.validationOutcome.set(null);
+    this.api.validateProvider(p.id).subscribe({
+      next: (result) => {
+        this.validatingProviderId.set(null);
+        this.validationOutcome.set({ providerId: p.id, result });
+      },
+      error: (e) => {
+        this.validatingProviderId.set(null);
+        this.loadError.set(formatHttpError(e));
+      },
+    });
+  }
+
+  dismissValidation(): void {
+    this.validationOutcome.set(null);
+  }
+
+  openTestSend(p: NotificationProviderResponse): void {
+    this.testSendState.set({
+      providerId: p.id,
+      channel: p.channel,
+      recipientAddress: '',
+      recipientDisplayName: '',
+      useTemplate: false,
+      templateId: '',
+      templateVersion: 1,
+      sending: false,
+      result: null,
+      error: null,
+    });
+  }
+
+  cancelTestSend(): void {
+    this.testSendState.set(null);
+  }
+
+  runTestSend(event: Event): void {
+    event.preventDefault();
+    const state = this.testSendState();
+    if (!state) return;
+
+    if (!state.recipientAddress) {
+      state.error = 'recipient.address is required.';
+      return;
+    }
+
+    if (state.useTemplate && (!state.templateId || state.templateVersion <= 0)) {
+      state.error = 'Template id + version must be set when "Use template" is on.';
+      return;
+    }
+
+    state.sending = true;
+    state.error = null;
+    state.result = null;
+
+    this.api.testSendProvider(state.providerId, {
+      recipient: {
+        channel: state.channel,
+        address: state.recipientAddress,
+        displayName: state.recipientDisplayName || null,
+      },
+      template: state.useTemplate
+        ? { templateId: state.templateId, version: state.templateVersion }
+        : null,
+    }).subscribe({
+      next: (result) => {
+        state.sending = false;
+        state.result = result;
+      },
+      error: (e) => {
+        state.sending = false;
+        state.error = formatHttpError(e);
+      },
+    });
+  }
+
+  recipientPlaceholder(channel: NotificationChannel): string {
+    switch (channel) {
+      case 'Email': return 'reviewer@example.com';
+      case 'Sms':   return '+15551234567 (E.164)';
+      case 'Slack': return 'C012AB3CD (channel id) or U… (user id)';
+    }
   }
 
   newRoute(): void {
