@@ -27,9 +27,12 @@ interface AssistantSettingsState {
   model: string;
   maxTokensPerConversation: number | null;
   assignedAgentRoleId: number | null;
+  instructions: string;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
+
+const ASSISTANT_INSTRUCTIONS_MAX = 16_000;
 
 interface ProviderFormState {
   provider: LlmProviderKey;
@@ -160,6 +163,29 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
                   <span class="mono">/app/codeflow/assistant/&#123;conversationId&#125;</span>,
                   created on first use. Edit a role's grants on the
                   <a routerLink="/settings/roles">Agent roles</a> page.
+                </span>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">
+                  Additional instructions
+                  <span class="muted small">(optional — appended to the curated system prompt)</span>
+                </span>
+                <textarea class="input mono assistant-instructions"
+                          rows="8"
+                          [ngModel]="assistant().instructions"
+                          (ngModelChange)="patchAssistant({ instructions: $event })"
+                          name="assistant_instructions"
+                          [maxlength]="ASSISTANT_INSTRUCTIONS_MAX"
+                          placeholder="e.g. The assigned role grants kanban.list_stories and kanban.create_story — use them when the user asks about Shortcut tickets. Stick to the active project's team."></textarea>
+                <span class="field-hint">
+                  Use this for instance-specific guidance the curated prompt can't know about —
+                  most commonly to describe extra tools granted via the assigned agent role above
+                  (their names + when to call them). The block lands inside an
+                  <span class="mono">&lt;operator-instructions&gt;</span> tag in the system prompt
+                  and overrides the curated knowledge where they conflict.
+                </span>
+                <span class="field-hint muted small">
+                  {{ assistant().instructions.length }} / {{ ASSISTANT_INSTRUCTIONS_MAX }} chars
                 </span>
               </label>
             </div>
@@ -299,6 +325,12 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
       border-radius: var(--radius);
     }
     .model-remove:hover { color: var(--fg); background: var(--bg); }
+    .assistant-instructions {
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      min-height: 9rem;
+      resize: vertical;
+      line-height: 1.45;
+    }
   `]
 })
 export class LlmProvidersComponent implements OnInit {
@@ -318,6 +350,7 @@ export class LlmProvidersComponent implements OnInit {
     model: '',
     maxTokensPerConversation: null,
     assignedAgentRoleId: null,
+    instructions: '',
     updatedBy: null,
     updatedAtUtc: null,
   });
@@ -325,6 +358,7 @@ export class LlmProvidersComponent implements OnInit {
   protected readonly agentRoles = signal<AgentRole[]>([]);
   protected readonly rolesLoading = signal(true);
   protected readonly LLM_PROVIDER_KEYS = LLM_PROVIDER_KEYS;
+  protected readonly ASSISTANT_INSTRUCTIONS_MAX = ASSISTANT_INSTRUCTIONS_MAX;
   protected readonly assistantModelOptions = computed<string[]>(() => {
     const providerKey = this.assistant().provider;
     if (!providerKey) return [];
@@ -370,6 +404,7 @@ export class LlmProvidersComponent implements OnInit {
       model: current.model || null,
       maxTokensPerConversation: current.maxTokensPerConversation,
       assignedAgentRoleId: current.assignedAgentRoleId,
+      instructions: current.instructions.trim().length === 0 ? null : current.instructions,
     }).subscribe({
       next: response => this.applyAssistantResponse(response),
       error: err => this.patchAssistant({ saving: false, error: formatHttpError(err) }),
@@ -413,6 +448,7 @@ export class LlmProvidersComponent implements OnInit {
       model: response.model ?? '',
       maxTokensPerConversation: response.maxTokensPerConversation ?? null,
       assignedAgentRoleId: response.assignedAgentRoleId ?? null,
+      instructions: response.instructions ?? '',
       updatedBy: response.updatedBy ?? null,
       updatedAtUtc: response.updatedAtUtc ?? null,
     });

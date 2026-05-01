@@ -335,6 +335,12 @@ export interface AssistantSettingsResponse {
    * assistant's tool surface. Null means "built-in tools only".
    */
   assignedAgentRoleId: number | null;
+  /**
+   * Free-form operator-authored guidance appended to the curated system prompt at chat-turn
+   * build time. Lets an admin describe additional tools granted via the assigned agent role,
+   * scope rules, persona tweaks, or any other instance-specific behavior.
+   */
+  instructions: string | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
@@ -344,6 +350,7 @@ export interface AssistantSettingsWriteRequest {
   model: string | null;
   maxTokensPerConversation: number | null;
   assignedAgentRoleId: number | null;
+  instructions: string | null;
 }
 
 // --- Notification subsystem (epic 48) ----------------------------------------------------
