@@ -470,6 +470,49 @@ export interface NotificationTestSendResponse {
   delivery: NotificationTestDeliveryDto;
 }
 
+// sc-59 — delivery audit listing.
+export type NotificationDeliveryStatus = 'Unknown' | 'Sent' | 'Failed' | 'Skipped' | 'Retrying' | 'Suppressed';
+
+export const NOTIFICATION_DELIVERY_STATUSES: readonly NotificationDeliveryStatus[] = [
+  'Sent',
+  'Failed',
+  'Skipped',
+  'Retrying',
+  'Suppressed',
+] as const;
+
+export interface NotificationDeliveryAttemptResponse {
+  id: number;
+  eventId: string;
+  eventKind: NotificationEventKind;
+  routeId: string;
+  providerId: string;
+  status: NotificationDeliveryStatus;
+  attemptNumber: number;
+  attemptedAtUtc: string;
+  completedAtUtc?: string | null;
+  normalizedDestination: string;
+  providerMessageId?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  createdAtUtc: string;
+}
+
+export interface NotificationDeliveryAttemptListResponse {
+  items: NotificationDeliveryAttemptResponse[];
+  nextBeforeId?: number | null;
+}
+
+export interface NotificationDeliveryAttemptListQuery {
+  eventId?: string | null;
+  providerId?: string | null;
+  routeId?: string | null;
+  status?: NotificationDeliveryStatus | null;
+  sinceUtc?: string | null;
+  beforeId?: number | null;
+  limit?: number | null;
+}
+
 export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
 
 export type WorkflowInputKind = 'Text' | 'Json';

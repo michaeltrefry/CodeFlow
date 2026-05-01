@@ -1,3 +1,4 @@
+using CodeFlow.Contracts.Notifications;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Notifications;
 using FluentAssertions;
@@ -501,5 +502,165 @@ public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFacto
 
         var diag2 = await client.GetFromJsonAsync<JsonElement>("/api/admin/notifications/diagnostics");
         diag2.GetProperty("providerCount").GetInt32().Should().Be(1);
+    }
+
+    // --- sc-59 delivery audit listing ---------------------------------------------------
+
+    [Fact]
+    public async Task ListDeliveryAttempts_WhenEmpty_ReturnsEmptyPage()
+    {
+        using var client = factory.CreateClient();
+
+        var page = await client.GetFromJsonAsync<JsonElement>("/api/admin/notification-delivery-attempts");
+
+        page.GetProperty("items").EnumerateArray().Should().BeEmpty();
+        AssertNoNextCursor(page);
+    }
+
+    [Fact]
+    public async Task ListDeliveryAttempts_FiltersByEventIdAndStatus_ReturnsScopedRows()
+    {
+        using var client = factory.CreateClient();
+
+        var eventA = Guid.NewGuid();
+        var eventB = Guid.NewGuid();
+        await SeedAttemptAsync(eventA, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "C012AB3CD", attemptNumber: 1);
+        await SeedAttemptAsync(eventA, providerId: "slack-prod", status: NotificationDeliveryStatus.Failed,
+            destination: "C012AB3CD", attemptNumber: 2, errorCode: "slack.transport_error");
+        await SeedAttemptAsync(eventB, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "C012AB3CD", attemptNumber: 1);
+
+        // Filter by event id — only the two attempts for event A.
+        var pageEventA = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/admin/notification-delivery-attempts?eventId={eventA}");
+        var items = pageEventA.GetProperty("items").EnumerateArray().ToList();
+        items.Should().HaveCount(2);
+        items.Select(i => i.GetProperty("eventId").GetGuid()).Should().AllBeEquivalentTo(eventA);
+
+        // Filter by status — only the failed attempt.
+        var pageFailed = await client.GetFromJsonAsync<JsonElement>(
+            "/api/admin/notification-delivery-attempts?status=Failed");
+        var failedItems = pageFailed.GetProperty("items").EnumerateArray().ToList();
+        failedItems.Should().ContainSingle();
+        failedItems[0].GetProperty("status").GetString().Should().Be("Failed");
+        failedItems[0].GetProperty("errorCode").GetString().Should().Be("slack.transport_error");
+    }
+
+    [Fact]
+    public async Task ListDeliveryAttempts_FiltersByProvider_ScopesToThatProvider()
+    {
+        using var client = factory.CreateClient();
+
+        var eventId = Guid.NewGuid();
+        await SeedAttemptAsync(eventId, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "C012AB3CD", attemptNumber: 1);
+        await SeedAttemptAsync(eventId, providerId: "email-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "ops@example.com", attemptNumber: 1);
+
+        var page = await client.GetFromJsonAsync<JsonElement>(
+            "/api/admin/notification-delivery-attempts?providerId=email-prod");
+
+        var items = page.GetProperty("items").EnumerateArray().ToList();
+        items.Should().ContainSingle();
+        items[0].GetProperty("providerId").GetString().Should().Be("email-prod");
+        items[0].GetProperty("normalizedDestination").GetString().Should().Be("ops@example.com");
+    }
+
+    [Fact]
+    public async Task ListDeliveryAttempts_PagesViaBeforeIdCursor()
+    {
+        using var client = factory.CreateClient();
+
+        // Seed 3 attempts — request limit=2 so the first page returns the two newest with a
+        // non-null cursor, and a follow-up call with that cursor returns the remaining one.
+        var eventId = Guid.NewGuid();
+        for (var i = 1; i <= 3; i++)
+        {
+            await SeedAttemptAsync(eventId, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+                destination: "C012AB3CD", attemptNumber: i);
+        }
+
+        var firstPage = await client.GetFromJsonAsync<JsonElement>(
+            "/api/admin/notification-delivery-attempts?limit=2");
+        var firstItems = firstPage.GetProperty("items").EnumerateArray().ToList();
+        firstItems.Should().HaveCount(2);
+        firstPage.GetProperty("nextBeforeId").ValueKind.Should().Be(JsonValueKind.Number);
+        var cursor = firstPage.GetProperty("nextBeforeId").GetInt64();
+
+        var secondPage = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/admin/notification-delivery-attempts?limit=2&beforeId={cursor}");
+        var secondItems = secondPage.GetProperty("items").EnumerateArray().ToList();
+        secondItems.Should().ContainSingle();
+        AssertNoNextCursor(secondPage);
+
+        // No row should appear on both pages.
+        var firstIds = firstItems.Select(i => i.GetProperty("id").GetInt64()).ToHashSet();
+        var secondIds = secondItems.Select(i => i.GetProperty("id").GetInt64()).ToHashSet();
+        firstIds.Should().NotIntersectWith(secondIds);
+    }
+
+    [Fact]
+    public async Task ListDeliveryAttempts_OrdersDescendingByMostRecent()
+    {
+        using var client = factory.CreateClient();
+
+        var eventId = Guid.NewGuid();
+        await SeedAttemptAsync(eventId, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "C012AB3CD", attemptNumber: 1);
+        await SeedAttemptAsync(eventId, providerId: "slack-prod", status: NotificationDeliveryStatus.Sent,
+            destination: "C012AB3CD", attemptNumber: 2);
+
+        var page = await client.GetFromJsonAsync<JsonElement>(
+            "/api/admin/notification-delivery-attempts");
+        var items = page.GetProperty("items").EnumerateArray().ToList();
+        items.Should().HaveCount(2);
+        // Newest first — attempt_number 2 was inserted second so its id is larger.
+        items[0].GetProperty("attemptNumber").GetInt32().Should()
+            .BeGreaterThan(items[1].GetProperty("attemptNumber").GetInt32());
+    }
+
+    /// <summary>
+    /// Asserts that the page has no follow-up cursor. ASP.NET Core's default JSON serialiser
+    /// may omit null properties — accept either "missing" or explicit null as "no more pages".
+    /// </summary>
+    private static void AssertNoNextCursor(JsonElement page)
+    {
+        if (page.TryGetProperty("nextBeforeId", out var cursor))
+        {
+            cursor.ValueKind.Should().Be(JsonValueKind.Null);
+        }
+    }
+
+    /// <summary>
+    /// Seed a delivery-attempt row directly through the repository so the audit endpoint has
+    /// something to surface. The dispatcher is the production write path; tests bypass it to
+    /// avoid the ceremony of standing up the full provider + route + template chain.
+    /// </summary>
+    private async Task SeedAttemptAsync(
+        Guid eventId,
+        string providerId,
+        NotificationDeliveryStatus status,
+        string destination,
+        int attemptNumber,
+        string? errorCode = null)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var repo = scope.ServiceProvider.GetRequiredService<INotificationDeliveryAttemptRepository>();
+        var nowUtc = DateTimeOffset.UtcNow;
+        await repo.RecordAsync(
+            new NotificationDeliveryResult(
+                EventId: eventId,
+                RouteId: $"route/{providerId}",
+                ProviderId: providerId,
+                Status: status,
+                AttemptedAtUtc: nowUtc,
+                CompletedAtUtc: nowUtc,
+                AttemptNumber: attemptNumber,
+                NormalizedDestination: destination,
+                ProviderMessageId: status == NotificationDeliveryStatus.Sent ? $"msg-{attemptNumber}" : null,
+                ErrorCode: errorCode,
+                ErrorMessage: errorCode is null ? null : "seeded for sc-59 audit test"),
+            NotificationEventKind.HitlTaskPending);
     }
 }
