@@ -71,6 +71,77 @@ public sealed class NotificationDeliveryAttemptRepository(CodeFlowDbContext dbCo
         return entity is null ? null : Map(entity);
     }
 
+    public async Task<IReadOnlyList<NotificationDeliveryAttemptRecord>> ListAsync(
+        NotificationDeliveryAttemptListFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+
+        // Clamp limit defensively here too; the API layer also clamps but the repository is the
+        // last line of defence against an unbounded scan if a future caller forgets.
+        var limit = filter.Limit <= 0 ? 50 : Math.Min(filter.Limit, 200);
+
+        var query = dbContext.NotificationDeliveryAttempts
+            .AsNoTracking()
+            .AsQueryable();
+
+        if (filter.EventId is { } eventId)
+        {
+            query = query.Where(a => a.EventId == eventId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProviderId))
+        {
+            query = query.Where(a => a.ProviderId == filter.ProviderId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.RouteId))
+        {
+            query = query.Where(a => a.RouteId == filter.RouteId);
+        }
+
+        if (filter.Status is { } status)
+        {
+            query = query.Where(a => a.Status == status);
+        }
+
+        if (filter.SinceUtc is { } since)
+        {
+            var sinceUtc = since.UtcDateTime;
+            query = query.Where(a => a.AttemptedAtUtc >= sinceUtc);
+        }
+
+        if (filter.BeforeId is { } beforeId)
+        {
+            query = query.Where(a => a.Id < beforeId);
+        }
+
+        var entities = await query
+            .OrderByDescending(a => a.Id)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+
+        return entities.Select(MapRecord).ToArray();
+    }
+
+    private static NotificationDeliveryAttemptRecord MapRecord(NotificationDeliveryAttemptEntity entity) => new(
+        Id: entity.Id,
+        EventId: entity.EventId,
+        EventKind: entity.EventKind,
+        RouteId: entity.RouteId,
+        ProviderId: entity.ProviderId,
+        Status: entity.Status,
+        AttemptNumber: entity.AttemptNumber,
+        AttemptedAtUtc: new DateTimeOffset(DateTime.SpecifyKind(entity.AttemptedAtUtc, DateTimeKind.Utc)),
+        CompletedAtUtc: entity.CompletedAtUtc is null
+            ? null
+            : new DateTimeOffset(DateTime.SpecifyKind(entity.CompletedAtUtc.Value, DateTimeKind.Utc)),
+        NormalizedDestination: entity.NormalizedDestination,
+        ProviderMessageId: entity.ProviderMessageId,
+        ErrorCode: entity.ErrorCode,
+        ErrorMessage: entity.ErrorMessage,
+        CreatedAtUtc: new DateTimeOffset(DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc)));
+
     private static NotificationDeliveryResult Map(NotificationDeliveryAttemptEntity entity) => new(
         EventId: entity.EventId,
         RouteId: entity.RouteId,

@@ -2,6 +2,8 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
+  NotificationDeliveryAttemptListQuery,
+  NotificationDeliveryAttemptListResponse,
   NotificationDiagnosticsResponse,
   NotificationProviderResponse,
   NotificationProviderValidationResponse,
@@ -78,5 +80,26 @@ export class NotificationsAdminApi {
 
   getDiagnostics(): Observable<NotificationDiagnosticsResponse> {
     return this.http.get<NotificationDiagnosticsResponse>('/api/admin/notifications/diagnostics');
+  }
+
+  /**
+   * sc-59 — admin audit listing of provider delivery attempts. Cursor-paginated; pass
+   * `nextBeforeId` from the previous page back as `beforeId` to fetch the next.
+   */
+  listDeliveryAttempts(query: NotificationDeliveryAttemptListQuery = {}): Observable<NotificationDeliveryAttemptListResponse> {
+    let params = new HttpParams();
+    if (query.eventId) params = params.set('eventId', query.eventId);
+    if (query.providerId) params = params.set('providerId', query.providerId);
+    if (query.routeId) params = params.set('routeId', query.routeId);
+    if (query.status) params = params.set('status', query.status);
+    if (query.sinceUtc) params = params.set('sinceUtc', query.sinceUtc);
+    if (query.beforeId !== undefined && query.beforeId !== null) {
+      params = params.set('beforeId', String(query.beforeId));
+    }
+    if (query.limit !== undefined && query.limit !== null) {
+      params = params.set('limit', String(query.limit));
+    }
+    return this.http.get<NotificationDeliveryAttemptListResponse>(
+      '/api/admin/notification-delivery-attempts', { params });
   }
 }

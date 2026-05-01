@@ -4,10 +4,13 @@ import { DatePipe } from '@angular/common';
 import { formatHttpError } from '../../../core/format-error';
 import {
   NOTIFICATION_CHANNELS,
+  NOTIFICATION_DELIVERY_STATUSES,
   NOTIFICATION_EVENT_KINDS,
   NOTIFICATION_SEVERITIES,
   NotificationChannel,
   NotificationCredentialAction,
+  NotificationDeliveryAttemptResponse,
+  NotificationDeliveryStatus,
   NotificationDiagnosticsResponse,
   NotificationEventKind,
   NotificationProviderResponse,
@@ -75,6 +78,23 @@ interface TestSendState {
 interface ValidationOutcome {
   providerId: string;
   result: NotificationProviderValidationResponse;
+}
+
+/**
+ * sc-59 — filter + paging state for the delivery audit panel. The form bindings live on this
+ * record so admins can refine filters without losing the existing page; "Apply" resets the
+ * cursor and pulls the first page anew.
+ */
+interface DeliveryAuditState {
+  filterEventId: string;
+  filterProviderId: string;
+  filterRouteId: string;
+  filterStatus: NotificationDeliveryStatus | '';
+  filterSinceUtc: string;
+  items: NotificationDeliveryAttemptResponse[];
+  nextBeforeId: number | null;
+  loading: boolean;
+  error: string | null;
 }
 
 @Component({
@@ -512,6 +532,128 @@ interface ValidationOutcome {
           </div>
         }
       </cf-card>
+
+      <!-- Delivery audit (sc-59) -->
+      <cf-card title="Delivery attempts">
+        <p class="muted small" style="margin-top: 0">
+          Provider delivery audit. Every dispatcher attempt is recorded — Sent, Failed, Skipped,
+          Retrying, or Suppressed — with a secret-stripped destination. Filter by event id when
+          troubleshooting a specific HITL task.
+        </p>
+        <div class="filter-row">
+          <label>
+            <span class="muted small">Event id</span>
+            <input type="text" [(ngModel)]="audit().filterEventId" name="filterEventId"
+              placeholder="GUID" (keyup.enter)="applyAuditFilters()">
+          </label>
+          <label>
+            <span class="muted small">Provider</span>
+            <select [(ngModel)]="audit().filterProviderId" name="filterProviderId" (change)="applyAuditFilters()">
+              <option value="">All</option>
+              @for (p of providers(); track p.id) {
+                <option [value]="p.id">{{ p.id }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span class="muted small">Route</span>
+            <select [(ngModel)]="audit().filterRouteId" name="filterRouteId" (change)="applyAuditFilters()">
+              <option value="">All</option>
+              @for (r of routes(); track r.routeId) {
+                <option [value]="r.routeId">{{ r.routeId }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span class="muted small">Status</span>
+            <select [(ngModel)]="audit().filterStatus" name="filterStatus" (change)="applyAuditFilters()">
+              <option value="">All</option>
+              @for (s of deliveryStatuses; track s) {
+                <option [value]="s">{{ s }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span class="muted small">Since (ISO UTC)</span>
+            <input type="text" [(ngModel)]="audit().filterSinceUtc" name="filterSinceUtc"
+              placeholder="2026-04-30T00:00:00Z" (keyup.enter)="applyAuditFilters()">
+          </label>
+          <div class="filter-actions">
+            <cf-button kind="ghost" (click)="applyAuditFilters()" [disabled]="audit().loading">
+              {{ audit().loading ? 'Loading…' : 'Apply' }}
+            </cf-button>
+            <cf-button kind="ghost" (click)="clearAuditFilters()">Clear</cf-button>
+          </div>
+        </div>
+
+        @if (audit().error) {
+          <div class="trace-failure">{{ audit().error }}</div>
+        }
+
+        @if (!audit().loading && audit().items.length === 0) {
+          <div class="muted">No delivery attempts found for the current filters.</div>
+        } @else {
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Attempted</th>
+                <th>Status</th>
+                <th>Provider</th>
+                <th>Route</th>
+                <th>Event</th>
+                <th>Destination</th>
+                <th>Attempt</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (a of audit().items; track a.id) {
+                <tr>
+                  <td><span class="muted small">{{ a.attemptedAtUtc | date:'medium' }}</span></td>
+                  <td>
+                    @switch (a.status) {
+                      @case ('Sent')       { <cf-chip tone="ok">Sent</cf-chip> }
+                      @case ('Failed')     { <cf-chip tone="warn">Failed</cf-chip> }
+                      @case ('Retrying')   { <cf-chip tone="warn">Retrying</cf-chip> }
+                      @case ('Skipped')    { <cf-chip tone="muted">Skipped</cf-chip> }
+                      @case ('Suppressed') { <cf-chip tone="muted">Suppressed</cf-chip> }
+                      @default             { <cf-chip>{{ a.status }}</cf-chip> }
+                    }
+                  </td>
+                  <td><code class="code-inline">{{ a.providerId }}</code></td>
+                  <td><code class="code-inline">{{ a.routeId }}</code></td>
+                  <td>
+                    <span class="muted small">{{ a.eventKind }}</span>
+                    <code class="code-inline" style="margin-left: 0.25rem">{{ a.eventId.substring(0, 8) }}…</code>
+                  </td>
+                  <td><code class="code-inline">{{ a.normalizedDestination }}</code></td>
+                  <td><span class="muted small">#{{ a.attemptNumber }}</span></td>
+                  <td>
+                    @if (a.errorCode) {
+                      <code class="code-inline">{{ a.errorCode }}</code>
+                      @if (a.errorMessage) {
+                        <span class="muted small" style="margin-left: 0.25rem">{{ a.errorMessage }}</span>
+                      }
+                    } @else if (a.providerMessageId) {
+                      <span class="muted small">id: <code class="code-inline">{{ a.providerMessageId }}</code></span>
+                    } @else {
+                      <span class="muted small">—</span>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+
+          @if (audit().nextBeforeId !== null) {
+            <div class="row" style="margin-top: 0.75rem; justify-content: center">
+              <cf-button kind="ghost" (click)="loadMoreAudit()" [disabled]="audit().loading">
+                {{ audit().loading ? 'Loading…' : 'Load more' }}
+              </cf-button>
+            </div>
+          }
+        }
+      </cf-card>
     </div>
   `,
   styles: [`
@@ -538,6 +680,13 @@ interface ValidationOutcome {
     .trace-failure { color: var(--cf-danger, #b91c1c); padding: 0.5rem 0.75rem; background: var(--cf-danger-bg, #fef2f2); border-radius: 0.35rem; }
     .small { font-size: 0.85rem; }
     .muted { color: var(--cf-muted, #6b7280); }
+    .filter-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 0.5rem 0 1rem; }
+    .filter-row label { display: flex; flex-direction: column; gap: 0.2rem; min-width: 12rem; flex: 1 1 12rem; }
+    .filter-row input, .filter-row select {
+      padding: 0.4rem 0.6rem; border: 1px solid var(--cf-border, #d1d5db); border-radius: 0.35rem;
+      font: inherit;
+    }
+    .filter-actions { display: flex; gap: 0.4rem; align-items: center; }
   `]
 })
 export class NotificationsAdminComponent implements OnInit {
@@ -546,6 +695,7 @@ export class NotificationsAdminComponent implements OnInit {
   readonly channels = NOTIFICATION_CHANNELS;
   readonly eventKinds = NOTIFICATION_EVENT_KINDS;
   readonly severities = NOTIFICATION_SEVERITIES;
+  readonly deliveryStatuses = NOTIFICATION_DELIVERY_STATUSES;
 
   readonly providers = signal<NotificationProviderResponse[]>([]);
   readonly routes = signal<NotificationRouteResponse[]>([]);
@@ -557,6 +707,20 @@ export class NotificationsAdminComponent implements OnInit {
   readonly testSendState = signal<TestSendState | null>(null);
   readonly validatingProviderId = signal<string | null>(null);
   readonly validationOutcome = signal<ValidationOutcome | null>(null);
+
+  // sc-59 — delivery audit panel state. Initialised once; mutated in place so the form
+  // bindings on the inputs survive Apply/Clear cycles.
+  readonly audit = signal<DeliveryAuditState>({
+    filterEventId: '',
+    filterProviderId: '',
+    filterRouteId: '',
+    filterStatus: '',
+    filterSinceUtc: '',
+    items: [],
+    nextBeforeId: null,
+    loading: false,
+    error: null,
+  });
 
   includeArchivedProviders = false;
 
@@ -572,6 +736,7 @@ export class NotificationsAdminComponent implements OnInit {
     });
     this.reloadProviders();
     this.reloadRoutes();
+    this.applyAuditFilters();
   }
 
   reloadProviders(): void {
@@ -899,6 +1064,80 @@ export class NotificationsAdminComponent implements OnInit {
       case 'Sms':   return "Currently optional — Twilio doesn't need additional config.";
       case 'Slack': return 'Optional opaque settings the provider may surface in audit rows.';
     }
+  }
+
+  /**
+   * sc-59 — apply current filters and pull the first page from scratch. Resets the cursor.
+   * `since` accepts an ISO 8601 string; the API also takes a Z suffix.
+   */
+  applyAuditFilters(): void {
+    const state = this.audit();
+    state.loading = true;
+    state.error = null;
+    state.items = [];
+    state.nextBeforeId = null;
+
+    this.api.listDeliveryAttempts({
+      eventId: state.filterEventId || null,
+      providerId: state.filterProviderId || null,
+      routeId: state.filterRouteId || null,
+      status: state.filterStatus || null,
+      sinceUtc: state.filterSinceUtc || null,
+      beforeId: null,
+      limit: 50,
+    }).subscribe({
+      next: (page) => {
+        state.items = page.items;
+        state.nextBeforeId = page.nextBeforeId ?? null;
+        state.loading = false;
+        this.audit.set({ ...state });
+      },
+      error: (e) => {
+        state.loading = false;
+        state.error = formatHttpError(e);
+        this.audit.set({ ...state });
+      },
+    });
+  }
+
+  loadMoreAudit(): void {
+    const state = this.audit();
+    if (state.nextBeforeId === null) return;
+
+    state.loading = true;
+    state.error = null;
+
+    this.api.listDeliveryAttempts({
+      eventId: state.filterEventId || null,
+      providerId: state.filterProviderId || null,
+      routeId: state.filterRouteId || null,
+      status: state.filterStatus || null,
+      sinceUtc: state.filterSinceUtc || null,
+      beforeId: state.nextBeforeId,
+      limit: 50,
+    }).subscribe({
+      next: (page) => {
+        state.items = [...state.items, ...page.items];
+        state.nextBeforeId = page.nextBeforeId ?? null;
+        state.loading = false;
+        this.audit.set({ ...state });
+      },
+      error: (e) => {
+        state.loading = false;
+        state.error = formatHttpError(e);
+        this.audit.set({ ...state });
+      },
+    });
+  }
+
+  clearAuditFilters(): void {
+    const state = this.audit();
+    state.filterEventId = '';
+    state.filterProviderId = '';
+    state.filterRouteId = '';
+    state.filterStatus = '';
+    state.filterSinceUtc = '';
+    this.applyAuditFilters();
   }
 
   private reloadDiagnostics(): void {

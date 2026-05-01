@@ -48,6 +48,11 @@ public static class NotificationsEndpoints
         templates.MapGet("/", ListTemplatesAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsRead);
 
+        // Delivery audit listing (sc-59).
+        var attempts = routes.MapGroup("/api/admin/notification-delivery-attempts");
+        attempts.MapGet("/", ListDeliveryAttemptsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsRead);
+
         // Diagnostics — read-only snapshot the admin UI surfaces in a header banner.
         routes.MapGet("/api/admin/notifications/diagnostics", GetDiagnosticsAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsRead);
@@ -525,6 +530,63 @@ public static class NotificationsEndpoints
             ["templateId"] = new[] { "templateId query parameter is required (full inventory listing lands in sc-63)." },
         });
     }
+
+    // --- delivery audit (sc-59) -------------------------------------------------------
+
+    private static async Task<IResult> ListDeliveryAttemptsAsync(
+        Guid? eventId,
+        string? providerId,
+        string? routeId,
+        NotificationDeliveryStatus? status,
+        DateTimeOffset? sinceUtc,
+        long? beforeId,
+        int? limit,
+        INotificationDeliveryAttemptRepository repository,
+        CancellationToken cancellationToken)
+    {
+        const int defaultLimit = 50;
+        const int maxLimit = 200;
+        var clampedLimit = limit is null
+            ? defaultLimit
+            : Math.Clamp(limit.Value, 1, maxLimit);
+
+        var filter = new NotificationDeliveryAttemptListFilter(
+            EventId: eventId,
+            ProviderId: string.IsNullOrWhiteSpace(providerId) ? null : providerId,
+            RouteId: string.IsNullOrWhiteSpace(routeId) ? null : routeId,
+            Status: status,
+            SinceUtc: sinceUtc,
+            BeforeId: beforeId,
+            Limit: clampedLimit);
+
+        var attempts = await repository.ListAsync(filter, cancellationToken);
+
+        // The next cursor is the smallest id the server returned. Null when the server returned
+        // fewer rows than requested — the client knows there's no more data behind it.
+        long? nextBeforeId = attempts.Count == clampedLimit
+            ? attempts[^1].Id
+            : null;
+
+        var items = attempts.Select(MapDeliveryAttempt).ToArray();
+        return Results.Ok(new NotificationDeliveryAttemptListResponse(items, nextBeforeId));
+    }
+
+    private static NotificationDeliveryAttemptResponse MapDeliveryAttempt(
+        NotificationDeliveryAttemptRecord record) => new(
+        Id: record.Id,
+        EventId: record.EventId,
+        EventKind: record.EventKind,
+        RouteId: record.RouteId,
+        ProviderId: record.ProviderId,
+        Status: record.Status,
+        AttemptNumber: record.AttemptNumber,
+        AttemptedAtUtc: record.AttemptedAtUtc,
+        CompletedAtUtc: record.CompletedAtUtc,
+        NormalizedDestination: record.NormalizedDestination,
+        ProviderMessageId: record.ProviderMessageId,
+        ErrorCode: record.ErrorCode,
+        ErrorMessage: record.ErrorMessage,
+        CreatedAtUtc: record.CreatedAtUtc);
 
     // --- diagnostics ------------------------------------------------------------------
 

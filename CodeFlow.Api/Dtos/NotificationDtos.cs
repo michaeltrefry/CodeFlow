@@ -124,6 +124,39 @@ public sealed record NotificationTestDeliveryDto(
     string? ErrorCode,
     string? ErrorMessage);
 
+// --- Delivery audit (sc-59) ---------------------------------------------------------------
+
+/// <summary>
+/// One delivery attempt row exposed to the admin audit surface. Mirrors the persistence
+/// projection (id, event metadata, status, timing, normalized destination, error code/message).
+/// Carries no secrets — <c>NormalizedDestination</c> is contractually secret-stripped at the
+/// provider layer (sc-50).
+/// </summary>
+public sealed record NotificationDeliveryAttemptResponse(
+    long Id,
+    Guid EventId,
+    NotificationEventKind EventKind,
+    string RouteId,
+    string ProviderId,
+    NotificationDeliveryStatus Status,
+    int AttemptNumber,
+    DateTimeOffset AttemptedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    string NormalizedDestination,
+    string? ProviderMessageId,
+    string? ErrorCode,
+    string? ErrorMessage,
+    DateTimeOffset CreatedAtUtc);
+
+/// <summary>
+/// Cursor-paginated listing of delivery attempts. <see cref="NextBeforeId"/> is the
+/// <c>id</c> the client should pass back as the <c>beforeId</c> query parameter to fetch the
+/// next page; null when the server returned fewer rows than requested.
+/// </summary>
+public sealed record NotificationDeliveryAttemptListResponse(
+    IReadOnlyList<NotificationDeliveryAttemptResponse> Items,
+    long? NextBeforeId);
+
 // --- Diagnostics --------------------------------------------------------------------------
 
 /// <summary>
