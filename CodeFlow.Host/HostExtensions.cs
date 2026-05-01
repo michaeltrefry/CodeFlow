@@ -1,4 +1,5 @@
 using CodeFlow.Host.Container;
+using CodeFlow.Host.Cleanup;
 using CodeFlow.Host.Mcp;
 using CodeFlow.Host.Workspace;
 using CodeFlow.Contracts.Notifications;
@@ -51,6 +52,8 @@ public static class HostExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddCodeFlowInfrastructure(configuration);
+        services.AddHostedService<TraceRetentionCleanupJob>();
+        services.AddHostedService<RetiredObjectCleanupJob>();
 
         services.AddCodeFlowBus(configuration, x =>
         {
@@ -127,6 +130,11 @@ public static class HostExtensions
         services.AddScoped<IAgentInvocationAuthorityRepository, AgentInvocationAuthorityRepository>();
         services.AddScoped<IAuthorityResolver, AuthorityResolver>();
         services.AddScoped<IAuthoritySnapshotRecorder, AuthoritySnapshotRecorder>();
+        services.AddScoped<CodeFlowCleanupRunner>();
+        services.AddOptions<CleanupJobsOptions>()
+            .Bind(configuration.GetSection(CleanupJobsOptions.SectionName))
+            .Validate(options => options.Validate().Count == 0, "CleanupJobs options are invalid.")
+            .ValidateOnStart();
 
         // Notification subsystem (epic 48). Provider adapters (Slack/Email/SMS, sc-54/55/56)
         // register their own INotificationProvider implementations; the registry below picks
