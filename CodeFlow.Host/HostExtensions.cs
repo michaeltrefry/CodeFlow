@@ -14,9 +14,11 @@ using CodeFlow.Persistence.Notifications;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Anthropic;
+using CodeFlow.Runtime.Container;
 using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Mcp;
 using CodeFlow.Runtime.OpenAI;
+using CodeFlow.Runtime.Web;
 using CodeFlow.Runtime.Workspace;
 using LlmProviderKeys = CodeFlow.Persistence.LlmProviderKeys;
 using MassTransit;
@@ -207,6 +209,14 @@ public static class HostExtensions
         services.AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>();
         services.AddSingleton<IRetryContextBuilder, RetryContextBuilder>();
         services.AddSingleton<ContextAssembler>();
+        services.AddOptions<ContainerToolOptions>()
+            .Bind(configuration.GetSection(ContainerToolOptions.SectionName))
+            .Validate(options => options.Validate().Count == 0, "ContainerTools options are invalid.")
+            .ValidateOnStart();
+        services.AddOptions<WebToolOptions>()
+            .Bind(configuration.GetSection(WebToolOptions.SectionName))
+            .Validate(options => options.Validate().Count == 0, "WebTools options are invalid.")
+            .ValidateOnStart();
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
                 workspaceTools: new WorkspaceHostToolService(
