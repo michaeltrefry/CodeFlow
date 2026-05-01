@@ -217,6 +217,11 @@ public static class HostExtensions
             .Bind(configuration.GetSection(WebToolOptions.SectionName))
             .Validate(options => options.Validate().Count == 0, "WebTools options are invalid.")
             .ValidateOnStart();
+        services.AddSingleton<IDockerCommandRunner, DockerCliCommandRunner>();
+        services.AddSingleton<DockerHostToolService>(sp =>
+            new DockerHostToolService(
+                sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value,
+                sp.GetRequiredService<IDockerCommandRunner>()));
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
                 workspaceTools: new WorkspaceHostToolService(
