@@ -44,6 +44,13 @@ public sealed class AssistantSettingsEntity
     /// </summary>
     public string? Instructions { get; set; }
 
+    /// <summary>
+    /// Cap on tool-loop turns per user message. Null falls back to the appsettings
+    /// <c>Assistant:MaxTurns</c> default. Surfaced in the system prompt's
+    /// <c>&lt;turn-budget&gt;</c> block so the model can pace itself.
+    /// </summary>
+    public int? MaxTurns { get; set; }
+
     public string? UpdatedBy { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }

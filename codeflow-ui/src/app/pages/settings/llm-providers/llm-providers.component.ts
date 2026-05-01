@@ -28,11 +28,13 @@ interface AssistantSettingsState {
   maxTokensPerConversation: number | null;
   assignedAgentRoleId: number | null;
   instructions: string;
+  maxTurns: number | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
 
 const ASSISTANT_INSTRUCTIONS_MAX = 16_000;
+const ASSISTANT_MAX_TURNS_CEILING = 100;
 
 interface ProviderFormState {
   provider: LlmProviderKey;
@@ -140,6 +142,23 @@ const PROVIDER_META: Record<LlmProviderKey, { displayName: string; placeholder: 
                 <span class="field-hint">
                   Cumulative input + output tokens captured against a single conversation. When
                   exceeded, the assistant refuses further turns until the user starts a new conversation.
+                </span>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">
+                  Max tool-loop turns per message
+                  <span class="muted small">(empty = use server default)</span>
+                </span>
+                <input class="input mono" type="number" min="1" [max]="ASSISTANT_MAX_TURNS_CEILING" step="1"
+                       [ngModel]="assistant().maxTurns ?? ''"
+                       (ngModelChange)="patchAssistant({ maxTurns: parseMaxTurns($event) })"
+                       name="assistant_max_turns"
+                       placeholder="25" />
+                <span class="field-hint">
+                  Caps the tool-call turns the assistant can run on a single user message. Surfaced
+                  in the system prompt's <span class="mono">&lt;turn-budget&gt;</span> block so the
+                  model paces itself. Raise this when tool-heavy flows (workflow drafting,
+                  multi-step diagnosis) hit the cap; ceiling is {{ ASSISTANT_MAX_TURNS_CEILING }}.
                 </span>
               </label>
               <label class="field span-2">
@@ -351,6 +370,7 @@ export class LlmProvidersComponent implements OnInit {
     maxTokensPerConversation: null,
     assignedAgentRoleId: null,
     instructions: '',
+    maxTurns: null,
     updatedBy: null,
     updatedAtUtc: null,
   });
@@ -359,6 +379,7 @@ export class LlmProvidersComponent implements OnInit {
   protected readonly rolesLoading = signal(true);
   protected readonly LLM_PROVIDER_KEYS = LLM_PROVIDER_KEYS;
   protected readonly ASSISTANT_INSTRUCTIONS_MAX = ASSISTANT_INSTRUCTIONS_MAX;
+  protected readonly ASSISTANT_MAX_TURNS_CEILING = ASSISTANT_MAX_TURNS_CEILING;
   protected readonly assistantModelOptions = computed<string[]>(() => {
     const providerKey = this.assistant().provider;
     if (!providerKey) return [];
@@ -394,6 +415,14 @@ export class LlmProvidersComponent implements OnInit {
     return Math.floor(n);
   }
 
+  protected parseMaxTurns(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const floored = Math.floor(n);
+    return floored > ASSISTANT_MAX_TURNS_CEILING ? ASSISTANT_MAX_TURNS_CEILING : floored;
+  }
+
   protected saveAssistantSettings(event: Event): void {
     event.preventDefault();
     const current = this.assistant();
@@ -405,6 +434,7 @@ export class LlmProvidersComponent implements OnInit {
       maxTokensPerConversation: current.maxTokensPerConversation,
       assignedAgentRoleId: current.assignedAgentRoleId,
       instructions: current.instructions.trim().length === 0 ? null : current.instructions,
+      maxTurns: current.maxTurns,
     }).subscribe({
       next: response => this.applyAssistantResponse(response),
       error: err => this.patchAssistant({ saving: false, error: formatHttpError(err) }),
@@ -449,6 +479,7 @@ export class LlmProvidersComponent implements OnInit {
       maxTokensPerConversation: response.maxTokensPerConversation ?? null,
       assignedAgentRoleId: response.assignedAgentRoleId ?? null,
       instructions: response.instructions ?? '',
+      maxTurns: response.maxTurns ?? null,
       updatedBy: response.updatedBy ?? null,
       updatedAtUtc: response.updatedAtUtc ?? null,
     });

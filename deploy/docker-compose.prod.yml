@@ -54,6 +54,8 @@ services:
       Auth__Audience: ${CODEFLOW_AUTH_AUDIENCE:?CODEFLOW_AUTH_AUDIENCE must be set (e.g. codeflow-api)}
       # --- CORS for the public origin (Slice 2 / config-driven). ---
       Cors__AllowedOrigins__0: ${CODEFLOW_PUBLIC_ORIGIN:-https://codeflow.trefry.net}
+      # --- Notification action links (HITL emails etc.) point back at the public UI. ---
+      CodeFlow__Notifications__PublicBaseUrl: ${CODEFLOW_PUBLIC_ORIGIN:-https://codeflow.trefry.net}
       # --- Persistence: shared MariaDB on trefry-network (hostname `mariadb`). ---
       CODEFLOW_DB_CONNECTION_STRING: ${CODEFLOW_DB_CONNECTION_STRING:?CODEFLOW_DB_CONNECTION_STRING must be set (Server=mariadb;Port=3306;Database=codeflow;User=...;Password=...;)}
       # --- Bus: external RabbitMQ at mqapps.trefry.net. ---

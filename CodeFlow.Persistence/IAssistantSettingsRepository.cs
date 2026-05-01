@@ -13,6 +13,7 @@ public sealed record AssistantSettings(
     long? MaxTokensPerConversation,
     long? AssignedAgentRoleId,
     string? Instructions,
+    int? MaxTurns,
     string? UpdatedBy,
     DateTime? UpdatedAtUtc);
 
@@ -22,4 +23,5 @@ public sealed record AssistantSettingsWrite(
     long? MaxTokensPerConversation,
     long? AssignedAgentRoleId,
     string? Instructions,
+    int? MaxTurns,
     string? UpdatedBy);

@@ -341,6 +341,11 @@ export interface AssistantSettingsResponse {
    * scope rules, persona tweaks, or any other instance-specific behavior.
    */
   instructions: string | null;
+  /**
+   * Cap on tool-loop turns per user message. Null falls back to the appsettings default.
+   * Surfaced in the system prompt's <turn-budget> block so the model paces itself.
+   */
+  maxTurns: number | null;
   updatedBy: string | null;
   updatedAtUtc: string | null;
 }
@@ -351,6 +356,7 @@ export interface AssistantSettingsWriteRequest {
   maxTokensPerConversation: number | null;
   assignedAgentRoleId: number | null;
   instructions: string | null;
+  maxTurns: number | null;
 }
 
 // --- Notification subsystem (epic 48) ----------------------------------------------------

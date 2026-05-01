@@ -56,11 +56,18 @@ public sealed class AssistantSettingsResolver(
             maxPerConversation = null;
         }
 
+        // Tool-loop cap: DB admin override > appsettings > 25. Positive int wins; null/<=0 falls
+        // through. Lets operators raise the budget without a redeploy when tool-heavy flows
+        // (workflow drafting, multi-step diagnosis) keep hitting the cap.
+        var maxTurns = dbDefaults?.MaxTurns is { } dbTurns && dbTurns > 0
+            ? dbTurns
+            : (options.MaxTurns > 0 ? options.MaxTurns : 25);
+
         return new AssistantRuntimeConfig(
             Provider: provider,
             Model: model,
             MaxTokens: options.MaxTokens > 0 ? options.MaxTokens : 32768,
-            MaxTurns: options.MaxTurns > 0 ? options.MaxTurns : 10,
+            MaxTurns: maxTurns,
             MaxTokensPerConversation: maxPerConversation,
             AssignedAgentRoleId: dbDefaults?.AssignedAgentRoleId,
             OperatorInstructions: string.IsNullOrWhiteSpace(dbDefaults?.Instructions)
