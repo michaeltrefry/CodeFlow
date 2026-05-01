@@ -1,3 +1,4 @@
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
@@ -283,6 +284,100 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         agents!.Should().Contain(agentSummary =>
             agentSummary.Key == "wf-apply-target-writer" &&
             agentSummary.LatestVersion == 1);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithoutStartNode()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-no-start",
+            agentKey: "import-no-start-agent",
+            nodes: new[]
+            {
+                PackageNode(Guid.NewGuid(), WorkflowNodeKind.Agent, "import-no-start-agent"),
+            },
+            edges: Array.Empty<WorkflowPackageWorkflowEdge>());
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("exactly one Start node");
+
+        var imported = await client.GetAsync("/api/workflows/import-no-start");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithDisconnectedNodes()
+    {
+        using var client = factory.CreateClient();
+        var startId = Guid.NewGuid();
+        var islandId = Guid.NewGuid();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-island-flow",
+            agentKey: "import-island-agent",
+            nodes: new[]
+            {
+                PackageNode(startId, WorkflowNodeKind.Start, "import-island-agent"),
+                PackageNode(islandId, WorkflowNodeKind.Agent, "import-island-agent"),
+            },
+            edges: Array.Empty<WorkflowPackageWorkflowEdge>());
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("not reachable from the Start node");
+
+        var imported = await client.GetAsync("/api/workflows/import-island-flow");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowWithInvalidMaxRounds()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-bad-rounds",
+            agentKey: "import-bad-rounds-agent",
+            maxRoundsPerRound: 0);
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("maxRoundsPerRound");
+
+        var imported = await client.GetAsync("/api/workflows/import-bad-rounds");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_RejectsWorkflowBlockedBySaveTimePipeline()
+    {
+        using var client = factory.CreateClient();
+        var package = BuildSingleAgentPackage(
+            workflowKey: "import-protected-var",
+            agentKey: "import-protected-var-agent",
+            nodes: new[]
+            {
+                PackageNode(
+                    Guid.NewGuid(),
+                    WorkflowNodeKind.Start,
+                    "import-protected-var-agent",
+                    mirrorOutputToWorkflowVar: "__loop.hijack"),
+            });
+
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+
+        apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await apply.Content.ReadAsStringAsync();
+        body.Should().Contain("framework-managed");
+
+        var imported = await client.GetAsync("/api/workflows/import-protected-var");
+        imported.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
@@ -1110,6 +1205,75 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         });
         response.EnsureSuccessStatusCode();
     }
+
+    private static WorkflowPackage BuildSingleAgentPackage(
+        string workflowKey,
+        string agentKey,
+        int maxRoundsPerRound = 3,
+        IReadOnlyList<WorkflowPackageWorkflowNode>? nodes = null,
+        IReadOnlyList<WorkflowPackageWorkflowEdge>? edges = null)
+    {
+        var startId = Guid.NewGuid();
+        var workflowNodes = nodes ?? new[]
+        {
+            PackageNode(startId, WorkflowNodeKind.Start, agentKey),
+        };
+
+        var workflow = new WorkflowPackageWorkflow(
+            Key: workflowKey,
+            Version: 1,
+            Name: workflowKey,
+            MaxRoundsPerRound: maxRoundsPerRound,
+            Category: WorkflowCategory.Workflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: workflowNodes,
+            Edges: edges ?? Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agent = new WorkflowPackageAgent(
+            Key: agentKey,
+            Version: 1,
+            Kind: AgentKind.Agent,
+            Config: JsonNode.Parse("""
+                {
+                  "type": "agent",
+                  "provider": "openai",
+                  "model": "gpt-test",
+                  "outputs": [{ "kind": "Completed" }]
+                }
+                """),
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "test",
+            Outputs: new[] { new WorkflowPackageAgentOutput("Completed", null, null) });
+
+        return new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference(workflow.Key, workflow.Version),
+            Workflows: new[] { workflow },
+            Agents: new[] { agent },
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+    }
+
+    private static WorkflowPackageWorkflowNode PackageNode(
+        Guid id,
+        WorkflowNodeKind kind,
+        string agentKey,
+        string? mirrorOutputToWorkflowVar = null) =>
+        new(
+            Id: id,
+            Kind: kind,
+            AgentKey: agentKey,
+            AgentVersion: 1,
+            OutputScript: null,
+            OutputPorts: new[] { "Completed" },
+            LayoutX: 0,
+            LayoutY: 0,
+            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar);
 
     private async Task SeedMcpRoleAsync(string agentKey)
     {

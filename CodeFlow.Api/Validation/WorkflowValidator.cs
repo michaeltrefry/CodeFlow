@@ -394,6 +394,12 @@ public static class WorkflowValidator
                 $"Multiple edges leave {DescribeNode(duplicateNode)} on port '{duplicateOutgoing.Key.FromPort}'.");
         }
 
+        var reachability = ValidateAllNodesReachableFromStart(nodes, edges);
+        if (!reachability.IsValid)
+        {
+            return reachability;
+        }
+
         var inputValidation = ValidateInputs(inputs);
         if (!inputValidation.IsValid)
         {
@@ -401,6 +407,54 @@ public static class WorkflowValidator
         }
 
         return ValidationResult.Ok();
+    }
+
+    private static ValidationResult ValidateAllNodesReachableFromStart(
+        IReadOnlyList<WorkflowNodeDto> nodes,
+        IReadOnlyList<WorkflowEdgeDto> edges)
+    {
+        if (nodes.Count <= 1)
+        {
+            return ValidationResult.Ok();
+        }
+
+        var start = nodes.Single(n => n.Kind == WorkflowNodeKind.Start);
+        var nodeIds = nodes.Select(n => n.Id).ToHashSet();
+        var outgoing = edges
+            .GroupBy(e => e.FromNodeId)
+            .ToDictionary(g => g.Key, g => g.Select(e => e.ToNodeId).ToArray());
+
+        var reachable = new HashSet<Guid> { start.Id };
+        var queue = new Queue<Guid>();
+        queue.Enqueue(start.Id);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (!outgoing.TryGetValue(current, out var targets))
+            {
+                continue;
+            }
+
+            foreach (var target in targets)
+            {
+                if (!nodeIds.Contains(target) || !reachable.Add(target))
+                {
+                    continue;
+                }
+                queue.Enqueue(target);
+            }
+        }
+
+        var unreachable = nodes.FirstOrDefault(n => !reachable.Contains(n.Id));
+        if (unreachable is null)
+        {
+            return ValidationResult.Ok();
+        }
+
+        return ValidationResult.Fail(
+            $"Workflow node {DescribeNode(unreachable)} is not reachable from the Start node. "
+            + "Connect every non-Start node through edges from the Start node, or remove unused island nodes.");
     }
 
     /// <summary>

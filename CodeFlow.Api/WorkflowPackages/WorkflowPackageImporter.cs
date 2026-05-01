@@ -1,4 +1,7 @@
+using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Mcp;
+using CodeFlow.Api.Validation;
+using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages.Admission;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Authority.Admission;
@@ -17,6 +20,8 @@ public sealed class WorkflowPackageImporter(
     ISkillRepository skillRepository,
     IMcpServerRepository mcpServerRepository,
     IMcpEndpointPolicy mcpEndpointPolicy,
+    WorkflowValidationPipeline? validationPipeline = null,
+    IAuthoringTelemetry? telemetry = null,
     WorkflowPackageImportValidator? admissionValidator = null) : IWorkflowPackageImporter
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -65,11 +70,129 @@ public sealed class WorkflowPackageImporter(
             await ImportWorkflowsAsync(importPackage, now, cancellationToken);
 
             await dbContext.SaveChangesAsync(cancellationToken);
+            await ValidateImportedWorkflowsAsync(importPackage, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         });
 
         return new WorkflowPackageImportApplyResult(preview.EntryPoint, preview.Items, preview.Warnings);
     }
+
+    private async Task ValidateImportedWorkflowsAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken)
+    {
+        foreach (var workflow in package.Workflows)
+        {
+            var nodes = workflow.Nodes.Select(ToDto).ToArray();
+            var edges = workflow.Edges.Select(ToDto).ToArray();
+            var inputs = workflow.Inputs.Select(ToDto).ToArray();
+
+            var legacyValidation = await WorkflowValidator.ValidateAsync(
+                workflow.Key,
+                workflow.Name,
+                workflow.MaxRoundsPerRound,
+                nodes,
+                edges,
+                inputs,
+                dbContext,
+                workflowRepository,
+                agentConfigRepository,
+                cancellationToken);
+
+            if (!legacyValidation.IsValid)
+            {
+                telemetry?.ValidatorBlockedSave(workflow.Key, new[] { "workflow-validator" });
+                throw new WorkflowPackageResolutionException(
+                    $"Workflow package import failed validation for workflow '{workflow.Key}': {legacyValidation.Error}");
+            }
+
+            if (validationPipeline is null)
+            {
+                continue;
+            }
+
+            var context = new WorkflowValidationContext(
+                Key: workflow.Key,
+                Name: workflow.Name,
+                MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+                Nodes: nodes,
+                Edges: edges,
+                Inputs: inputs,
+                DbContext: dbContext,
+                WorkflowRepository: workflowRepository,
+                AgentRepository: agentConfigRepository,
+                AgentRoleRepository: agentRoleRepository,
+                WorkflowVarsReads: workflow.WorkflowVarsReads,
+                WorkflowVarsWrites: workflow.WorkflowVarsWrites);
+
+            var report = await validationPipeline.RunAsync(context, cancellationToken);
+            if (!report.HasErrors)
+            {
+                continue;
+            }
+
+            var errors = report.Findings
+                .Where(f => f.Severity == WorkflowValidationSeverity.Error)
+                .ToArray();
+            telemetry?.ValidatorBlockedSave(
+                workflow.Key,
+                errors.Select(f => f.RuleId).Distinct(StringComparer.Ordinal).ToArray());
+
+            throw new WorkflowPackageResolutionException(
+                $"Workflow package import failed validation for workflow '{workflow.Key}': "
+                + string.Join("; ", errors.Select(f => f.Message)));
+        }
+    }
+
+    private static WorkflowNodeDto ToDto(WorkflowPackageWorkflowNode node) =>
+        new(
+            Id: node.Id,
+            Kind: node.Kind,
+            AgentKey: node.AgentKey,
+            AgentVersion: node.AgentVersion,
+            OutputScript: node.OutputScript,
+            OutputPorts: node.OutputPorts,
+            LayoutX: node.LayoutX,
+            LayoutY: node.LayoutY,
+            SubflowKey: node.SubflowKey,
+            SubflowVersion: node.SubflowVersion,
+            ReviewMaxRounds: node.ReviewMaxRounds,
+            LoopDecision: node.LoopDecision,
+            InputScript: node.InputScript,
+            OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+            RejectionHistory: node.RejectionHistory,
+            MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
+            OutputPortReplacements: node.OutputPortReplacements,
+            Template: node.Template,
+            OutputType: node.OutputType,
+            SwarmProtocol: node.SwarmProtocol,
+            SwarmN: node.SwarmN,
+            ContributorAgentKey: node.ContributorAgentKey,
+            ContributorAgentVersion: node.ContributorAgentVersion,
+            SynthesizerAgentKey: node.SynthesizerAgentKey,
+            SynthesizerAgentVersion: node.SynthesizerAgentVersion,
+            CoordinatorAgentKey: node.CoordinatorAgentKey,
+            CoordinatorAgentVersion: node.CoordinatorAgentVersion,
+            SwarmTokenBudget: node.SwarmTokenBudget);
+
+    private static WorkflowEdgeDto ToDto(WorkflowPackageWorkflowEdge edge) =>
+        new(
+            FromNodeId: edge.FromNodeId,
+            FromPort: edge.FromPort,
+            ToNodeId: edge.ToNodeId,
+            ToPort: edge.ToPort,
+            RotatesRound: edge.RotatesRound,
+            SortOrder: edge.SortOrder);
+
+    private static WorkflowInputDto ToDto(WorkflowPackageWorkflowInput input) =>
+        new(
+            Key: input.Key,
+            DisplayName: input.DisplayName,
+            Kind: input.Kind,
+            Required: input.Required,
+            DefaultValueJson: input.DefaultValueJson,
+            Description: input.Description,
+            Ordinal: input.Ordinal);
 
     private async Task<WorkflowPackageImportPlan> BuildImportPlanAsync(
         WorkflowPackage package,

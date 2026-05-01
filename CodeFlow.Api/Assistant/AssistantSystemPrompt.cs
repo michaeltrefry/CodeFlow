@@ -226,8 +226,28 @@ public static class AssistantSystemPrompt
         Each `workflows[]` entry has `nodes[]` (`{ id, kind, agentKey, agentVersion,
         outputPorts[], outputScript?, inputScript?, layoutX, layoutY, ... }`), `edges[]`
         (`{ fromNodeId, fromPort, toNodeId, toPort, rotatesRound, sortOrder }`), and `inputs[]`.
-        Node `kind` is one of `Agent`, `Hitl`, `Subflow`, `ReviewLoop`, `Swarm`, `Transform`,
-        `Logic`. Node `id` is a fresh GUID per node.
+        Node `kind` is one of `Start`, `Agent`, `Hitl`, `Subflow`, `ReviewLoop`, `Swarm`,
+        `Transform`, `Logic`. Node `id` is a fresh GUID per node.
+
+        ## Workflow validity checklist (hard save/import rules)
+        Every workflow package you draft must satisfy the same rules as the visual editor:
+        - Set workflow `maxRoundsPerRound` to an integer from 1 to 50. Use 3 unless the user
+          specifies another value.
+        - Each workflow must have exactly one `Start` node. A Start node is not optional; it is
+          the trace entry point and receives the workflow input.
+        - Every non-Start node must be reachable from the Start node through `edges[]`. Do not
+          emit island nodes. If a node should run after another node, add an edge from the
+          upstream node's declared output port to the downstream node.
+        - Every edge must reference real node ids, have a non-empty `fromPort`, and use a port
+          that the source node can actually emit. For Start/Agent/HITL nodes, mirror the pinned
+          agent's declared outputs. `Failed` is implicit on every node and may be used for error
+          handling. `Transform` emits `Out`. `ReviewLoop` emits child terminal ports plus
+          `Exhausted` and its `loopDecision` (default `Rejected`).
+        - Do not include reserved/synthesized ports in `outputPorts`: never declare `Failed`,
+          and never declare `Exhausted` on a ReviewLoop even when you wire an `Exhausted` edge.
+        - Do not create multiple edges from the same node and same `fromPort`.
+        - `ReviewLoop` nodes must set `reviewMaxRounds` from 1 to 10 and must reference a real
+          child workflow through `subflowKey`/`subflowVersion`.
 
         Kind-specific node fields:
         - `Subflow` / `ReviewLoop`: `subflowKey`, `subflowVersion`, plus `reviewMaxRounds`
