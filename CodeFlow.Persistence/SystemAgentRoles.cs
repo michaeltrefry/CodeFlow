@@ -16,6 +16,7 @@ namespace CodeFlow.Persistence;
 public static class SystemAgentRoles
 {
     public const string CodeWorkerKey = "code-worker";
+    public const string CodeBuilderKey = "code-builder";
     public const string ReadOnlyShellKey = "read-only-shell";
     public const string KanbanWorkerKey = "kanban-worker";
 
@@ -37,6 +38,29 @@ public static class SystemAgentRoles
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
+            }),
+        new SystemAgentRole(
+            Key: CodeBuilderKey,
+            DisplayName: "Code builder",
+            Description: "Code-worker capabilities plus containerized build/test (container.run) "
+                + "and bounded public web lookup (web_fetch, web_search). Use for developer "
+                + "agents that need to build/test in language toolchains the host does not have "
+                + "installed. The agent picks an image from Docker Hub (docker.io only) and "
+                + "runs commands in a workflow-scoped writable copy of the workspace at "
+                + "/workspace; build artifacts never pollute the canonical workspace. "
+                + "ABSOLUTE BAN: no repo Dockerfiles, no `docker build`, no `docker compose`, "
+                + "no privileged mode, no host networking, no published ports, no Docker socket "
+                + "mounts. Web tools are read-only HTTP(S) and never send credentials/cookies.",
+            Grants: new[]
+            {
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "container.run"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_fetch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_search"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
             }),

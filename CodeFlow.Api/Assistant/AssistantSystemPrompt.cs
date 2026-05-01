@@ -111,9 +111,18 @@ public static class AssistantSystemPrompt
         - **MCP server**: an external Model Context Protocol server registered as a tool source;
           agents pick up its tools via roles that list `mcp:<server-key>:<tool-name>` grants.
         - Seeded system roles: `code-worker` (`read_file`, `apply_patch`, `run_command`, `echo`,
-          `now`), `read-only-shell` (no `apply_patch`), and `kanban-worker` (pre-wired MCP
-          grants for the conventional Kanban MCP server). System-managed roles can be assigned
-          but not edited; fork to a new key to customize.
+          `now`); `code-builder` (code-worker + `container.run` + `web_fetch` + `web_search`
+          for agents that need to build/test in language toolchains the host doesn't ship —
+          docker.io images only, no repo Dockerfiles, no compose, no privileged mode);
+          `read-only-shell` (no `apply_patch`); `kanban-worker` (pre-wired MCP grants for the
+          conventional Kanban MCP server). System-managed roles can be assigned but not
+          edited; fork to a new key to customize.
+        - Build/test workflow for `code-builder` agents: inspect the repo (read_file), call
+          `web_search`/`web_fetch` to confirm the official setup guide and an appropriate
+          docker.io image when the toolchain is unfamiliar, then `container.run` for build
+          and test commands. The container's /workspace is a per-workflow writable mirror —
+          source edits go through `apply_patch` on the canonical workspace and propagate
+          forward on the next `container.run`. Never use repo Dockerfiles or `docker build`.
 
         ## Workflows and nodes
         A workflow is a directed graph of nodes joined by edges. Node kinds in CodeFlow today:
