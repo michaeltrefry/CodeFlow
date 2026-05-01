@@ -1,5 +1,9 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Container;
+using CodeFlow.Runtime.Web;
 using CodeFlow.Runtime.Workspace;
 using FluentAssertions;
 
@@ -244,6 +248,91 @@ public sealed class HostToolProviderTests : IDisposable
                 Directory.Delete(executionRoot, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void GetCatalog_IncludesWebTools()
+    {
+        var catalog = HostToolProvider.GetCatalog();
+        var names = catalog.Select(t => t.Name).ToHashSet();
+
+        names.Should().Contain(WebHostToolService.WebFetchToolName);
+        names.Should().Contain(WebHostToolService.WebSearchToolName);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebFetch_WithoutWebService_ThrowsHelpfulError()
+    {
+        var act = async () => await provider.InvokeAsync(
+            new ToolCall(
+                "call_fetch",
+                WebHostToolService.WebFetchToolName,
+                new JsonObject { ["url"] = "https://docs.example.com/" }),
+            context: context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*web_* tools are not configured*");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebFetch_RoutesToWebHostToolService()
+    {
+        var handler = new EchoHandler(HttpStatusCode.OK, "ok body", "text/plain");
+        var providerWithWeb = new HostToolProvider(
+            workspaceTools: new WorkspaceHostToolService(new WorkspaceOptions { Root = workspaceRoot }),
+            webTools: new WebHostToolService(
+                new WebToolOptions(),
+                handler,
+                hostResolver: (_, _) => Task.FromResult<IReadOnlyList<IPAddress>>(new[] { IPAddress.Parse("203.0.113.1") })));
+
+        var result = await providerWithWeb.InvokeAsync(
+            new ToolCall(
+                "call_fetch",
+                WebHostToolService.WebFetchToolName,
+                new JsonObject { ["url"] = "https://docs.example.com/" }),
+            context: context);
+
+        result.IsError.Should().BeFalse();
+        JsonNode.Parse(result.Content)!["text"]!.GetValue<string>().Should().Contain("ok body");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebSearch_RoutesToWebHostToolService_AndSurfacesNullProviderRefusal()
+    {
+        var providerWithWeb = new HostToolProvider(
+            workspaceTools: new WorkspaceHostToolService(new WorkspaceOptions { Root = workspaceRoot }),
+            webTools: new WebHostToolService(new WebToolOptions()));
+
+        var result = await providerWithWeb.InvokeAsync(
+            new ToolCall(
+                "call_search",
+                WebHostToolService.WebSearchToolName,
+                new JsonObject { ["query"] = "node 22 docker" }),
+            context: context);
+
+        result.IsError.Should().BeTrue();
+        JsonNode.Parse(result.Content)!["refusal"]!["code"]!.GetValue<string>()
+            .Should().Be("search-not-configured");
+    }
+
+    private sealed class EchoHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode status;
+        private readonly string body;
+        private readonly string contentType;
+
+        public EchoHandler(HttpStatusCode status, string body, string contentType)
+        {
+            this.status = status;
+            this.body = body;
+            this.contentType = contentType;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, contentType)
+            });
     }
 
     private sealed class SuccessfulDockerRunner : IDockerCommandRunner

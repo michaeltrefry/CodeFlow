@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Container;
+using CodeFlow.Runtime.Web;
 using CodeFlow.Runtime.Workspace;
 
 namespace CodeFlow.Runtime;
@@ -10,17 +11,20 @@ public sealed class HostToolProvider : IToolProvider
     private readonly WorkspaceHostToolService workspaceTools;
     private readonly VcsHostToolService? vcsTools;
     private readonly DockerHostToolService? containerTools;
+    private readonly WebHostToolService? webTools;
 
     public HostToolProvider(
         Func<DateTimeOffset>? nowProvider = null,
         WorkspaceHostToolService? workspaceTools = null,
         VcsHostToolService? vcsTools = null,
-        DockerHostToolService? containerTools = null)
+        DockerHostToolService? containerTools = null,
+        WebHostToolService? webTools = null)
     {
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
         this.workspaceTools = workspaceTools ?? new WorkspaceHostToolService();
         this.vcsTools = vcsTools;
         this.containerTools = containerTools;
+        this.webTools = webTools;
     }
 
     public ToolCategory Category => ToolCategory.Host;
@@ -55,6 +59,8 @@ public sealed class HostToolProvider : IToolProvider
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
             DockerHostToolService.ContainerRunToolName => RequireContainer().RunContainerAsync(toolCall, context, cancellationToken),
+            WebHostToolService.WebFetchToolName => RequireWeb().FetchAsync(toolCall, context, cancellationToken),
+            WebHostToolService.WebSearchToolName => RequireWeb().SearchAsync(toolCall, context, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
 
@@ -68,6 +74,10 @@ public sealed class HostToolProvider : IToolProvider
     private DockerHostToolService RequireContainer() =>
         containerTools ?? throw new InvalidOperationException(
             "container.* tools are not configured: HostToolProvider was constructed without a DockerHostToolService.");
+
+    private WebHostToolService RequireWeb() =>
+        webTools ?? throw new InvalidOperationException(
+            "web_* tools are not configured: HostToolProvider was constructed without a WebHostToolService.");
 
     public static IReadOnlyList<ToolSchema> GetCatalog()
     {
@@ -242,7 +252,55 @@ public sealed class HostToolProvider : IToolProvider
                     },
                     ["required"] = new JsonArray("image", "command")
                 },
-                IsMutating: true)
+                IsMutating: true),
+            new ToolSchema(
+                WebHostToolService.WebFetchToolName,
+                "Fetches readable text from a public HTTP/HTTPS URL. Use this to read official "
+                + "framework install/setup guides and Docker Hub image descriptions before "
+                + "choosing an image for container.run. Loopback, private, link-local, and "
+                + "metadata-service IPs are blocked both pre-flight and after every redirect; "
+                + "no credentials, cookies, or auth headers are ever sent. Response size and "
+                + "extracted-text length are capped — set 'maxResults' on web_search instead "
+                + "of fetching every result.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["url"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Absolute http(s) URL to fetch. Must point at the "
+                                + "public internet — internal/private hosts are denied."
+                        }
+                    },
+                    ["required"] = new JsonArray("url")
+                }),
+            new ToolSchema(
+                WebHostToolService.WebSearchToolName,
+                "Searches the public web for build/test/install guidance. Prefer queries that "
+                + "include the framework name plus 'official docs' or 'docker hub' so the "
+                + "first hit is authoritative. Results are bounded by maxResults and re-checked "
+                + "against the SSRF blocklist before they reach the agent — never trust the "
+                + "snippet alone, always web_fetch the URL to read the actual page.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["query"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Search query string."
+                        },
+                        ["maxResults"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Cap on hit count. Capped to the configured maximum."
+                        }
+                    },
+                    ["required"] = new JsonArray("query")
+                })
         ];
     }
 

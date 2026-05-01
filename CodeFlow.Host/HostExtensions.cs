@@ -240,13 +240,19 @@ public static class HostExtensions
                 sp.GetRequiredService<DockerLifecycleService>(),
                 sp.GetRequiredService<ContainerExecutionWorkspaceProvider>()));
         services.AddHostedService<ContainerResourceSweepService>();
+        services.TryAddSingleton<IWebSearchProvider, NullWebSearchProvider>();
+        services.AddSingleton<WebHostToolService>(sp =>
+            new WebHostToolService(
+                sp.GetRequiredService<IOptions<WebToolOptions>>().Value,
+                searchProvider: sp.GetRequiredService<IWebSearchProvider>()));
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
                 workspaceTools: new WorkspaceHostToolService(
                     sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
                 vcsTools: new VcsHostToolService(
                     sp.GetRequiredService<IVcsProviderFactory>()),
-                containerTools: sp.GetRequiredService<DockerHostToolService>()));
+                containerTools: sp.GetRequiredService<DockerHostToolService>(),
+                webTools: sp.GetRequiredService<WebHostToolService>()));
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 
