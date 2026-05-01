@@ -6,6 +6,14 @@ public interface INotificationTemplateRepository
         string templateId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the latest version of every distinct <c>template_id</c>. Backs the admin
+    /// editor's full-inventory listing (sc-63) — versions are surfaced through
+    /// <see cref="ListVersionsAsync"/> when an admin drills into a single template.
+    /// </summary>
+    Task<IReadOnlyList<NotificationTemplate>> ListLatestPerTemplateAsync(
+        CancellationToken cancellationToken = default);
+
     Task<NotificationTemplate?> GetAsync(
         string templateId,
         int version,

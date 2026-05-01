@@ -436,6 +436,28 @@ export interface NotificationTemplateResponse {
   updatedBy?: string | null;
 }
 
+// sc-63 — template authoring DTOs.
+export interface NotificationTemplateWriteRequest {
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+}
+
+export interface NotificationTemplatePreviewRequest {
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+}
+
+export interface NotificationTemplatePreviewResponse {
+  subject?: string | null;
+  body?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
 export interface NotificationDiagnosticsResponse {
   publicBaseUrl?: string | null;
   providerCount: number;

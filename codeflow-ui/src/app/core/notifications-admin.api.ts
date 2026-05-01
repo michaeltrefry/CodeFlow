@@ -10,7 +10,10 @@ import {
   NotificationProviderWriteRequest,
   NotificationRouteResponse,
   NotificationRouteWriteRequest,
+  NotificationTemplatePreviewRequest,
+  NotificationTemplatePreviewResponse,
   NotificationTemplateResponse,
+  NotificationTemplateWriteRequest,
   NotificationTestSendRequest,
   NotificationTestSendResponse,
 } from './models';
@@ -72,10 +75,27 @@ export class NotificationsAdminApi {
     return this.http.delete<void>(`/api/admin/notification-routes/${encodeURIComponent(routeId)}`);
   }
 
-  /** sc-57 only supports per-templateId history listings — full inventory listing lands in sc-63. */
+  /** sc-63 — full inventory listing (latest version of every template). */
+  listTemplates(): Observable<NotificationTemplateResponse[]> {
+    return this.http.get<NotificationTemplateResponse[]>('/api/admin/notification-templates');
+  }
+
+  /** Per-templateId version history (used by the route editor when pinning a specific version). */
   listTemplateVersions(templateId: string): Observable<NotificationTemplateResponse[]> {
     const params = new HttpParams().set('templateId', templateId);
     return this.http.get<NotificationTemplateResponse[]>('/api/admin/notification-templates', { params });
+  }
+
+  /** sc-63 — publish a new template version. No-ops if the content matches the existing latest. */
+  putTemplate(templateId: string, request: NotificationTemplateWriteRequest): Observable<NotificationTemplateResponse> {
+    return this.http.put<NotificationTemplateResponse>(
+      `/api/admin/notification-templates/${encodeURIComponent(templateId)}`, request);
+  }
+
+  /** sc-63 — render a draft against a synthetic HitlTaskPendingEvent without persisting. */
+  previewTemplate(request: NotificationTemplatePreviewRequest): Observable<NotificationTemplatePreviewResponse> {
+    return this.http.post<NotificationTemplatePreviewResponse>(
+      '/api/admin/notification-templates/preview', request);
   }
 
   getDiagnostics(): Observable<NotificationDiagnosticsResponse> {

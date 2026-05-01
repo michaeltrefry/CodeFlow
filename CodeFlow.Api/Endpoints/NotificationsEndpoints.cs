@@ -3,6 +3,7 @@ using CodeFlow.Api.Dtos;
 using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Persistence.Notifications;
+using CodeFlow.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -47,6 +48,10 @@ public static class NotificationsEndpoints
         var templates = routes.MapGroup("/api/admin/notification-templates");
         templates.MapGet("/", ListTemplatesAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsRead);
+        templates.MapPut("/{templateId}", PutTemplateAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
+        templates.MapPost("/preview", PreviewTemplateAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.NotificationsWrite);
 
         // Delivery audit listing (sc-59).
         var attempts = routes.MapGroup("/api/admin/notification-delivery-attempts");
@@ -512,23 +517,140 @@ public static class NotificationsEndpoints
         INotificationTemplateRepository repository,
         CancellationToken cancellationToken)
     {
-        // Without a templateId, return the latest version of every template the admin can
-        // currently pick from. With a templateId, return the full version history for that
-        // single template (used by the route editor when the admin wants to pin a specific
-        // version).
+        // With a templateId, return the full version history for that single template (used by
+        // the route editor when an admin wants to pin a specific version). Without one, return
+        // the latest version of every template — drives the admin templates list on the
+        // notifications settings page (sc-63).
         if (!string.IsNullOrWhiteSpace(templateId))
         {
             var versions = await repository.ListVersionsAsync(templateId, cancellationToken);
             return Results.Ok(versions.Select(MapTemplate).ToArray());
         }
 
-        // Latest-only listing isn't on the repository contract today — sc-63 will likely add
-        // it. For now we surface a not-implemented response with a clear error message; the
-        // route editor uses templateId-scoped lookups in the meantime.
-        return Results.ValidationProblem(new Dictionary<string, string[]>
+        var latest = await repository.ListLatestPerTemplateAsync(cancellationToken);
+        return Results.Ok(latest.Select(MapTemplate).ToArray());
+    }
+
+    private static async Task<IResult> PutTemplateAsync(
+        string templateId,
+        NotificationTemplateWriteRequest? request,
+        INotificationTemplateRepository repository,
+        ICurrentUser currentUser,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
         {
-            ["templateId"] = new[] { "templateId query parameter is required (full inventory listing lands in sc-63)." },
-        });
+            return ApiResults.BadRequest("Request body is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(templateId))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["templateId"] = new[] { "templateId is required." },
+            });
+        }
+
+        var errors = ValidateTemplate(request);
+        if (errors.Count > 0)
+        {
+            return Results.ValidationProblem(errors);
+        }
+
+        var saved = await repository.PublishAsync(
+            new NotificationTemplateUpsert(
+                TemplateId: templateId,
+                EventKind: request.EventKind,
+                Channel: request.Channel,
+                SubjectTemplate: string.IsNullOrEmpty(request.SubjectTemplate) ? null : request.SubjectTemplate,
+                BodyTemplate: request.BodyTemplate,
+                UpdatedBy: currentUser.Id),
+            cancellationToken);
+
+        return Results.Ok(MapTemplate(saved));
+    }
+
+    private static async Task<IResult> PreviewTemplateAsync(
+        NotificationTemplatePreviewRequest? request,
+        IScribanTemplateRenderer scriban,
+        IHitlNotificationActionUrlBuilder actionUrlBuilder,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return ApiResults.BadRequest("Request body is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BodyTemplate))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["bodyTemplate"] = new[] { "bodyTemplate is required." },
+            });
+        }
+
+        // Render against a synthetic HitlTaskPendingEvent so the admin sees exactly what the
+        // dispatcher would produce. Synthetic GUIDs + HitlTaskId=42 + "preview" workflow/agent
+        // keys make the rendered output obvious in any logs and isolated from real fan-outs
+        // even though preview never actually sends.
+        var nowUtc = DateTimeOffset.UtcNow;
+        Uri actionUrl;
+        try
+        {
+            actionUrl = actionUrlBuilder.BuildForPendingTask(hitlTaskId: 42, traceId: Guid.NewGuid());
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Ok(new NotificationTemplatePreviewResponse(
+                Subject: null,
+                Body: null,
+                ErrorCode: "preview.action_url_unconfigured",
+                ErrorMessage: ex.Message));
+        }
+
+        var syntheticEvent = new HitlTaskPendingEvent(
+            EventId: Guid.NewGuid(),
+            OccurredAtUtc: nowUtc,
+            ActionUrl: actionUrl,
+            Severity: NotificationSeverity.Normal,
+            HitlTaskId: 42,
+            TraceId: Guid.NewGuid(),
+            RoundId: Guid.NewGuid(),
+            NodeId: Guid.NewGuid(),
+            WorkflowKey: "preview-workflow",
+            WorkflowVersion: 1,
+            AgentKey: "preview-agent",
+            AgentVersion: 1,
+            HitlTaskCreatedAtUtc: nowUtc,
+            InputPreview: "Preview input — replace with realistic content when authoring real templates.",
+            InputRef: null,
+            SubflowPath: null);
+
+        var scope = ScribanNotificationTemplateRenderer.BuildScope(syntheticEvent);
+
+        try
+        {
+            var subject = string.IsNullOrEmpty(request.SubjectTemplate)
+                ? null
+                : scriban.Render(request.SubjectTemplate, scope, cancellationToken);
+            var body = scriban.Render(request.BodyTemplate, scope, cancellationToken);
+
+            return Results.Ok(new NotificationTemplatePreviewResponse(
+                Subject: subject,
+                Body: body,
+                ErrorCode: null,
+                ErrorMessage: null));
+        }
+        catch (Exception ex)
+        {
+            // Scriban render failures (syntax error, sandbox violation, timeout) surface as a
+            // structured response — no 500 — so the editor can show the message inline.
+            return Results.Ok(new NotificationTemplatePreviewResponse(
+                Subject: null,
+                Body: null,
+                ErrorCode: "preview.render_failed",
+                ErrorMessage: ex.Message));
+        }
     }
 
     // --- delivery audit (sc-59) -------------------------------------------------------
@@ -688,6 +810,48 @@ public static class NotificationsEndpoints
                 || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
         {
             errors["endpointUrl"] = new[] { "endpointUrl must be an absolute http(s) URL." };
+        }
+
+        return errors;
+    }
+
+    private static Dictionary<string, string[]> ValidateTemplate(NotificationTemplateWriteRequest request)
+    {
+        var errors = new Dictionary<string, string[]>();
+
+        if (request.EventKind == NotificationEventKind.Unspecified)
+        {
+            errors["eventKind"] = new[] { "eventKind must be a known notification event kind." };
+        }
+
+        if (request.Channel == NotificationChannel.Unspecified)
+        {
+            errors["channel"] = new[] { "channel must be one of Email, Sms, Slack." };
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BodyTemplate))
+        {
+            errors["bodyTemplate"] = new[] { "bodyTemplate is required." };
+        }
+
+        // Channel-specific subject rules: email subject is meaningful and required by every
+        // SMTP/SES path; SMS has no subject concept and a non-empty value would be silently
+        // dropped by the provider, so reject it at the API. Slack accepts but doesn't require
+        // a subject — chat.postMessage uses it as a fallback for notifications/screen readers.
+        switch (request.Channel)
+        {
+            case NotificationChannel.Email:
+                if (string.IsNullOrWhiteSpace(request.SubjectTemplate))
+                {
+                    errors["subjectTemplate"] = new[] { "subjectTemplate is required for the Email channel." };
+                }
+                break;
+            case NotificationChannel.Sms:
+                if (!string.IsNullOrWhiteSpace(request.SubjectTemplate))
+                {
+                    errors["subjectTemplate"] = new[] { "subjectTemplate is not supported for the Sms channel — leave it empty." };
+                }
+                break;
         }
 
         return errors;

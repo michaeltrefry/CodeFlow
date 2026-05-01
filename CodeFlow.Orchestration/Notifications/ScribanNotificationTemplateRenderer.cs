@@ -64,7 +64,12 @@ public sealed class ScribanNotificationTemplateRenderer(
             Template: route.Template);
     }
 
-    private static ScriptObject BuildScope(INotificationEvent notificationEvent)
+    /// <summary>
+    /// Builds the Scriban scope for an event. Public so the admin preview endpoint (sc-63)
+    /// can render unsaved drafts against a synthetic event without going through the full
+    /// route+template pipeline.
+    /// </summary>
+    public static ScriptObject BuildScope(INotificationEvent notificationEvent)
     {
         var element = JsonSerializer.SerializeToElement((object)notificationEvent, JsonOptions);
         var scope = new ScriptObject();

@@ -19,6 +19,25 @@ public sealed class NotificationTemplateRepository(CodeFlowDbContext dbContext) 
         return entities.Select(Map).ToArray();
     }
 
+    public async Task<IReadOnlyList<NotificationTemplate>> ListLatestPerTemplateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // Correlated subquery: keep rows whose version equals MAX(version) for the same
+        // template_id. EF Core translates this to a `WHERE version = (SELECT MAX(...))`
+        // clause that MariaDB serves cheaply via the (template_id, version) primary key. The
+        // GroupBy + Select(g => g.First()) form is more idiomatic but doesn't survive EF
+        // translation in EF Core 10 (EmptyProjectionMember error).
+        var entities = await dbContext.NotificationTemplates
+            .AsNoTracking()
+            .Where(t => t.Version == dbContext.NotificationTemplates
+                .Where(other => other.TemplateId == t.TemplateId)
+                .Max(other => other.Version))
+            .OrderBy(t => t.TemplateId)
+            .ToListAsync(cancellationToken);
+
+        return entities.Select(Map).ToArray();
+    }
+
     public async Task<NotificationTemplate?> GetAsync(
         string templateId,
         int version,
