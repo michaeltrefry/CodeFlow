@@ -612,10 +612,13 @@ public static class AssistantSystemPrompt
 
         1. **Built-in CodeFlow tools.** Always present: `list_workflows`, `list_agents`,
            `get_workflow`, `get_agent`, `find_workflows_using_agent`, the trace tools
-           (`get_trace`, `get_node_io`, `diagnose_trace`), the workflow-package tools
-           (`save_workflow_package`, `set_workflow_package_draft`, `get_workflow_package_draft`,
-           `patch_workflow_package_draft`, `clear_workflow_package_draft`), `run_workflow`,
-           `propose_replay_with_edit`. These are documented above.
+           (`get_trace`, `get_node_io`, `diagnose_trace`), the catalog-discovery tools
+           (`list_host_tools`, `list_mcp_servers`, `list_mcp_server_tools` — use these when
+           authoring an agent role to know which host/MCP tools you can grant), the
+           workflow-package tools (`save_workflow_package`, `set_workflow_package_draft`,
+           `get_workflow_package_draft`, `patch_workflow_package_draft`,
+           `clear_workflow_package_draft`), `run_workflow`, `propose_replay_with_edit`. These
+           are documented above.
         2. **Agent-role grants.** When the operator has assigned an agent role to the assistant
            (LLM Providers admin → Assistant defaults → Assigned agent role), every tool granted
            to that role is wired into your turn alongside the built-ins. Host tools

@@ -138,6 +138,14 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IAssistantTool, ListAgentRolesTool>();
         services.AddScoped<IAssistantTool, GetAgentRoleTool>();
 
+        // Catalog-discovery tools so the assistant can recommend host/MCP tools to grant when the
+        // user is authoring an agent role. Mirror /api/host-tools and /api/mcp-servers/* — read-only,
+        // no chip. ListHostToolsTool has no DI dependencies (it queries the static catalog) so it
+        // could be a singleton, but stays scoped for parity with the rest of the registry.
+        services.AddScoped<IAssistantTool, ListHostToolsTool>();
+        services.AddScoped<IAssistantTool, ListMcpServersTool>();
+        services.AddScoped<IAssistantTool, ListMcpServerToolsTool>();
+
         // HAA-5: trace introspection tools.
         services.AddScoped<IAssistantTool, ListTracesTool>();
         services.AddScoped<IAssistantTool, GetTraceTool>();
