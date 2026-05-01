@@ -1,14 +1,45 @@
+using CodeFlow.Api;
 using CodeFlow.Contracts.Notifications;
 using CodeFlow.Persistence;
 using CodeFlow.Persistence.Notifications;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace CodeFlow.Api.Tests.Integration;
+
+/// <summary>
+/// Helpers for the sc-60 authorization tests. Lets a single test customize the principal the
+/// dev-bypass auth handler asserts (default is Admin via <c>CodeFlowApiFactory</c>) by
+/// post-configuring <see cref="CodeFlow.Api.Auth.AuthOptions.DevelopmentRoles"/> on a derived
+/// factory. Uses <c>PostConfigure</c> rather than configuration overrides because the config
+/// binder appends list entries instead of replacing them, which would leave the default Admin
+/// role in the list and defeat the test.
+/// </summary>
+internal static class NotificationsTestFactoryExtensions
+{
+    public static WebApplicationFactory<Program> WithRoles(this WebApplicationFactory<Program> factory, params string[] roles)
+    {
+        return factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.PostConfigure<CodeFlow.Api.Auth.AuthOptions>(options =>
+                {
+                    options.DevelopmentRoles = roles.ToList();
+                });
+            });
+        });
+    }
+}
 
 [Trait("Category", "EndToEnd")]
 public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
@@ -662,5 +693,229 @@ public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFacto
                 ErrorCode: errorCode,
                 ErrorMessage: errorCode is null ? null : "seeded for sc-59 audit test"),
             NotificationEventKind.HitlTaskPending);
+    }
+
+    // --- sc-60 authorization tests ------------------------------------------------------
+
+    public static IEnumerable<object[]> NotificationEndpoints()
+    {
+        // Every endpoint exposed by NotificationsEndpoints. The "verb url" pairs are the same
+        // path strings registered in MapNotificationsEndpoints — keep this list in sync as the
+        // surface area grows.
+        yield return new object[] { "GET",    "/api/admin/notification-providers" };
+        yield return new object[] { "PUT",    "/api/admin/notification-providers/some-id" };
+        yield return new object[] { "DELETE", "/api/admin/notification-providers/some-id" };
+        yield return new object[] { "POST",   "/api/admin/notification-providers/some-id/validate" };
+        yield return new object[] { "POST",   "/api/admin/notification-providers/some-id/test-send" };
+        yield return new object[] { "GET",    "/api/admin/notification-routes" };
+        yield return new object[] { "PUT",    "/api/admin/notification-routes/some-route" };
+        yield return new object[] { "DELETE", "/api/admin/notification-routes/some-route" };
+        yield return new object[] { "GET",    "/api/admin/notification-templates" };
+        yield return new object[] { "GET",    "/api/admin/notifications/diagnostics" };
+        yield return new object[] { "GET",    "/api/admin/notification-delivery-attempts" };
+    }
+
+    [Theory]
+    [MemberData(nameof(NotificationEndpoints))]
+    public async Task NotificationEndpoint_RejectsNonAdminCallers(string verb, string url)
+    {
+        // Non-admin clients should hit the PermissionRequirement before any controller logic
+        // runs and get 403. Both NotificationsRead and NotificationsWrite policies are
+        // Admin-only per CodeFlowApiDefaults.PermissionRoleMatrix; this Theory verifies every
+        // endpoint enforces that, including the sc-58 validate/test-send and sc-59 audit
+        // listing endpoints added after sc-57's original auth wiring.
+        using var nonAdminFactory = factory.WithRoles(CodeFlowApiDefaults.Roles.Viewer);
+        using var client = nonAdminFactory.CreateClient();
+
+        using var request = new HttpRequestMessage(new HttpMethod(verb), url);
+        if (verb is "PUT" or "POST")
+        {
+            // Body is irrelevant — auth runs before model binding for the policies we care
+            // about. Send a syntactically valid JSON object so a 400 from missing body can't
+            // mask a 403/200 outcome.
+            request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        }
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden,
+            $"non-admin callers must not reach {verb} {url}");
+    }
+
+    [Theory]
+    [MemberData(nameof(NotificationEndpoints))]
+    public async Task NotificationEndpoint_AllowsAdminCallers(string verb, string url)
+    {
+        // Counterpart to the 403 Theory: admins are not blocked by the auth pipeline. The
+        // exact response body varies (404 for missing rows, 200 for empty lists, 400 for the
+        // templates endpoint without a templateId, etc.) — we only assert the call did NOT
+        // return 401 or 403. This pins "admin role grants access" without coupling to the
+        // specific success shape, which the dedicated tests already cover.
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(new HttpMethod(verb), url);
+        if (verb is "PUT" or "POST")
+        {
+            request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        }
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().NotBe(HttpStatusCode.Unauthorized,
+            $"admin must be authenticated for {verb} {url}");
+        response.StatusCode.Should().NotBe(HttpStatusCode.Forbidden,
+            $"admin must be authorized for {verb} {url}");
+    }
+
+    // --- sc-60 validation gap-fillers ---------------------------------------------------
+
+    [Fact]
+    public async Task TestSend_AgainstArchivedProvider_SurfacesProviderNotRegistered()
+    {
+        // The registry returns null for archived providers (sc-54 promoted to async factory
+        // pattern), and TestSend surfaces that as a structured error rather than 404 so the
+        // admin UI can render alongside the other validation outcomes. Pin that behaviour.
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-archived", new
+        {
+            displayName = "Slack — to-be-archived",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = "xoxb-test" },
+        })).EnsureSuccessStatusCode();
+
+        (await client.DeleteAsync("/api/admin/notification-providers/slack-archived")).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-archived/test-send",
+            new
+            {
+                recipient = new { channel = "Slack", address = "C012AB3CD", displayName = (string?)null },
+                template = (object?)null,
+            });
+
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("delivery").GetProperty("errorCode").GetString()
+            .Should().Be("dispatcher.provider_not_registered");
+    }
+
+    [Fact]
+    public async Task PutRoute_RejectsEmptyRecipientArray()
+    {
+        using var client = factory.CreateClient();
+
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-prod", new
+        {
+            displayName = "Slack",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = "xoxb-test" },
+        })).EnsureSuccessStatusCode();
+
+        var response = await client.PutAsJsonAsync("/api/admin/notification-routes/r1", new
+        {
+            eventKind = "HitlTaskPending",
+            providerId = "slack-prod",
+            recipients = Array.Empty<object>(),
+            template = new { templateId = "t/1", version = 1 },
+            minimumSeverity = "Normal",
+            enabled = true,
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PutProvider_AcceptsArbitraryAdditionalConfigJson_WithoutCrashing()
+    {
+        // additional_config_json is provider-specific opaque bytes (engine selector for email,
+        // future Slack workspace hint, etc.). The API doesn't validate the shape because that
+        // would tightly couple the API layer to every provider's schema — pin "the API stores
+        // whatever the admin put in and returns 200" so a future contributor doesn't add naive
+        // JSON-schema validation that breaks bespoke provider configs.
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/notification-providers/email-bespoke", new
+        {
+            displayName = "Email bespoke",
+            channel = "Email",
+            endpointUrl = (string?)null,
+            fromAddress = "ops@example.com",
+            additionalConfigJson = """{"engine":"smtp","host":"mx","port":587,"unknown_extra_field":42}""",
+            enabled = true,
+            credential = new { action = "Replace", value = "smtp-password" },
+        });
+        put.EnsureSuccessStatusCode();
+
+        var saved = await put.Content.ReadFromJsonAsync<JsonElement>();
+        saved.GetProperty("additionalConfigJson").GetString().Should().Contain("unknown_extra_field");
+    }
+
+    [Fact]
+    public async Task PutProvider_RejectsMalformedEndpointUrl()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/notification-providers/p1", new
+        {
+            displayName = "P1",
+            channel = "Email",
+            endpointUrl = "not-a-url",
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Preserve", value = (string?)null },
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ValidateAndTestSend_DoNotEchoCredential()
+    {
+        // sc-58 routes — the response shapes don't include the credential field, but a future
+        // refactor could leak it (e.g. by adding a debug field). Round-trip with a marker
+        // string and assert it never appears in either response body.
+        using var client = factory.CreateClient();
+
+        var marker = "xoxb-marker-must-not-leak-12345";
+        (await client.PutAsJsonAsync("/api/admin/notification-providers/slack-prod", new
+        {
+            displayName = "Slack",
+            channel = "Slack",
+            endpointUrl = (string?)null,
+            fromAddress = (string?)null,
+            additionalConfigJson = (string?)null,
+            enabled = true,
+            credential = new { action = "Replace", value = marker },
+        })).EnsureSuccessStatusCode();
+
+        // Validate path: hits Slack's auth.test which will fail with a fake token, but the
+        // response body must not echo our credential under any error path.
+        var validate = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-prod/validate", new { });
+        var validateBody = await validate.Content.ReadAsStringAsync();
+        validateBody.Should().NotContain(marker);
+
+        // Test-send path: same expectation. Action-URL-unconfigured short-circuit fires first
+        // because the test factory has no PublicBaseUrl — but even if the call ever reached
+        // Slack's API, the response shape only carries delivery metadata, never the cred.
+        var testSend = await client.PostAsJsonAsync(
+            "/api/admin/notification-providers/slack-prod/test-send",
+            new
+            {
+                recipient = new { channel = "Slack", address = "C012AB3CD", displayName = (string?)null },
+                template = (object?)null,
+            });
+        var testSendBody = await testSend.Content.ReadAsStringAsync();
+        testSendBody.Should().NotContain(marker);
     }
 }
