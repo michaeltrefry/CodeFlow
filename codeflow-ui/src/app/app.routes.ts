@@ -142,6 +142,11 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/settings/llm-providers/llm-providers.component').then(m => m.LlmProvidersComponent)
   },
   {
+    path: 'settings/notifications',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/settings/notifications/notifications.component').then(m => m.NotificationsAdminComponent)
+  },
+  {
     path: 'assistant-preview',
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/assistant-preview/assistant-preview.component').then(m => m.AssistantPreviewComponent)

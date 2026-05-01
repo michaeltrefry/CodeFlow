@@ -118,12 +118,13 @@ public sealed class AssistantSystemPromptTests
     [InlineData("codeflow.workflow-package.v1")]
     [InlineData("entryPoint")]
     [InlineData("agentRoleAssignments")]
-    [InlineData("Self-containment")]
+    [InlineData("Embedding rule")]
     [InlineData("cf-workflow-package")]
     public void DefaultPrompt_DescribesPackageEmissionContract(string token)
     {
         // HAA-9 emission contract: the assistant must know the package schema's top-level
-        // shape, the self-containment rule, and the fence language hint the chat UI looks for.
+        // shape, the embedding rule (token economy — only embed entities being created/bumped,
+        // existing refs resolve from the DB), and the fence language hint the chat UI looks for.
         AssistantSystemPrompt.Default.Should().Contain(token,
             because: $"HAA-9 emission contract requires the prompt to mention '{token}'");
     }

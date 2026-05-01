@@ -221,6 +221,27 @@ public sealed class WorkflowValidatorTests
     }
 
     [Fact]
+    public async Task Workflow_ShouldRejectNodesNotReachableFromStart()
+    {
+        var fx = await TestFixture.CreateAsync();
+        await fx.SeedAgentAsync("kickoff", new[] { "Completed" });
+
+        var startId = Guid.NewGuid();
+        var islandId = Guid.NewGuid();
+
+        var nodes = new[]
+        {
+            Node(startId, WorkflowNodeKind.Start, "kickoff", new[] { "Completed" }),
+            Node(islandId, WorkflowNodeKind.Agent, "kickoff", new[] { "Completed" }),
+        };
+
+        var result = await fx.ValidateAsync("island-flow", nodes, Array.Empty<WorkflowEdgeDto>());
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("not reachable from the Start node");
+    }
+
+    [Fact]
     public async Task RepositoriesInput_AcceptsSingleEntryWithJustUrl()
     {
         var fx = await SeedSingleStartFixture();

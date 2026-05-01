@@ -226,28 +226,80 @@ public static class AssistantSystemPrompt
         Each `workflows[]` entry has `nodes[]` (`{ id, kind, agentKey, agentVersion,
         outputPorts[], outputScript?, inputScript?, layoutX, layoutY, ... }`), `edges[]`
         (`{ fromNodeId, fromPort, toNodeId, toPort, rotatesRound, sortOrder }`), and `inputs[]`.
-        Node `kind` is one of `Agent`, `Hitl`, `Subflow`, `ReviewLoop`, `Swarm`, `Transform`,
-        `Logic`. Node `id` is a fresh GUID per node.
+        Node `kind` is one of `Start`, `Agent`, `Hitl`, `Subflow`, `ReviewLoop`, `Swarm`,
+        `Transform`, `Logic`. Node `id` is a fresh GUID per node.
 
-        Kind-specific node fields:
-        - `Subflow` / `ReviewLoop`: `subflowKey`, `subflowVersion`, plus `reviewMaxRounds`
-          and `loopDecision` for ReviewLoop.
-        - `Transform`: `template` (Scriban), `outputType` (`"string"` or `"json"`).
-        - `Swarm`: `swarmProtocol` (`"Sequential"` | `"Coordinator"`), `swarmN` (1..16),
-          `contributorAgentKey` + `contributorAgentVersion`, `synthesizerAgentKey` +
-          `synthesizerAgentVersion`, and — only when `swarmProtocol` is `"Coordinator"` —
-          `coordinatorAgentKey` + `coordinatorAgentVersion` (omit / null on Sequential).
-          Optional `swarmTokenBudget` (>0 when set, null for unbounded). Default
-          `outputPorts: ["Synthesized"]` if you don't have synthesizer output info; otherwise
-          mirror the synthesizer agent's declared outputs (excluding `Failed`).
+        ## Workflow validity checklist (hard save/import rules)
+        Every workflow package you draft must satisfy the same rules as the visual editor.
+        These run identically in `save_workflow_package` (preview validation) and at the import
+        endpoint, so a violation here means the user clicks Save and gets a 400.
 
-        ## Self-containment rule (hard)
-        Workflow packages must include every referenced entity at its existing version. The
-        importer does not resolve from the database. If the user's workflow references agent
-        `reviewer` v3 and role `code-reviewer`, both MUST appear in the package's `agents[]`
-        and `roles[]` arrays even when unchanged. Use `get_agent` / `get_role` (when available)
-        to fetch the current version; if the assistant tool surface doesn't include the lookup
-        you need, ask the user for the version number.
+        Workflow-level:
+        - Workflow `key` is non-empty, slug-shaped (lowercase, dash-separated). `name` is
+          non-empty.
+        - `maxRoundsPerRound` is an integer from 1 to 50. Use 3 unless the user specifies
+          another value.
+        - `inputs[]`: every entry has a non-empty `key` (unique within the workflow) and a
+          non-empty `displayName`. If `defaultValueJson` is set it must be valid JSON. The
+          input keyed `repositories` must be `Kind: Json` and its default must be an array of
+          `{ "url": "<non-empty>", "branch?": "..." }` objects.
+
+        Node-level (every node):
+        - Each workflow has exactly one `Start` node. A Start node is not optional; it is the
+          trace entry point and receives the workflow input.
+        - Every non-Start node is reachable from the Start node through `edges[]`. Do not emit
+          island nodes. If a node should run after another node, add an edge from the upstream
+          node's declared output port to the downstream node.
+        - Node `id` is a fresh non-empty GUID; ids are unique within the workflow.
+        - Do not declare reserved/synthesized ports in `outputPorts`: never declare `Failed`
+          (implicit on every node), and never declare `Exhausted` on a ReviewLoop even when
+          you wire an `Exhausted` edge.
+
+        Edge-level:
+        - Every edge references real node ids, has a non-empty `fromPort`, and uses a port
+          the source node can actually emit. For `Start` / `Agent` / `HITL` nodes, mirror the
+          pinned agent's declared outputs. `Failed` is implicit on every node and may be used
+          for error handling. `Transform` emits `Out`. `ReviewLoop` emits the child workflow's
+          terminal ports plus `Exhausted` and its `loopDecision` (default `Rejected`).
+        - At most one edge leaves any given (node, fromPort) pair.
+
+        Kind-specific node rules:
+        - `Start` / `Agent` / `HITL`: must set `agentKey`. Pin `agentVersion` to a concrete
+          integer when you know it; the importer/save endpoint resolves null to latest, but
+          pinning is preferred for reproducibility.
+        - `Logic`: `outputScript` must be a non-empty JS expression and `outputPorts` must
+          declare at least one port. Routing fans out by the script's returned port name.
+        - `Transform`: `template` is a non-empty Scriban template. `outputType` is `"string"`
+          or `"json"` (default `"string"`). Do NOT declare any `outputPorts` other than `Out`
+          — `Out` is the only synthesized port.
+        - `Subflow`: `subflowKey` references a real workflow; the workflow may NOT reference
+          itself (`subflowKey != key`). Pin `subflowVersion` when known.
+        - `ReviewLoop`: same `subflowKey` rule as Subflow. `reviewMaxRounds` must be 1..10.
+          Optional `loopDecision` is a non-empty port name <= 64 chars and not `"Failed"`.
+        - `Swarm`: `swarmProtocol` is `"Sequential"` | `"Coordinator"`. `swarmN` is 1..16.
+          `contributorAgentKey` + `contributorAgentVersion` and `synthesizerAgentKey` +
+          `synthesizerAgentVersion` are required (BOTH key and version must be set; latest-
+          resolution does not happen here). Only when `swarmProtocol == "Coordinator"`,
+          `coordinatorAgentKey` + `coordinatorAgentVersion` are required; on Sequential they
+          must be null. Optional `swarmTokenBudget` is > 0 when set (null for unbounded).
+          `outputPorts` declares at least one port (typically `["Synthesized"]`).
+
+        ## Embedding rule (token economy)
+        Embed only the entities you are creating or intentionally bumping. Refs that already
+        exist in the target library at the (key, version) you cite do NOT need to be embedded
+        — the importer resolves them from the local DB and reports them as `Reuse` items in
+        the preview. So:
+        - When drafting a brand-new workflow that uses an existing agent `reviewer` v3, your
+          `agents[]` may omit `reviewer` entirely and your nodes just carry
+          `agentKey: "reviewer", agentVersion: 3`. Same for roles, skills, MCP servers, and
+          subflow workflow refs.
+        - When you ARE creating or bumping an entity (a new agent, a new version of an agent
+          whose body changed), include it in the appropriate top-level array
+          (`agents[]` / `roles[]` / `skills[]` / `mcpServers[]` / nested `workflows[]`).
+        - When in doubt about whether a referenced entity exists, call `get_agent`,
+          `get_workflow`, `list_agents`, etc. first.
+        Embedding everything regardless wastes tokens and makes refinement loops more costly
+        for the user. Don't do it.
 
         ## Emission contract
         When the design is approved, emit the package as a fenced code block with the language
@@ -261,18 +313,46 @@ public static class AssistantSystemPrompt
         human-readable summary (workflow name, node count, agent keys). On refinement,
         re-emit the FULL package in a new fenced block — never deltas.
 
-        ## Saving a drafted package
-        When the user asks to save / import / add / commit the drafted package to the library,
-        invoke the `save_workflow_package` tool with the FULL package payload as the `package`
-        argument (not a fenced markdown code block — pass the parsed JSON object directly via
-        the tool input). The tool runs a self-containment preview only; it does not save. The
-        chat UI surfaces a confirmation chip carrying the package; only the user clicking that
-        chip persists the package.
+        ## Drafting and saving via the workspace (preferred)
+        The conversation has a private workspace. Use it as a scratchpad for the in-progress
+        package so you don't have to re-emit the full payload on every refinement turn — the
+        savings are real on long iterations.
 
-        After invoking `save_workflow_package`, do NOT call it again or take further action.
-        Wait for the user's next message — the chip will surface the result there. If the
-        preview returns `status: "invalid"`, tell the user which references are missing and
-        re-emit a corrected package.
+        The four draft tools:
+        - `set_workflow_package_draft({ package })` — write the package to disk. Returns a small
+          summary; the package is NOT echoed back. Call once after assembling.
+        - `get_workflow_package_draft()` — read it back. Use this when you need to see the
+          current state to plan a patch.
+        - `patch_workflow_package_draft({ operations: [...] })` — apply RFC 6902 JSON Patch ops
+          in-place. Each op is `{ op, path, value? }`. Use `/-` as the array index to append.
+          Examples:
+            - Append an edge: `{ "op": "add", "path": "/workflows/0/edges/-", "value": { "fromNodeId": "...", "fromPort": "Completed", "toNodeId": "...", "toPort": "in", "rotatesRound": false, "sortOrder": 0 } }`
+            - Replace a node's port list: `{ "op": "replace", "path": "/workflows/0/nodes/2/outputPorts", "value": ["Approved","Rejected"] }`
+            - Tweak a scalar: `{ "op": "replace", "path": "/workflows/0/maxRoundsPerRound", "value": 5 }`
+            - Remove an element: `{ "op": "remove", "path": "/workflows/0/edges/3" }`
+          Patch is far cheaper than re-emitting the whole package via `set_workflow_package_draft`.
+        - `clear_workflow_package_draft()` — delete the draft after a successful save.
+
+        ## Saving the drafted package
+        When the user asks to save / import / add / commit the drafted package to the library:
+        - **Preferred (draft path):** call `save_workflow_package` with NO arguments. The tool
+          reads the draft from the workspace, runs preview + validation, and surfaces a chip the
+          user clicks to apply. The package never travels through your context again.
+        - **Fallback (inline path):** if no workspace is available (the draft tools aren't
+          listed for this turn) or you didn't draft via the workspace, call
+          `save_workflow_package({ package: ... })` with the full package payload. Same
+          preview/validation; chip carries the inline payload.
+
+        Tool result branches (both paths):
+        - `status: "preview_ok"` → STOP. The chip is in front of the user. Do not call the
+          tool again or take further action; wait for the user's next message.
+        - `status: "preview_conflicts"` → tell the user which conflicts to resolve (the items
+          listed with `action: "Conflict"`) and re-emit a corrected package (or patch the draft
+          and call save again).
+        - `status: "invalid"` → the package would be rejected at apply. The result carries an
+          `errors[]` array with `{ workflowKey, message, ruleIds }`. Tell the user which rule
+          each error came from, propose the fix, then patch the draft (cheap) — don't re-emit
+          the whole package unless the change is structural.
 
         ## Triggering a workflow run
         When the user asks to run / start / trigger / kick off / execute a workflow, use the

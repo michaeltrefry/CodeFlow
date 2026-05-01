@@ -1,4 +1,7 @@
+using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Mcp;
+using CodeFlow.Api.Validation;
+using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages.Admission;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Authority.Admission;
@@ -17,6 +20,8 @@ public sealed class WorkflowPackageImporter(
     ISkillRepository skillRepository,
     IMcpServerRepository mcpServerRepository,
     IMcpEndpointPolicy mcpEndpointPolicy,
+    WorkflowValidationPipeline? validationPipeline = null,
+    IAuthoringTelemetry? telemetry = null,
     WorkflowPackageImportValidator? admissionValidator = null) : IWorkflowPackageImporter
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -45,31 +50,219 @@ public sealed class WorkflowPackageImporter(
         }
 
         var importPackage = plan.Package;
+        var validationErrors = new List<WorkflowPackageValidationError>();
 
         var strategy = dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            dbContext.ChangeTracker.Clear();
-
-            await using var transaction = await dbContext.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable,
-                cancellationToken);
-
-            var now = DateTime.UtcNow;
-
-            await ImportSkillsAsync(importPackage, now, cancellationToken);
-            await ImportMcpServersAsync(importPackage, now, cancellationToken);
-            await ImportRolesAsync(importPackage, now, cancellationToken);
-            await ImportAgentsAsync(importPackage, now, cancellationToken);
-            await ImportRoleAssignmentsAsync(importPackage, now, cancellationToken);
-            await ImportWorkflowsAsync(importPackage, now, cancellationToken);
-
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            validationErrors.Clear();
+            await RunImportInTransactionAsync(importPackage, commit: true, validationErrors, cancellationToken);
         });
+
+        if (validationErrors.Count > 0)
+        {
+            // RunImportInTransactionAsync rolled back when commit=true encounters validation
+            // errors; surface as the same exception type the endpoint already maps to a 400.
+            throw new WorkflowPackageResolutionException(FormatValidationFailure(validationErrors));
+        }
 
         return new WorkflowPackageImportApplyResult(preview.EntryPoint, preview.Items, preview.Warnings);
     }
+
+    public async Task<WorkflowPackageValidationResult> ValidateAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
+        if (!plan.Preview.CanApply)
+        {
+            // Conflict-only packages: caller (PreviewAsync) already reports the conflicts;
+            // validation is moot until the conflicts are resolved.
+            return WorkflowPackageValidationResult.Valid;
+        }
+
+        var importPackage = plan.Package;
+        var errors = new List<WorkflowPackageValidationError>();
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            errors.Clear();
+            await RunImportInTransactionAsync(importPackage, commit: false, errors, cancellationToken);
+        });
+
+        return errors.Count == 0
+            ? WorkflowPackageValidationResult.Valid
+            : new WorkflowPackageValidationResult(false, errors);
+    }
+
+    private async Task RunImportInTransactionAsync(
+        WorkflowPackage importPackage,
+        bool commit,
+        List<WorkflowPackageValidationError> validationErrors,
+        CancellationToken cancellationToken)
+    {
+        dbContext.ChangeTracker.Clear();
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable,
+            cancellationToken);
+
+        var now = DateTime.UtcNow;
+
+        await ImportSkillsAsync(importPackage, now, cancellationToken);
+        await ImportMcpServersAsync(importPackage, now, cancellationToken);
+        await ImportRolesAsync(importPackage, now, cancellationToken);
+        await ImportAgentsAsync(importPackage, now, cancellationToken);
+        await ImportRoleAssignmentsAsync(importPackage, now, cancellationToken);
+        await ImportWorkflowsAsync(importPackage, now, cancellationToken);
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await CollectValidationErrorsAsync(importPackage, validationErrors, cancellationToken);
+
+        if (commit && validationErrors.Count == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            await transaction.RollbackAsync(cancellationToken);
+        }
+    }
+
+    private async Task CollectValidationErrorsAsync(
+        WorkflowPackage package,
+        List<WorkflowPackageValidationError> errors,
+        CancellationToken cancellationToken)
+    {
+        foreach (var workflow in package.Workflows)
+        {
+            var nodes = workflow.Nodes.Select(ToDto).ToArray();
+            var edges = workflow.Edges.Select(ToDto).ToArray();
+            var inputs = workflow.Inputs.Select(ToDto).ToArray();
+
+            var legacyValidation = await WorkflowValidator.ValidateAsync(
+                workflow.Key,
+                workflow.Name,
+                workflow.MaxRoundsPerRound,
+                nodes,
+                edges,
+                inputs,
+                dbContext,
+                workflowRepository,
+                agentConfigRepository,
+                cancellationToken);
+
+            if (!legacyValidation.IsValid)
+            {
+                telemetry?.ValidatorBlockedSave(workflow.Key, new[] { "workflow-validator" });
+                errors.Add(new WorkflowPackageValidationError(
+                    workflow.Key,
+                    legacyValidation.Error!,
+                    new[] { "workflow-validator" }));
+                continue;
+            }
+
+            if (validationPipeline is null)
+            {
+                continue;
+            }
+
+            var context = new WorkflowValidationContext(
+                Key: workflow.Key,
+                Name: workflow.Name,
+                MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+                Nodes: nodes,
+                Edges: edges,
+                Inputs: inputs,
+                DbContext: dbContext,
+                WorkflowRepository: workflowRepository,
+                AgentRepository: agentConfigRepository,
+                AgentRoleRepository: agentRoleRepository,
+                WorkflowVarsReads: workflow.WorkflowVarsReads,
+                WorkflowVarsWrites: workflow.WorkflowVarsWrites);
+
+            var report = await validationPipeline.RunAsync(context, cancellationToken);
+            if (!report.HasErrors)
+            {
+                continue;
+            }
+
+            var pipelineErrors = report.Findings
+                .Where(f => f.Severity == WorkflowValidationSeverity.Error)
+                .ToArray();
+            var ruleIds = pipelineErrors
+                .Select(f => f.RuleId)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            telemetry?.ValidatorBlockedSave(workflow.Key, ruleIds);
+
+            errors.Add(new WorkflowPackageValidationError(
+                workflow.Key,
+                string.Join("; ", pipelineErrors.Select(f => f.Message)),
+                ruleIds));
+        }
+    }
+
+    private static string FormatValidationFailure(IReadOnlyList<WorkflowPackageValidationError> errors)
+    {
+        var first = errors[0];
+        return errors.Count == 1
+            ? $"Workflow package import failed validation for workflow '{first.WorkflowKey}': {first.Message}"
+            : "Workflow package import failed validation: "
+                + string.Join(" | ", errors.Select(e => $"'{e.WorkflowKey}': {e.Message}"));
+    }
+
+    private static WorkflowNodeDto ToDto(WorkflowPackageWorkflowNode node) =>
+        new(
+            Id: node.Id,
+            Kind: node.Kind,
+            AgentKey: node.AgentKey,
+            AgentVersion: node.AgentVersion,
+            OutputScript: node.OutputScript,
+            OutputPorts: node.OutputPorts,
+            LayoutX: node.LayoutX,
+            LayoutY: node.LayoutY,
+            SubflowKey: node.SubflowKey,
+            SubflowVersion: node.SubflowVersion,
+            ReviewMaxRounds: node.ReviewMaxRounds,
+            LoopDecision: node.LoopDecision,
+            InputScript: node.InputScript,
+            OptOutLastRoundReminder: node.OptOutLastRoundReminder,
+            RejectionHistory: node.RejectionHistory,
+            MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
+            OutputPortReplacements: node.OutputPortReplacements,
+            Template: node.Template,
+            OutputType: node.OutputType,
+            SwarmProtocol: node.SwarmProtocol,
+            SwarmN: node.SwarmN,
+            ContributorAgentKey: node.ContributorAgentKey,
+            ContributorAgentVersion: node.ContributorAgentVersion,
+            SynthesizerAgentKey: node.SynthesizerAgentKey,
+            SynthesizerAgentVersion: node.SynthesizerAgentVersion,
+            CoordinatorAgentKey: node.CoordinatorAgentKey,
+            CoordinatorAgentVersion: node.CoordinatorAgentVersion,
+            SwarmTokenBudget: node.SwarmTokenBudget);
+
+    private static WorkflowEdgeDto ToDto(WorkflowPackageWorkflowEdge edge) =>
+        new(
+            FromNodeId: edge.FromNodeId,
+            FromPort: edge.FromPort,
+            ToNodeId: edge.ToNodeId,
+            ToPort: edge.ToPort,
+            RotatesRound: edge.RotatesRound,
+            SortOrder: edge.SortOrder);
+
+    private static WorkflowInputDto ToDto(WorkflowPackageWorkflowInput input) =>
+        new(
+            Key: input.Key,
+            DisplayName: input.DisplayName,
+            Kind: input.Kind,
+            Required: input.Required,
+            DefaultValueJson: input.DefaultValueJson,
+            Description: input.Description,
+            Ordinal: input.Ordinal);
 
     private async Task<WorkflowPackageImportPlan> BuildImportPlanAsync(
         WorkflowPackage package,
