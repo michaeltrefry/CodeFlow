@@ -7,7 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.SimpleEmailV2" />
     <PackageReference Include="Jint" />
+    <PackageReference Include="MailKit" />
     <PackageReference Include="MassTransit" />
     <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
