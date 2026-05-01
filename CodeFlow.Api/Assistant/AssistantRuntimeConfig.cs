@@ -6,4 +6,5 @@ public sealed record AssistantRuntimeConfig(
     int MaxTokens,
     int MaxTurns,
     long? MaxTokensPerConversation,
-    long? AssignedAgentRoleId = null);
+    long? AssignedAgentRoleId = null,
+    string? OperatorInstructions = null);

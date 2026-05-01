@@ -30,6 +30,10 @@ public sealed class AssistantSettingsEntityConfiguration : IEntityTypeConfigurat
         builder.Property(e => e.AssignedAgentRoleId)
             .HasColumnName("assigned_agent_role_id");
 
+        builder.Property(e => e.Instructions)
+            .HasColumnName("instructions")
+            .HasColumnType("longtext");
+
         builder.Property(e => e.UpdatedBy)
             .HasColumnName("updated_by")
             .HasMaxLength(256);

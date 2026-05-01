@@ -78,6 +78,17 @@ public sealed class CodeFlowAssistant(
 
         var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
+        // Operator-authored instructions overlay (LLM Providers admin → Assistant defaults).
+        // Appended after the curated prompt so the operator can describe role-granted tools,
+        // scope rules, persona tweaks, etc. without forking the curated knowledge base.
+        var operatorInstructions = config.OperatorInstructions;
+        if (!string.IsNullOrWhiteSpace(operatorInstructions))
+        {
+            var overlay = BuildOperatorInstructionsBlock(operatorInstructions);
+            systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                ? overlay
+                : systemPrompt + "\n\n" + overlay;
+        }
         // HAA-8: prepend a structured page-context block so the model can resolve "this trace",
         // "this node", etc. without the user pasting IDs. The block is per-turn (it changes as
         // the user navigates) and the most recent value wins.
@@ -258,6 +269,25 @@ public sealed class CodeFlowAssistant(
                 conversationId);
             return null;
         }
+    }
+
+    private static string BuildOperatorInstructionsBlock(string instructions)
+    {
+        // Wrap the operator overlay in a clearly-labeled block so the model can distinguish
+        // platform-curated knowledge from instance-specific guidance. Trim the value defensively;
+        // the repository normalizes blanks to null but operator pastes can still carry trailing
+        // whitespace.
+        var sb = new StringBuilder();
+        sb.AppendLine("<operator-instructions>");
+        sb.AppendLine("Additional guidance from this CodeFlow instance's operator. These instructions");
+        sb.AppendLine("supplement the curated system prompt above and may describe extra tools that have");
+        sb.AppendLine("been granted to you (via the assigned agent role), scope rules, or persona tweaks.");
+        sb.AppendLine("Treat this block as authoritative; it overrides the curated prompt where they");
+        sb.AppendLine("conflict.");
+        sb.AppendLine();
+        sb.AppendLine(instructions.Trim());
+        sb.Append("</operator-instructions>");
+        return sb.ToString();
     }
 
     private static string BuildWorkspaceUnavailableNotice(string reason)
