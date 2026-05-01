@@ -31,7 +31,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
     [Fact]
     public async Task SeedAsync_FreshDb_InsertsAllSystemRolesWithCatalogGrants()
     {
-        // S1: a fresh install should land all 3 system roles + their full grant catalog,
+        // S1: a fresh install should land all system roles + their full grant catalog,
         // each marked IsSystemManaged so the API gates protect them.
         await using var ctx = CreateDbContext();
 
@@ -42,7 +42,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Where(r => SystemAgentRoles.All.Select(sr => sr.Key).Contains(r.Key))
             .OrderBy(r => r.Key)
             .ToListAsync();
-        seeded.Should().HaveCount(3);
+        seeded.Should().HaveCount(SystemAgentRoles.All.Count);
         seeded.Should().AllSatisfy(r => r.IsSystemManaged.Should().BeTrue());
         seeded.Should().AllSatisfy(r => r.IsArchived.Should().BeFalse());
 
@@ -63,6 +63,65 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .ToListAsync();
         readOnlyGrants.Should().BeEquivalentTo("read_file", "echo", "now");
         readOnlyGrants.Should().NotContain("run_command");
+    }
+
+    [Fact]
+    public async Task SeedAsync_CodeBuilderRole_GrantsContainerAndWebToolsOnTopOfCodeWorker()
+    {
+        // sc-452: code-builder is the only seeded role with container/web grants. Its
+        // description must explicitly forbid Dockerfile builds so operators see the policy
+        // before they assign it; the grant set is the full code-worker bundle plus
+        // container.run + web_fetch + web_search.
+        await using var ctx = CreateDbContext();
+
+        await SystemAgentRoleSeeder.SeedAsync(ctx);
+
+        var codeBuilder = await ctx.AgentRoles
+            .AsNoTracking()
+            .SingleAsync(r => r.Key == SystemAgentRoles.CodeBuilderKey);
+        codeBuilder.IsSystemManaged.Should().BeTrue();
+        codeBuilder.Description.Should().Contain("docker.io");
+        codeBuilder.Description.Should().Contain("no repo Dockerfiles");
+
+        var grants = await ctx.AgentRoleToolGrants
+            .AsNoTracking()
+            .Where(g => g.RoleId == codeBuilder.Id)
+            .ToListAsync();
+        grants.Select(g => g.ToolIdentifier)
+            .Should().BeEquivalentTo(
+                "read_file",
+                "apply_patch",
+                "run_command",
+                "container.run",
+                "web_fetch",
+                "web_search",
+                "echo",
+                "now");
+        grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+    }
+
+    [Fact]
+    public async Task SeedAsync_CodeWorkerRole_DoesNotIncludeContainerOrWebTools()
+    {
+        // sc-452: container.run/web_fetch/web_search are opt-in via code-builder so
+        // existing fresh-install operators don't get unbounded outbound network or Docker
+        // execution silently added to the default dev role. Operators who want them switch
+        // their dev agents to code-builder explicitly.
+        await using var ctx = CreateDbContext();
+
+        await SystemAgentRoleSeeder.SeedAsync(ctx);
+
+        var codeWorker = await ctx.AgentRoles
+            .AsNoTracking()
+            .SingleAsync(r => r.Key == SystemAgentRoles.CodeWorkerKey);
+        var identifiers = await ctx.AgentRoleToolGrants
+            .AsNoTracking()
+            .Where(g => g.RoleId == codeWorker.Id)
+            .Select(g => g.ToolIdentifier)
+            .ToListAsync();
+        identifiers.Should().NotContain("container.run");
+        identifiers.Should().NotContain("web_fetch");
+        identifiers.Should().NotContain("web_search");
     }
 
     [Fact]

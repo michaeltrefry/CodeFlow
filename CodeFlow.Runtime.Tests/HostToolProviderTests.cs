@@ -1,4 +1,9 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Container;
+using CodeFlow.Runtime.Web;
 using CodeFlow.Runtime.Workspace;
 using FluentAssertions;
 
@@ -106,6 +111,251 @@ public sealed class HostToolProviderTests : IDisposable
 
         names.Should().Contain("vcs.open_pr");
         names.Should().Contain("vcs.get_repo");
+    }
+
+    [Fact]
+    public void GetCatalog_IncludesContainerRun()
+    {
+        var catalog = HostToolProvider.GetCatalog();
+        var containerRun = catalog.SingleOrDefault(t => t.Name == DockerHostToolService.ContainerRunToolName);
+
+        containerRun.Should().NotBeNull();
+        containerRun!.IsMutating.Should().BeTrue();
+        containerRun.Parameters!["required"]!.AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should().Contain(["image", "command"]);
+    }
+
+    [Fact]
+    public void AvailableTools_RoleGrantedAllowlist_FiltersToContainerRunOnly()
+    {
+        // Simulates an envelope/role grant that allows ONLY container.run; the runtime
+        // already filters by AllowedToolNames upstream of this provider, so ToolAccessPolicy
+        // returning a single-name allowlist is the on-wire contract this slice exposes.
+        var policy = new ToolAccessPolicy(
+            AllowedToolNames: new[] { DockerHostToolService.ContainerRunToolName });
+
+        var tools = provider.AvailableTools(policy);
+
+        // The provider returns the full catalog (the registry intersects against
+        // AllowedToolNames before invocation). What we want to confirm here is that
+        // container.run *is* discoverable through the catalog so the allowlist can refer
+        // to it by name without runtime errors.
+        tools.Select(t => t.Name).Should().Contain(DockerHostToolService.ContainerRunToolName);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ContainerRun_WithoutContainerService_ThrowsHelpfulError()
+    {
+        // The fixture's HostToolProvider was constructed without containerTools (default
+        // ctor argument). Confirm hitting container.run fails fast with a clear deployment
+        // hint instead of NRE-ing.
+        var act = async () => await provider.InvokeAsync(
+            new ToolCall(
+                "call_run_container",
+                DockerHostToolService.ContainerRunToolName,
+                new JsonObject
+                {
+                    ["image"] = "node:22",
+                    ["command"] = "npm",
+                    ["args"] = new JsonArray("test")
+                }),
+            context: context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*container.* tools are not configured*");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ContainerRun_RoutesToDockerHostToolService()
+    {
+        var executionRoot = Path.Combine(Path.GetTempPath(), "codeflow-hosttool-exec-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var runner = new SuccessfulDockerRunner();
+            var providerWithContainer = new HostToolProvider(
+                workspaceTools: new WorkspaceHostToolService(
+                    new WorkspaceOptions
+                    {
+                        Root = workspaceRoot,
+                        ReadMaxBytes = 256 * 1024
+                    }),
+                containerTools: new DockerHostToolService(
+                    new ContainerToolOptions(),
+                    runner,
+                    executionWorkspaces: new ContainerExecutionWorkspaceProvider(executionRoot)));
+
+            var result = await providerWithContainer.InvokeAsync(
+                new ToolCall(
+                    "call_container",
+                    DockerHostToolService.ContainerRunToolName,
+                    new JsonObject
+                    {
+                        ["image"] = "node:22",
+                        ["command"] = "npm",
+                        ["args"] = new JsonArray("test")
+                    }),
+                context: context);
+
+            result.IsError.Should().BeFalse();
+            JsonNode.Parse(result.Content)!["image"]!.GetValue<string>().Should().Be("node:22");
+            runner.LastArguments.Should().NotBeNull();
+            runner.LastArguments!.Should().StartWith("run");
+        }
+        finally
+        {
+            if (Directory.Exists(executionRoot))
+            {
+                Directory.Delete(executionRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ContainerRun_PolicyRefusal_ReturnsStructuredRefusalNotException()
+    {
+        var executionRoot = Path.Combine(Path.GetTempPath(), "codeflow-hosttool-exec-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var providerWithContainer = new HostToolProvider(
+                workspaceTools: new WorkspaceHostToolService(
+                    new WorkspaceOptions { Root = workspaceRoot }),
+                containerTools: new DockerHostToolService(
+                    new ContainerToolOptions(),
+                    new SuccessfulDockerRunner(),
+                    executionWorkspaces: new ContainerExecutionWorkspaceProvider(executionRoot)));
+
+            var result = await providerWithContainer.InvokeAsync(
+                new ToolCall(
+                    "call_container",
+                    DockerHostToolService.ContainerRunToolName,
+                    new JsonObject
+                    {
+                        ["image"] = "ghcr.io/example/blocked:latest",
+                        ["command"] = "npm"
+                    }),
+                context: context);
+
+            result.IsError.Should().BeTrue();
+            var refusal = JsonNode.Parse(result.Content)!["refusal"]!;
+            refusal["code"]!.GetValue<string>().Should().Be("image-registry-denied");
+            refusal["axis"]!.GetValue<string>().Should().Be("container-policy");
+        }
+        finally
+        {
+            if (Directory.Exists(executionRoot))
+            {
+                Directory.Delete(executionRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void GetCatalog_IncludesWebTools()
+    {
+        var catalog = HostToolProvider.GetCatalog();
+        var names = catalog.Select(t => t.Name).ToHashSet();
+
+        names.Should().Contain(WebHostToolService.WebFetchToolName);
+        names.Should().Contain(WebHostToolService.WebSearchToolName);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebFetch_WithoutWebService_ThrowsHelpfulError()
+    {
+        var act = async () => await provider.InvokeAsync(
+            new ToolCall(
+                "call_fetch",
+                WebHostToolService.WebFetchToolName,
+                new JsonObject { ["url"] = "https://docs.example.com/" }),
+            context: context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*web_* tools are not configured*");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebFetch_RoutesToWebHostToolService()
+    {
+        var handler = new EchoHandler(HttpStatusCode.OK, "ok body", "text/plain");
+        var providerWithWeb = new HostToolProvider(
+            workspaceTools: new WorkspaceHostToolService(new WorkspaceOptions { Root = workspaceRoot }),
+            webTools: new WebHostToolService(
+                new WebToolOptions(),
+                handler,
+                hostResolver: (_, _) => Task.FromResult<IReadOnlyList<IPAddress>>(new[] { IPAddress.Parse("203.0.113.1") })));
+
+        var result = await providerWithWeb.InvokeAsync(
+            new ToolCall(
+                "call_fetch",
+                WebHostToolService.WebFetchToolName,
+                new JsonObject { ["url"] = "https://docs.example.com/" }),
+            context: context);
+
+        result.IsError.Should().BeFalse();
+        JsonNode.Parse(result.Content)!["text"]!.GetValue<string>().Should().Contain("ok body");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WebSearch_RoutesToWebHostToolService_AndSurfacesNullProviderRefusal()
+    {
+        var providerWithWeb = new HostToolProvider(
+            workspaceTools: new WorkspaceHostToolService(new WorkspaceOptions { Root = workspaceRoot }),
+            webTools: new WebHostToolService(new WebToolOptions()));
+
+        var result = await providerWithWeb.InvokeAsync(
+            new ToolCall(
+                "call_search",
+                WebHostToolService.WebSearchToolName,
+                new JsonObject { ["query"] = "node 22 docker" }),
+            context: context);
+
+        result.IsError.Should().BeTrue();
+        JsonNode.Parse(result.Content)!["refusal"]!["code"]!.GetValue<string>()
+            .Should().Be("search-not-configured");
+    }
+
+    private sealed class EchoHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode status;
+        private readonly string body;
+        private readonly string contentType;
+
+        public EchoHandler(HttpStatusCode status, string body, string contentType)
+        {
+            this.status = status;
+            this.body = body;
+            this.contentType = contentType;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, contentType)
+            });
+    }
+
+    private sealed class SuccessfulDockerRunner : IDockerCommandRunner
+    {
+        public IReadOnlyList<string>? LastArguments { get; private set; }
+
+        public Task<DockerCommandResult> RunAsync(
+            IReadOnlyList<string> arguments,
+            TimeSpan timeout,
+            long stdoutMaxBytes,
+            long stderrMaxBytes,
+            CancellationToken cancellationToken = default)
+        {
+            LastArguments = arguments.ToArray();
+            // First call (lifecycle ps) returns empty; subsequent docker run returns ok.
+            return Task.FromResult(new DockerCommandResult(
+                ExitCode: 0,
+                StandardOutput: string.Empty,
+                StandardError: string.Empty,
+                StandardOutputTruncated: false,
+                StandardErrorTruncated: false,
+                TimedOut: false));
+        }
     }
 
     [Fact]

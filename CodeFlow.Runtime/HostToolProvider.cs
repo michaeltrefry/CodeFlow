@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Container;
+using CodeFlow.Runtime.Web;
 using CodeFlow.Runtime.Workspace;
 
 namespace CodeFlow.Runtime;
@@ -8,15 +10,21 @@ public sealed class HostToolProvider : IToolProvider
     private readonly Func<DateTimeOffset> nowProvider;
     private readonly WorkspaceHostToolService workspaceTools;
     private readonly VcsHostToolService? vcsTools;
+    private readonly DockerHostToolService? containerTools;
+    private readonly WebHostToolService? webTools;
 
     public HostToolProvider(
         Func<DateTimeOffset>? nowProvider = null,
         WorkspaceHostToolService? workspaceTools = null,
-        VcsHostToolService? vcsTools = null)
+        VcsHostToolService? vcsTools = null,
+        DockerHostToolService? containerTools = null,
+        WebHostToolService? webTools = null)
     {
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
         this.workspaceTools = workspaceTools ?? new WorkspaceHostToolService();
         this.vcsTools = vcsTools;
+        this.containerTools = containerTools;
+        this.webTools = webTools;
     }
 
     public ToolCategory Category => ToolCategory.Host;
@@ -50,6 +58,9 @@ public sealed class HostToolProvider : IToolProvider
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
+            DockerHostToolService.ContainerRunToolName => RequireContainer().RunContainerAsync(toolCall, context, cancellationToken),
+            WebHostToolService.WebFetchToolName => RequireWeb().FetchAsync(toolCall, context, cancellationToken),
+            WebHostToolService.WebSearchToolName => RequireWeb().SearchAsync(toolCall, context, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
 
@@ -59,6 +70,14 @@ public sealed class HostToolProvider : IToolProvider
     private VcsHostToolService RequireVcs() =>
         vcsTools ?? throw new InvalidOperationException(
             "vcs.* tools are not configured: HostToolProvider was constructed without a VcsHostToolService.");
+
+    private DockerHostToolService RequireContainer() =>
+        containerTools ?? throw new InvalidOperationException(
+            "container.* tools are not configured: HostToolProvider was constructed without a DockerHostToolService.");
+
+    private WebHostToolService RequireWeb() =>
+        webTools ?? throw new InvalidOperationException(
+            "web_* tools are not configured: HostToolProvider was constructed without a WebHostToolService.");
 
     public static IReadOnlyList<ToolSchema> GetCatalog()
     {
@@ -183,6 +202,104 @@ public sealed class HostToolProvider : IToolProvider
                         ["name"] = new JsonObject { ["type"] = "string" }
                     },
                     ["required"] = new JsonArray("owner", "name")
+                }),
+            new ToolSchema(
+                DockerHostToolService.ContainerRunToolName,
+                "Runs a one-shot build/test command inside a constrained Docker container. "
+                + "v1 accepts only Docker Hub (docker.io) images; the canonical workspace is "
+                + "mirrored into a workflow-scoped writable copy at /workspace so build "
+                + "artifacts never pollute the source-of-truth tree. CPU/memory/pids/timeout/"
+                + "output limits and a per-workflow container cap are enforced. Repository "
+                + "Dockerfiles, docker build, docker compose, privileged mode, host networking, "
+                + "published ports, and Docker socket mounts are forbidden and surface a "
+                + "structured refusal. Prefer official images and the smallest tag that "
+                + "provides the toolchain you need.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["image"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Docker Hub image reference (e.g. 'node:22-bookworm', "
+                                + "'library/python:3.12-slim', 'docker.io/library/golang:1.22'). "
+                                + "Non-docker.io registries are denied."
+                        },
+                        ["command"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Executable to run inside the container (e.g. 'npm', "
+                                + "'pytest', 'cargo'). Invoking 'docker' or 'docker-compose' is denied."
+                        },
+                        ["args"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Positional args passed to the command."
+                        },
+                        ["workingDirectory"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Workspace-relative directory to run from. Defaults to "
+                                + "the workspace root. Paths that escape the workspace are denied."
+                        },
+                        ["timeoutSeconds"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Per-command timeout. Capped to the configured maximum."
+                        }
+                    },
+                    ["required"] = new JsonArray("image", "command")
+                },
+                IsMutating: true),
+            new ToolSchema(
+                WebHostToolService.WebFetchToolName,
+                "Fetches readable text from a public HTTP/HTTPS URL. Use this to read official "
+                + "framework install/setup guides and Docker Hub image descriptions before "
+                + "choosing an image for container.run. Loopback, private, link-local, and "
+                + "metadata-service IPs are blocked both pre-flight and after every redirect; "
+                + "no credentials, cookies, or auth headers are ever sent. Response size and "
+                + "extracted-text length are capped — set 'maxResults' on web_search instead "
+                + "of fetching every result.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["url"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Absolute http(s) URL to fetch. Must point at the "
+                                + "public internet — internal/private hosts are denied."
+                        }
+                    },
+                    ["required"] = new JsonArray("url")
+                }),
+            new ToolSchema(
+                WebHostToolService.WebSearchToolName,
+                "Searches the public web for build/test/install guidance. Prefer queries that "
+                + "include the framework name plus 'official docs' or 'docker hub' so the "
+                + "first hit is authoritative. Results are bounded by maxResults and re-checked "
+                + "against the SSRF blocklist before they reach the agent — never trust the "
+                + "snippet alone, always web_fetch the URL to read the actual page.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["query"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Search query string."
+                        },
+                        ["maxResults"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Cap on hit count. Capped to the configured maximum."
+                        }
+                    },
+                    ["required"] = new JsonArray("query")
                 })
         ];
     }

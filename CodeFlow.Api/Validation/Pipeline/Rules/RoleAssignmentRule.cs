@@ -27,7 +27,7 @@ public sealed class RoleAssignmentRule : IWorkflowValidationRule
     /// commonly appear in plain prose.
     /// </summary>
     private static readonly Regex CapabilityRegex = new(
-        @"\b(read_file|apply_patch|run_command|vcs\.open_pr|vcs\.get_repo|mcp:[A-Za-z0-9_\-]+)\b",
+        @"\b(read_file|apply_patch|run_command|vcs\.open_pr|vcs\.get_repo|container\.run|web_fetch|web_search|mcp:[A-Za-z0-9_\-]+)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public string RuleId => "missing-role";

@@ -3,6 +3,7 @@ using CodeFlow.Orchestration.Scripting;
 using System.Diagnostics;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
+using CodeFlow.Runtime.Container;
 using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
@@ -124,8 +125,47 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                                 .TransitionTo(Failed))));
 
         WhenEnter(Completed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Completed")));
+        WhenEnter(Completed, binder => binder.ThenAsync(TryCleanupWorkflowContainersAsync));
         WhenEnter(Completed, binder => binder.ThenAsync(TryCleanupHappyPathWorkdirAsync));
         WhenEnter(Failed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Failed")));
+        WhenEnter(Failed, binder => binder.ThenAsync(TryCleanupWorkflowContainersAsync));
+    }
+
+    private static async Task TryCleanupWorkflowContainersAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context)
+    {
+        var services = context.GetPayload<IServiceProvider>();
+        var lifecycle = services.GetService<DockerLifecycleService>();
+        if (lifecycle is null)
+        {
+            return;
+        }
+
+        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
+        var logger = loggerFactory.CreateLogger<WorkflowSagaStateMachine>();
+
+        try
+        {
+            var cleanup = await lifecycle.CleanupWorkflowAsync(context.Saga.TraceId, context.CancellationToken);
+            if (cleanup.RemovedContainers > 0
+                || cleanup.RemovedVolumes > 0
+                || cleanup.RemovedExecutionWorkspaces > 0)
+            {
+                logger.LogInformation(
+                    "Cleaned up {ContainerCount} container(s), {VolumeCount} cache volume(s), and {WorkspaceCount} execution workspace(s) for workflow trace {TraceId}.",
+                    cleanup.RemovedContainers,
+                    cleanup.RemovedVolumes,
+                    cleanup.RemovedExecutionWorkspaces,
+                    context.Saga.TraceId);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to clean up workflow-scoped Docker resources for trace {TraceId}; orphan sweep should retry later.",
+                context.Saga.TraceId);
+        }
     }
 
     /// <summary>
