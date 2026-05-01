@@ -19,6 +19,22 @@ export interface ChatToolCallConfirmation {
   confirmLabel?: string;
   cancelLabel?: string;
   /**
+   * For `save_workflow_package` only. `'inline'` = the LLM passed a `package` arg the chat-panel
+   * cached and POSTs to `/api/workflows/package/apply` on confirm. `'draft'` = the LLM invoked
+   * the tool with no arguments; the package lives in the conversation's workspace draft and the
+   * chat-panel POSTs to `/api/workflows/package/apply-from-draft` so the payload never round-trips
+   * through the browser. Default `'inline'` for backward compatibility.
+   */
+  packageSource?: 'inline' | 'draft';
+  /**
+   * For `save_workflow_package` draft path only. The immutable id of the snapshot file the
+   * server wrote at preview time. The chat-panel posts this id with the conversation id when
+   * the user confirms; the apply endpoint loads the snapshot (NOT the live draft) so a
+   * draft-mutating tool call between preview and confirm cannot trick the user into approving
+   * one package and importing another.
+   */
+  snapshotId?: string;
+  /**
    * 'idle' = chip presented to user; 'applying' = confirm clicked, awaiting API; 'success' /
    * 'error' = terminal. The chip itself just disables on `applying`/`success`/`error`; the
    * banner below the chip surfaces the resolution.

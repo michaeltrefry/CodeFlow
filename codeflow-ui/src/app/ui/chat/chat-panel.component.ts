@@ -1039,8 +1039,24 @@ export class ChatPanelComponent implements OnDestroy {
   /**
    * HAA-10: POSTs the cached package to the existing /api/workflows/package/apply endpoint
    * (WorkflowsWrite under the logged-in user) and reflects the outcome on the chip.
+   *
+   * Branches on the chip's `packageSource`:
+   *  - `'inline'` (default): the LLM passed a `package` arg; we cached it and POST it directly.
+   *  - `'draft'`: the LLM invoked save_workflow_package without args; the package lives in the
+   *    conversation's workspace draft. Skip the inline preview (the tool already validated it
+   *    server-side) and POST a tiny `{ conversationId }` body to /apply-from-draft, which reads
+   *    the draft and applies it. Saves the round-trip payload through the browser too.
    */
   private applySaveConfirmation(toolCallId: string): void {
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const conf = card?.confirmation;
+    const isDraftSource = conf?.packageSource === 'draft';
+
+    if (isDraftSource) {
+      this.applyDraftSaveConfirmation(toolCallId);
+      return;
+    }
+
     const pkg = this.pendingSaves.get(toolCallId);
     if (!pkg) {
       this.updateConfirmation(toolCallId, c => ({
@@ -1071,6 +1087,70 @@ export class ChatPanelComponent implements OnDestroy {
           ...c,
           state: 'error',
           errorMessage: `Save preview failed: ${formatHttpError(err)}`,
+        }));
+      },
+    });
+  }
+
+  /**
+   * Apply path for the draft-source chip: the package lives in the assistant conversation's
+   * workspace as an immutable snapshot file (keyed by the `snapshotId` the tool result carried).
+   * The server reads from the snapshot, not the live draft, so a draft mutation between preview
+   * and confirm cannot redirect this Save to a different package.
+   */
+  private applyDraftSaveConfirmation(toolCallId: string): void {
+    const conversationId = this.conversationId();
+    if (!conversationId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'No active conversation — cannot save the workspace draft.',
+      }));
+      return;
+    }
+
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const snapshotId = card?.confirmation?.snapshotId;
+    if (!snapshotId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Snapshot id missing on this Save chip — re-ask the assistant to save the draft.',
+      }));
+      return;
+    }
+
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.workflowsApi.applyPackageImportFromDraft(conversationId, snapshotId).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: result => {
+        this.workflowsApi.getLatest(result.entryPoint.key).pipe(
+          takeUntilDestroyed(this.destroyRef),
+        ).subscribe({
+          next: () => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'success',
+              applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
+            }));
+          },
+          error: err => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'error',
+              errorMessage:
+                `Save returned success, but CodeFlow could not load workflow `
+                + `${result.entryPoint.key}: ${formatHttpError(err)}`,
+            }));
+          },
+        });
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: `Save from draft failed: ${formatHttpError(err)}`,
         }));
       },
     });
@@ -1467,18 +1547,46 @@ export function buildSaveConfirmationView(
   resultJson: string,
   pkg: unknown,
 ): ChatToolCallView['confirmation'] | undefined {
-  let parsed: { status?: unknown; entryPoint?: { key?: unknown; version?: unknown } } | null = null;
+  let parsed:
+    | {
+        status?: unknown;
+        packageSource?: unknown;
+        snapshotId?: unknown;
+        entryPoint?: { key?: unknown; version?: unknown };
+      }
+    | null = null;
   try {
     parsed = JSON.parse(resultJson);
   } catch {
     return undefined;
   }
 
-  if (!parsed || parsed.status !== 'preview_ok' || !pkg) {
+  if (!parsed || parsed.status !== 'preview_ok') {
     return undefined;
   }
 
-  const summary = summarizeWorkflowPackage(pkg);
+  // Two valid render paths:
+  //  - inline: the LLM passed a `package` arg; we cached it and POST it on confirm.
+  //  - draft: the LLM invoked save with no args; the package lives server-side in the
+  //    conversation's workspace as an immutable snapshot file. We post `{ conversationId,
+  //    snapshotId }` to `/api/workflows/package/apply-from-draft` so the apply binds to
+  //    the exact bytes that were validated, not whatever the live draft happens to contain.
+  const isDraftSource = parsed.packageSource === 'draft';
+  if (!isDraftSource && !pkg) {
+    return undefined;
+  }
+
+  // Draft path requires the snapshot id from the tool result. Without it the apply would
+  // be ambiguous (live draft vs. validated bytes) — refuse to render the chip at all so the
+  // user can't confirm a save that would be unsafe under draft mutation.
+  const snapshotId = typeof parsed.snapshotId === 'string' && parsed.snapshotId.length > 0
+    ? parsed.snapshotId
+    : undefined;
+  if (isDraftSource && !snapshotId) {
+    return undefined;
+  }
+
+  const summary = pkg ? summarizeWorkflowPackage(pkg) : null;
   const entryKey =
     typeof parsed.entryPoint?.key === 'string' ? parsed.entryPoint.key : summary?.entryPointKey ?? '';
   const entryVersion =
@@ -1493,6 +1601,8 @@ export function buildSaveConfirmationView(
     prompt: label,
     confirmLabel: 'Save',
     cancelLabel: 'Cancel',
+    packageSource: isDraftSource ? 'draft' : 'inline',
+    snapshotId,
     state: 'idle',
   };
 }

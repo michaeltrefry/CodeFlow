@@ -150,7 +150,19 @@ public static class ApiServiceCollectionExtensions
         // GetWorkflowPackageTool is the read-only companion that hands the LLM a canonical
         // package shape exemplar so it can mirror field names and enum casing exactly.
         services.AddScoped<IAssistantTool, GetWorkflowPackageTool>();
+
+        // SaveWorkflowPackageTool: registered DI-side as the workspace-blind fallback (used by
+        // tests and any future caller that doesn't go through the per-turn assistant path). The
+        // homepage assistant uses WorkflowDraftAssistantToolFactory below to produce a
+        // workspace-AWARE instance that overrides this one on the per-turn dispatcher (the
+        // factory's tool wins on the name collision).
         services.AddScoped<IAssistantTool, SaveWorkflowPackageTool>();
+
+        // Per-turn factory that produces (a) a workspace-aware SaveWorkflowPackageTool and
+        // (b) the four draft tools (set/get/patch/clear) when a workspace resolves. CodeFlowAssistant
+        // merges the factory's tools into the dispatcher with override-priority for the save tool
+        // so the workspace-aware version replaces the DI fallback for the LLM's view.
+        services.AddScoped<WorkflowDraftAssistantToolFactory>();
 
         // HAA-11: confirmation-gated workflow run. Same split — the tool validates the run
         // request against the workflow's declared input schema; the UI POSTs to /api/traces
