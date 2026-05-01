@@ -19,6 +19,9 @@ import {
   NotificationRouteResponse,
   NotificationRouteWriteRequest,
   NotificationSeverity,
+  NotificationTemplatePreviewResponse,
+  NotificationTemplateResponse,
+  NotificationTemplateWriteRequest,
   NotificationTestSendResponse,
 } from '../../../core/models';
 import { NotificationsAdminApi } from '../../../core/notifications-admin.api';
@@ -78,6 +81,23 @@ interface TestSendState {
 interface ValidationOutcome {
   providerId: string;
   result: NotificationProviderValidationResponse;
+}
+
+/**
+ * sc-63 — inline template editor state. Mutated in place so signals don't fire on every
+ * keystroke; the surrounding signal stores `null` (no editor open) or a single open editor.
+ */
+interface TemplateEditState {
+  templateId: string;
+  isNew: boolean;
+  eventKind: NotificationEventKind;
+  channel: NotificationChannel;
+  subjectTemplate: string;
+  bodyTemplate: string;
+  saving: boolean;
+  error: string | null;
+  preview: NotificationTemplatePreviewResponse | null;
+  previewing: boolean;
 }
 
 /**
@@ -533,6 +553,136 @@ interface DeliveryAuditState {
         }
       </cf-card>
 
+      <!-- Templates (sc-63) -->
+      <cf-card title="Templates">
+        <p class="muted small" style="margin-top: 0">
+          Scriban-rendered subject + body for HITL notifications. Each save creates an
+          immutable new version; routes pin a specific version so editing a template never
+          silently changes what production sends.
+        </p>
+        <div class="row" style="margin-bottom: 0.75rem; gap: 0.5rem">
+          <cf-button (click)="newTemplate()">+ New template</cf-button>
+        </div>
+
+        @if (templates().length === 0) {
+          <div class="muted">No templates yet. Routes need at least one to render notifications.</div>
+        } @else {
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Template id</th>
+                <th>Event</th>
+                <th>Channel</th>
+                <th>Latest</th>
+                <th>Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (t of templates(); track t.templateId) {
+                <tr>
+                  <td><code class="code-inline">{{ t.templateId }}</code></td>
+                  <td>{{ t.eventKind }}</td>
+                  <td><cf-chip>{{ t.channel }}</cf-chip></td>
+                  <td><span class="muted small">v{{ t.version }}</span></td>
+                  <td><span class="muted small">{{ t.updatedAtUtc | date:'shortDate' }}</span></td>
+                  <td class="actions">
+                    <cf-button kind="ghost" (click)="editTemplate(t)">Edit</cf-button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+
+        @if (templateEdit(); as edit) {
+          <div class="edit-panel">
+            <h3>{{ edit.isNew ? 'New template' : 'Edit template — ' + edit.templateId }}</h3>
+            @if (edit.error) {
+              <div class="trace-failure">{{ edit.error }}</div>
+            }
+            <form (submit)="saveTemplate($event)">
+              <div class="form-row">
+                <label>Template id</label>
+                <input type="text" [(ngModel)]="edit.templateId" name="templateId" required
+                  [disabled]="!edit.isNew" placeholder="hitl-task-pending/slack/default">
+              </div>
+              <div class="form-row">
+                <label>Event kind</label>
+                <select [(ngModel)]="edit.eventKind" name="eventKind">
+                  @for (k of eventKinds; track k) {
+                    <option [value]="k">{{ k }}</option>
+                  }
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Channel</label>
+                <select [(ngModel)]="edit.channel" name="channel">
+                  @for (c of channels; track c) {
+                    <option [value]="c">{{ c }}</option>
+                  }
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Subject template</label>
+                <textarea [(ngModel)]="edit.subjectTemplate" name="subjectTemplate" rows="2"
+                  [placeholder]="subjectPlaceholder(edit.channel)"></textarea>
+                <span class="muted small">{{ subjectHelp(edit.channel) }}</span>
+              </div>
+              <div class="form-row">
+                <label>Body template</label>
+                <textarea [(ngModel)]="edit.bodyTemplate" name="bodyTemplate" rows="8" required
+                  placeholder="Body — Scriban syntax. Use {{ '{{' }} action_url {{ '}}' }}, {{ '{{' }} workflow_key {{ '}}' }}, etc."></textarea>
+                <span class="muted small">
+                  Available variables: action_url, hitl_task_id, trace_id, round_id, node_id,
+                  workflow_key, workflow_version, agent_key, agent_version, severity,
+                  input_preview, subflow_path. See docs/notifications.md.
+                </span>
+              </div>
+
+              <div class="actions">
+                <cf-button type="submit" [disabled]="edit.saving">
+                  {{ edit.saving ? 'Saving…' : 'Save (new version)' }}
+                </cf-button>
+                <cf-button kind="ghost" (click)="previewTemplate()" [disabled]="edit.previewing">
+                  {{ edit.previewing ? 'Rendering…' : 'Preview' }}
+                </cf-button>
+                <cf-button kind="ghost" (click)="cancelTemplateEdit()">Cancel</cf-button>
+              </div>
+            </form>
+
+            @if (edit.preview; as p) {
+              <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--cf-border, #e5e7eb)">
+                <h4 style="margin: 0 0 0.5rem 0">Preview</h4>
+                @if (p.errorCode) {
+                  <div class="form-row">
+                    <label>Render failed</label>
+                    <div>
+                      <code class="code-inline">{{ p.errorCode }}</code>
+                      <span class="muted small">{{ p.errorMessage }}</span>
+                    </div>
+                  </div>
+                } @else {
+                  @if (p.subject) {
+                    <div class="form-row">
+                      <label>Rendered subject</label>
+                      <div>{{ p.subject }}</div>
+                    </div>
+                  }
+                  <div class="form-row">
+                    <label>Rendered body</label>
+                    <textarea readonly rows="6" style="font-family: ui-monospace, monospace; font-size: 0.85rem">{{ p.body }}</textarea>
+                  </div>
+                }
+                <p class="muted small" style="margin: 0">
+                  Rendered against a synthetic HitlTaskPendingEvent (HitlTaskId=42, "preview" workflow/agent keys).
+                </p>
+              </div>
+            }
+          </div>
+        }
+      </cf-card>
+
       <!-- Delivery audit (sc-59) -->
       <cf-card title="Delivery attempts">
         <p class="muted small" style="margin-top: 0">
@@ -699,6 +849,8 @@ export class NotificationsAdminComponent implements OnInit {
 
   readonly providers = signal<NotificationProviderResponse[]>([]);
   readonly routes = signal<NotificationRouteResponse[]>([]);
+  readonly templates = signal<NotificationTemplateResponse[]>([]);
+  readonly templateEdit = signal<TemplateEditState | null>(null);
   readonly diagnostics = signal<NotificationDiagnosticsResponse | null>(null);
   readonly loadError = signal<string | null>(null);
 
@@ -736,7 +888,15 @@ export class NotificationsAdminComponent implements OnInit {
     });
     this.reloadProviders();
     this.reloadRoutes();
+    this.reloadTemplates();
     this.applyAuditFilters();
+  }
+
+  reloadTemplates(): void {
+    this.api.listTemplates().subscribe({
+      next: list => this.templates.set(list),
+      error: e => this.loadError.set(formatHttpError(e)),
+    });
   }
 
   reloadProviders(): void {
@@ -1138,6 +1298,108 @@ export class NotificationsAdminComponent implements OnInit {
     state.filterStatus = '';
     state.filterSinceUtc = '';
     this.applyAuditFilters();
+  }
+
+  // sc-63 — template authoring -----------------------------------------------------
+
+  newTemplate(): void {
+    this.templateEdit.set({
+      templateId: '',
+      isNew: true,
+      eventKind: 'HitlTaskPending',
+      channel: 'Slack',
+      subjectTemplate: '',
+      bodyTemplate: '',
+      saving: false,
+      error: null,
+      preview: null,
+      previewing: false,
+    });
+  }
+
+  editTemplate(t: NotificationTemplateResponse): void {
+    this.templateEdit.set({
+      templateId: t.templateId,
+      isNew: false,
+      eventKind: t.eventKind,
+      channel: t.channel,
+      subjectTemplate: t.subjectTemplate ?? '',
+      bodyTemplate: t.bodyTemplate,
+      saving: false,
+      error: null,
+      preview: null,
+      previewing: false,
+    });
+  }
+
+  cancelTemplateEdit(): void {
+    this.templateEdit.set(null);
+  }
+
+  saveTemplate(event: Event): void {
+    event.preventDefault();
+    const state = this.templateEdit();
+    if (!state) return;
+    state.saving = true;
+    state.error = null;
+
+    const request: NotificationTemplateWriteRequest = {
+      eventKind: state.eventKind,
+      channel: state.channel,
+      subjectTemplate: state.subjectTemplate || null,
+      bodyTemplate: state.bodyTemplate,
+    };
+
+    this.api.putTemplate(state.templateId, request).subscribe({
+      next: () => {
+        this.templateEdit.set(null);
+        this.reloadTemplates();
+      },
+      error: (e) => {
+        state.saving = false;
+        state.error = formatHttpError(e);
+      },
+    });
+  }
+
+  previewTemplate(): void {
+    const state = this.templateEdit();
+    if (!state) return;
+    state.previewing = true;
+    state.preview = null;
+    state.error = null;
+
+    this.api.previewTemplate({
+      eventKind: state.eventKind,
+      channel: state.channel,
+      subjectTemplate: state.subjectTemplate || null,
+      bodyTemplate: state.bodyTemplate,
+    }).subscribe({
+      next: (preview) => {
+        state.preview = preview;
+        state.previewing = false;
+      },
+      error: (e) => {
+        state.previewing = false;
+        state.error = formatHttpError(e);
+      },
+    });
+  }
+
+  subjectPlaceholder(channel: NotificationChannel): string {
+    switch (channel) {
+      case 'Email': return '[CodeFlow] HITL review needed for {{ workflow_key }}';
+      case 'Slack': return '(optional — used as the notification fallback)';
+      case 'Sms':   return '(leave empty — SMS has no subject)';
+    }
+  }
+
+  subjectHelp(channel: NotificationChannel): string {
+    switch (channel) {
+      case 'Email': return 'Required. Scriban-rendered.';
+      case 'Slack': return 'Optional. Slack uses it as the screen-reader fallback.';
+      case 'Sms':   return 'Must be empty for SMS — providers ignore it.';
+    }
   }
 
   private reloadDiagnostics(): void {

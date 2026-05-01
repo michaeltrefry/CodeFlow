@@ -320,17 +320,6 @@ public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFacto
     }
 
     [Fact]
-    public async Task ListTemplates_WithoutTemplateIdQuery_ReturnsValidationProblem()
-    {
-        // sc-57 only supports per-template-id history listings; a full inventory listing lands
-        // in sc-63 with the template editor. Make sure the contract is explicit so the UI knows
-        // to scope its query.
-        using var client = factory.CreateClient();
-        var response = await client.GetAsync("/api/admin/notification-templates");
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-    }
-
-    [Fact]
     public async Task ListTemplates_WithTemplateIdQuery_ReturnsVersionsDescending()
     {
         // Seed two versions of one template directly through the repository — the template
@@ -876,6 +865,226 @@ public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFacto
         });
 
         put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    // --- sc-63 template authoring -------------------------------------------------------
+
+    [Fact]
+    public async Task ListTemplates_WithoutTemplateId_ReturnsEmptyArrayWhenNoneExist()
+    {
+        using var client = factory.CreateClient();
+
+        var templates = await client.GetFromJsonAsync<JsonElement[]>("/api/admin/notification-templates");
+
+        templates.Should().NotBeNull();
+        templates!.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PutTemplate_CreatesV1OnFirstSave_AndV2OnContentChange()
+    {
+        using var client = factory.CreateClient();
+
+        var first = await client.PutAsJsonAsync(
+            "/api/admin/notification-templates/hitl-task-pending%2Fslack%2Fdefault", new
+            {
+                eventKind = "HitlTaskPending",
+                channel = "Slack",
+                subjectTemplate = (string?)null,
+                bodyTemplate = "HITL pending: <{{ action_url }}|review>",
+            });
+        first.EnsureSuccessStatusCode();
+        var v1 = await first.Content.ReadFromJsonAsync<JsonElement>();
+        v1.GetProperty("version").GetInt32().Should().Be(1);
+
+        var second = await client.PutAsJsonAsync(
+            "/api/admin/notification-templates/hitl-task-pending%2Fslack%2Fdefault", new
+            {
+                eventKind = "HitlTaskPending",
+                channel = "Slack",
+                subjectTemplate = (string?)null,
+                bodyTemplate = "HITL pending: <{{ action_url }}|review now>",
+            });
+        second.EnsureSuccessStatusCode();
+        var v2 = await second.Content.ReadFromJsonAsync<JsonElement>();
+        v2.GetProperty("version").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task PutTemplate_NoOpsWhenContentMatchesLatest()
+    {
+        using var client = factory.CreateClient();
+
+        var body = new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "no-op pin",
+        };
+
+        var first = await client.PutAsJsonAsync("/api/admin/notification-templates/t1", body);
+        first.EnsureSuccessStatusCode();
+        var v1 = await first.Content.ReadFromJsonAsync<JsonElement>();
+        v1.GetProperty("version").GetInt32().Should().Be(1);
+
+        var resave = await client.PutAsJsonAsync("/api/admin/notification-templates/t1", body);
+        resave.EnsureSuccessStatusCode();
+        var stillV1 = await resave.Content.ReadFromJsonAsync<JsonElement>();
+        stillV1.GetProperty("version").GetInt32().Should().Be(1,
+            "identical content must not churn version history");
+    }
+
+    [Fact]
+    public async Task PutTemplate_RequiresSubjectForEmail()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/notification-templates/t-email", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Email",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "body",
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PutTemplate_RejectsSubjectForSms()
+    {
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/admin/notification-templates/t-sms", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Sms",
+            subjectTemplate = "should not be here",
+            bodyTemplate = "short body",
+        });
+
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ListTemplates_ReturnsLatestPerTemplate_AfterMultipleVersions()
+    {
+        using var client = factory.CreateClient();
+
+        // Two templates, one with two versions. Listing should return one row per templateId
+        // at the latest version.
+        await client.PutAsJsonAsync("/api/admin/notification-templates/a", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "a v1",
+        });
+        await client.PutAsJsonAsync("/api/admin/notification-templates/a", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "a v2",
+        });
+        await client.PutAsJsonAsync("/api/admin/notification-templates/b", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "b v1",
+        });
+
+        var list = await client.GetFromJsonAsync<JsonElement[]>("/api/admin/notification-templates");
+        list.Should().NotBeNull();
+        list!.Should().HaveCount(2);
+        var byId = list.ToDictionary(t => t.GetProperty("templateId").GetString()!);
+        byId["a"].GetProperty("version").GetInt32().Should().Be(2);
+        byId["a"].GetProperty("bodyTemplate").GetString().Should().Be("a v2");
+        byId["b"].GetProperty("version").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PreviewTemplate_RendersScribanAgainstSyntheticEvent()
+    {
+        // PublicBaseUrl is unset in CodeFlowApiFactory so the preview endpoint short-circuits
+        // with `preview.action_url_unconfigured` — pin that, plus the success path on a
+        // factory variant that has the URL set.
+        using var client = factory.CreateClient();
+
+        var unset = await client.PostAsJsonAsync("/api/admin/notification-templates/preview", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "Visit {{ action_url }}",
+        });
+        unset.EnsureSuccessStatusCode();
+        var unsetBody = await unset.Content.ReadFromJsonAsync<JsonElement>();
+        unsetBody.GetProperty("errorCode").GetString().Should().Be("preview.action_url_unconfigured");
+
+        using var factoryWithBaseUrl = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, config) =>
+            {
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CodeFlow:Notifications:PublicBaseUrl"] = "https://codeflow.example.com",
+                });
+            });
+        });
+        using var clientWithUrl = factoryWithBaseUrl.CreateClient();
+
+        var ok = await clientWithUrl.PostAsJsonAsync("/api/admin/notification-templates/preview", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "Visit {{ action_url }} for workflow {{ workflow_key }}",
+        });
+        ok.EnsureSuccessStatusCode();
+        var okBody = await ok.Content.ReadFromJsonAsync<JsonElement>();
+        // errorCode is null on success — ASP.NET serialiser may omit; accept either shape.
+        if (okBody.TryGetProperty("errorCode", out var errorCode))
+        {
+            errorCode.ValueKind.Should().Be(JsonValueKind.Null);
+        }
+        var rendered = okBody.GetProperty("body").GetString()!;
+        rendered.Should().Contain("https://codeflow.example.com/hitl?task=42");
+        rendered.Should().Contain("preview-workflow");
+    }
+
+    [Fact]
+    public async Task PreviewTemplate_RenderFailureSurfacedAsStructuredError()
+    {
+        // Scriban barfs on an unclosed expression — the endpoint must catch and return a
+        // structured error with errorCode `preview.render_failed` rather than 500.
+        using var factoryWithBaseUrl = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, config) =>
+            {
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CodeFlow:Notifications:PublicBaseUrl"] = "https://codeflow.example.com",
+                });
+            });
+        });
+        using var client = factoryWithBaseUrl.CreateClient();
+
+        // {{ if }} with no condition — Scriban rejects on parse rather than treating it as
+        // text, so this is a stable "definitely a render failure" template.
+        var response = await client.PostAsJsonAsync("/api/admin/notification-templates/preview", new
+        {
+            eventKind = "HitlTaskPending",
+            channel = "Slack",
+            subjectTemplate = (string?)null,
+            bodyTemplate = "Broken {{ if }} {{ end }}",
+        });
+
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("errorCode").GetString().Should().Be("preview.render_failed");
     }
 
     [Fact]

@@ -166,6 +166,14 @@ public sealed class ScribanNotificationTemplateRendererTests
             Task.FromResult<IReadOnlyList<NotificationTemplate>>(
                 templates.Values.Where(t => t.TemplateId == templateId).OrderByDescending(t => t.Version).ToArray());
 
+        public Task<IReadOnlyList<NotificationTemplate>> ListLatestPerTemplateAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NotificationTemplate>>(
+                templates.Values
+                    .GroupBy(t => t.TemplateId)
+                    .Select(g => g.OrderByDescending(t => t.Version).First())
+                    .OrderBy(t => t.TemplateId)
+                    .ToArray());
+
         public Task<NotificationTemplate?> GetAsync(string templateId, int version, CancellationToken ct = default) =>
             Task.FromResult(templates.TryGetValue((templateId, version), out var t) ? t : null);
 

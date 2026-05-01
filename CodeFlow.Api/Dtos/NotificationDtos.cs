@@ -84,6 +84,38 @@ public sealed record NotificationTemplateResponse(
     DateTime UpdatedAtUtc,
     string? UpdatedBy);
 
+/// <summary>
+/// Publish a new template version (sc-63). Templates are immutable per (id, version); the
+/// repository creates a new version row when any field differs and is a no-op when content
+/// matches the existing latest.
+/// </summary>
+public sealed record NotificationTemplateWriteRequest(
+    NotificationEventKind EventKind,
+    NotificationChannel Channel,
+    string? SubjectTemplate,
+    string BodyTemplate);
+
+/// <summary>
+/// Render an unsaved draft against a synthetic <c>HitlTaskPendingEvent</c> (sc-63). Lets
+/// admins preview Scriban output before committing a new version.
+/// </summary>
+public sealed record NotificationTemplatePreviewRequest(
+    NotificationEventKind EventKind,
+    NotificationChannel Channel,
+    string? SubjectTemplate,
+    string BodyTemplate);
+
+/// <summary>
+/// Result of a template preview. <see cref="ErrorCode"/> is non-null on render failure (Scriban
+/// syntax error, sandbox violation, action-URL unconfigured) — the editor renders it inline so
+/// authors don't have to dig through logs.
+/// </summary>
+public sealed record NotificationTemplatePreviewResponse(
+    string? Subject,
+    string? Body,
+    string? ErrorCode,
+    string? ErrorMessage);
+
 // --- Test send (sc-58) --------------------------------------------------------------------
 
 /// <summary>

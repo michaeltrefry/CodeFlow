@@ -180,7 +180,22 @@ Channel-specific authoring tips:
 - **Email**: subject is mandatory (Scriban template); body can be plain text or HTML.
 - **SMS**: target ≤ 160 chars to avoid multi-segment billing. Drop `input_preview` for SMS bodies; include `action_url` for the deep-link.
 
-Template authoring + a Scriban-backed editor land in [sc-63](https://app.shortcut.com/trefry/story/63); for now templates seed via the `notification_templates` table directly or through the persistence repository in scripts.
+### Authoring templates
+
+The admin notifications page (`/settings/notifications`) has a "Templates" section with a list of every template at its latest version and an inline editor. Each save creates a new immutable version row; routes pin a specific `(templateId, version)` so editing a template never silently changes what production sends.
+
+The editor includes a **Preview** action that renders the unsaved subject + body against a synthetic `HitlTaskPendingEvent` (`HitlTaskId=42`, `preview-workflow`/`preview-agent` keys) so authors can see exactly what the dispatcher would produce before publishing. Render failures (Scriban syntax errors, sandbox timeouts, action-URL unconfigured) surface as a structured error inline:
+
+| Error code | When |
+| --- | --- |
+| `preview.action_url_unconfigured` | `CodeFlow:Notifications:PublicBaseUrl` not set; the preview can't construct the synthetic action URL. |
+| `preview.render_failed` | Scriban parse/runtime error, sandbox violation, or 50 ms timeout. The template won't be saved either way — fix it and re-preview. |
+
+Channel-specific subject rules enforced by the API:
+
+- **Email**: subject is required.
+- **SMS**: subject must be empty (Twilio ignores it; rejecting at the API avoids confusion).
+- **Slack**: subject is optional and used as the screen-reader / notification fallback.
 
 ## Delivery audit
 
