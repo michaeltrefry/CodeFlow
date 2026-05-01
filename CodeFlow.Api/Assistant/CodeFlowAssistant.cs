@@ -77,35 +77,46 @@ public sealed class CodeFlowAssistant(
         ArgumentNullException.ThrowIfNull(history);
 
         var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
-        var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
-        // Per-turn budget block: tells the model the tool-loop cap so it can pace itself rather
-        // than trickling tool calls until the harness aborts the turn. Prepended (not appended)
-        // so the model reads the budget before it reads the curated knowledge base.
-        var budgetBlock = BuildTurnBudgetBlock(config.MaxTurns);
-        systemPrompt = string.IsNullOrEmpty(systemPrompt)
-            ? budgetBlock
-            : budgetBlock + "\n\n" + systemPrompt;
+
+        // CE-1: split the system prompt into a stable "cacheable" head and a "volatile" tail so
+        // the same prefix repeats verbatim across every iteration of the in-turn tool loop AND
+        // across turns of the same conversation. The cacheable head is what we mark with
+        // `cache_control: ephemeral` on the Anthropic side and what OpenAI's automatic prefix
+        // cache keys off of. Anything that varies per-turn (budget block, page context, workspace
+        // switch notice) lands AFTER the cache breakpoint so it doesn't invalidate the prefix.
+        //
+        // Order within the cacheable head: curated knowledge base, then operator overlay.
+        // Order within the volatile tail: workspace-unavailable notice, workspace-switch notice,
+        // page context, budget block. The model sees them right after the cached body, before
+        // any user message, so the conceptual "you read this last" effect is preserved.
+        var cacheableSystemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
         // Operator-authored instructions overlay (LLM Providers admin → Assistant defaults).
-        // Appended after the curated prompt so the operator can describe role-granted tools,
-        // scope rules, persona tweaks, etc. without forking the curated knowledge base.
+        // Stable per-conversation (admin-tunable) → belongs in the cacheable block.
         var operatorInstructions = config.OperatorInstructions;
         if (!string.IsNullOrWhiteSpace(operatorInstructions))
         {
             var overlay = BuildOperatorInstructionsBlock(operatorInstructions);
-            systemPrompt = string.IsNullOrEmpty(systemPrompt)
+            cacheableSystemPrompt = string.IsNullOrEmpty(cacheableSystemPrompt)
                 ? overlay
-                : systemPrompt + "\n\n" + overlay;
+                : cacheableSystemPrompt + "\n\n" + overlay;
         }
-        // HAA-8: prepend a structured page-context block so the model can resolve "this trace",
-        // "this node", etc. without the user pasting IDs. The block is per-turn (it changes as
-        // the user navigates) and the most recent value wins.
+
+        // Volatile tail: per-turn content the cache must NOT include.
+        var volatileSystemPrompt = string.Empty;
+        // HAA-8: structured page-context block so the model can resolve "this trace",
+        // "this node", etc. without the user pasting IDs. Per-turn — most recent value wins.
         var contextBlock = AssistantPageContextFormatter.FormatAsSystemMessage(pageContext);
         if (!string.IsNullOrEmpty(contextBlock))
         {
-            systemPrompt = string.IsNullOrEmpty(systemPrompt)
-                ? contextBlock
-                : contextBlock + "\n\n" + systemPrompt;
+            volatileSystemPrompt = contextBlock;
         }
+        // Per-turn budget block: tells the model the tool-loop cap so it can pace itself rather
+        // than trickling tool calls until the harness aborts the turn. Lives in the volatile tail
+        // because MaxTurns is admin-tunable and config-resolved per turn.
+        var budgetBlock = BuildTurnBudgetBlock(config.MaxTurns);
+        volatileSystemPrompt = string.IsNullOrEmpty(volatileSystemPrompt)
+            ? budgetBlock
+            : volatileSystemPrompt + "\n\n" + budgetBlock;
 
         // HAA-19 — Resolve the host-tool workspace based on the per-turn override. Detect a switch
         // versus the previously-persisted signature and prepend a one-shot notice to the system
@@ -136,9 +147,9 @@ public sealed class CodeFlowAssistant(
                     "Failed to resolve assistant workspace for conversation {ConversationId}; role host tools will be unavailable for this turn.",
                     conversationId);
                 var degradationNotice = BuildWorkspaceUnavailableNotice(ex.Message);
-                systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                volatileSystemPrompt = string.IsNullOrEmpty(volatileSystemPrompt)
                     ? degradationNotice
-                    : degradationNotice + "\n\n" + systemPrompt;
+                    : degradationNotice + "\n\n" + volatileSystemPrompt;
             }
         }
         if (conversationId != Guid.Empty && resolvedWorkspace is { } rw)
@@ -149,9 +160,9 @@ public sealed class CodeFlowAssistant(
                 && !string.Equals(conversation.ActiveWorkspaceSignature, newSignature, StringComparison.Ordinal))
             {
                 var notice = BuildWorkspaceSwitchNotice(conversation.ActiveWorkspaceSignature, rw);
-                systemPrompt = string.IsNullOrEmpty(systemPrompt)
+                volatileSystemPrompt = string.IsNullOrEmpty(volatileSystemPrompt)
                     ? notice
-                    : notice + "\n\n" + systemPrompt;
+                    : notice + "\n\n" + volatileSystemPrompt;
                 await conversations.SetActiveWorkspaceSignatureAsync(conversationId, newSignature, cancellationToken);
             }
         }
@@ -204,8 +215,8 @@ public sealed class CodeFlowAssistant(
 
         IAsyncEnumerable<AssistantStreamItem> stream = config.Provider switch
         {
-            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, systemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
-            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, systemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
+            LlmProviderKeys.Anthropic => AskAnthropicAsync(config, cacheableSystemPrompt, volatileSystemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
+            LlmProviderKeys.OpenAi or LlmProviderKeys.LmStudio => AskOpenAiAsync(config, cacheableSystemPrompt, volatileSystemPrompt, userMessage, history, allowedTools, dispatcher, cancellationToken),
             _ => throw new InvalidOperationException(
                 $"Assistant provider '{config.Provider}' is not supported. Expected one of: anthropic, openai, lmstudio.")
         };
@@ -425,7 +436,8 @@ public sealed class CodeFlowAssistant(
 
     private async IAsyncEnumerable<AssistantStreamItem> AskAnthropicAsync(
         AssistantRuntimeConfig config,
-        string systemPrompt,
+        string cacheableSystemPrompt,
+        string volatileSystemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         IReadOnlyCollection<IAssistantTool> allowedTools,
@@ -444,7 +456,10 @@ public sealed class CodeFlowAssistant(
             BaseUrl = string.IsNullOrWhiteSpace(endpointUrl) ? opts.BaseUrl : new Uri(endpointUrl)
         });
 
-        var anthropicTools = allowedTools.Count > 0 ? AnthropicToolMapper.Map(allowedTools) : null;
+        // CE-1: mark the last tool with cache_control=ephemeral. Anthropic caches the entire
+        // tools-array prefix when the marker lands on the LAST entry, so a single breakpoint is
+        // enough — no need to mark every tool.
+        var anthropicTools = allowedTools.Count > 0 ? AnthropicToolMapper.Map(allowedTools, markLastEphemeral: true) : null;
 
         var messages = new List<MessageParam>(history.Count + 1);
         foreach (var msg in history)
@@ -461,7 +476,7 @@ public sealed class CodeFlowAssistant(
         MessageDeltaUsage? finalUsage = null;
         for (var turn = 0; turn < config.MaxTurns; turn++)
         {
-            var createParams = BuildAnthropicParams(config, systemPrompt, messages, anthropicTools);
+            var createParams = BuildAnthropicParams(config, cacheableSystemPrompt, volatileSystemPrompt, messages, anthropicTools);
 
             // Per-turn accumulators: text gets streamed back to the caller; tool_use blocks gather
             // their input JSON across multiple InputJSONDelta events keyed by content-block index.
@@ -576,13 +591,23 @@ public sealed class CodeFlowAssistant(
 
     private static MessageCreateParams BuildAnthropicParams(
         AssistantRuntimeConfig config,
-        string systemPrompt,
+        string cacheableSystemPrompt,
+        string volatileSystemPrompt,
         List<MessageParam> messages,
         IReadOnlyList<ToolUnion>? tools)
     {
-        // System is init-only on MessageCreateParams, so we have to branch on whether to set it
-        // and on whether tools are present.
-        if (string.IsNullOrWhiteSpace(systemPrompt))
+        // CE-1: build the system as a TextBlockParam list so we can mark the cacheable head with
+        // cache_control=ephemeral. Anthropic's cache breakpoint applies to that block and the
+        // accumulated content before it (here: the tools-array prefix and the model/max_tokens
+        // metadata). The volatile tail is a second TextBlockParam with no cache marker — it lives
+        // in the same `system` field so the model reads it as part of the system prompt, but it
+        // sits AFTER the breakpoint so per-turn changes don't invalidate the cached prefix.
+        var systemBlocks = BuildSystemBlocks(cacheableSystemPrompt, volatileSystemPrompt);
+        var hasSystem = systemBlocks.Count > 0;
+
+        // System is init-only on MessageCreateParams, so we branch on whether to set it and on
+        // whether tools are present.
+        if (!hasSystem)
         {
             return tools is null
                 ? new MessageCreateParams { Model = config.Model, MaxTokens = config.MaxTokens, Messages = messages }
@@ -600,22 +625,49 @@ public sealed class CodeFlowAssistant(
             {
                 Model = config.Model,
                 MaxTokens = config.MaxTokens,
-                System = systemPrompt,
+                System = systemBlocks,
                 Messages = messages
             }
             : new MessageCreateParams
             {
                 Model = config.Model,
                 MaxTokens = config.MaxTokens,
-                System = systemPrompt,
+                System = systemBlocks,
                 Messages = messages,
                 Tools = tools.ToList()
             };
     }
 
+    /// <summary>
+    /// CE-1: assemble the system prompt as a list of TextBlockParam so the cacheable head can
+    /// carry a cache_control=ephemeral marker and the volatile tail can sit after the breakpoint.
+    /// Empty strings collapse — if both are empty the caller skips setting System entirely.
+    /// </summary>
+    internal static List<TextBlockParam> BuildSystemBlocks(string cacheableSystemPrompt, string volatileSystemPrompt)
+    {
+        var blocks = new List<TextBlockParam>(2);
+        if (!string.IsNullOrWhiteSpace(cacheableSystemPrompt))
+        {
+            blocks.Add(new TextBlockParam
+            {
+                Text = cacheableSystemPrompt,
+                CacheControl = new CacheControlEphemeral()
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(volatileSystemPrompt))
+        {
+            blocks.Add(new TextBlockParam
+            {
+                Text = volatileSystemPrompt
+            });
+        }
+        return blocks;
+    }
+
     private async IAsyncEnumerable<AssistantStreamItem> AskOpenAiAsync(
         AssistantRuntimeConfig config,
-        string systemPrompt,
+        string cacheableSystemPrompt,
+        string volatileSystemPrompt,
         string userMessage,
         IReadOnlyList<AssistantMessage> history,
         IReadOnlyCollection<IAssistantTool> allowedTools,
@@ -638,10 +690,17 @@ public sealed class CodeFlowAssistant(
 
         var openAiTools = allowedTools.Count > 0 ? OpenAiToolMapper.Map(allowedTools) : null;
 
-        var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 2);
-        if (!string.IsNullOrWhiteSpace(systemPrompt))
+        // CE-1: send the cacheable head and the volatile tail as two separate SystemChatMessages.
+        // OpenAI's automatic prompt caching keys off of the longest stable prefix, so keeping the
+        // first message stable across turns lets it cache while the volatile tail still flows in.
+        var chatMessages = new List<OpenAI.Chat.ChatMessage>(history.Count + 3);
+        if (!string.IsNullOrWhiteSpace(cacheableSystemPrompt))
         {
-            chatMessages.Add(new SystemChatMessage(systemPrompt));
+            chatMessages.Add(new SystemChatMessage(cacheableSystemPrompt));
+        }
+        if (!string.IsNullOrWhiteSpace(volatileSystemPrompt))
+        {
+            chatMessages.Add(new SystemChatMessage(volatileSystemPrompt));
         }
         foreach (var msg in history)
         {
@@ -851,18 +910,36 @@ public sealed class CodeFlowAssistant(
         return JsonSerializer.SerializeToElement(combined);
     }
 
-    private static JsonElement? SerializeOpenAiUsage(OpenAI.Chat.ChatTokenUsage? usage)
+    internal static JsonElement? SerializeOpenAiUsage(OpenAI.Chat.ChatTokenUsage? usage)
     {
         if (usage is null)
         {
             return null;
         }
 
+        // CE-2: include the breakdown sub-objects so the aggregator can flatten them onto dotted
+        // paths (e.g. `prompt_tokens_details.cached_tokens`) that match OpenAI's wire shape. The
+        // wire shape uses `_details` suffixes so we mirror it here. Fields are emitted even when
+        // zero so dashboards can distinguish "no cache" from "field missing".
         var combined = new Dictionary<string, object?>
         {
             ["prompt_tokens"] = usage.InputTokenCount,
             ["completion_tokens"] = usage.OutputTokenCount,
-            ["total_tokens"] = usage.TotalTokenCount
+            ["total_tokens"] = usage.TotalTokenCount,
+            ["prompt_tokens_details"] = new Dictionary<string, object?>
+            {
+                ["cached_tokens"] = usage.InputTokenDetails?.CachedTokenCount ?? 0,
+                ["audio_tokens"] = usage.InputTokenDetails?.AudioTokenCount ?? 0,
+            },
+            ["completion_tokens_details"] = new Dictionary<string, object?>
+            {
+                ["reasoning_tokens"] = usage.OutputTokenDetails?.ReasoningTokenCount ?? 0,
+                ["audio_tokens"] = usage.OutputTokenDetails?.AudioTokenCount ?? 0,
+                // Predicted-output fields (accepted/rejected_prediction_tokens) are gated behind
+                // the SDK's OPENAI001 evaluation diagnostic in 2.10.0. Skip them until the API
+                // stabilizes — `cached_tokens` and `reasoning_tokens` are the load-bearing fields
+                // for the assistant cost-observability story.
+            },
         };
 
         return JsonSerializer.SerializeToElement(combined);
