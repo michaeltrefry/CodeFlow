@@ -47,8 +47,18 @@ public sealed class DockerHostToolServiceTests : IDisposable
         runner.Arguments.Should().NotBeNull();
         runner.Arguments!.Should().StartWith("run", "--rm");
         runner.Arguments.Should().ContainInOrder("--name", "codeflow-11111111222233334444555555555555-call_1-aaaaaaaaaaaa");
+        runner.Calls.Should().HaveCount(2);
+        runner.Calls[0].Arguments.Should().ContainInOrder(
+            "ps",
+            "-aq",
+            "--filter",
+            "label=codeflow.managed=true",
+            "--filter",
+            "label=codeflow.workflow=11111111222233334444555555555555");
         runner.Arguments.Should().ContainInOrder("--label", "codeflow.managed=true");
         runner.Arguments.Should().ContainInOrder("--label", "codeflow.workflow=11111111222233334444555555555555");
+        runner.Arguments.Should().ContainInOrder("--label", "codeflow.createdAt=2026-05-01T13:00:00.0000000+00:00");
+        runner.Arguments.Should().ContainInOrder("--label", "codeflow.resource=container");
         runner.Arguments.Should().ContainInOrder("--workdir", "/workspace/src");
         runner.Arguments.Should().ContainInOrder("--cpus", "2");
         runner.Arguments.Should().ContainInOrder("--memory", "4294967296");
@@ -175,11 +185,40 @@ public sealed class DockerHostToolServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RunContainerAsync_refuses_when_workflow_container_limit_is_reached()
+    {
+        var runner = new CapturingDockerRunner
+        {
+            Results = new Queue<DockerCommandResult>([
+                new DockerCommandResult(0, "c1\nc2\nc3\n", string.Empty, false, false, TimedOut: false)
+            ])
+        };
+        var service = NewService(runner);
+
+        var result = await service.RunContainerAsync(
+            NewCall(new JsonObject
+            {
+                ["image"] = "node:22",
+                ["command"] = "npm",
+                ["args"] = new JsonArray("test")
+            }),
+            NewContext());
+
+        result.IsError.Should().BeTrue();
+        JsonNode.Parse(result.Content)!["refusal"]!["code"]!.GetValue<string>()
+            .Should().Be("container-limit-exceeded");
+        runner.Calls.Should().HaveCount(1);
+    }
+
+    [Fact]
     public async Task RunContainerAsync_marks_nonzero_exit_as_error()
     {
         var runner = new CapturingDockerRunner
         {
-            Result = new DockerCommandResult(ExitCode: 2, "out", "err", false, false, TimedOut: false)
+            Results = new Queue<DockerCommandResult>([
+                new DockerCommandResult(0, string.Empty, string.Empty, false, false, TimedOut: false),
+                new DockerCommandResult(ExitCode: 2, "out", "err", false, false, TimedOut: false)
+            ])
         };
         var service = NewService(runner);
 
@@ -200,7 +239,11 @@ public sealed class DockerHostToolServiceTests : IDisposable
     }
 
     private DockerHostToolService NewService(CapturingDockerRunner runner) =>
-        new(new ContainerToolOptions(), runner, () => Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
+        new(
+            new ContainerToolOptions(),
+            runner,
+            idProvider: () => Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            nowProvider: () => DateTimeOffset.Parse("2026-05-01T13:00:00Z"));
 
     private ToolCall NewCall(JsonNode arguments) =>
         new("call_1", DockerHostToolService.ContainerRunToolName, arguments);
@@ -214,8 +257,12 @@ public sealed class DockerHostToolServiceTests : IDisposable
 
         public TimeSpan Timeout { get; private set; }
 
+        public List<CapturedDockerCall> Calls { get; } = [];
+
         public DockerCommandResult Result { get; set; } =
             new(ExitCode: 0, "ok", string.Empty, false, false, TimedOut: false);
+
+        public Queue<DockerCommandResult>? Results { get; set; }
 
         public Task<DockerCommandResult> RunAsync(
             IReadOnlyList<string> arguments,
@@ -226,7 +273,15 @@ public sealed class DockerHostToolServiceTests : IDisposable
         {
             Arguments = arguments.ToArray();
             Timeout = timeout;
+            Calls.Add(new CapturedDockerCall(arguments.ToArray(), timeout));
+            if (Results is { Count: > 0 })
+            {
+                return Task.FromResult(Results.Dequeue());
+            }
+
             return Task.FromResult(Result);
         }
     }
+
+    private sealed record CapturedDockerCall(IReadOnlyList<string> Arguments, TimeSpan Timeout);
 }

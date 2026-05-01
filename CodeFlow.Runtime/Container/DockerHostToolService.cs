@@ -10,12 +10,16 @@ public sealed class DockerHostToolService
 
     private readonly ContainerToolOptions options;
     private readonly IDockerCommandRunner runner;
+    private readonly DockerLifecycleService lifecycle;
     private readonly Func<Guid> idProvider;
+    private readonly Func<DateTimeOffset> nowProvider;
 
     public DockerHostToolService(
         ContainerToolOptions? options = null,
         IDockerCommandRunner? runner = null,
-        Func<Guid>? idProvider = null)
+        DockerLifecycleService? lifecycle = null,
+        Func<Guid>? idProvider = null,
+        Func<DateTimeOffset>? nowProvider = null)
     {
         this.options = options ?? new ContainerToolOptions();
         var errors = this.options.Validate();
@@ -25,7 +29,9 @@ public sealed class DockerHostToolService
         }
 
         this.runner = runner ?? new DockerCliCommandRunner();
+        this.lifecycle = lifecycle ?? new DockerLifecycleService(this.options, this.runner);
         this.idProvider = idProvider ?? Guid.NewGuid;
+        this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
     public async Task<ToolResult> RunContainerAsync(
@@ -73,11 +79,22 @@ public sealed class DockerHostToolService
             return RefusalResult(toolCall.Id, "working-directory-confined", ex.Message, admitted.WorkingDirectory);
         }
 
+        var activeContainers = await lifecycle.CountWorkflowContainersAsync(workspace.CorrelationId, cancellationToken);
+        if (activeContainers >= options.MaxContainersPerWorkflow)
+        {
+            return RefusalResult(
+                toolCall.Id,
+                "container-limit-exceeded",
+                $"Workflow already has {activeContainers} managed container(s), meeting or exceeding the configured limit of {options.MaxContainersPerWorkflow}.");
+        }
+
         var containerName = BuildContainerName(workspace.CorrelationId, toolCall.Id);
+        var createdAt = nowProvider();
         var dockerArguments = BuildDockerRunArguments(
             workspace,
             resolvedWorkingDirectory,
             containerName,
+            createdAt,
             admitted);
 
         var timeout = TimeSpan.FromSeconds(Math.Min(admitted.TimeoutSeconds ?? options.CommandTimeoutSeconds, options.CommandTimeoutSeconds));
@@ -112,6 +129,7 @@ public sealed class DockerHostToolService
         ToolWorkspaceContext workspace,
         string resolvedWorkingDirectory,
         string containerName,
+        DateTimeOffset createdAt,
         ContainerRunRequest request)
     {
         var containerWorkingDirectory = ToContainerWorkingDirectory(workspace.RootPath, resolvedWorkingDirectory);
@@ -122,9 +140,13 @@ public sealed class DockerHostToolService
             "--name",
             containerName,
             "--label",
-            "codeflow.managed=true",
+            $"{DockerResourceLabels.Managed}={DockerResourceLabels.ManagedValue}",
             "--label",
-            $"codeflow.workflow={workspace.CorrelationId:N}",
+            $"{DockerResourceLabels.Workflow}={workspace.CorrelationId:N}",
+            "--label",
+            $"{DockerResourceLabels.CreatedAt}={createdAt:O}",
+            "--label",
+            $"{DockerResourceLabels.ResourceKind}={DockerResourceLabels.ContainerKind}",
             "--workdir",
             containerWorkingDirectory,
             "--cpus",

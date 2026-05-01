@@ -1,3 +1,4 @@
+using CodeFlow.Host.Container;
 using CodeFlow.Host.Mcp;
 using CodeFlow.Host.Workspace;
 using CodeFlow.Contracts.Notifications;
@@ -218,10 +219,16 @@ public static class HostExtensions
             .Validate(options => options.Validate().Count == 0, "WebTools options are invalid.")
             .ValidateOnStart();
         services.AddSingleton<IDockerCommandRunner, DockerCliCommandRunner>();
+        services.AddSingleton<DockerLifecycleService>(sp =>
+            new DockerLifecycleService(
+                sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value,
+                sp.GetRequiredService<IDockerCommandRunner>()));
         services.AddSingleton<DockerHostToolService>(sp =>
             new DockerHostToolService(
                 sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value,
-                sp.GetRequiredService<IDockerCommandRunner>()));
+                sp.GetRequiredService<IDockerCommandRunner>(),
+                sp.GetRequiredService<DockerLifecycleService>()));
+        services.AddHostedService<ContainerResourceSweepService>();
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
                 workspaceTools: new WorkspaceHostToolService(
