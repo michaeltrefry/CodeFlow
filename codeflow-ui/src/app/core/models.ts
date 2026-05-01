@@ -197,6 +197,7 @@ export interface AgentRole {
   updatedAtUtc: string;
   updatedBy?: string | null;
   isArchived: boolean;
+  isRetired: boolean;
 }
 
 export interface AgentRoleGrant {
@@ -621,6 +622,7 @@ export interface WorkflowSummary {
   edgeCount: number;
   inputCount: number;
   createdAtUtc: string;
+  isRetired: boolean;
 }
 
 export interface WorkflowDetail {
@@ -631,6 +633,7 @@ export interface WorkflowDetail {
   category: WorkflowCategory;
   tags: string[];
   createdAtUtc: string;
+  isRetired: boolean;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   inputs: WorkflowInput[];

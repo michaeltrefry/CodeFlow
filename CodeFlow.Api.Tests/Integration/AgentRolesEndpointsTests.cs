@@ -35,6 +35,51 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task Retire_HidesFromListAndBlocksNewAssignments()
+    {
+        using var client = factory.CreateClient();
+
+        var role = await CreateRole(client);
+
+        var retire = await client.PostAsync($"/api/agent-roles/{role.Id}/retire", content: null);
+        retire.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var list = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
+        list.Select(r => r.Id).Should().NotContain(role.Id);
+
+        var includeRetired = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>(
+            "/api/agent-roles?includeRetired=true"))!;
+        includeRetired.Single(r => r.Id == role.Id).IsRetired.Should().BeTrue();
+
+        var assign = await client.PutAsJsonAsync($"/api/agents/role-retire-{Guid.NewGuid():N}/roles", new
+        {
+            roleIds = new[] { role.Id },
+        });
+        assign.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task BulkRetire_HidesSelectedRoles()
+    {
+        using var client = factory.CreateClient();
+
+        var roleA = await CreateRole(client);
+        var roleB = await CreateRole(client);
+
+        var retire = await client.PostAsJsonAsync("/api/agent-roles/retire", new
+        {
+            ids = new[] { roleA.Id, roleB.Id, 999999999L },
+        });
+        retire.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = (await retire.Content.ReadFromJsonAsync<BulkRoleRetireDto>())!;
+        result.RetiredIds.Should().BeEquivalentTo(new[] { roleA.Id, roleB.Id });
+        result.MissingIds.Should().Contain(999999999L);
+
+        var list = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
+        list.Select(r => r.Id).Should().NotContain(new[] { roleA.Id, roleB.Id });
+    }
+
+    [Fact]
     public async Task Put_tools_with_host_and_mcp_grants_succeeds_when_server_exists()
     {
         using var client = factory.CreateClient();
@@ -232,7 +277,9 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         DateTime UpdatedAtUtc,
         string? UpdatedBy,
         bool IsArchived,
+        bool IsRetired,
         bool IsSystemManaged);
 
     private sealed record GrantDto(string Category, string ToolIdentifier);
+    private sealed record BulkRoleRetireDto(IReadOnlyList<long> RetiredIds, IReadOnlyList<long> MissingIds);
 }

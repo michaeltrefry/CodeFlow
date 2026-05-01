@@ -10,6 +10,7 @@ public sealed record AgentRole(
     DateTime UpdatedAtUtc,
     string? UpdatedBy,
     bool IsArchived,
+    bool IsRetired = false,
     bool IsSystemManaged = false);
 
 public sealed record AgentRoleToolGrant(

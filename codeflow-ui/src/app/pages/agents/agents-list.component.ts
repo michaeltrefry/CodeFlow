@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { useAsyncList } from '../../core/async-state';
+import { formatHttpError } from '../../core/format-error';
 import { relativeTime } from '../../core/format-time';
 import { AgentSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
@@ -40,8 +41,19 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
             (valueChange)="filter.set($any($event))">
           </cf-segmented>
         </div>
-        <span class="muted small">showing {{ visibleAgents().length }}</span>
+        <div class="bulk-actions">
+          <span class="muted small">showing {{ visibleAgents().length }}</span>
+          @if (selectedCount() > 0) {
+            <button type="button" cf-button variant="ghost" size="sm" icon="trash" (click)="retireSelected()" [disabled]="retiring()">
+              {{ retiring() ? 'Retiring…' : 'Retire selected' }}
+            </button>
+          }
+        </div>
       </div>
+
+      @if (retireError()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ retireError() }}</cf-chip></div></div>
+      }
 
       @if (loading()) {
         <div class="card"><div class="card-body muted">Loading agents…</div></div>
@@ -54,6 +66,12 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
           @for (agent of visibleAgents(); track agent.key) {
             <a class="agent-card" [routerLink]="['/agents', agent.key]">
               <div class="agent-card-head">
+                <input
+                  type="checkbox"
+                  class="select-box"
+                  [checked]="isSelected(agent.key)"
+                  (click)="$event.stopPropagation()"
+                  (change)="toggleSelected(agent.key, $event)" />
                 <div style="min-width: 0; flex: 1">
                   <div class="agent-key">{{ agent.key }}</div>
                   <div class="agent-name">{{ agent.name ?? '—' }}</div>
@@ -103,6 +121,10 @@ export class AgentsListComponent {
   readonly loading = this.agentsList.loading;
   readonly error = this.agentsList.error;
   readonly filter = signal<AgentFilter>('all');
+  readonly selectedKeys = signal<Set<string>>(new Set());
+  readonly retiring = signal(false);
+  readonly retireError = signal<string | null>(null);
+  readonly selectedCount = computed(() => this.selectedKeys().size);
 
   readonly visibleAgents = computed(() => {
     const f = this.filter();
@@ -121,8 +143,37 @@ export class AgentsListComponent {
   constructor() { this.reload(); }
 
   reload(): void {
+    this.selectedKeys.set(new Set());
     this.agentsList.reload();
   }
 
   relTime = relativeTime;
+
+  isSelected(key: string): boolean {
+    return this.selectedKeys().has(key);
+  }
+
+  toggleSelected(key: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    const next = new Set(this.selectedKeys());
+    checked ? next.add(key) : next.delete(key);
+    this.selectedKeys.set(next);
+  }
+
+  retireSelected(): void {
+    const keys = [...this.selectedKeys()];
+    if (keys.length === 0 || this.retiring()) return;
+    this.retiring.set(true);
+    this.retireError.set(null);
+    this.agentsApi.retireMany(keys).subscribe({
+      next: () => {
+        this.retiring.set(false);
+        this.reload();
+      },
+      error: err => {
+        this.retiring.set(false);
+        this.retireError.set(formatHttpError(err, 'Failed to retire selected agents.'));
+      }
+    });
+  }
 }

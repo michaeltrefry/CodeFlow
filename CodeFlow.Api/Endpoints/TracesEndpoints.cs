@@ -346,6 +346,11 @@ public static class TracesEndpoints
             workflow = latest;
         }
 
+        if (workflow.IsRetired)
+        {
+            return ApiResults.Conflict($"Workflow '{workflow.Key}' is retired and cannot be used for new traces.");
+        }
+
         var startNode = workflow.StartNode;
         if (string.IsNullOrWhiteSpace(startNode.AgentKey))
         {

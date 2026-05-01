@@ -36,6 +36,35 @@ public interface IWorkflowRepository
 
     Task<IReadOnlyList<Workflow>> ListVersionsAsync(string key, CancellationToken cancellationToken = default);
 
+    Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(false);
+    }
+
+    Task<IReadOnlyList<string>> RetireManyAsync(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        return RetireManyFallbackAsync(this, keys, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<string>> RetireManyFallbackAsync(
+        IWorkflowRepository repository,
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken)
+    {
+        var retired = new List<string>();
+        foreach (var key in keys.Distinct(StringComparer.Ordinal))
+        {
+            if (await repository.RetireAsync(key, cancellationToken))
+            {
+                retired.Add(key);
+            }
+        }
+
+        return retired;
+    }
+
     Task<WorkflowEdge?> FindNextAsync(
         string key,
         int version,

@@ -52,6 +52,11 @@ public sealed class AgentRoleEntityConfiguration : IEntityTypeConfiguration<Agen
             .HasDefaultValue(false)
             .IsRequired();
 
+        builder.Property(role => role.IsRetired)
+            .HasColumnName("is_retired")
+            .HasDefaultValue(false)
+            .IsRequired();
+
         builder.Property(role => role.IsSystemManaged)
             .HasColumnName("is_system_managed")
             .HasDefaultValue(false)
@@ -59,5 +64,6 @@ public sealed class AgentRoleEntityConfiguration : IEntityTypeConfiguration<Agen
 
         builder.HasIndex(role => role.Key).IsUnique();
         builder.HasIndex(role => role.IsArchived);
+        builder.HasIndex(role => role.IsRetired);
     }
 }

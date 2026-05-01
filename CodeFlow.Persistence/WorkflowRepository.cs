@@ -74,6 +74,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
     public async Task<IReadOnlyList<Workflow>> ListLatestAsync(CancellationToken cancellationToken = default)
     {
         var entities = await LoadWorkflowsQuery()
+            .Where(workflow => !workflow.IsRetired)
             .GroupBy(workflow => workflow.Key)
             .Select(group => group
                 .OrderByDescending(workflow => workflow.Version)
@@ -95,6 +96,93 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             .ToListAsync(cancellationToken);
 
         return entities.Select(Map).ToArray();
+    }
+
+    public async Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var normalizedKey = NormalizeKey(key);
+
+        var entities = await dbContext.Workflows
+            .Where(workflow => workflow.Key == normalizedKey)
+            .ToListAsync(cancellationToken);
+
+        if (entities.Count == 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        foreach (var entity in entities)
+        {
+            if (!entity.IsRetired)
+            {
+                entity.IsRetired = true;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            foreach (var version in entities.Select(entity => entity.Version))
+            {
+                Cache.Remove(WorkflowCacheKey.Create(normalizedKey, version));
+            }
+        }
+
+        return true;
+    }
+
+    public async Task<IReadOnlyList<string>> RetireManyAsync(
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+
+        var normalizedKeys = keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(NormalizeKey)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (normalizedKeys.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var entities = await dbContext.Workflows
+            .Where(workflow => normalizedKeys.Contains(workflow.Key))
+            .ToListAsync(cancellationToken);
+
+        if (entities.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var changed = false;
+        foreach (var entity in entities)
+        {
+            if (!entity.IsRetired)
+            {
+                entity.IsRetired = true;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            foreach (var entity in entities)
+            {
+                Cache.Remove(WorkflowCacheKey.Create(entity.Key, entity.Version));
+            }
+        }
+
+        return entities
+            .Select(entity => entity.Key)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
     }
 
     public async Task<WorkflowEdge?> FindNextAsync(
@@ -254,7 +342,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.Category,
             WorkflowJson.DeserializeTags(entity.TagsJson),
             WorkflowJson.DeserializeStringList(entity.WorkflowVarsReadsJson),
-            WorkflowJson.DeserializeStringList(entity.WorkflowVarsWritesJson));
+            WorkflowJson.DeserializeStringList(entity.WorkflowVarsWritesJson),
+            entity.IsRetired);
     }
 
     private static IReadOnlyList<string> NormalizeTags(IReadOnlyList<string>? tags)

@@ -33,6 +33,17 @@ export class AgentRolesApi {
     return this.http.delete<void>(`/api/agent-roles/${id}`);
   }
 
+  retire(id: number): Observable<AgentRole> {
+    return this.http.post<AgentRole>(`/api/agent-roles/${id}/retire`, {});
+  }
+
+  retireMany(ids: number[]): Observable<{ retiredIds: number[]; missingIds: number[] }> {
+    return this.http.post<{ retiredIds: number[]; missingIds: number[] }>(
+      '/api/agent-roles/retire',
+      { ids }
+    );
+  }
+
   getGrants(id: number): Observable<AgentRoleGrant[]> {
     return this.http.get<AgentRoleGrant[]>(`/api/agent-roles/${id}/tools`);
   }

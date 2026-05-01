@@ -48,6 +48,12 @@ internal sealed class VersionedEntityCache<TKey, TValue>
         cache.Set(cacheKey, value, entryOptions);
     }
 
+    public void Remove(TKey cacheKey)
+    {
+        ArgumentNullException.ThrowIfNull(cacheKey);
+        cache.Remove(cacheKey);
+    }
+
     /// <summary>
     /// Test-only escape hatch: drop every cached entry. Required because the cache instance is
     /// typically held in a static field on the repository and can leak entries between tests

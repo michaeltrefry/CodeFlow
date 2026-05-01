@@ -84,7 +84,7 @@ public static class LlmProvidersEndpoints
             else
             {
                 var role = await agentRoleRepository.GetAsync(roleId, cancellationToken);
-                if (role is null || role.IsArchived)
+                if (role is null || role.IsArchived || role.IsRetired)
                 {
                     errors["assignedAgentRoleId"] = new[] { $"Agent role {roleId} is not available." };
                 }

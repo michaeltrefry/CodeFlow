@@ -77,6 +77,11 @@ function byteLengthOfJson(value: unknown): number {
       <cf-page-header
         title="Workflows"
         subtitle="Versioned graphs of agents, logic, and human checkpoints.">
+        @if (selectedCount() > 0) {
+          <button type="button" cf-button variant="ghost" icon="trash" (click)="retireSelected()" [disabled]="retiring()">
+            {{ retiring() ? 'Retiring…' : 'Retire selected' }}
+          </button>
+        }
         <input
           #packageInput
           class="file-input"
@@ -349,6 +354,9 @@ function byteLengthOfJson(value: unknown): number {
         @if (exportError()) {
           <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ exportError() }}</cf-chip></div></div>
         }
+        @if (retireError()) {
+          <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ retireError() }}</cf-chip></div></div>
+        }
 
         <div class="filters-bar">
           <label class="filter">
@@ -385,6 +393,9 @@ function byteLengthOfJson(value: unknown): number {
             <table class="table">
               <thead>
                 <tr>
+                  <th style="width: 42px">
+                    <input type="checkbox" [checked]="allVisibleSelected()" (change)="toggleAll($event)" />
+                  </th>
                   <th class="sortable" (click)="toggleSort('name')">
                     Name {{ sortIndicator('name') }}
                   </th>
@@ -410,6 +421,9 @@ function byteLengthOfJson(value: unknown): number {
               <tbody>
                 @for (wf of visibleWorkflows(); track wf.key) {
                   <tr (click)="open(wf.key)">
+                    <td (click)="$event.stopPropagation()">
+                      <input type="checkbox" [checked]="isSelected(wf.key)" (change)="toggleSelected(wf.key, $event)" />
+                    </td>
                     <td>{{ wf.name }}</td>
                     <td class="mono" style="font-weight: 500">{{ wf.key }}</td>
                     <td>
@@ -594,6 +608,8 @@ export class WorkflowsListComponent {
   readonly importError = signal<string | null>(null);
   readonly importLoading = signal(false);
   readonly importApplyLoading = signal(false);
+  readonly retiring = signal(false);
+  readonly retireError = signal<string | null>(null);
   readonly importSuccess = signal<string | null>(null);
   readonly importPreview = signal<WorkflowPackageImportPreview | null>(null);
   private pendingImportPackage: unknown = null;
@@ -610,6 +626,12 @@ export class WorkflowsListComponent {
   readonly tagFilter = signal<string[]>([]);
   readonly sortKey = signal<SortKey>('category');
   readonly sortDirection = signal<SortDirection>('asc');
+  readonly selectedKeys = signal<Set<string>>(new Set());
+  readonly selectedCount = computed(() => this.selectedKeys().size);
+  readonly allVisibleSelected = computed(() => {
+    const visible = this.visibleWorkflows();
+    return visible.length > 0 && visible.every(wf => this.selectedKeys().has(wf.key));
+  });
 
   /** Secondary ordering always falls back to name ASC so category-grouping stays readable. */
   readonly visibleWorkflows = computed<WorkflowSummary[]>(() => {
@@ -657,11 +679,45 @@ export class WorkflowsListComponent {
   }
 
   reload(): void {
+    this.selectedKeys.set(new Set());
     this.workflowsList.reload();
   }
 
   open(key: string): void {
     this.router.navigate(['/workflows', key]);
+  }
+
+  isSelected(key: string): boolean {
+    return this.selectedKeys().has(key);
+  }
+
+  toggleSelected(key: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    const next = new Set(this.selectedKeys());
+    checked ? next.add(key) : next.delete(key);
+    this.selectedKeys.set(next);
+  }
+
+  toggleAll(event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.selectedKeys.set(checked ? new Set(this.visibleWorkflows().map(wf => wf.key)) : new Set());
+  }
+
+  retireSelected(): void {
+    const keys = [...this.selectedKeys()];
+    if (keys.length === 0 || this.retiring()) return;
+    this.retiring.set(true);
+    this.retireError.set(null);
+    this.api.retireMany(keys).subscribe({
+      next: () => {
+        this.retiring.set(false);
+        this.reload();
+      },
+      error: err => {
+        this.retiring.set(false);
+        this.retireError.set(formatHttpError(err, 'Failed to retire selected workflows.'));
+      }
+    });
   }
 
   /** E5: open the export-preview dialog. The dependency tree is pulled from the V8 manifest

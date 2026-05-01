@@ -113,6 +113,38 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task BulkRetire_HidesSelectedAgents()
+    {
+        using var client = factory.CreateClient();
+
+        var keyA = $"bulk-retire-a-{Guid.NewGuid():N}";
+        var keyB = $"bulk-retire-b-{Guid.NewGuid():N}";
+
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = keyA,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "A" }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = keyB,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "B" }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var retire = await client.PostAsJsonAsync("/api/agents/retire", new
+        {
+            keys = new[] { keyA, keyB, "missing-agent-key" },
+        });
+        retire.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = (await retire.Content.ReadFromJsonAsync<BulkRetireDto>())!;
+        result.RetiredKeys.Should().BeEquivalentTo(new[] { keyA, keyB });
+        result.MissingKeys.Should().Contain("missing-agent-key");
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
+        list!.Select(a => a.Key).Should().NotContain(new[] { keyA, keyB });
+    }
+
+    [Fact]
     public async Task List_ShouldHideWorkflowScopedForks()
     {
         using var client = factory.CreateClient();
@@ -535,6 +567,7 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     private sealed record SummaryDto(string Key, int LatestVersion, bool IsRetired);
 
     private sealed record VersionDetailDto(string Key, int Version, bool IsRetired);
+    private sealed record BulkRetireDto(IReadOnlyList<string> RetiredKeys, IReadOnlyList<string> MissingKeys);
 
     private sealed record PreviewResponse(string Rendered);
 

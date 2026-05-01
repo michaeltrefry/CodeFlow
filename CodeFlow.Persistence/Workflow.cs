@@ -16,7 +16,8 @@ public sealed record Workflow(
     // non-empty, the validator pipeline (WorkflowVarDeclarationRule) emits warnings if any
     // reachable agent reads / script writes a variable not in the corresponding list.
     IReadOnlyList<string>? WorkflowVarsReads = null,
-    IReadOnlyList<string>? WorkflowVarsWrites = null)
+    IReadOnlyList<string>? WorkflowVarsWrites = null,
+    bool IsRetired = false)
 {
     public IReadOnlyList<string> TagsOrEmpty => Tags ?? Array.Empty<string>();
 

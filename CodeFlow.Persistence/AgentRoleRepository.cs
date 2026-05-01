@@ -5,12 +5,26 @@ namespace CodeFlow.Persistence;
 
 public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRoleRepository
 {
-    public async Task<IReadOnlyList<AgentRole>> ListAsync(bool includeArchived, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AgentRole>> ListAsync(
+        bool includeArchived,
+        CancellationToken cancellationToken = default)
+    {
+        return await ListAsync(includeArchived, includeRetired: false, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<AgentRole>> ListAsync(
+        bool includeArchived,
+        bool includeRetired,
+        CancellationToken cancellationToken = default)
     {
         var query = dbContext.AgentRoles.AsNoTracking();
         if (!includeArchived)
         {
             query = query.Where(role => !role.IsArchived);
+        }
+        if (!includeRetired)
+        {
+            query = query.Where(role => !role.IsRetired);
         }
 
         var entities = await query
@@ -89,6 +103,68 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
             entity.UpdatedAtUtc = DateTime.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    public async Task RetireAsync(long id, CancellationToken cancellationToken = default)
+    {
+        var entity = await dbContext.AgentRoles
+            .SingleOrDefaultAsync(role => role.Id == id, cancellationToken)
+            ?? throw new AgentRoleNotFoundException(id);
+
+        if (!entity.IsRetired)
+        {
+            entity.IsRetired = true;
+            entity.UpdatedAtUtc = DateTime.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    public async Task<IReadOnlyList<long>> RetireManyAsync(
+        IReadOnlyList<long> ids,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+
+        var distinctIds = ids
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+
+        if (distinctIds.Length == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        var entities = await dbContext.AgentRoles
+            .Where(role => distinctIds.Contains(role.Id))
+            .ToListAsync(cancellationToken);
+
+        if (entities.Count == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        var changed = false;
+        var now = DateTime.UtcNow;
+        foreach (var entity in entities)
+        {
+            if (!entity.IsRetired)
+            {
+                entity.IsRetired = true;
+                entity.UpdatedAtUtc = now;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return entities
+            .Select(entity => entity.Id)
+            .OrderBy(id => id)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<AgentRoleToolGrant>> GetGrantsAsync(long id, CancellationToken cancellationToken = default)
@@ -174,7 +250,7 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         if (distinctRoleIds.Length > 0)
         {
             var validIds = await dbContext.AgentRoles
-                .Where(role => distinctRoleIds.Contains(role.Id))
+                .Where(role => distinctRoleIds.Contains(role.Id) && !role.IsArchived && !role.IsRetired)
                 .Select(role => role.Id)
                 .ToListAsync(cancellationToken);
 
@@ -297,6 +373,7 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         UpdatedAtUtc: DateTime.SpecifyKind(entity.UpdatedAtUtc, DateTimeKind.Utc),
         UpdatedBy: entity.UpdatedBy,
         IsArchived: entity.IsArchived,
+        IsRetired: entity.IsRetired,
         IsSystemManaged: entity.IsSystemManaged);
 
     private static string NormalizeKey(string key)

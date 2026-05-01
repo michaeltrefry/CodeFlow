@@ -40,6 +40,9 @@ public static class AgentsEndpoints
         group.MapPost("/{key}/retire", RetireAgentAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
+        group.MapPost("/retire", RetireAgentsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
+
         group.MapPost("/fork", ForkAgentAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsWrite);
 
@@ -692,6 +695,26 @@ public static class AgentsEndpoints
         return Results.Ok(new { key = normalizedKey, isRetired = true });
     }
 
+    private static async Task<IResult> RetireAgentsAsync(
+        BulkRetireKeysRequest request,
+        IAgentConfigRepository repository,
+        CancellationToken cancellationToken)
+    {
+        var validation = ValidateBulkKeys(request);
+        if (validation.ErrorResult is not null)
+        {
+            return validation.ErrorResult;
+        }
+
+        var retired = await repository.RetireManyAsync(validation.Keys, cancellationToken);
+        var retiredSet = retired.ToHashSet(StringComparer.Ordinal);
+        var missing = validation.Keys
+            .Where(key => !retiredSet.Contains(key))
+            .ToArray();
+
+        return Results.Ok(new BulkRetireKeysResponse(retired, missing));
+    }
+
     private static AgentVersionDto MapVersion(AgentConfigEntity entity)
     {
         var configNode = TryParseNode(entity.ConfigJson);
@@ -703,6 +726,45 @@ public static class AgentsEndpoints
             CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
             CreatedBy: entity.CreatedBy,
             IsRetired: entity.IsRetired);
+    }
+
+    private static (IReadOnlyList<string> Keys, IResult? ErrorResult) ValidateBulkKeys(BulkRetireKeysRequest request)
+    {
+        if (request?.Keys is null)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["keys"] = new[] { "Key list is required." }
+            }));
+        }
+
+        var keys = request.Keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(NormalizeKey)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (keys.Length == 0)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["keys"] = new[] { "At least one key is required." }
+            }));
+        }
+
+        var errors = keys
+            .Select(key => (Key: key, Validation: AgentConfigValidator.ValidateKey(key)))
+            .Where(item => !item.Validation.IsValid)
+            .ToArray();
+        if (errors.Length > 0)
+        {
+            return (Array.Empty<string>(), Results.ValidationProblem(errors.ToDictionary(
+                item => $"keys.{item.Key}",
+                item => new[] { item.Validation.Error! },
+                StringComparer.Ordinal)));
+        }
+
+        return (keys, null);
     }
 
     private static string NormalizeKey(string key) => key.Trim();
