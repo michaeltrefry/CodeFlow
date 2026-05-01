@@ -11,6 +11,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
     private static readonly VersionedEntityCache<WorkflowCacheKey, Workflow> Cache =
         new(sizeLimit: 512, slidingExpiration: TimeSpan.FromMinutes(15));
 
+    public static void ClearCache() => Cache.Clear();
+
     public async Task<Workflow> GetAsync(
         string key,
         int version,

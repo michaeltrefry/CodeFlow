@@ -17,7 +17,9 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
     /// cache is process-static and can leak entries between tests that reuse agent keys against
     /// fresh in-memory databases. Production code never calls this.
     /// </summary>
-    public static void ClearCacheForTests() => Cache.Clear();
+    public static void ClearCacheForTests() => ClearCache();
+
+    public static void ClearCache() => Cache.Clear();
 
     public async Task<AgentConfig> GetAsync(
         string key,
