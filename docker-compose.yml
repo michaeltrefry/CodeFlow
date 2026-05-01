@@ -93,6 +93,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       CODEFLOW_DB_CONNECTION_STRING: "Server=mariadb;Port=3306;Database=codeflow;User=${CODEFLOW_DB_USER:-root};Password=${CODEFLOW_DB_PASSWORD:?CODEFLOW_DB_PASSWORD must be set in .env};"
+      CodeFlow__Notifications__PublicBaseUrl: "${CODEFLOW_NOTIFICATIONS_PUBLIC_BASEURL}"
       RabbitMq__Host: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__VirtualHost: codeflow
