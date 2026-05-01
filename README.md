@@ -353,6 +353,7 @@ CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted b
 
 - [Agent in-place editing](./docs/agent-in-place-edit.md)
 - [Replay-with-edit on past traces](./docs/replay-with-edit.md)
+- [HITL notifications — setup + provider extension](./docs/notifications.md)
 
 ### Assistant
 
