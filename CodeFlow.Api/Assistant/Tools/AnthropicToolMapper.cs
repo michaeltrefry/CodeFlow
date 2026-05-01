@@ -10,19 +10,44 @@ namespace CodeFlow.Api.Assistant.Tools;
 /// </summary>
 internal static class AnthropicToolMapper
 {
-    public static IReadOnlyList<ToolUnion> Map(IEnumerable<IAssistantTool> tools)
+    /// <summary>
+    /// Map the assistant tool registry to Anthropic <see cref="ToolUnion"/>s. When
+    /// <paramref name="markLastEphemeral"/> is true, the last entry's underlying <see cref="Tool"/>
+    /// is constructed with <c>cache_control: ephemeral</c> — Anthropic caches the entire
+    /// tools-array prefix when the marker lands on the last tool, so a single breakpoint suffices.
+    /// (<see cref="Tool.CacheControl"/> is init-only, so the marker has to be set at construction
+    /// time rather than mutated post-hoc.)
+    /// </summary>
+    public static IReadOnlyList<ToolUnion> Map(IEnumerable<IAssistantTool> tools, bool markLastEphemeral = false)
     {
-        return tools.Select(MapOne).ToArray();
+        var source = tools as IReadOnlyList<IAssistantTool> ?? tools.ToArray();
+        if (source.Count == 0) return Array.Empty<ToolUnion>();
+
+        var result = new ToolUnion[source.Count];
+        for (var i = 0; i < source.Count; i++)
+        {
+            var isLast = i == source.Count - 1;
+            result[i] = MapOne(source[i], applyEphemeral: markLastEphemeral && isLast);
+        }
+        return result;
     }
 
-    private static ToolUnion MapOne(IAssistantTool tool)
+    private static ToolUnion MapOne(IAssistantTool tool, bool applyEphemeral)
     {
-        return (Tool)new Tool
-        {
-            Name = tool.Name,
-            Description = tool.Description,
-            InputSchema = BuildInputSchema(tool.InputSchema)
-        };
+        return (Tool)(applyEphemeral
+            ? new Tool
+            {
+                Name = tool.Name,
+                Description = tool.Description,
+                InputSchema = BuildInputSchema(tool.InputSchema),
+                CacheControl = new CacheControlEphemeral()
+            }
+            : new Tool
+            {
+                Name = tool.Name,
+                Description = tool.Description,
+                InputSchema = BuildInputSchema(tool.InputSchema)
+            });
     }
 
     private static InputSchema BuildInputSchema(JsonElement schema)

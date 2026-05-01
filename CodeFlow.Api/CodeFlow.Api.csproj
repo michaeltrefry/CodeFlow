@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodeFlow.Api.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodeFlow.Contracts\CodeFlow.Contracts.csproj" />
     <ProjectReference Include="..\CodeFlow.Host\CodeFlow.Host.csproj" />
     <ProjectReference Include="..\CodeFlow.Orchestration\CodeFlow.Orchestration.csproj" />
