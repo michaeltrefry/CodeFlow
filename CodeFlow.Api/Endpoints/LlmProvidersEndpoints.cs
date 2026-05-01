@@ -49,6 +49,7 @@ public static class LlmProvidersEndpoints
             MaxTokensPerConversation: settings?.MaxTokensPerConversation,
             AssignedAgentRoleId: settings?.AssignedAgentRoleId,
             Instructions: settings?.Instructions,
+            MaxTurns: settings?.MaxTurns,
             UpdatedBy: settings?.UpdatedBy,
             UpdatedAtUtc: settings?.UpdatedAtUtc));
     }
@@ -93,6 +94,10 @@ public static class LlmProvidersEndpoints
         {
             errors["instructions"] = new[] { $"Instructions must be {MaxInstructionsLength} characters or fewer." };
         }
+        if (request.MaxTurns is { } turns && (turns < 0 || turns > MaxToolLoopTurnsCeiling))
+        {
+            errors["maxTurns"] = new[] { $"Max tool-loop turns must be 0 (use default) or between 1 and {MaxToolLoopTurnsCeiling}." };
+        }
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
@@ -104,6 +109,7 @@ public static class LlmProvidersEndpoints
             MaxTokensPerConversation: request.MaxTokensPerConversation,
             AssignedAgentRoleId: request.AssignedAgentRoleId,
             Instructions: request.Instructions,
+            MaxTurns: request.MaxTurns,
             UpdatedBy: currentUser.Id), cancellationToken);
 
         return Results.Ok(new AssistantSettingsResponse(
@@ -112,6 +118,7 @@ public static class LlmProvidersEndpoints
             MaxTokensPerConversation: saved.MaxTokensPerConversation,
             AssignedAgentRoleId: saved.AssignedAgentRoleId,
             Instructions: saved.Instructions,
+            MaxTurns: saved.MaxTurns,
             UpdatedBy: saved.UpdatedBy,
             UpdatedAtUtc: saved.UpdatedAtUtc));
     }
@@ -122,6 +129,14 @@ public static class LlmProvidersEndpoints
     /// the model's effective context budget.
     /// </summary>
     private const int MaxInstructionsLength = 16_000;
+
+    /// <summary>
+    /// Hard ceiling on the configurable tool-loop budget. The runtime enforces this independently
+    /// of the appsettings default so an admin can't accidentally type "1000" and let a runaway
+    /// turn keep tool-calling. 100 is well above any legitimate workflow drafting / diagnosis
+    /// flow but still bounded.
+    /// </summary>
+    private const int MaxToolLoopTurnsCeiling = 100;
 
     private static async Task<IResult> ListAsync(
         ILlmProviderSettingsRepository repository,

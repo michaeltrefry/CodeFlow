@@ -12,6 +12,7 @@ public sealed record AssistantSettingsResponse(
     long? MaxTokensPerConversation,
     long? AssignedAgentRoleId,
     string? Instructions,
+    int? MaxTurns,
     string? UpdatedBy,
     DateTime? UpdatedAtUtc);
 
@@ -20,7 +21,8 @@ public sealed record AssistantSettingsWriteRequest(
     string? Model,
     long? MaxTokensPerConversation,
     long? AssignedAgentRoleId,
-    string? Instructions);
+    string? Instructions,
+    int? MaxTurns);
 
 /// <summary>
 /// sc-274 phase 2 — ambiguity preflight refusal payload for the assistant chat endpoint.

@@ -22,8 +22,10 @@ public sealed class AssistantOptions
     public int MaxTokens { get; set; } = 32768;
 
     /// <summary>
-    /// Maximum tool-loop turns per user message. Unused while HAA-1 ships without tools — kept
-    /// here so HAA-4/5/9-onward don't reshape the options block when they wire tool calling.
+    /// Maximum tool-loop turns per user message. Surfaced in the system prompt's
+    /// <c>&lt;turn-budget&gt;</c> block so the model can pace itself; raise via
+    /// <c>Assistant__MaxTurns</c> when tool-heavy flows (workflow drafting, multi-step diagnosis)
+    /// keep hitting the cap.
     /// </summary>
-    public int MaxTurns { get; set; } = 10;
+    public int MaxTurns { get; set; } = 25;
 }

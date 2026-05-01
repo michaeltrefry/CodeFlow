@@ -34,6 +34,9 @@ public sealed class AssistantSettingsEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("instructions")
             .HasColumnType("longtext");
 
+        builder.Property(e => e.MaxTurns)
+            .HasColumnName("max_turns");
+
         builder.Property(e => e.UpdatedBy)
             .HasColumnName("updated_by")
             .HasMaxLength(256);

@@ -78,6 +78,13 @@ public sealed class CodeFlowAssistant(
 
         var config = await settingsResolver.ResolveAsync(overrideProvider, overrideModel, cancellationToken);
         var systemPrompt = await systemPromptProvider.GetSystemPromptAsync(cancellationToken);
+        // Per-turn budget block: tells the model the tool-loop cap so it can pace itself rather
+        // than trickling tool calls until the harness aborts the turn. Prepended (not appended)
+        // so the model reads the budget before it reads the curated knowledge base.
+        var budgetBlock = BuildTurnBudgetBlock(config.MaxTurns);
+        systemPrompt = string.IsNullOrEmpty(systemPrompt)
+            ? budgetBlock
+            : budgetBlock + "\n\n" + systemPrompt;
         // Operator-authored instructions overlay (LLM Providers admin → Assistant defaults).
         // Appended after the curated prompt so the operator can describe role-granted tools,
         // scope rules, persona tweaks, etc. without forking the curated knowledge base.
@@ -269,6 +276,20 @@ public sealed class CodeFlowAssistant(
                 conversationId);
             return null;
         }
+    }
+
+    private static string BuildTurnBudgetBlock(int maxTurns)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<turn-budget>");
+        sb.Append("You are bounded to ").Append(maxTurns).AppendLine(" tool-call turns per user message. Spend them deliberately:");
+        sb.AppendLine("- Plan before calling tools. Decide what you actually need, then make the minimum set of calls.");
+        sb.AppendLine("- Batch independent tool calls in parallel where the API allows it instead of chaining one-at-a-time.");
+        sb.AppendLine("- Do not repeat a call you already made this turn — earlier tool results are still in context.");
+        sb.AppendLine("- Stop calling tools and emit a final answer as soon as you have what you need. Don't call tools to re-confirm what you already know.");
+        sb.AppendLine("- If the work would exceed the budget, return a partial answer summarizing what you found and the next step you'd take, rather than running out of turns silently.");
+        sb.Append("</turn-budget>");
+        return sb.ToString();
     }
 
     private static string BuildOperatorInstructionsBlock(string instructions)
