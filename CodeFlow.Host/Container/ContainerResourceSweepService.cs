@@ -38,12 +38,13 @@ internal sealed class ContainerResourceSweepService : BackgroundService
             try
             {
                 var result = await lifecycle.SweepOrphansAsync(stoppingToken);
-                if (result.RemovedContainers > 0 || result.RemovedVolumes > 0)
+                if (result.RemovedContainers > 0 || result.RemovedVolumes > 0 || result.RemovedExecutionWorkspaces > 0)
                 {
                     logger.LogInformation(
-                        "Container resource sweep removed {ContainerCount} stale container(s) and {VolumeCount} stale cache volume(s).",
+                        "Container resource sweep removed {ContainerCount} stale container(s), {VolumeCount} stale cache volume(s), and {WorkspaceCount} stale execution workspace(s).",
                         result.RemovedContainers,
-                        result.RemovedVolumes);
+                        result.RemovedVolumes,
+                        result.RemovedExecutionWorkspaces);
                 }
             }
             catch (OperationCanceledException)

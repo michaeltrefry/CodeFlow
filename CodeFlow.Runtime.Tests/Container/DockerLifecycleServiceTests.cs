@@ -81,7 +81,7 @@ public sealed class DockerLifecycleServiceTests
             new DockerCommandResult(0, "removed volumes", string.Empty, false, false, TimedOut: false)
         ]);
         var options = new ContainerToolOptions { OrphanCleanupTtl = TimeSpan.FromHours(24) };
-        var service = new DockerLifecycleService(options, runner, () => now);
+        var service = new DockerLifecycleService(options, runner, nowProvider: () => now);
 
         var result = await service.SweepOrphansAsync();
 
@@ -90,6 +90,74 @@ public sealed class DockerLifecycleServiceTests
         runner.Calls.Should().HaveCount(4);
         runner.Calls[1].Arguments.Should().Equal("rm", "-f", "old-container");
         runner.Calls[3].Arguments.Should().Equal("volume", "rm", "-f", "old-volume");
+    }
+
+    [Fact]
+    public async Task CleanupWorkflowAsync_removes_per_workflow_execution_workspace()
+    {
+        var workflowId = Guid.NewGuid();
+        var executionRoot = Path.Combine(Path.GetTempPath(), "codeflow-lifecycle-exec-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var provider = new ContainerExecutionWorkspaceProvider(executionRoot);
+            var execPath = Path.Combine(executionRoot, workflowId.ToString("N"));
+            Directory.CreateDirectory(execPath);
+
+            var runner = new QueueingDockerRunner([
+                new DockerCommandResult(0, string.Empty, string.Empty, false, false, TimedOut: false),
+                new DockerCommandResult(0, string.Empty, string.Empty, false, false, TimedOut: false)
+            ]);
+            var service = new DockerLifecycleService(new ContainerToolOptions(), runner, provider);
+
+            var result = await service.CleanupWorkflowAsync(workflowId);
+
+            result.RemovedExecutionWorkspaces.Should().Be(1);
+            Directory.Exists(execPath).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(executionRoot))
+            {
+                Directory.Delete(executionRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SweepOrphansAsync_reaps_stale_execution_workspaces()
+    {
+        var executionRoot = Path.Combine(Path.GetTempPath(), "codeflow-lifecycle-sweep-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var provider = new ContainerExecutionWorkspaceProvider(executionRoot);
+            Directory.CreateDirectory(executionRoot);
+            var stalePath = Path.Combine(executionRoot, Guid.NewGuid().ToString("N"));
+            var freshPath = Path.Combine(executionRoot, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stalePath);
+            Directory.CreateDirectory(freshPath);
+            Directory.SetLastWriteTimeUtc(stalePath, DateTime.UtcNow.AddHours(-30));
+            Directory.SetLastWriteTimeUtc(freshPath, DateTime.UtcNow);
+
+            var runner = new QueueingDockerRunner([
+                new DockerCommandResult(0, string.Empty, string.Empty, false, false, TimedOut: false),
+                new DockerCommandResult(0, string.Empty, string.Empty, false, false, TimedOut: false)
+            ]);
+            var options = new ContainerToolOptions { OrphanCleanupTtl = TimeSpan.FromHours(24) };
+            var service = new DockerLifecycleService(options, runner, provider, () => DateTimeOffset.UtcNow);
+
+            var result = await service.SweepOrphansAsync();
+
+            result.RemovedExecutionWorkspaces.Should().Be(1);
+            Directory.Exists(stalePath).Should().BeFalse();
+            Directory.Exists(freshPath).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(executionRoot))
+            {
+                Directory.Delete(executionRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]

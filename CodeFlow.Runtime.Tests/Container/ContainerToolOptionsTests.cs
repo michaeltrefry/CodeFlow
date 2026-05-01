@@ -57,6 +57,29 @@ public sealed class ContainerToolOptionsTests
     }
 
     [Fact]
+    public void Validate_rejects_relative_execution_workspace_root_path()
+    {
+        var options = new ContainerToolOptions
+        {
+            ExecutionWorkspaceRootPath = "relative/path"
+        };
+
+        options.Validate().Should().Contain(error => error.Contains("ExecutionWorkspaceRootPath"));
+    }
+
+    [Fact]
+    public void Validate_accepts_absolute_execution_workspace_root_path()
+    {
+        var absolutePath = OperatingSystem.IsWindows() ? "C:\\codeflow\\exec" : "/var/codeflow/exec";
+        var options = new ContainerToolOptions
+        {
+            ExecutionWorkspaceRootPath = absolutePath
+        };
+
+        options.Validate().Should().BeEmpty();
+    }
+
+    [Fact]
     public void Validate_rejects_invalid_limits_and_paths()
     {
         var options = new ContainerToolOptions

@@ -147,12 +147,15 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         try
         {
             var cleanup = await lifecycle.CleanupWorkflowAsync(context.Saga.TraceId, context.CancellationToken);
-            if (cleanup.RemovedContainers > 0 || cleanup.RemovedVolumes > 0)
+            if (cleanup.RemovedContainers > 0
+                || cleanup.RemovedVolumes > 0
+                || cleanup.RemovedExecutionWorkspaces > 0)
             {
                 logger.LogInformation(
-                    "Cleaned up {ContainerCount} container(s) and {VolumeCount} cache volume(s) for workflow trace {TraceId}.",
+                    "Cleaned up {ContainerCount} container(s), {VolumeCount} cache volume(s), and {WorkspaceCount} execution workspace(s) for workflow trace {TraceId}.",
                     cleanup.RemovedContainers,
                     cleanup.RemovedVolumes,
+                    cleanup.RemovedExecutionWorkspaces,
                     context.Saga.TraceId);
             }
         }

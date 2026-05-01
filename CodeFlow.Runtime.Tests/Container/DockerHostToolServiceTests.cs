@@ -7,18 +7,32 @@ namespace CodeFlow.Runtime.Tests.Container;
 public sealed class DockerHostToolServiceTests : IDisposable
 {
     private readonly string workspaceRoot;
+    private readonly string executionRoot;
+    private readonly ContainerExecutionWorkspaceProvider executionWorkspaces;
 
     public DockerHostToolServiceTests()
     {
         workspaceRoot = Path.Combine(Path.GetTempPath(), "codeflow-docker-tool-" + Guid.NewGuid().ToString("N"));
+        executionRoot = Path.Combine(Path.GetTempPath(), "codeflow-docker-exec-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
+        File.WriteAllText(Path.Combine(workspaceRoot, "src", "index.ts"), "console.log('hello');\n");
+        executionWorkspaces = new ContainerExecutionWorkspaceProvider(executionRoot);
     }
 
     public void Dispose()
     {
+        TryRemove(workspaceRoot);
+        TryRemove(executionRoot);
+    }
+
+    private static void TryRemove(string path)
+    {
         try
         {
-            Directory.Delete(workspaceRoot, recursive: true);
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
         }
         catch
         {
@@ -64,9 +78,15 @@ public sealed class DockerHostToolServiceTests : IDisposable
         runner.Arguments.Should().ContainInOrder("--memory", "4294967296");
         runner.Arguments.Should().ContainInOrder("--pids-limit", "1024");
         runner.Arguments.Should().ContainInOrder("--network", "bridge");
+        var expectedExecPath = Path.Combine(executionRoot, "11111111222233334444555555555555");
         runner.Arguments.Should().ContainInOrder(
             "--mount",
-            $"type=bind,source={workspaceRoot},target=/workspace,readonly=false");
+            $"type=bind,source={expectedExecPath},target=/workspace,readonly=false");
+        runner.Arguments.Should().NotContain($"type=bind,source={workspaceRoot},target=/workspace,readonly=false",
+            because: "the canonical workspace must never be the docker bind-mount source");
+        Directory.Exists(expectedExecPath).Should().BeTrue();
+        File.ReadAllText(Path.Combine(expectedExecPath, "src", "index.ts"))
+            .Should().Be("console.log('hello');\n", because: "execution workspace mirrors canonical contents");
         runner.Arguments.Should().ContainInOrder("node:22-bookworm", "npm", "test", "--", "--runInBand");
         runner.Timeout.Should().Be(TimeSpan.FromSeconds(30));
 
@@ -211,6 +231,55 @@ public sealed class DockerHostToolServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RunContainerAsync_mounts_execution_copy_so_simulated_writes_do_not_pollute_canonical()
+    {
+        var correlationId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        var runner = new CapturingDockerRunner();
+        var service = NewService(runner);
+
+        await service.RunContainerAsync(
+            NewCall(new JsonObject
+            {
+                ["image"] = "node:22",
+                ["command"] = "npm",
+                ["args"] = new JsonArray("test")
+            }),
+            NewContext(correlationId));
+
+        var execPath = Path.Combine(executionRoot, correlationId.ToString("N"));
+        Directory.Exists(execPath).Should().BeTrue();
+
+        // Simulate the build container writing artifacts and overwriting a source file in /workspace.
+        Directory.CreateDirectory(Path.Combine(execPath, "dist"));
+        File.WriteAllText(Path.Combine(execPath, "dist", "bundle.js"), "/*compiled*/");
+        File.WriteAllText(Path.Combine(execPath, "src", "index.ts"), "// container-edited\n");
+
+        File.ReadAllText(Path.Combine(workspaceRoot, "src", "index.ts"))
+            .Should().Be("console.log('hello');\n", because: "container writes must not pollute the canonical workspace");
+        Directory.Exists(Path.Combine(workspaceRoot, "dist")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunContainerAsync_refuses_when_canonical_workspace_does_not_exist()
+    {
+        var runner = new CapturingDockerRunner();
+        var service = NewService(runner);
+        var missingPath = Path.Combine(Path.GetTempPath(), "codeflow-missing-" + Guid.NewGuid().ToString("N"));
+
+        var result = await service.RunContainerAsync(
+            NewCall(new JsonObject
+            {
+                ["image"] = "node:22",
+                ["command"] = "npm"
+            }),
+            new ToolExecutionContext(Workspace: new ToolWorkspaceContext(Guid.NewGuid(), missingPath)));
+
+        result.IsError.Should().BeTrue();
+        JsonNode.Parse(result.Content)!["refusal"]!["code"]!.GetValue<string>()
+            .Should().Be("workspace-not-ready");
+    }
+
+    [Fact]
     public async Task RunContainerAsync_marks_nonzero_exit_as_error()
     {
         var runner = new CapturingDockerRunner
@@ -242,6 +311,7 @@ public sealed class DockerHostToolServiceTests : IDisposable
         new(
             new ContainerToolOptions(),
             runner,
+            executionWorkspaces: executionWorkspaces,
             idProvider: () => Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
             nowProvider: () => DateTimeOffset.Parse("2026-05-01T13:00:00Z"));
 

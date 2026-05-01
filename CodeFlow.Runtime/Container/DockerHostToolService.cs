@@ -11,6 +11,7 @@ public sealed class DockerHostToolService
     private readonly ContainerToolOptions options;
     private readonly IDockerCommandRunner runner;
     private readonly DockerLifecycleService lifecycle;
+    private readonly ContainerExecutionWorkspaceProvider executionWorkspaces;
     private readonly Func<Guid> idProvider;
     private readonly Func<DateTimeOffset> nowProvider;
 
@@ -18,6 +19,7 @@ public sealed class DockerHostToolService
         ContainerToolOptions? options = null,
         IDockerCommandRunner? runner = null,
         DockerLifecycleService? lifecycle = null,
+        ContainerExecutionWorkspaceProvider? executionWorkspaces = null,
         Func<Guid>? idProvider = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
@@ -30,8 +32,20 @@ public sealed class DockerHostToolService
 
         this.runner = runner ?? new DockerCliCommandRunner();
         this.lifecycle = lifecycle ?? new DockerLifecycleService(this.options, this.runner);
+        this.executionWorkspaces = executionWorkspaces ?? new ContainerExecutionWorkspaceProvider(
+            ResolveDefaultExecutionRoot(this.options));
         this.idProvider = idProvider ?? Guid.NewGuid;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
+    }
+
+    private static string ResolveDefaultExecutionRoot(ContainerToolOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.ExecutionWorkspaceRootPath))
+        {
+            return options.ExecutionWorkspaceRootPath!;
+        }
+
+        return Path.Combine(Path.GetTempPath(), "codeflow-" + options.ExecutionWorkspaceDirectoryName);
     }
 
     public async Task<ToolResult> RunContainerAsync(
@@ -88,10 +102,21 @@ public sealed class DockerHostToolService
                 $"Workflow already has {activeContainers} managed container(s), meeting or exceeding the configured limit of {options.MaxContainersPerWorkflow}.");
         }
 
+        string executionWorkspacePath;
+        try
+        {
+            executionWorkspacePath = executionWorkspaces.EnsureForWorkflow(workspace.CorrelationId, workspace.RootPath);
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            return RefusalResult(toolCall.Id, "workspace-not-ready", ex.Message);
+        }
+
         var containerName = BuildContainerName(workspace.CorrelationId, toolCall.Id);
         var createdAt = nowProvider();
         var dockerArguments = BuildDockerRunArguments(
             workspace,
+            executionWorkspacePath,
             resolvedWorkingDirectory,
             containerName,
             createdAt,
@@ -127,6 +152,7 @@ public sealed class DockerHostToolService
 
     private IReadOnlyList<string> BuildDockerRunArguments(
         ToolWorkspaceContext workspace,
+        string executionWorkspacePath,
         string resolvedWorkingDirectory,
         string containerName,
         DateTimeOffset createdAt,
@@ -158,7 +184,7 @@ public sealed class DockerHostToolService
             "--network",
             options.AllowNetwork ? "bridge" : "none",
             "--mount",
-            $"type=bind,source={workspace.RootPath},target={options.WorkspaceMountPath},readonly=false",
+            $"type=bind,source={executionWorkspacePath},target={options.WorkspaceMountPath},readonly=false",
             request.Image,
             request.Command
         };

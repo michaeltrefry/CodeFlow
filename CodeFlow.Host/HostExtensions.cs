@@ -219,15 +219,26 @@ public static class HostExtensions
             .Validate(options => options.Validate().Count == 0, "WebTools options are invalid.")
             .ValidateOnStart();
         services.AddSingleton<IDockerCommandRunner, DockerCliCommandRunner>();
+        services.AddSingleton<ContainerExecutionWorkspaceProvider>(sp =>
+        {
+            var containerOptions = sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value;
+            var workspaceOptions = sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value;
+            var executionRoot = ResolveExecutionWorkspaceRoot(containerOptions, workspaceOptions);
+            return new ContainerExecutionWorkspaceProvider(
+                executionRoot,
+                logger: sp.GetService<Microsoft.Extensions.Logging.ILogger<ContainerExecutionWorkspaceProvider>>());
+        });
         services.AddSingleton<DockerLifecycleService>(sp =>
             new DockerLifecycleService(
                 sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value,
-                sp.GetRequiredService<IDockerCommandRunner>()));
+                sp.GetRequiredService<IDockerCommandRunner>(),
+                sp.GetRequiredService<ContainerExecutionWorkspaceProvider>()));
         services.AddSingleton<DockerHostToolService>(sp =>
             new DockerHostToolService(
                 sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value,
                 sp.GetRequiredService<IDockerCommandRunner>(),
-                sp.GetRequiredService<DockerLifecycleService>()));
+                sp.GetRequiredService<DockerLifecycleService>(),
+                sp.GetRequiredService<ContainerExecutionWorkspaceProvider>()));
         services.AddHostedService<ContainerResourceSweepService>();
         services.AddSingleton<HostToolProvider>(sp =>
             new HostToolProvider(
@@ -474,5 +485,33 @@ public static class HostExtensions
     {
         return !string.IsNullOrWhiteSpace(endpointName)
             && endpointName.StartsWith("api-trace-observer-", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The canonical workdir-sweep enumerates direct children of WorkingDirectoryRoot looking
+    // for stale {traceId:N} dirs by mtime, so we deliberately place container execution
+    // workspaces OUTSIDE that root (default: sibling under the same parent). Operators with a
+    // non-standard layout can override via ContainerTools:ExecutionWorkspaceRootPath.
+    private static string ResolveExecutionWorkspaceRoot(
+        ContainerToolOptions containerOptions,
+        WorkspaceOptions workspaceOptions)
+    {
+        if (!string.IsNullOrWhiteSpace(containerOptions.ExecutionWorkspaceRootPath))
+        {
+            return containerOptions.ExecutionWorkspaceRootPath!;
+        }
+
+        var workingRoot = workspaceOptions.WorkingDirectoryRoot;
+        if (string.IsNullOrWhiteSpace(workingRoot))
+        {
+            return Path.Combine(Path.GetTempPath(), "codeflow-" + containerOptions.ExecutionWorkspaceDirectoryName);
+        }
+
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(workingRoot));
+        if (string.IsNullOrWhiteSpace(parent))
+        {
+            return Path.Combine(workingRoot, containerOptions.ExecutionWorkspaceDirectoryName);
+        }
+
+        return Path.Combine(parent, containerOptions.ExecutionWorkspaceDirectoryName);
     }
 }

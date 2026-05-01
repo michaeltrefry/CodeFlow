@@ -8,11 +8,13 @@ public sealed class DockerLifecycleService
 
     private readonly ContainerToolOptions options;
     private readonly IDockerCommandRunner runner;
+    private readonly ContainerExecutionWorkspaceProvider? executionWorkspaces;
     private readonly Func<DateTimeOffset> nowProvider;
 
     public DockerLifecycleService(
         ContainerToolOptions? options = null,
         IDockerCommandRunner? runner = null,
+        ContainerExecutionWorkspaceProvider? executionWorkspaces = null,
         Func<DateTimeOffset>? nowProvider = null)
     {
         this.options = options ?? new ContainerToolOptions();
@@ -23,6 +25,7 @@ public sealed class DockerLifecycleService
         }
 
         this.runner = runner ?? new DockerCliCommandRunner();
+        this.executionWorkspaces = executionWorkspaces;
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
@@ -58,7 +61,9 @@ public sealed class DockerLifecycleService
 
         var removedVolumes = await RemoveResourcesAsync("volume", ["rm", "-f"], volumes, cancellationToken);
 
-        return new DockerWorkflowCleanupResult(removedContainers, removedVolumes);
+        var removedExecutionWorkspaces = (executionWorkspaces?.RemoveWorkflow(workflowId) ?? false) ? 1 : 0;
+
+        return new DockerWorkflowCleanupResult(removedContainers, removedVolumes, removedExecutionWorkspaces);
     }
 
     public async Task<DockerWorkflowCleanupResult> SweepOrphansAsync(CancellationToken cancellationToken = default)
@@ -92,7 +97,9 @@ public sealed class DockerLifecycleService
 
         var removedVolumes = await RemoveResourcesAsync("volume", ["rm", "-f"], volumes, cancellationToken);
 
-        return new DockerWorkflowCleanupResult(removedContainers, removedVolumes);
+        var removedExecutionWorkspaces = executionWorkspaces?.SweepOrphans(options.OrphanCleanupTtl, nowProvider()) ?? 0;
+
+        return new DockerWorkflowCleanupResult(removedContainers, removedVolumes, removedExecutionWorkspaces);
     }
 
     public async Task<int> CountWorkflowContainersAsync(
@@ -214,4 +221,5 @@ public sealed class DockerLifecycleService
 
 public sealed record DockerWorkflowCleanupResult(
     int RemovedContainers,
-    int RemovedVolumes);
+    int RemovedVolumes,
+    int RemovedExecutionWorkspaces = 0);

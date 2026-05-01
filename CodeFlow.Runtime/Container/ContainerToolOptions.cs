@@ -12,6 +12,15 @@ public sealed class ContainerToolOptions
 
     public string ExecutionWorkspaceDirectoryName { get; set; } = "container-workspace";
 
+    /// <summary>
+    /// Absolute host path where per-workflow execution workspaces live (one
+    /// <c>{traceId:N}/</c> subdirectory per active workflow). When empty, the host derives a
+    /// default from <c>WorkspaceOptions.WorkingDirectoryRoot</c> + <c>..</c> +
+    /// <see cref="ExecutionWorkspaceDirectoryName"/> so the canonical workdir-sweep doesn't see
+    /// the execution copies as stray children of its own root.
+    /// </summary>
+    public string? ExecutionWorkspaceRootPath { get; set; }
+
     public double CpuCount { get; set; } = 2;
 
     public long MemoryBytes { get; set; } = 4L * 1024 * 1024 * 1024;
@@ -69,6 +78,12 @@ public sealed class ContainerToolOptions
             || ExecutionWorkspaceDirectoryName.Contains('\\'))
         {
             errors.Add("ContainerTools:ExecutionWorkspaceDirectoryName must be a single directory name.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(ExecutionWorkspaceRootPath)
+            && !Path.IsPathFullyQualified(ExecutionWorkspaceRootPath))
+        {
+            errors.Add("ContainerTools:ExecutionWorkspaceRootPath must be an absolute host path when set.");
         }
 
         if (CpuCount <= 0)
