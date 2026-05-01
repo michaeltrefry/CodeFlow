@@ -45,6 +45,22 @@ public sealed class RoleAssignmentRuleTests
     }
 
     [Fact]
+    public async Task ZeroRoles_PromptMentionsContainerRun_EmitsError()
+    {
+        // sc-450: container.run is a host-tool capability; agents that mention it but have no
+        // role grants should fail save with the same Roles-page nudge as run_command.
+        await using var fx = await TestFixture.CreateAsync();
+        await fx.SeedAgentAsync("builder",
+            systemPrompt: "Build the project with container.run on a docker.io image.");
+
+        var findings = await fx.RunRuleAsync(new[] { AgentNode("builder", version: 1) });
+
+        findings.Should().ContainSingle();
+        findings[0].Severity.Should().Be(WorkflowValidationSeverity.Error);
+        findings[0].Message.Should().Contain("container.run");
+    }
+
+    [Fact]
     public async Task ZeroRoles_PromptMentionsMcp_EmitsError()
     {
         await using var fx = await TestFixture.CreateAsync();

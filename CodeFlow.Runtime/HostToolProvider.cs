@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using CodeFlow.Runtime.Container;
 using CodeFlow.Runtime.Workspace;
 
 namespace CodeFlow.Runtime;
@@ -8,15 +9,18 @@ public sealed class HostToolProvider : IToolProvider
     private readonly Func<DateTimeOffset> nowProvider;
     private readonly WorkspaceHostToolService workspaceTools;
     private readonly VcsHostToolService? vcsTools;
+    private readonly DockerHostToolService? containerTools;
 
     public HostToolProvider(
         Func<DateTimeOffset>? nowProvider = null,
         WorkspaceHostToolService? workspaceTools = null,
-        VcsHostToolService? vcsTools = null)
+        VcsHostToolService? vcsTools = null,
+        DockerHostToolService? containerTools = null)
     {
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
         this.workspaceTools = workspaceTools ?? new WorkspaceHostToolService();
         this.vcsTools = vcsTools;
+        this.containerTools = containerTools;
     }
 
     public ToolCategory Category => ToolCategory.Host;
@@ -50,6 +54,7 @@ public sealed class HostToolProvider : IToolProvider
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
+            DockerHostToolService.ContainerRunToolName => RequireContainer().RunContainerAsync(toolCall, context, cancellationToken),
             _ => throw new UnknownToolException(toolCall.Name)
         };
 
@@ -59,6 +64,10 @@ public sealed class HostToolProvider : IToolProvider
     private VcsHostToolService RequireVcs() =>
         vcsTools ?? throw new InvalidOperationException(
             "vcs.* tools are not configured: HostToolProvider was constructed without a VcsHostToolService.");
+
+    private DockerHostToolService RequireContainer() =>
+        containerTools ?? throw new InvalidOperationException(
+            "container.* tools are not configured: HostToolProvider was constructed without a DockerHostToolService.");
 
     public static IReadOnlyList<ToolSchema> GetCatalog()
     {
@@ -183,7 +192,57 @@ public sealed class HostToolProvider : IToolProvider
                         ["name"] = new JsonObject { ["type"] = "string" }
                     },
                     ["required"] = new JsonArray("owner", "name")
-                })
+                }),
+            new ToolSchema(
+                DockerHostToolService.ContainerRunToolName,
+                "Runs a one-shot build/test command inside a constrained Docker container. "
+                + "v1 accepts only Docker Hub (docker.io) images; the canonical workspace is "
+                + "mirrored into a workflow-scoped writable copy at /workspace so build "
+                + "artifacts never pollute the source-of-truth tree. CPU/memory/pids/timeout/"
+                + "output limits and a per-workflow container cap are enforced. Repository "
+                + "Dockerfiles, docker build, docker compose, privileged mode, host networking, "
+                + "published ports, and Docker socket mounts are forbidden and surface a "
+                + "structured refusal. Prefer official images and the smallest tag that "
+                + "provides the toolchain you need.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["image"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Docker Hub image reference (e.g. 'node:22-bookworm', "
+                                + "'library/python:3.12-slim', 'docker.io/library/golang:1.22'). "
+                                + "Non-docker.io registries are denied."
+                        },
+                        ["command"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Executable to run inside the container (e.g. 'npm', "
+                                + "'pytest', 'cargo'). Invoking 'docker' or 'docker-compose' is denied."
+                        },
+                        ["args"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Positional args passed to the command."
+                        },
+                        ["workingDirectory"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Workspace-relative directory to run from. Defaults to "
+                                + "the workspace root. Paths that escape the workspace are denied."
+                        },
+                        ["timeoutSeconds"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Per-command timeout. Capped to the configured maximum."
+                        }
+                    },
+                    ["required"] = new JsonArray("image", "command")
+                },
+                IsMutating: true)
         ];
     }
 

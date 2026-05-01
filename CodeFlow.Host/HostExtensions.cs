@@ -245,7 +245,8 @@ public static class HostExtensions
                 workspaceTools: new WorkspaceHostToolService(
                     sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
                 vcsTools: new VcsHostToolService(
-                    sp.GetRequiredService<IVcsProviderFactory>())));
+                    sp.GetRequiredService<IVcsProviderFactory>()),
+                containerTools: sp.GetRequiredService<DockerHostToolService>()));
         services.AddSingleton<Agent>();
         services.AddSingleton<IAgentInvoker>(provider => provider.GetRequiredService<Agent>());
 
