@@ -5,6 +5,7 @@
   <Project Path="CodeFlow.Architecture.Tests/CodeFlow.Architecture.Tests.csproj" />
   <Folder Name="/SolutionFolder/">
     <File Path=".gitignore" />
+    <File Path="Directory.Packages.props" />
     <File Path="docker-compose.yml" />
     <File Path="README.md" />
   </Folder>

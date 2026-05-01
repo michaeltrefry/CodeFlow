@@ -151,14 +151,6 @@ public static class HostExtensions
         services.AddSingleton<INotificationProviderFactory>(sp =>
             sp.GetRequiredService<SlackNotificationProviderFactory>());
 
-        // Email provider (sc-55). One factory dispatches between the SES (AWS SDK) and SMTP
-        // (MailKit) engines based on each config row's AdditionalConfigJson. SES provider
-        // instances build their own AmazonSimpleEmailServiceV2Client; SMTP instances open one
-        // SmtpClient per send.
-        services.AddSingleton<EmailNotificationProviderFactory>();
-        services.AddSingleton<INotificationProviderFactory>(sp =>
-            sp.GetRequiredService<EmailNotificationProviderFactory>());
-
         // SMS provider (sc-56). v1 ships Twilio behind the Sms-channel factory; future SMS
         // engines (Vonage, SNS, Plivo) plug in by refactoring the factory to dispatch on an
         // engine selector (mirrors EmailNotificationProviderFactory's SES vs SMTP split).
@@ -171,6 +163,14 @@ public static class HostExtensions
         services.AddSingleton<INotificationProviderFactory>(sp =>
             sp.GetRequiredService<SmsNotificationProviderFactory>());
 
+
+        // Email provider (sc-55). One factory dispatches between the SES (AWS SDK) and SMTP
+        // (MailKit) engines based on each config row's AdditionalConfigJson. SES provider
+        // instances build their own AmazonSimpleEmailServiceV2Client; SMTP instances open one
+        // SmtpClient per send.
+        services.AddSingleton<EmailNotificationProviderFactory>();
+        services.AddSingleton<INotificationProviderFactory>(sp =>
+            sp.GetRequiredService<EmailNotificationProviderFactory>());
         services.AddHttpClient<IGitHostVerifier, GitHostVerifier>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
