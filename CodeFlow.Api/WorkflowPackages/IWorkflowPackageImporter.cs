@@ -9,7 +9,35 @@ public interface IWorkflowPackageImporter
     Task<WorkflowPackageImportApplyResult> ApplyAsync(
         WorkflowPackage package,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Runs the same workflow validators ApplyAsync runs, but inside a rollback-only transaction
+    /// so the package is never persisted. Mirrors the editor's save-time validation surface for
+    /// authoring flows (the homepage assistant's <c>save_workflow_package</c> tool) that need to
+    /// know whether the package would actually land — without committing it.
+    /// <para/>
+    /// Returns <see cref="WorkflowPackageValidationResult.Valid"/> when every embedded workflow
+    /// passes the legacy validator and the validation pipeline. Otherwise returns the per-workflow
+    /// error list. Conflict-only packages (preview cannot apply) short-circuit to Valid — fix the
+    /// conflicts first; we'll re-validate on the corrected package.
+    /// </summary>
+    Task<WorkflowPackageValidationResult> ValidateAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken = default);
 }
+
+public sealed record WorkflowPackageValidationResult(
+    bool IsValid,
+    IReadOnlyList<WorkflowPackageValidationError> Errors)
+{
+    public static readonly WorkflowPackageValidationResult Valid =
+        new(true, Array.Empty<WorkflowPackageValidationError>());
+}
+
+public sealed record WorkflowPackageValidationError(
+    string WorkflowKey,
+    string Message,
+    IReadOnlyList<string>? RuleIds = null);
 
 public sealed record WorkflowPackageImportPreview(
     WorkflowPackageReference EntryPoint,

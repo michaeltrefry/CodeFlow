@@ -9,6 +9,7 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="FluentAssertions" Version="8.3.0" />
     <PackageVersion Include="Jint" Version="4.4.0" />
+    <PackageVersion Include="JsonPatch.Net" Version="3.4.0" />
     <PackageVersion Include="MailKit" Version="4.13.0" />
     <PackageVersion Include="MassTransit" Version="8.4.1" />
     <PackageVersion Include="MassTransit.EntityFrameworkCore" Version="8.4.1" />

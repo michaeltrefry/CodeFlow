@@ -50,35 +50,90 @@ public sealed class WorkflowPackageImporter(
         }
 
         var importPackage = plan.Package;
+        var validationErrors = new List<WorkflowPackageValidationError>();
 
         var strategy = dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            dbContext.ChangeTracker.Clear();
-
-            await using var transaction = await dbContext.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable,
-                cancellationToken);
-
-            var now = DateTime.UtcNow;
-
-            await ImportSkillsAsync(importPackage, now, cancellationToken);
-            await ImportMcpServersAsync(importPackage, now, cancellationToken);
-            await ImportRolesAsync(importPackage, now, cancellationToken);
-            await ImportAgentsAsync(importPackage, now, cancellationToken);
-            await ImportRoleAssignmentsAsync(importPackage, now, cancellationToken);
-            await ImportWorkflowsAsync(importPackage, now, cancellationToken);
-
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await ValidateImportedWorkflowsAsync(importPackage, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            validationErrors.Clear();
+            await RunImportInTransactionAsync(importPackage, commit: true, validationErrors, cancellationToken);
         });
+
+        if (validationErrors.Count > 0)
+        {
+            // RunImportInTransactionAsync rolled back when commit=true encounters validation
+            // errors; surface as the same exception type the endpoint already maps to a 400.
+            throw new WorkflowPackageResolutionException(FormatValidationFailure(validationErrors));
+        }
 
         return new WorkflowPackageImportApplyResult(preview.EntryPoint, preview.Items, preview.Warnings);
     }
 
-    private async Task ValidateImportedWorkflowsAsync(
+    public async Task<WorkflowPackageValidationResult> ValidateAsync(
         WorkflowPackage package,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
+        if (!plan.Preview.CanApply)
+        {
+            // Conflict-only packages: caller (PreviewAsync) already reports the conflicts;
+            // validation is moot until the conflicts are resolved.
+            return WorkflowPackageValidationResult.Valid;
+        }
+
+        var importPackage = plan.Package;
+        var errors = new List<WorkflowPackageValidationError>();
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            errors.Clear();
+            await RunImportInTransactionAsync(importPackage, commit: false, errors, cancellationToken);
+        });
+
+        return errors.Count == 0
+            ? WorkflowPackageValidationResult.Valid
+            : new WorkflowPackageValidationResult(false, errors);
+    }
+
+    private async Task RunImportInTransactionAsync(
+        WorkflowPackage importPackage,
+        bool commit,
+        List<WorkflowPackageValidationError> validationErrors,
+        CancellationToken cancellationToken)
+    {
+        dbContext.ChangeTracker.Clear();
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable,
+            cancellationToken);
+
+        var now = DateTime.UtcNow;
+
+        await ImportSkillsAsync(importPackage, now, cancellationToken);
+        await ImportMcpServersAsync(importPackage, now, cancellationToken);
+        await ImportRolesAsync(importPackage, now, cancellationToken);
+        await ImportAgentsAsync(importPackage, now, cancellationToken);
+        await ImportRoleAssignmentsAsync(importPackage, now, cancellationToken);
+        await ImportWorkflowsAsync(importPackage, now, cancellationToken);
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await CollectValidationErrorsAsync(importPackage, validationErrors, cancellationToken);
+
+        if (commit && validationErrors.Count == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            await transaction.RollbackAsync(cancellationToken);
+        }
+    }
+
+    private async Task CollectValidationErrorsAsync(
+        WorkflowPackage package,
+        List<WorkflowPackageValidationError> errors,
         CancellationToken cancellationToken)
     {
         foreach (var workflow in package.Workflows)
@@ -102,8 +157,11 @@ public sealed class WorkflowPackageImporter(
             if (!legacyValidation.IsValid)
             {
                 telemetry?.ValidatorBlockedSave(workflow.Key, new[] { "workflow-validator" });
-                throw new WorkflowPackageResolutionException(
-                    $"Workflow package import failed validation for workflow '{workflow.Key}': {legacyValidation.Error}");
+                errors.Add(new WorkflowPackageValidationError(
+                    workflow.Key,
+                    legacyValidation.Error!,
+                    new[] { "workflow-validator" }));
+                continue;
             }
 
             if (validationPipeline is null)
@@ -131,17 +189,29 @@ public sealed class WorkflowPackageImporter(
                 continue;
             }
 
-            var errors = report.Findings
+            var pipelineErrors = report.Findings
                 .Where(f => f.Severity == WorkflowValidationSeverity.Error)
                 .ToArray();
-            telemetry?.ValidatorBlockedSave(
-                workflow.Key,
-                errors.Select(f => f.RuleId).Distinct(StringComparer.Ordinal).ToArray());
+            var ruleIds = pipelineErrors
+                .Select(f => f.RuleId)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            telemetry?.ValidatorBlockedSave(workflow.Key, ruleIds);
 
-            throw new WorkflowPackageResolutionException(
-                $"Workflow package import failed validation for workflow '{workflow.Key}': "
-                + string.Join("; ", errors.Select(f => f.Message)));
+            errors.Add(new WorkflowPackageValidationError(
+                workflow.Key,
+                string.Join("; ", pipelineErrors.Select(f => f.Message)),
+                ruleIds));
         }
+    }
+
+    private static string FormatValidationFailure(IReadOnlyList<WorkflowPackageValidationError> errors)
+    {
+        var first = errors[0];
+        return errors.Count == 1
+            ? $"Workflow package import failed validation for workflow '{first.WorkflowKey}': {first.Message}"
+            : "Workflow package import failed validation: "
+                + string.Join(" | ", errors.Select(e => $"'{e.WorkflowKey}': {e.Message}"));
     }
 
     private static WorkflowNodeDto ToDto(WorkflowPackageWorkflowNode node) =>

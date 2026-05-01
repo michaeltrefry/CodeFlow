@@ -44,14 +44,26 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
         "codeflow-api-tests-workdir",
         Guid.NewGuid().ToString("N"));
 
+    // Per-fixture WorkspaceOptions.AssistantWorkspaceRoot. Same problem as workingDirectoryRoot:
+    // the production default (`/app/codeflow/assistant`) isn't writable in CI / dev. The
+    // homepage assistant's per-conversation workspace + workflow-package draft tools need a
+    // writable root, so tests get an isolated temp dir.
+    private readonly string assistantWorkspaceRoot = Path.Combine(
+        Path.GetTempPath(),
+        "codeflow-api-tests-assistant",
+        Guid.NewGuid().ToString("N"));
+
     public string ArtifactRoot => artifactRoot;
 
     public string WorkingDirectoryRoot => workingDirectoryRoot;
+
+    public string AssistantWorkspaceRoot => assistantWorkspaceRoot;
 
     public async Task InitializeAsync()
     {
         Directory.CreateDirectory(artifactRoot);
         Directory.CreateDirectory(workingDirectoryRoot);
+        Directory.CreateDirectory(assistantWorkspaceRoot);
         await mariaDbContainer.StartAsync();
         await rabbitMqContainer.StartAsync();
     }
@@ -82,6 +94,17 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
             }
         }
 
+        if (Directory.Exists(assistantWorkspaceRoot))
+        {
+            try
+            {
+                Directory.Delete(assistantWorkspaceRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+
         await rabbitMqContainer.DisposeAsync();
         await mariaDbContainer.DisposeAsync();
     }
@@ -103,6 +126,7 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
                 ["RabbitMq:Password"] = "codeflow_dev",
                 ["Artifacts:RootDirectory"] = artifactRoot,
                 ["Workspace:WorkingDirectoryRoot"] = workingDirectoryRoot,
+                ["Workspace:AssistantWorkspaceRoot"] = assistantWorkspaceRoot,
                 ["Auth:DevelopmentBypass"] = "true",
                 ["Auth:RequireHttpsMetadata"] = "false",
                 ["McpEndpointPolicy:AllowInternalTargets"] = "true",

@@ -248,6 +248,23 @@ export class WorkflowsApi {
     return this.http.post<WorkflowPackageImportApplyResult>('/api/workflows/package/apply', workflowPackage);
   }
 
+  /**
+   * Apply the package snapshot the assistant minted when it validated a workspace draft. Used
+   * by the chat panel when the assistant invoked `save_workflow_package` without an inline
+   * package payload. The `snapshotId` is the immutable id the tool returned at preview time;
+   * the server loads the snapshot file (NOT the live draft) so a draft mutation between
+   * preview and confirm cannot make the apply target a different package than the one shown.
+   */
+  applyPackageImportFromDraft(
+    conversationId: string,
+    snapshotId: string,
+  ): Observable<WorkflowPackageImportApplyResult> {
+    return this.http.post<WorkflowPackageImportApplyResult>(
+      '/api/workflows/package/apply-from-draft',
+      { conversationId, snapshotId },
+    );
+  }
+
   create(payload: WorkflowPayload): Observable<{ key: string; version: number }> {
     return this.http.post<{ key: string; version: number }>('/api/workflows', payload);
   }
