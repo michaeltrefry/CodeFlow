@@ -209,6 +209,76 @@ public sealed class AssistantConversationRepository(CodeFlowDbContext dbContext)
             conversation.OutputTokensTotal);
     }
 
+    public async Task<AssistantConversationFork?> ForkAsync(
+        Guid sourceConversationId,
+        Guid throughMessageId,
+        CancellationToken cancellationToken = default)
+    {
+        var source = await dbContext.AssistantConversations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(c => c.Id == sourceConversationId, cancellationToken);
+        if (source is null)
+        {
+            return null;
+        }
+
+        var pivot = await dbContext.AssistantMessages
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                m => m.Id == throughMessageId && m.ConversationId == sourceConversationId,
+                cancellationToken);
+        if (pivot is null)
+        {
+            return null;
+        }
+
+        var sourceMessages = await dbContext.AssistantMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == sourceConversationId && m.Sequence <= pivot.Sequence)
+            .OrderBy(m => m.Sequence)
+            .ToListAsync(cancellationToken);
+
+        var now = DateTime.UtcNow;
+        var newConversation = new AssistantConversationEntity
+        {
+            Id = Guid.NewGuid(),
+            UserId = source.UserId,
+            ScopeKind = source.ScopeKind,
+            EntityType = source.EntityType,
+            EntityId = source.EntityId,
+            ScopeKey = source.ScopeKey,
+            SyntheticTraceId = Guid.NewGuid(),
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+        };
+        dbContext.AssistantConversations.Add(newConversation);
+
+        var copies = new List<AssistantMessageEntity>(sourceMessages.Count);
+        foreach (var src in sourceMessages)
+        {
+            var copy = new AssistantMessageEntity
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = newConversation.Id,
+                Sequence = src.Sequence,
+                Role = src.Role,
+                Content = src.Content,
+                Provider = src.Provider,
+                Model = src.Model,
+                InvocationId = src.InvocationId,
+                CreatedAtUtc = now,
+            };
+            dbContext.AssistantMessages.Add(copy);
+            copies.Add(copy);
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return new AssistantConversationFork(
+            Map(newConversation),
+            copies.Select(Map).ToArray());
+    }
+
     public async Task SetActiveWorkspaceSignatureAsync(
         Guid conversationId,
         string? signature,

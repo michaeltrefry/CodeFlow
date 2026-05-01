@@ -56,5 +56,38 @@ describe('ChatMessageComponent', () => {
     expect(fixture.nativeElement.querySelector('.chat-msg-pending')?.textContent).toContain('streaming');
     expect(fixture.nativeElement.querySelector('.chat-msg-spinner')).not.toBeNull();
     expect(fixture.nativeElement.querySelector('.chat-msg-meta')).toBeNull();
+    // Copy + fork actions should not surface while the assistant turn is still streaming.
+    expect(fixture.nativeElement.querySelector('.chat-msg-actions')).toBeNull();
+  });
+
+  it('renders copy + fork actions on completed assistant messages and emits forkRequested', () => {
+    fixture.componentRef.setInput('message', {
+      id: 'message-2',
+      role: 'assistant',
+      content: 'Hello',
+    });
+
+    let forked: string | undefined;
+    fixture.componentInstance.forkRequested.subscribe((id: string) => { forked = id; });
+    fixture.detectChanges();
+
+    const actions = fixture.nativeElement.querySelector('.chat-msg-actions');
+    expect(actions).not.toBeNull();
+    const buttons = actions!.querySelectorAll('button.chat-msg-action');
+    expect(buttons.length).toBe(2);
+
+    (buttons[1] as HTMLButtonElement).click();
+    expect(forked).toBe('message-2');
+  });
+
+  it('does not render copy/fork actions on user messages', () => {
+    fixture.componentRef.setInput('message', {
+      id: 'message-3',
+      role: 'user',
+      content: 'hi there',
+    });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('.chat-msg-actions')).toBeNull();
   });
 });

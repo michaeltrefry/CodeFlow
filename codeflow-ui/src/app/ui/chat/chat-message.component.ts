@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, HostListener, computed, inject, input, output, signal } from '@angular/core';
+import { IconComponent } from '../icon.component';
 import { renderMarkdown } from './markdown';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'system';
@@ -17,6 +18,7 @@ export interface ChatMessageView {
   selector: 'cf-chat-message',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [IconComponent],
   template: `
     <article class="chat-msg" [attr.data-role]="message().role">
       <header class="chat-msg-head">
@@ -31,6 +33,32 @@ export interface ChatMessageView {
           <span class="chat-msg-meta">
             {{ message().provider }} · {{ message().model }}
           </span>
+        }
+        @if (showActions()) {
+          <div class="chat-msg-actions">
+            <button
+              type="button"
+              class="chat-msg-action"
+              [attr.aria-label]="copied() ? 'Copied' : 'Copy message'"
+              [title]="copied() ? 'Copied' : 'Copy message'"
+              (click)="onCopyClick()"
+            >
+              <cf-icon [name]="copied() ? 'check' : 'copy'"></cf-icon>
+              @if (copied()) {
+                <span class="chat-msg-tooltip" role="status">Copied</span>
+              }
+            </button>
+            <button
+              type="button"
+              class="chat-msg-action"
+              aria-label="Fork conversation from here"
+              title="Fork conversation from here"
+              [disabled]="!message().id"
+              (click)="onForkClick()"
+            >
+              <cf-icon name="fork"></cf-icon>
+            </button>
+          </div>
         }
       </header>
       @if (message().role === 'user') {
@@ -97,6 +125,61 @@ export interface ChatMessageView {
       font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
+    /* Per-message actions (copy / fork). Sit at the right edge of the header strip; sized to
+       blend in next to the role + provider/model meta line so they read as ambient affordances
+       rather than primary controls. */
+    .chat-msg-actions {
+      display: inline-flex;
+      gap: 2px;
+      margin-left: auto;
+      align-items: center;
+    }
+    .chat-msg-meta + .chat-msg-actions {
+      margin-left: 6px;
+    }
+    .chat-msg-action {
+      position: relative;
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted, #9aa3b2);
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .chat-msg-action:hover:not(:disabled) {
+      background: var(--surface-2, rgba(255,255,255,0.06));
+      border-color: var(--border, rgba(255,255,255,0.12));
+      color: var(--text, #E7E9EE);
+    }
+    .chat-msg-action:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .chat-msg-tooltip {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      right: 0;
+      padding: 2px 6px;
+      font-size: 10px;
+      color: var(--text, #E7E9EE);
+      background: var(--surface-2, #1a1d23);
+      border: 1px solid var(--border, rgba(255,255,255,0.16));
+      border-radius: 3px;
+      white-space: nowrap;
+      pointer-events: none;
+      animation: chat-msg-tooltip-fade 1500ms ease forwards;
+    }
+    @keyframes chat-msg-tooltip-fade {
+      0%, 70% { opacity: 1; }
+      100% { opacity: 0; }
+    }
     .chat-msg-body {
       font-size: var(--fs-md, 13px);
       line-height: 1.5;
@@ -152,6 +235,17 @@ export interface ChatMessageView {
     .chat-msg-body--markdown .cf-workflow-package-summary code {
       background: color-mix(in oklab, var(--text, #E7E9EE) 10%, transparent);
     }
+    /* Actions row: keep "Show package JSON" disclosure on the left and the download button on
+       the right so the download stays visible without expanding the JSON. */
+    .chat-msg-body--markdown .cf-workflow-package-actions {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .chat-msg-body--markdown .cf-workflow-package-detail {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     .chat-msg-body--markdown .cf-workflow-package-detail summary {
       cursor: pointer;
       font-size: 11px;
@@ -165,12 +259,40 @@ export interface ChatMessageView {
     .chat-msg-body--markdown .cf-workflow-package-detail pre {
       margin: 6px 0 0 0;
     }
+    .chat-msg-body--markdown .cf-workflow-package-download {
+      flex: 0 0 auto;
+      appearance: none;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border, rgba(255,255,255,0.16));
+      background: transparent;
+      color: var(--text-muted, #9aa3b2);
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .chat-msg-body--markdown .cf-workflow-package-download:hover {
+      background: var(--surface-2, rgba(255,255,255,0.06));
+      border-color: var(--border-2, rgba(255,255,255,0.24));
+      color: var(--text, #E7E9EE);
+    }
   `],
 })
 export class ChatMessageComponent {
+  private readonly host = inject(ElementRef<HTMLElement>);
+
   readonly message = input.required<ChatMessageView>();
+  readonly forkRequested = output<string>();
+
+  protected readonly copied = signal(false);
+  private copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
   readonly renderedHtml = computed(() => renderMarkdown(this.message().content));
+
+  protected readonly showActions = computed(() => {
+    const m = this.message();
+    return m.role === 'assistant' && !m.pending;
+  });
 
   protected roleLabel(): string {
     switch (this.message().role) {
@@ -179,4 +301,84 @@ export class ChatMessageComponent {
       case 'system': return 'System';
     }
   }
+
+  protected onCopyClick(): void {
+    const content = this.message().content ?? '';
+    void writeToClipboard(content).then(ok => {
+      if (!ok) return;
+      this.copied.set(true);
+      if (this.copiedTimer !== null) {
+        clearTimeout(this.copiedTimer);
+      }
+      this.copiedTimer = setTimeout(() => {
+        this.copied.set(false);
+        this.copiedTimer = null;
+      }, 1500);
+    });
+  }
+
+  protected onForkClick(): void {
+    const id = this.message().id;
+    if (!id) return;
+    this.forkRequested.emit(id);
+  }
+
+  /**
+   * Workflow-package render emits a button with class `.cf-workflow-package-download` whose JSON
+   * lives inside the sibling `<details><pre><code>`. Angular can't bind events to innerHTML, so
+   * we delegate from the host: read the JSON out of the DOM and trigger a download.
+   */
+  @HostListener('click', ['$event'])
+  protected onHostClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement | null;
+    const button = target?.closest('.cf-workflow-package-download') as HTMLButtonElement | null;
+    if (!button || !this.host.nativeElement.contains(button)) {
+      return;
+    }
+    event.preventDefault();
+    const container = button.closest('.cf-workflow-package');
+    const code = container?.querySelector('.cf-workflow-package-detail pre code') as HTMLElement | null;
+    const json = code?.textContent ?? '';
+    if (!json) return;
+    const filename = button.dataset['cfFilename'] || 'workflow.json';
+    triggerJsonDownload(json, filename);
+  }
+}
+
+async function writeToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to legacy path
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function triggerJsonDownload(json: string, filename: string): void {
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

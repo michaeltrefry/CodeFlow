@@ -116,6 +116,18 @@ export class AssistantApi {
   }
 
   /**
+   * Forks the conversation at <c>throughMessageId</c>: creates a new conversation under the same
+   * scope/user with every message up to and including the named pivot copied over. Returns the
+   * fresh conversation + the copied messages so the chat panel can hydrate immediately.
+   */
+  fork(conversationId: string, throughMessageId: string): Observable<ConversationResponse> {
+    return this.http.post<ConversationResponse>(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/fork`,
+      { throughMessageId },
+    );
+  }
+
+  /**
    * HAA-14 — Lists the caller's recent conversations for the homepage resume-list rail.
    * Anonymous demo-mode callers see only the conversations attached to their `cf_anon_id`
    * cookie (typically just the homepage thread).
