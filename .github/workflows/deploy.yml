@@ -306,6 +306,13 @@ jobs:
           CODEFLOW_CFSC_CONFIG_DIR: ${{ vars.CODEFLOW_CFSC_CONFIG_DIR || '/opt/codeflow/cfsc/config' }}
           CODEFLOW_CFSC_CLIENT_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_DIR || '/opt/codeflow/cfsc-client/api' }}
           CODEFLOW_CFSC_CLIENT_WORKER_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_WORKER_DIR || '/opt/codeflow/cfsc-client/worker' }}
+          # Seccomp profile path on the host (deploy workflow scps the file
+          # there). Deploy-user-writable; no sudo required.
+          CFSC_SECCOMP_PROFILE_PATH: ${{ vars.CFSC_SECCOMP_PROFILE_PATH || '/opt/codeflow/cfsc/seccomp/cfsc.json' }}
+          # AppArmor profile name. Default "unconfined" until the operator runs
+          # the one-time `sudo apparmor_parser` install per host-setup.md §2.
+          # After install, set repo var CFSC_APPARMOR_PROFILE=codeflow-sandbox-controller.
+          CFSC_APPARMOR_PROFILE: ${{ vars.CFSC_APPARMOR_PROFILE || 'unconfined' }}
         run: |
           set -eu
           owner_lc="$(echo "${IMAGE_OWNER_LC}" | tr '[:upper:]' '[:lower:]')"
@@ -344,6 +351,8 @@ jobs:
             q CODEFLOW_CFSC_CONFIG_DIR "${CODEFLOW_CFSC_CONFIG_DIR}"
             q CODEFLOW_CFSC_CLIENT_DIR "${CODEFLOW_CFSC_CLIENT_DIR}"
             q CODEFLOW_CFSC_CLIENT_WORKER_DIR "${CODEFLOW_CFSC_CLIENT_WORKER_DIR}"
+            q CFSC_SECCOMP_PROFILE_PATH "${CFSC_SECCOMP_PROFILE_PATH}"
+            q CFSC_APPARMOR_PROFILE "${CFSC_APPARMOR_PROFILE}"
           } > .env.release
           chmod 600 .env.release
           echo "Generated .env.release ($(wc -l < .env.release) lines)"
@@ -359,7 +368,7 @@ jobs:
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
               "set -eu; \
-               mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant'"
+               mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant' '${DEPLOY_DIR}/cfsc/seccomp'"
           # Ownership/perms on the bind-mount targets are fixed up on every `docker compose up` by
           # the codeflow-init service in deploy/docker-compose.prod.yml — it runs as root inside
           # Docker and chowns /target/{assistant,workdir,artifacts} to uid 1654 (the api/worker app
@@ -372,6 +381,12 @@ jobs:
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               .env.release \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/.env.release"
+          # Ship the seccomp profile to a deploy-user-writable path on the host
+          # (compose references it via security_opt seccomp=...). The
+          # /etc/docker/seccomp/ alternative would need root.
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
+              sandbox-controller/deploy/seccomp/controller-seccomp.json \
+              "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/cfsc/seccomp/cfsc.json"
           # sc-535: append DOCKER_GID at deploy time. The host's docker group's gid varies
           # per VM, and the sandbox-controller container needs supplementary membership in
           # it (group_add) to write to /var/run/docker.sock. We pull the gid from the host

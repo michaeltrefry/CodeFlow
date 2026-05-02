@@ -57,7 +57,14 @@ docker run --rm --runtime=runsc alpine:3 dmesg 2>&1 | head -5
 
 If the kernel string mentions gVisor, you're good.
 
-## 2. Install the AppArmor profile
+## 2. Install the AppArmor profile (one-time, requires sudo)
+
+The deploy user can't load AppArmor profiles into the kernel — `apparmor_parser`
+is a privileged operation. This is a **one-time** setup step. Until it runs,
+the controller boots with `apparmor=unconfined` (the GHA deploy default). The
+other six hardening levers — cap_drop ALL, no-new-privileges, seccomp,
+read_only, internal-network, nonroot uid — still hold, so this is a defence-
+in-depth weakening rather than a hole.
 
 ```bash
 # As root, from the repo root after `git pull`.
@@ -67,16 +74,28 @@ apparmor_parser -r /etc/apparmor.d/codeflow-sandbox-controller
 aa-status | grep codeflow-sandbox-controller   # expect (enforce)
 ```
 
-## 3. Install the seccomp profile
+After the profile is loaded, set the GitHub repository variable
+`CFSC_APPARMOR_PROFILE=codeflow-sandbox-controller` (or edit `.env.release`
+on the host directly). The next deploy picks it up — compose substitutes
+`apparmor=${CFSC_APPARMOR_PROFILE}` and the restarted controller enforces
+the profile.
+
+## 3. Seccomp profile (automatic, no sudo)
+
+Unlike AppArmor, seccomp profiles are docker-loaded files — dockerd reads
+them at container-create time. The deploy workflow scps
+`sandbox-controller/deploy/seccomp/controller-seccomp.json` from the repo to
+`/opt/codeflow/cfsc/seccomp/cfsc.json` on every deploy. The compose file
+references that path via `seccomp=${CFSC_SECCOMP_PROFILE_PATH:-/opt/codeflow/cfsc/seccomp/cfsc.json}`.
+**No manual step required** — but if you're standing up the host by hand
+before the first deploy:
 
 ```bash
-# As root.
-install -d -m 0755 /etc/docker/seccomp
-install -m 0644 sandbox-controller/deploy/seccomp/controller-seccomp.json \
-                /etc/docker/seccomp/cfsc.json
+sudo install -d -m 0755 /opt/codeflow/cfsc/seccomp
+sudo install -m 0644 sandbox-controller/deploy/seccomp/controller-seccomp.json \
+                     /opt/codeflow/cfsc/seccomp/cfsc.json
+sudo chown -R "$(id -u):$(id -g)" /opt/codeflow/cfsc
 ```
-
-The compose file references this exact path: `seccomp=/etc/docker/seccomp/cfsc.json`.
 
 ## 4. Bootstrap the mTLS CA + per-component certs
 
