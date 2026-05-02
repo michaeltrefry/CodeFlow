@@ -236,8 +236,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Workspace root — read-only. Controller doesn't write to workspaces.
       - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/opt/codeflow/workdirs:ro
-      # Per-host config + cert material from the secret store.
+      # Per-host config — config.toml mounts at /etc/cfsc/config.toml (the
+      # controller's default `-config` flag).
       - ${CODEFLOW_CFSC_CONFIG_DIR:-/opt/codeflow/cfsc/config}:/etc/cfsc:ro
+      # mTLS material lives in a sibling host directory (bootstrap-ca.sh writes
+      # it to /opt/codeflow/cfsc/tls/). Mounted at /etc/cfsc/tls/ inside the
+      # container so config.toml's tls.cert_path / key_path / client_ca_path
+      # values resolve. The overlay mount on /etc/cfsc/tls is supported by
+      # compose because the more-specific bind shadows the parent.
+      - ${CODEFLOW_CFSC_TLS_DIR:-/opt/codeflow/cfsc/tls}:/etc/cfsc/tls:ro
 
     # NO `ports:` — controller is reachable only via controller-internal.
     networks:
