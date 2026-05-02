@@ -70,6 +70,7 @@ jobs:
       api_image: ${{ steps.tags.outputs.api_image }}
       worker_image: ${{ steps.tags.outputs.worker_image }}
       ui_image: ${{ steps.tags.outputs.ui_image }}
+      sandbox_controller_image: ${{ steps.tags.outputs.sandbox_controller_image }}
       sha_tag: ${{ steps.tags.outputs.sha_tag }}
     steps:
       - uses: actions/checkout@v5
@@ -86,6 +87,7 @@ jobs:
             echo "api_image=${REGISTRY}/${owner_lc}/codeflow-api:sha-${short_sha}"
             echo "worker_image=${REGISTRY}/${owner_lc}/codeflow-worker:sha-${short_sha}"
             echo "ui_image=${REGISTRY}/${owner_lc}/codeflow-ui:sha-${short_sha}"
+            echo "sandbox_controller_image=${REGISTRY}/${owner_lc}/codeflow-sandbox-controller:sha-${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker buildx
@@ -133,6 +135,24 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.tags.outputs.owner_lc }}/codeflow-ui:latest
           cache-from: type=gha,scope=codeflow-ui
           cache-to: type=gha,mode=max,scope=codeflow-ui
+
+      # sc-535: build + push the Go sandbox-controller image. Build context is
+      # the sandbox-controller subtree; passes the commit sha through as a
+      # build-arg so /version surfaces it.
+      - name: Build + push codeflow-sandbox-controller
+        uses: docker/build-push-action@v6
+        with:
+          context: sandbox-controller
+          file: sandbox-controller/deploy/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.sandbox_controller_image }}
+            ${{ env.REGISTRY }}/${{ steps.tags.outputs.owner_lc }}/codeflow-sandbox-controller:latest
+          build-args: |
+            COMMIT=${{ steps.tags.outputs.sha_tag }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
+          cache-from: type=gha,scope=codeflow-sandbox-controller
+          cache-to: type=gha,mode=max,scope=codeflow-sandbox-controller
 
   deploy:
     name: Deploy to Linode
@@ -280,6 +300,12 @@ jobs:
           CODEFLOW_ARTIFACTS_DIR: ${{ vars.CODEFLOW_ARTIFACTS_DIR || '/opt/codeflow/artifacts' }}
           CODEFLOW_WORKDIRS_DIR: ${{ vars.CODEFLOW_WORKDIRS_DIR || '/opt/codeflow/workdirs' }}
           CODEFLOW_ASSISTANT_DIR: ${{ vars.CODEFLOW_ASSISTANT_DIR || '/opt/codeflow/assistant' }}
+          # sc-535: sandbox controller deploy values.
+          CODEFLOW_SANDBOX_CONTROLLER_IMAGE: ${{ needs.images.outputs.sandbox_controller_image }}
+          CODEFLOW_CONTAINER_BACKEND: ${{ vars.CODEFLOW_CONTAINER_BACKEND || 'SandboxController' }}
+          CODEFLOW_CFSC_CONFIG_DIR: ${{ vars.CODEFLOW_CFSC_CONFIG_DIR || '/opt/codeflow/cfsc/config' }}
+          CODEFLOW_CFSC_CLIENT_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_DIR || '/opt/codeflow/cfsc-client/api' }}
+          CODEFLOW_CFSC_CLIENT_WORKER_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_WORKER_DIR || '/opt/codeflow/cfsc-client/worker' }}
         run: |
           set -eu
           owner_lc="$(echo "${IMAGE_OWNER_LC}" | tr '[:upper:]' '[:lower:]')"
@@ -312,6 +338,12 @@ jobs:
             q CODEFLOW_ARTIFACTS_DIR "${CODEFLOW_ARTIFACTS_DIR}"
             q CODEFLOW_WORKDIRS_DIR "${CODEFLOW_WORKDIRS_DIR}"
             q CODEFLOW_ASSISTANT_DIR "${CODEFLOW_ASSISTANT_DIR}"
+            # sc-535: sandbox controller image + deploy paths.
+            q CODEFLOW_SANDBOX_CONTROLLER_IMAGE "${CODEFLOW_SANDBOX_CONTROLLER_IMAGE}"
+            q CODEFLOW_CONTAINER_BACKEND "${CODEFLOW_CONTAINER_BACKEND}"
+            q CODEFLOW_CFSC_CONFIG_DIR "${CODEFLOW_CFSC_CONFIG_DIR}"
+            q CODEFLOW_CFSC_CLIENT_DIR "${CODEFLOW_CFSC_CLIENT_DIR}"
+            q CODEFLOW_CFSC_CLIENT_WORKER_DIR "${CODEFLOW_CFSC_CLIENT_WORKER_DIR}"
           } > .env.release
           chmod 600 .env.release
           echo "Generated .env.release ($(wc -l < .env.release) lines)"
@@ -340,9 +372,21 @@ jobs:
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               .env.release \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/.env.release"
+          # sc-535: append DOCKER_GID at deploy time. The host's docker group's gid varies
+          # per VM, and the sandbox-controller container needs supplementary membership in
+          # it (group_add) to write to /var/run/docker.sock. We pull the gid from the host
+          # rather than baking it into vars/secrets so the deploy is idempotent across
+          # rebuilt VMs.
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
-              "chmod 600 '${DEPLOY_DIR}/.env.release'"
+              "set -eu; \
+               chmod 600 '${DEPLOY_DIR}/.env.release'; \
+               gid=\$(getent group docker | cut -d: -f3); \
+               if [ -z \"\$gid\" ]; then echo 'docker group not found on host' >&2; exit 1; fi; \
+               grep -v '^DOCKER_GID=' '${DEPLOY_DIR}/.env.release' > '${DEPLOY_DIR}/.env.release.tmp'; \
+               echo \"DOCKER_GID='\$gid'\" >> '${DEPLOY_DIR}/.env.release.tmp'; \
+               mv '${DEPLOY_DIR}/.env.release.tmp' '${DEPLOY_DIR}/.env.release'; \
+               chmod 600 '${DEPLOY_DIR}/.env.release'"
 
       - name: Ensure trefry-network and (re)start the stack
         env:
