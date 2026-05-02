@@ -135,7 +135,7 @@ sudo "${EDITOR:-vi}" /opt/codeflow/cfsc/config/config.toml
 Edit:
 
 - `[server] listen` → `0.0.0.0:8443`.
-- `[tls]` block → point at `/etc/cfsc/tls/server.{pem,key}` and `/etc/cfsc/tls/ca.pem`.
+- `[tls]` block → point at `/etc/cfsc-tls/server.{pem,key}` and `/etc/cfsc-tls/ca.pem` (the prod compose mounts the host TLS dir at `/etc/cfsc-tls`, un-nested from `/etc/cfsc`).
 - `[tls.allowed_client_subjects]` → confirm `codeflow-api` and `codeflow-worker` entries match what `bootstrap-ca.sh` issued.
 - `[runner] docker_socket_path` → `/var/run/docker.sock`.
 - `[workspace] workdir_root` → `/opt/codeflow/workdirs` (must match `CODEFLOW_WORKDIRS_DIR` in `.env.release`).

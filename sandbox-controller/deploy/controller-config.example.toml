@@ -11,12 +11,17 @@ listen = "0.0.0.0:8443"
 [tls]
 # Server cert + key for the controller's mTLS listener. The cert's CN should be
 # `codeflow-sandbox-controller`; the api/worker pin this on their side.
-cert_path      = "/etc/cfsc/tls/server.pem"
-key_path       = "/etc/cfsc/tls/server.key"
+#
+# NOTE: prod compose mounts the host TLS dir at /etc/cfsc-tls (un-nested from
+# /etc/cfsc on purpose — see docker-compose.prod.yml comment for why). The
+# bootstrap-ca.sh script names the CA bundle ca.pem, so the client_ca_path
+# below points at /etc/cfsc-tls/ca.pem rather than client-ca.pem.
+cert_path      = "/etc/cfsc-tls/server.pem"
+key_path       = "/etc/cfsc-tls/server.key"
 
 # CA bundle that issued the api/worker client certs. Any client whose cert is
 # not signed by this CA fails the TLS handshake before reaching the HTTP layer.
-client_ca_path = "/etc/cfsc/tls/client-ca.pem"
+client_ca_path = "/etc/cfsc-tls/ca.pem"
 
 # Allowlist of client cert subjects. A client cert must (a) be signed by
 # client_ca_path and (b) match at least one entry here. Each entry's set fields

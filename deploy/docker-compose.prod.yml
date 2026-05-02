@@ -240,11 +240,13 @@ services:
       # controller's default `-config` flag).
       - ${CODEFLOW_CFSC_CONFIG_DIR:-/opt/codeflow/cfsc/config}:/etc/cfsc:ro
       # mTLS material lives in a sibling host directory (bootstrap-ca.sh writes
-      # it to /opt/codeflow/cfsc/tls/). Mounted at /etc/cfsc/tls/ inside the
-      # container so config.toml's tls.cert_path / key_path / client_ca_path
-      # values resolve. The overlay mount on /etc/cfsc/tls is supported by
-      # compose because the more-specific bind shadows the parent.
-      - ${CODEFLOW_CFSC_TLS_DIR:-/opt/codeflow/cfsc/tls}:/etc/cfsc/tls:ro
+      # it to /opt/codeflow/cfsc/tls/). Mounted at /etc/cfsc-tls/ inside the
+      # container — NOT nested under /etc/cfsc, because read_only:true makes
+      # the rootfs overlay read-only and Docker can't mkdir a child mountpoint
+      # under another bind-mounted parent on a read-only fs (compose silently
+      # accepts the overlap but dockerd rejects it at create time). Keep it
+      # un-nested. Operator's config.toml must reference /etc/cfsc-tls/* paths.
+      - ${CODEFLOW_CFSC_TLS_DIR:-/opt/codeflow/cfsc/tls}:/etc/cfsc-tls:ro
 
     # NO `ports:` — controller is reachable only via controller-internal.
     networks:
