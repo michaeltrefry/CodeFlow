@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +12,16 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 )
+
+// hashImage returns a short stable digest for log correlation. We deliberately
+// don't put the raw image string into operator logs on reject paths — the
+// rejected name is a partial leak of intent.
+func hashImage(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:6])
+}
 
 // RunRequest matches the schema in docs/sandbox-executor.md §11.2. Decoded
 // strictly: unknown fields are rejected to defend against schema-bypass /
@@ -119,6 +130,25 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "controller_unavailable",
 			"job runner not configured", "runner.nil", req.JobID)
 		return
+	}
+
+	// Layer-2 image-allowlist check (sc-530). Independent of CodeFlow's
+	// ContainerToolOptions. Default-deny — an empty (or nil) allowlist
+	// rejects every image. The error is logged at info with a hash of the
+	// offending image rather than the raw value, per
+	// docs/sandbox-executor.md §10.4 (don't leak rejected-request intent
+	// into operator logs).
+	if al := s.allowlist(); al != nil {
+		if err := al.Verify(req.Image); err != nil {
+			s.logger.Info("rejected: image not on allowlist",
+				"job_id", req.JobID,
+				"trace_id", req.TraceID,
+				"image_hash", hashImage(req.Image),
+			)
+			writeError(w, http.StatusForbidden, "image_not_allowed",
+				whitelist.ErrImageNotAllowed.Error(), "validator.imageWhitelist", req.JobID)
+			return
+		}
 	}
 
 	spec := req.toJobSpec()

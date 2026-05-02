@@ -26,7 +26,25 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/dockerd"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/server"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 )
+
+// compileImageAllowlist adapts the config-shaped rules into a whitelist.Allowlist.
+func compileImageAllowlist(cfg *config.Config) (*whitelist.Allowlist, error) {
+	return compileImageAllowlistFromConfig(cfg)
+}
+
+func compileImageAllowlistFromConfig(cfg *config.Config) (*whitelist.Allowlist, error) {
+	rules := make([]whitelist.Rule, 0, len(cfg.Images.Allowed))
+	for _, r := range cfg.Images.Allowed {
+		rules = append(rules, whitelist.Rule{
+			Registry:   r.Registry,
+			Repository: r.Repository,
+			Tag:        r.Tag,
+		})
+	}
+	return whitelist.Compile(rules)
+}
 
 // Build metadata, set via -ldflags="-X main.commit=... -X main.buildTime=...".
 var (
@@ -76,8 +94,14 @@ func main() {
 	teardownTimeout := time.Duration(cfg.Runner.ContainerTeardownTimeoutSeconds) * time.Second
 	jobRunner := runner.New(runner.NewRealDaemon(dockerClient), logger, imagePullTimeout, teardownTimeout)
 
+	imageAllowlist, err := compileImageAllowlist(cfg)
+	if err != nil {
+		logger.Error("failed to compile image allowlist", "err", err)
+		os.Exit(2)
+	}
+
 	build := server.BuildInfo{Commit: commit, BuildTime: buildTime, ConfigHash: cfg.Hash()}
-	srv := server.New(cfg, verifier, build, logger, jobRunner)
+	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -95,6 +119,7 @@ func main() {
 		"commit", commit,
 		"build_time", buildTime,
 		"allowed_subjects", verifier.Count(),
+		"allowed_images", imageAllowlist.Count(),
 	)
 
 	errCh := make(chan error, 1)
@@ -107,6 +132,32 @@ func main() {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// SIGHUP reloads the image allowlist + logging level from the config file.
+	// We deliberately do NOT reload TLS material or the listen address — those
+	// would require restarting the listener; restart the process for those.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			logger.Info("SIGHUP received; reloading config", "path", *configPath)
+			newCfg, err := config.Load(*configPath)
+			if err != nil {
+				logger.Error("config reload failed; keeping previous", "err", err)
+				continue
+			}
+			newAllowlist, err := compileImageAllowlistFromConfig(newCfg)
+			if err != nil {
+				logger.Error("image-allowlist recompile failed; keeping previous", "err", err)
+				continue
+			}
+			srv.SetAllowlist(newAllowlist)
+			logger.Info("config reloaded",
+				"config_hash", newCfg.Hash(),
+				"allowed_images", newAllowlist.Count(),
+			)
+		}
+	}()
 
 	select {
 	case sig := <-stop:

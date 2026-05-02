@@ -45,3 +45,31 @@ image_pull_timeout_seconds = 600
 # Best-effort teardown budget — controller waits up to this long for a
 # kill/remove before logging a warning and giving up.
 container_teardown_timeout_seconds = 30
+
+# === IMAGE ALLOWLIST (sc-530) ================================================
+#
+# Default-deny. An empty `images.allowed` list means EVERY /run is rejected
+# with image_not_allowed. Add an entry per image you want sandboxed jobs to
+# be allowed to run.
+#
+# Tag patterns:
+#   "exact"     — match this tag exactly
+#   "10.0-*"    — trailing wildcard; everything starting with "10.0-"
+#   "*"         — any tag (use sparingly)
+#   ""          — defaults to matching "latest" only
+#
+# No regex, no internal wildcards — auditable plain English by design.
+#
+# Hot-reload: send SIGHUP to the controller process to reload this section
+# without restarting (TLS / listen address are NOT reloadable on HUP).
+
+# Uncomment + edit per the images you trust.
+# [[images.allowed]]
+# registry   = "ghcr.io"
+# repository = "trefry/dotnet-tester"
+# tag        = "10.0-sdk-*"
+#
+# [[images.allowed]]
+# registry   = "docker.io"
+# repository = "library/alpine"
+# tag        = "3"
