@@ -1,0 +1,112 @@
+# Production compose snippet for the codeflow-sandbox-controller service.
+#
+# This is the v1 reference shape sc-535 will integrate into the main repo's
+# `deploy/docker-compose.prod.yml`. Until sc-535 lands, this snippet is the
+# canonical source of truth for the controller's prod runtime posture.
+#
+# Phase 1: deploys to the same VM as the rest of the CodeFlow stack on the
+# `controller-internal` network. Only api/worker attach to that network; the
+# controller is never published to the host. See docs/sandbox-executor.md §6
+# for the architecture and §11.5 for the auth posture.
+#
+# All host paths assume the IM provisioning runbook (sc-535) has placed:
+#   /etc/apparmor.d/codeflow-sandbox-controller   <- deploy/apparmor/codeflow-sandbox-controller
+#   /etc/docker/seccomp/cfsc.json                 <- deploy/seccomp/controller-seccomp.json
+#   /etc/cfsc/config.toml                         <- per-host configuration
+#   /etc/cfsc/tls/server.{pem,key}                <- mTLS server material
+#   /etc/cfsc/tls/client-ca.pem                   <- CA bundle for client cert verification
+# and that runsc is installed and dockerd has it as a registered runtime.
+
+services:
+  codeflow-sandbox-controller:
+    image: ${CODEFLOW_SANDBOX_CONTROLLER_IMAGE:?must be set (full ghcr.io/<owner>/codeflow-sandbox-controller:<tag>)}
+    container_name: codeflow-sandbox-controller
+    restart: unless-stopped
+
+    # The controller does NOT publish ports. It is reachable only via the
+    # controller-internal compose network (internal: true), which means there
+    # is no NAT route from the public internet to this container.
+    networks:
+      - controller-internal
+
+    # === RUNTIME HARDENING (sc-538) ==========================================
+    # Each lever is one independent boundary; removing any one is a security
+    # regression. See deploy/HARDENING.md for the lever-to-threat mapping.
+
+    read_only: true
+    user: "65532:65532"          # distroless `nonroot`
+
+    cap_drop:
+      - ALL                       # the controller needs no Linux capabilities
+
+    security_opt:
+      - "no-new-privileges:true"
+      - "apparmor=codeflow-sandbox-controller"
+      - "seccomp=/etc/docker/seccomp/cfsc.json"
+
+    # group_add gives the container's nonroot uid membership in the host's
+    # docker group (the gid varies per host). Without this, the unix-socket
+    # mount below is unreachable (mode 0660 root:docker).
+    group_add:
+      - "${DOCKER_GID:?must be set; getent group docker | cut -d: -f3}"
+
+    # === FILESYSTEM ==========================================================
+
+    tmpfs:
+      - /tmp:size=16m,mode=1700,uid=65532,gid=65532
+
+    volumes:
+      # The one privileged operation: socket access. read_only on the container
+      # filesystem doesn't apply here — the docker socket is its own thing.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Workspace root, read-only. The controller doesn't write to workspaces;
+      # it passes the path through to dockerd which bind-mounts it into the
+      # sibling sandbox container at /workspace:ro.
+      - /opt/codeflow/workdirs:/opt/codeflow/workdirs:ro
+
+      # Config + cert material from the host secret store.
+      - /etc/cfsc:/etc/cfsc:ro
+
+    # === HEALTH ==============================================================
+    # mTLS is required, so the docker healthcheck has to present a client cert.
+    # Use a curl invocation that presents the prod 'internal-ops' client cert.
+    # If your monitoring host runs a separate liveness probe, point it here.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sandbox-controller", "-config", "/etc/cfsc/config.toml", "-version-only"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # The api/worker services already exist in deploy/docker-compose.prod.yml.
+  # sc-535 attaches them to controller-internal as an additional network and
+  # injects the SandboxController__* env vars. Snippet for reference only:
+  #
+  # codeflow-api:
+  #   networks:
+  #     - default
+  #     - trefry-network
+  #     - controller-internal      # NEW
+  #   environment:
+  #     ContainerTools__Backend: SandboxController
+  #     SandboxController__Url: https://codeflow-sandbox-controller:8443
+  #     SandboxController__ClientCertPath: /etc/cfsc/tls/codeflow-api.pem
+  #     SandboxController__ClientKeyPath:  /etc/cfsc/tls/codeflow-api.key
+  #     SandboxController__ServerCAPath:   /etc/cfsc/tls/server-ca.pem
+  #     SandboxController__ServerSubjectPin: "CN=codeflow-sandbox-controller"
+
+networks:
+  controller-internal:
+    # internal: true is the headline boundary. Containers attached to this
+    # network have NO route to the public internet. The controller's outbound
+    # HTTPS surface is therefore zero — image pulls happen at dockerd, not from
+    # inside the controller container.
+    internal: true
+    driver: bridge
