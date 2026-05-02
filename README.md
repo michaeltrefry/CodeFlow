@@ -15,6 +15,9 @@ The current tree includes:
 - trace submission, streaming trace detail, and HITL queue screens
 - admin pages for MCP servers, skills, agent roles, git hosts, and LLM providers
 - a Docker-based local stack for the API, worker, UI, MariaDB, RabbitMQ, and Aspire dashboard
+- an out-of-process **sandbox controller** (Go) that owns docker daemon access for `run_container` jobs. The api/worker have no docker access at all in production; agent-driven container jobs flow through the controller over mTLS, and sandbox containers run under gVisor. See [`docs/sandbox-executor.md`](docs/sandbox-executor.md) for the architecture and threat model.
+
+> **Why a separate controller?** Mounting `/var/run/docker.sock` into the public-facing api/worker would make any code-execution flaw in the .NET process host-root on the CodeFlow VM. The controller pattern moves that capability into a small, hardened service that's the only thing allowed to talk to dockerd. DooD-on-app-tier was considered and rejected for this threat model — the audit script `scripts/audit-no-dood-on-app-tier.sh` runs in CI to prevent accidental regression.
 
 ## Solution layout
 
