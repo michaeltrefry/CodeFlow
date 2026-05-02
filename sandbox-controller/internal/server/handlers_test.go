@@ -183,7 +183,7 @@ func setupServer(t *testing.T, pki *testPKI) (string, *stubRunner, func()) {
 	}
 	logger := apilog.New(slog.LevelError)
 	stub := &stubRunner{}
-	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), nil)
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), nil, nil)
 
 	httpSrv := httptest.NewUnstartedServer(srv.Handler())
 	httpSrv.TLS = &tls.Config{
@@ -545,7 +545,7 @@ func TestServer_SetAllowlist_HotSwap(t *testing.T) {
 	}
 	logger := apilog.New(slog.LevelError)
 	stub2 := &stubRunner{result: &runner.Result{ExitCode: 0, Stdout: "ok\n"}}
-	srv := New(cfg, verifier, BuildInfo{Commit: "t", BuildTime: "n"}, logger, stub2, permissiveAllowlist(t), nil)
+	srv := New(cfg, verifier, BuildInfo{Commit: "t", BuildTime: "n"}, logger, stub2, permissiveAllowlist(t), nil, nil)
 
 	// Hot-swap to a strict allowlist mid-flight.
 	strict, err := whitelist.Compile([]whitelist.Rule{
@@ -628,7 +628,7 @@ func setupServerWithWorkspace(t *testing.T, pki *testPKI) (string, *stubRunner, 
 	}
 	logger := apilog.New(slog.LevelError)
 	stub := &stubRunner{}
-	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), v)
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), v, nil)
 
 	httpSrv := httptest.NewUnstartedServer(srv.Handler())
 	httpSrv.TLS = &tls.Config{

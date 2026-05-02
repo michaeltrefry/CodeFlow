@@ -14,6 +14,7 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/telemetry"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
@@ -33,12 +34,13 @@ type JobRunner interface {
 
 // Server is the controller's HTTP server. Construct with New, mount with Handler.
 type Server struct {
-	cfg       *config.Config
-	verifier  *auth.SubjectAllowlist
-	build     BuildInfo
-	logger    *slog.Logger
-	jobRunner JobRunner
+	cfg         *config.Config
+	verifier    *auth.SubjectAllowlist
+	build       BuildInfo
+	logger      *slog.Logger
+	jobRunner   JobRunner
 	wsValidator *workspace.Validator
+	telemetry   *telemetry.Telemetry
 
 	// allowlistRef is read atomically on every /run so SIGHUP can swap the
 	// image policy without restarting the process (sc-530).
@@ -74,6 +76,9 @@ func (s *Server) SetAllowlist(a *whitelist.Allowlist) {
 // wsValidator may be nil to opt out of workspace-path validation (test only —
 // production code MUST pass a configured workspace.Validator; sc-531 onward
 // rejects every /run that wants a workspace when wsValidator is nil).
+//
+// tel may be nil; an internal no-op Telemetry is wired up in that case so the
+// instrumentation paths don't have to branch on "telemetry configured?".
 func New(
 	cfg *config.Config,
 	verifier *auth.SubjectAllowlist,
@@ -82,9 +87,14 @@ func New(
 	jobRunner JobRunner,
 	allowlist *whitelist.Allowlist,
 	wsValidator *workspace.Validator,
+	tel *telemetry.Telemetry,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if tel == nil {
+		nop, _ := telemetry.Setup(context.Background(), telemetry.Config{}) // OTLPEndpoint empty → no-op
+		tel = nop
 	}
 	s := &Server{
 		cfg:         cfg,
@@ -93,13 +103,14 @@ func New(
 		logger:      logger,
 		jobRunner:   jobRunner,
 		wsValidator: wsValidator,
+		telemetry:   tel,
 	}
 	s.SetAllowlist(allowlist)
 	return s
 }
 
 // Handler returns an http.Handler with the four endpoints mounted and the mTLS
-// allowlist + structured-logging middleware applied.
+// allowlist + structured-logging + tracing middleware applied.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /run", s.handleRun)
@@ -107,10 +118,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /version", s.handleVersion)
 
-	// Order: mTLS allowlist first (so unauthorized requests don't even hit logging
-	// with a cert subject — they get logged at the rejection point with a clear
-	// reason), then request logging.
-	return s.requestLogging(s.requireAllowedSubject(mux))
+	// Order:
+	//   1. mTLS allowlist — unauthorized requests don't reach logging or tracing
+	//      with sensitive identity attributes; they get rejected with a clear log.
+	//   2. tracing — extract W3C traceparent from CodeFlow's runner request and
+	//      start a span; downstream handlers + the runner inherit it.
+	//   3. request logging — emits the structured per-request log line.
+	return s.requestLogging(s.tracing(s.requireAllowedSubject(mux)))
 }
 
 // LoadTLSConfig builds the *tls.Config the http.Server uses. Mode is

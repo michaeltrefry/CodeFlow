@@ -98,3 +98,15 @@ results_dir_name = ".results"
 interval_seconds      = 1800   # 30m
 container_ttl_seconds = 86400  # 24h
 results_ttl_seconds   = 604800 # 7d
+
+[telemetry]
+# OTLP collector endpoint (sc-534). Empty disables export — all instruments
+# become no-ops, useful for local dev. The trace + metric exporters use HTTP
+# to /v1/traces and /v1/metrics under this base.
+otlp_endpoint   = ""
+
+# Surfaces as service.name in resource attributes. Default "sandbox-controller".
+service_name    = "sandbox-controller"
+
+# Surfaces as service.version. Empty falls back to the build-time commit hash.
+service_version = ""

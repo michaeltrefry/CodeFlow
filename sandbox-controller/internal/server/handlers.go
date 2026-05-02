@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,8 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
@@ -119,17 +124,32 @@ func strictDecode(r *http.Request, v any) error {
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	span := trace.SpanFromContext(r.Context())
+	m := s.telemetry.Metrics
+
+	defer func() {
+		m.RunDurationMs.Record(r.Context(), float64(time.Since(start).Milliseconds()))
+	}()
+
 	var req RunRequest
 	if err := strictDecode(r, &req); err != nil {
+		s.recordRejection("request_invalid")
 		writeError(w, http.StatusBadRequest, "request_invalid", err.Error(), "decoder", "")
 		return
 	}
+
+	span.SetAttributes(
+		attribute.String("cfsc.job_id", req.JobID),
+		attribute.String("cfsc.trace_id", req.TraceID),
+	)
 
 	// Layer-2 entry: scaffold-shape validation. sc-530 / sc-531 add the image
 	// whitelist and workspace-path checks. The strict-decode above already
 	// rejected unknown fields (defends against attempts to set privileged,
 	// host network, etc. — those keys are not on RunRequest so they 400).
 	if err := validateScaffoldShape(&req); err != nil {
+		s.recordRejection("scaffold_shape")
 		writeError(w, http.StatusBadRequest, "request_invalid", err.Error(), "scaffold_shape", req.JobID)
 		return
 	}
@@ -148,6 +168,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	// into operator logs).
 	if al := s.allowlist(); al != nil {
 		if err := al.Verify(req.Image); err != nil {
+			s.recordRejection("image_not_allowed")
 			s.logger.Info("rejected: image not on allowlist",
 				"job_id", req.JobID,
 				"trace_id", req.TraceID,
@@ -161,13 +182,11 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	spec := req.toJobSpec()
 
-	// Layer-2 workspace-path resolution + validation (sc-531). When the
-	// controller is configured without a validator (test path), spec is
-	// passed through with empty workspace paths and the runner skips the
-	// bind-mount. In production main.go always passes a validator.
+	// Layer-2 workspace-path resolution + validation (sc-531).
 	if s.wsValidator != nil {
 		resolved, err := s.wsValidator.Resolve(req.TraceID, req.RepoSlug, req.JobID)
 		if err != nil {
+			s.recordRejection("workspace_invalid")
 			s.logger.Info("rejected: workspace invalid",
 				"job_id", req.JobID,
 				"trace_id", req.TraceID,
@@ -176,7 +195,6 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			code := "workspace_invalid"
 			msg := workspace.ErrWorkspaceInvalid.Error()
 			if !errors.Is(err, workspace.ErrWorkspaceInvalid) {
-				// Programmer error — surface internally.
 				code = "internal_error"
 				msg = err.Error()
 			}
@@ -187,8 +205,14 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		spec.ResultsHostPath = resolved.Results
 	}
 
+	// Validation passed — job reaches the runner.
+	m.JobsStarted.Add(r.Context(), 1)
+	m.InFlightJobs.Add(r.Context(), 1)
+	defer m.InFlightJobs.Add(r.Context(), -1)
+
 	res, err := s.jobRunner.Run(r.Context(), spec)
 	if err != nil {
+		m.JobsFailed.Add(r.Context(), 1)
 		s.logger.Warn("job run failed",
 			"job_id", req.JobID,
 			"trace_id", req.TraceID,
@@ -207,6 +231,19 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "daemon_error", err.Error(), "runner.error", jobID)
 		return
+	}
+
+	// Outcome counter — exactly one of these is recorded per /run that reached
+	// the runner.
+	switch {
+	case res.TimedOut:
+		m.JobsTimedOut.Add(r.Context(), 1)
+	case res.Cancelled:
+		m.JobsCancelled.Add(r.Context(), 1)
+	case res.ExitCode == 0:
+		m.JobsSucceeded.Add(r.Context(), 1)
+	default:
+		m.JobsFailed.Add(r.Context(), 1)
 	}
 
 	writeJSON(w, http.StatusOK, RunResponse{
@@ -310,3 +347,22 @@ func validateScaffoldShape(req *RunRequest) error {
 	}
 	return nil
 }
+
+// recordRejection bumps the validator-rejections counter with a low-cardinality
+// rule attribute. The rule names are the controller's own enum (per
+// docs/sandbox-executor.md §10.2): request_invalid, scaffold_shape,
+// image_not_allowed, workspace_invalid, etc. We don't attach the offending
+// value — see §14.3.
+func (s *Server) recordRejection(rule string) {
+	// Counter Add doesn't block on or use the context for transport; it just
+	// uses it for span linkage if a span is in scope. context.Background() is
+	// fine for telemetry purposes here.
+	s.telemetry.Metrics.ValidatorRejections.Add(
+		serverBackgroundCtx, 1,
+		metric.WithAttributes(attribute.String("rule", rule)))
+}
+
+// serverBackgroundCtx is a package-level context for fire-and-forget metric
+// emissions where the request context may already be cancelled by the time
+// we record (e.g. on the response-write path).
+var serverBackgroundCtx = context.Background()

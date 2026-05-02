@@ -27,9 +27,20 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/server"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/sweeper"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/telemetry"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
+
+// pickFirstNonEmpty returns the first non-empty string, or "" if all blank.
+func pickFirstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // compileImageAllowlist adapts the config-shaped rules into a whitelist.Allowlist.
 func compileImageAllowlist(cfg *config.Config) (*whitelist.Allowlist, error) {
@@ -108,8 +119,25 @@ func main() {
 		os.Exit(2)
 	}
 
+	tel, err := telemetry.Setup(context.Background(), telemetry.Config{
+		OTLPEndpoint:   cfg.Telemetry.OTLPEndpoint,
+		ServiceName:    cfg.Telemetry.ServiceName,
+		ServiceVersion: pickFirstNonEmpty(cfg.Telemetry.ServiceVersion, commit),
+	})
+	if err != nil {
+		logger.Error("failed to set up telemetry", "err", err)
+		os.Exit(2)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tel.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("telemetry shutdown failed", "err", err.Error())
+		}
+	}()
+
 	build := server.BuildInfo{Commit: commit, BuildTime: buildTime, ConfigHash: cfg.Hash()}
-	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist, wsValidator)
+	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist, wsValidator, tel)
 
 	// sc-533 — periodic sweep of orphaned containers + stale per-job results
 	// dirs. Per-job teardown is synchronous to /run; the sweep handles the
