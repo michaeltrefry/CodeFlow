@@ -3,6 +3,11 @@ package server
 import (
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // requireAllowedSubject runs the post-handshake subject allowlist check. The
@@ -50,6 +55,53 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)
 	r.bytes += int64(n)
 	return n, err
+}
+
+// tracing extracts the W3C traceparent from CodeFlow's runner request and
+// starts an inbound `controller.<route>` span. Downstream handlers and the
+// runner inherit the span context via r.Context().
+func (s *Server) tracing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		propagator := otel.GetTextMapPropagator()
+		ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		tracer := s.telemetry.Tracer
+		spanName := "controller." + sanitisePathForSpanName(r.URL.Path)
+		ctx, span := tracer.Start(ctx, spanName,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.method", r.Method),
+				attribute.String("http.route", r.URL.Path),
+			),
+		)
+		defer span.End()
+
+		var subjectCN string
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			subjectCN = r.TLS.PeerCertificates[0].Subject.CommonName
+		}
+		// Coarse identity attribute only — no full DN, no cert serial. §14.3.
+		span.SetAttributes(attribute.String("cfsc.client_cn", subjectCN))
+
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r.WithContext(ctx))
+		span.SetAttributes(attribute.Int("http.status_code", statusOr200(rec.status)))
+	})
+}
+
+// sanitisePathForSpanName turns "/run" into "run". Span names should be low-
+// cardinality strings; we drop the leading slash and stop there.
+func sanitisePathForSpanName(p string) string {
+	if len(p) > 0 && p[0] == '/' {
+		return p[1:]
+	}
+	return p
+}
+
+func statusOr200(s int) int {
+	if s == 0 {
+		return http.StatusOK
+	}
+	return s
 }
 
 // requestLogging emits a structured log line per request. Subject is logged at

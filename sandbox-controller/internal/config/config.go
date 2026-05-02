@@ -21,6 +21,7 @@ type Config struct {
 	Images    ImagesConfig    `toml:"images"`
 	Workspace WorkspaceConfig `toml:"workspace"`
 	Sweeper   SweeperConfig   `toml:"sweeper"`
+	Telemetry TelemetryConfig `toml:"telemetry"`
 
 	rawHash string
 }
@@ -32,6 +33,15 @@ type SweeperConfig struct {
 	IntervalSeconds     int `toml:"interval_seconds"`
 	ContainerTTLSeconds int `toml:"container_ttl_seconds"`
 	ResultsTTLSeconds   int `toml:"results_ttl_seconds"`
+}
+
+// TelemetryConfig configures sc-534's OpenTelemetry exporter. When OTLPEndpoint
+// is empty, all instruments become no-ops and nothing is exported — keeps dev
+// running without an external collector.
+type TelemetryConfig struct {
+	OTLPEndpoint   string `toml:"otlp_endpoint"`
+	ServiceName    string `toml:"service_name"`
+	ServiceVersion string `toml:"service_version"`
 }
 
 // WorkspaceConfig governs sc-531's workspace path validation. WorkdirRoot must
