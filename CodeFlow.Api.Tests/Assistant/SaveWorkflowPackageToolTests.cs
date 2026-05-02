@@ -222,6 +222,66 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
     }
 
     [Fact]
+    public async Task Invoke_DraftPath_EmitsSnapshotIdInFormatTheApplyEndpointCanBind()
+    {
+        // Regression for the silent-400 chip failure: the tool emitted snapshotId as
+        // `Guid.ToString("N")` (32 hex, no dashes) for "compact transport," but the
+        // apply-from-draft endpoint binds the body to a `Guid` field via System.Text.Json,
+        // which only accepts the 36-char "D" (hyphenated) format. The result was a 400
+        // with an empty body (binding failure short-circuits the handler's catch-all) and
+        // no path forward for the user. Pin the contract here so a future "compact" tweak
+        // can't silently re-break the chip.
+        const string agentKey = "haa10-snapshot-format-writer";
+        await SeedAgentAsync(agentKey);
+
+        var workspaceDir = Path.Combine(
+            Path.GetTempPath(),
+            "cf-snapshot-format-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspaceDir);
+        var workspace = new ToolWorkspaceContext(Guid.NewGuid(), workspaceDir);
+
+        try
+        {
+            var package = await BuildSelfContainedPackageAsync("haa10-snapshot-format-flow", agentKey);
+            await WorkflowPackageDraftStore.WriteAsync(
+                workspace,
+                JsonNode.Parse(JsonSerializer.Serialize(package, JsonSerializerOptions.Web))!,
+                CancellationToken.None);
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var draftFactory = scope.ServiceProvider.GetRequiredService<WorkflowDraftAssistantToolFactory>();
+            var saveTool = draftFactory.Build(workspace).OfType<SaveWorkflowPackageTool>().Single();
+
+            var result = await saveTool.InvokeAsync(JsonDocument.Parse("{}").RootElement, CancellationToken.None);
+            var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+            var snapshotIdString = parsed.GetProperty("snapshotId").GetString();
+            snapshotIdString.Should().NotBeNullOrEmpty();
+
+            // The chat panel sends the chip body as `{ conversationId, snapshotId }` where
+            // both values arrive at the API as strings. Mimic the apply-from-draft DTO bind
+            // exactly: System.Text.Json with the same Web defaults the framework configures
+            // for minimal-API request bodies. If this throws, the chip fires and the user
+            // sees an empty-body 400.
+            var bodyJson = $$"""{"conversationId":"{{Guid.NewGuid()}}","snapshotId":"{{snapshotIdString}}"}""";
+            var act = () => JsonSerializer.Deserialize<ApplyFromDraftBindingShape>(
+                bodyJson,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            act.Should().NotThrow(
+                because: "the chip POSTs this body to /api/workflows/package/apply-from-draft "
+                    + "where it binds to a Guid; an unparseable id produces a 400 with empty body");
+        }
+        finally
+        {
+            if (Directory.Exists(workspaceDir))
+            {
+                Directory.Delete(workspaceDir, recursive: true);
+            }
+        }
+    }
+
+    private sealed record ApplyFromDraftBindingShape(Guid ConversationId, Guid SnapshotId);
+
+    [Fact]
     public async Task Invoke_WithPackagePresentButNotObject_ReturnsHardError_NotDraftFallback()
     {
         // Codex finding (medium): when the LLM sends `{ "package": null }` or any non-object
