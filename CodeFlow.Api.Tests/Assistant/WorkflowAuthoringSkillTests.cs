@@ -1,0 +1,288 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using CodeFlow.Api.Assistant.Skills;
+using CodeFlow.Api.WorkflowPackages;
+using FluentAssertions;
+
+namespace CodeFlow.Api.Tests.Assistant;
+
+/// <summary>
+/// Structural lints for the embedded `workflow-authoring` skill (AS-3). These tests guard
+/// the curated body against silent regression in two dimensions:
+/// 1. Every gotcha / vocabulary token the legacy curated prompt taught is still present in
+///    the migrated skill — the model must not lose authoring competence in the move.
+/// 2. The canonical-shape JSON exemplar at the end of the body deserializes cleanly into a
+///    <see cref="WorkflowPackage"/> via the same options the API uses on import, and covers
+///    every key node kind the assistant might emit.
+/// </summary>
+public sealed class WorkflowAuthoringSkillTests
+{
+    private const string SkillKey = "workflow-authoring";
+
+    /// <summary>
+    /// Mirrors the API's request-body deserializer (<c>JsonOptions</c> in
+    /// <c>ApiServiceCollectionExtensions</c>): web defaults + string enum converter. The
+    /// exemplar's enum values (<c>"Start"</c>, <c>"Workflow"</c>, <c>"Text"</c>, etc.) only
+    /// round-trip with the converter installed.
+    /// </summary>
+    private static readonly JsonSerializerOptions DeserializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private static AssistantSkill LoadSkill()
+    {
+        var provider = new EmbeddedAssistantSkillProvider();
+        var skill = provider.Get(SkillKey);
+        skill.Should().NotBeNull(
+            because: $"the embedded resource pipeline must surface '{SkillKey}.md' as a registered skill");
+        return skill!;
+    }
+
+    /// <summary>
+    /// Pull out the contents of the LAST <c>```cf-workflow-package</c> fenced block. The skill
+    /// body convention places the canonical exemplar at the end; earlier occurrences (e.g. in
+    /// the "Emission contract" section showing the LLM how to emit a draft) are illustrative
+    /// shells with `...` placeholders and would not parse as JSON.
+    /// </summary>
+    private static string ExtractExemplarJson(string body)
+    {
+        const string OpenFence = "```cf-workflow-package";
+        const string CloseFence = "```";
+
+        var openIndex = body.LastIndexOf(OpenFence, StringComparison.Ordinal);
+        openIndex.Should().BeGreaterThan(0,
+            because: "the skill body must end with a `cf-workflow-package` exemplar");
+
+        var jsonStart = body.IndexOf('\n', openIndex);
+        jsonStart.Should().BeGreaterThan(0);
+        jsonStart++;
+
+        var closeIndex = body.IndexOf(CloseFence, jsonStart, StringComparison.Ordinal);
+        closeIndex.Should().BeGreaterThan(jsonStart, because: "exemplar fence must close");
+
+        return body[jsonStart..closeIndex];
+    }
+
+    [Fact]
+    public void Skill_ExposesExpectedFrontmatter()
+    {
+        var skill = LoadSkill();
+
+        skill.Key.Should().Be("workflow-authoring");
+        skill.Name.Should().NotBeNullOrWhiteSpace();
+        skill.Description.Should().NotBeNullOrWhiteSpace();
+        skill.Trigger.Should().NotBeNullOrWhiteSpace();
+        skill.Body.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Theory]
+    // Authoring vocabulary anchors — these were lints on the legacy prompt and must survive
+    // the migration into this skill. The "Workflows are data, not source code" guardrail lives
+    // in the base prompt (see AssistantSystemPromptTests), not here — it's an always-on rule,
+    // not authoring-specific.
+    [InlineData("partialPins")]
+    [InlineData("@codeflow/reviewer-base")]
+    [InlineData("@codeflow/producer-base")]
+    [InlineData("rejectionHistory")]
+    [InlineData("mirrorOutputToWorkflowVar")]
+    [InlineData("outputPortReplacements")]
+    [InlineData("setWorkflow")]
+    [InlineData("setContext")]
+    [InlineData("setOutput")]
+    [InlineData("setInput")]
+    [InlineData("setNodePath")]
+    [InlineData("Subflow")]
+    [InlineData("ReviewLoop")]
+    [InlineData("Swarm")]
+    [InlineData("Transform")]
+    [InlineData("Hitl")]
+    [InlineData("workflow` bag")]
+    [InlineData("context` bag")]
+    public void Skill_TeachesAuthoringVocabulary(string token)
+    {
+        LoadSkill().Body.Should().Contain(token);
+    }
+
+    [Theory]
+    // Save / package validators that show up in error responses and must be cited explicitly
+    // when the model explains a save rejection.
+    [InlineData("port-coupling")]
+    [InlineData("missing-role")]
+    [InlineData("prompt-lint")]
+    [InlineData("protected-variable-target")]
+    [InlineData("package-node-missing-agent-version")]
+    [InlineData("package-node-missing-subflow-version")]
+    public void Skill_CitesValidatorRuleIds(string ruleId)
+    {
+        LoadSkill().Body.Should().Contain(ruleId);
+    }
+
+    [Theory]
+    // Common shape gotchas (#198) — silent shape drift here costs the user a save round-trip,
+    // so the migrated skill must keep teaching every one.
+    [InlineData("config.outputs")]
+    [InlineData("toolGrants")]
+    [InlineData("\"category\": \"Host\"|\"Mcp\"")]
+    [InlineData("schemaVersion")]
+    [InlineData("codeflow.workflow-package.v1")]
+    [InlineData("entryPoint")]
+    [InlineData("agentRoleAssignments")]
+    [InlineData("Embedding rule")]
+    [InlineData("cf-workflow-package")]
+    public void Skill_PinsShapeGotchasAndEmissionContract(string token)
+    {
+        LoadSkill().Body.Should().Contain(token);
+    }
+
+    [Theory]
+    // save_workflow_package result branches — every shape the LLM may see and must handle
+    // distinctly.
+    [InlineData("preview_ok")]
+    [InlineData("preview_conflicts")]
+    [InlineData("status: \"invalid\"")]
+    [InlineData("almost always empty")]
+    [InlineData("\"error\":")]
+    [InlineData("never deltas")]
+    public void Skill_DescribesSaveResultBranches(string token)
+    {
+        LoadSkill().Body.Should().Contain(token);
+    }
+
+    [Fact]
+    public void Skill_DoesNotImplyImporterIgnoresDb()
+    {
+        // The earlier "the importer does not resolve from the DB" wording contradicted the
+        // resolver, which DOES look up unembedded refs against the local DB. Forbid the
+        // misleading sentence so we don't regress.
+        LoadSkill().Body.Should().NotContain("importer does not resolve from the DB");
+    }
+
+    [Fact]
+    public void Exemplar_DeserializesCleanlyAsWorkflowPackage()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions);
+
+        package.Should().NotBeNull();
+        package!.SchemaVersion.Should().Be("codeflow.workflow-package.v1");
+        package.EntryPoint.Should().NotBeNull();
+        package.Workflows.Should().NotBeEmpty();
+        package.Agents.Should().NotBeEmpty();
+
+        // Entry point must appear in workflows[]; anything else fails admission.
+        package.Workflows.Should().Contain(w =>
+            w.Key == package.EntryPoint.Key && w.Version == package.EntryPoint.Version);
+    }
+
+    [Fact]
+    public void Exemplar_CoversEveryRequiredNodeKind()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions)!;
+
+        var allKinds = package.Workflows
+            .SelectMany(w => w.Nodes)
+            .Select(n => n.Kind)
+            .Distinct()
+            .ToHashSet();
+
+        // Acceptance criterion: at minimum Start + Agent + ReviewLoop + Subflow + Hitl. The
+        // exemplar must be expressive enough to teach the model the full shape grammar even
+        // when the user's library is empty.
+        allKinds.Should().Contain(CodeFlow.Persistence.WorkflowNodeKind.Start);
+        allKinds.Should().Contain(CodeFlow.Persistence.WorkflowNodeKind.Agent);
+        allKinds.Should().Contain(CodeFlow.Persistence.WorkflowNodeKind.ReviewLoop);
+        allKinds.Should().Contain(CodeFlow.Persistence.WorkflowNodeKind.Hitl);
+    }
+
+    [Fact]
+    public void Exemplar_AgentsHaveConfigOutputsArrayAndPinnedVersions()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions)!;
+
+        // Every agent the exemplar embeds must show config.outputs[] (the canonical port
+        // declaration the importer reads) — otherwise the model is being shown a shape that
+        // the validator rejects on port-coupling.
+        foreach (var agent in package.Agents)
+        {
+            agent.Version.Should().BeGreaterThan(0,
+                because: $"agent '{agent.Key}' must carry a concrete pinned version");
+            agent.Config.Should().NotBeNull(
+                because: $"agent '{agent.Key}' must show a config blob in the exemplar");
+
+            var configOutputs = agent.Config!["outputs"];
+            configOutputs.Should().NotBeNull(
+                because: $"agent '{agent.Key}' must have config.outputs[] — port-coupling reads from this");
+            configOutputs!.AsArray().Count.Should().BeGreaterThan(0);
+        }
+    }
+
+    [Fact]
+    public void Exemplar_HasRoleWithBothHostAndMcpGrants()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions)!;
+
+        package.Roles.Should().NotBeEmpty(because: "the exemplar must include at least one role to teach toolGrants[] shape");
+
+        var grants = package.Roles.SelectMany(r => r.ToolGrants).ToArray();
+        grants.Should().Contain(g => g.Category == CodeFlow.Persistence.AgentRoleToolCategory.Host,
+            because: "the role exemplar must show a Host grant");
+        grants.Should().Contain(g => g.Category == CodeFlow.Persistence.AgentRoleToolCategory.Mcp,
+            because: "the role exemplar must show an Mcp grant");
+    }
+
+    [Fact]
+    public void Exemplar_AgentVersionPinsAreNonZeroEverywhere()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions)!;
+
+        // Package admission rejects any agent-bearing node with null/0 agentVersion. Verify
+        // every node in the exemplar pins a concrete integer so the model learns the right
+        // shape.
+        foreach (var workflow in package.Workflows)
+        {
+            foreach (var node in workflow.Nodes)
+            {
+                if (node.Kind is CodeFlow.Persistence.WorkflowNodeKind.Start
+                    or CodeFlow.Persistence.WorkflowNodeKind.Agent
+                    or CodeFlow.Persistence.WorkflowNodeKind.Hitl)
+                {
+                    node.AgentKey.Should().NotBeNullOrWhiteSpace(
+                        because: $"node {node.Id} ({node.Kind}) must reference an agent key");
+                    node.AgentVersion.Should().NotBeNull(
+                        because: $"node {node.Id} ({node.Kind}) must pin a concrete agent version");
+                    node.AgentVersion!.Value.Should().BeGreaterThan(0);
+                }
+
+                if (node.Kind is CodeFlow.Persistence.WorkflowNodeKind.Subflow
+                    or CodeFlow.Persistence.WorkflowNodeKind.ReviewLoop)
+                {
+                    node.SubflowKey.Should().NotBeNullOrWhiteSpace(
+                        because: $"node {node.Id} ({node.Kind}) must reference a subflow key");
+                    node.SubflowVersion.Should().NotBeNull(
+                        because: $"node {node.Id} ({node.Kind}) must pin a concrete subflow version");
+                    node.SubflowVersion!.Value.Should().BeGreaterThan(0);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void Exemplar_DemonstratesDeclarativeAuthoringFeatures()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+
+        // The exemplar should demonstrate the declarative features the prose recommends —
+        // P3 rejection-history, P4 mirror, P5 port-keyed replacement — so the model has a
+        // concrete shape reference, not just a description.
+        json.Should().Contain("rejectionHistory");
+        json.Should().Contain("mirrorOutputToWorkflowVar");
+        json.Should().Contain("outputPortReplacements");
+        json.Should().Contain("partialPins");
+    }
+}

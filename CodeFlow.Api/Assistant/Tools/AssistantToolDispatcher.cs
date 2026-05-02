@@ -16,7 +16,13 @@ public sealed class AssistantToolDispatcher
     /// will not silently truncate JSON because chopped JSON is invalid and the model will
     /// hallucinate around the tail.
     /// </summary>
-    public const int MaxResultBytes = 32 * 1024;
+    /// <remarks>
+    /// Sized for the largest curated payload the assistant intentionally loads — the
+    /// workflow-authoring skill body (AS-3) lands around 40 KB after JSON wrapping. The cap is
+    /// still well below the provider's tool-result limit; arbitrary registry tools that approach
+    /// it indicate a missing limit/filter on the tool side, not a budget shortage.
+    /// </remarks>
+    public const int MaxResultBytes = 96 * 1024;
 
     private readonly IReadOnlyDictionary<string, IAssistantTool> tools;
 
