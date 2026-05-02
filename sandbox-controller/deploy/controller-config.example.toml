@@ -1,0 +1,34 @@
+# Sandbox-controller configuration — example.
+#
+# Copy to controller-config.dev.toml (or controller-config.toml in prod) and
+# fill in the paths. Validation happens at startup; missing fields fail fast.
+
+[server]
+# host:port to bind. mTLS-only — there is no plaintext listener. Prod (sc-535)
+# does NOT publish this port outside the controller-internal compose network.
+listen = "0.0.0.0:8443"
+
+[tls]
+# Server cert + key for the controller's mTLS listener. The cert's CN should be
+# `codeflow-sandbox-controller`; the api/worker pin this on their side.
+cert_path      = "/etc/cfsc/tls/server.pem"
+key_path       = "/etc/cfsc/tls/server.key"
+
+# CA bundle that issued the api/worker client certs. Any client whose cert is
+# not signed by this CA fails the TLS handshake before reaching the HTTP layer.
+client_ca_path = "/etc/cfsc/tls/client-ca.pem"
+
+# Allowlist of client cert subjects. A client cert must (a) be signed by
+# client_ca_path and (b) match at least one entry here. Each entry's set fields
+# (CN, O, OU) must all match the cert's Subject. Set at least one of CN/O/OU.
+[[tls.allowed_client_subjects]]
+common_name  = "codeflow-api"
+organization = "trefry"
+
+[[tls.allowed_client_subjects]]
+common_name  = "codeflow-worker"
+organization = "trefry"
+
+[logging]
+# debug | info | warn | error
+level = "info"
