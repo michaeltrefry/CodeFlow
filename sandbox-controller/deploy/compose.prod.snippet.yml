@@ -1,8 +1,10 @@
-# Production compose snippet for the codeflow-sandbox-controller service.
-#
-# This is the v1 reference shape sc-535 will integrate into the main repo's
-# `deploy/docker-compose.prod.yml`. Until sc-535 lands, this snippet is the
-# canonical source of truth for the controller's prod runtime posture.
+# SUPERSEDED — this snippet was the v1 reference shape before sc-535 landed.
+# The canonical prod compose now lives at `deploy/docker-compose.prod.yml` in
+# the repo root. The integrated version differs from this snippet in several
+# ways (un-nested /etc/cfsc-tls bind mount, deploy-user-writable seccomp path,
+# env-driven AppArmor profile, ca.pem instead of client-ca.pem). Refer to
+# `deploy/docker-compose.prod.yml` for current state; this file is kept only
+# for historical context and will be deleted in a follow-up.
 #
 # Phase 1: deploys to the same VM as the rest of the CodeFlow stack on the
 # `controller-internal` network. Only api/worker attach to that network; the
@@ -11,10 +13,10 @@
 #
 # All host paths assume the IM provisioning runbook (sc-535) has placed:
 #   /etc/apparmor.d/codeflow-sandbox-controller   <- deploy/apparmor/codeflow-sandbox-controller
-#   /etc/docker/seccomp/cfsc.json                 <- deploy/seccomp/controller-seccomp.json
-#   /etc/cfsc/config.toml                         <- per-host configuration
-#   /etc/cfsc/tls/server.{pem,key}                <- mTLS server material
-#   /etc/cfsc/tls/client-ca.pem                   <- CA bundle for client cert verification
+#   /opt/codeflow/cfsc/seccomp/cfsc.json          <- deploy/seccomp/controller-seccomp.json (deploy-user-writable)
+#   /opt/codeflow/cfsc/config/config.toml         <- per-host configuration
+#   /opt/codeflow/cfsc/tls/server.{pem,key}       <- mTLS server material (mounted at /etc/cfsc-tls/)
+#   /opt/codeflow/cfsc/tls/ca.pem                 <- CA bundle for client cert verification
 # and that runsc is installed and dockerd has it as a registered runtime.
 
 services:

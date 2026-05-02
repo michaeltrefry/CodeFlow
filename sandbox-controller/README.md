@@ -32,11 +32,14 @@ Requires Go 1.26+ and openssl.
 make dev-certs
 
 # Drop a dev config in place (copy the example, paths point at deploy/dev-tls).
+# Note the path + filename rewrites: prod uses /etc/cfsc-tls/ + ca.pem (per
+# bootstrap-ca.sh + the un-nested compose mount); dev uses ./deploy/dev-tls/ +
+# client-ca.pem (per gen-dev-certs.sh).
 cp deploy/controller-config.example.toml deploy/controller-config.dev.toml
 sed -i '' \
-  -e 's|/etc/cfsc/tls/server.pem|deploy/dev-tls/server.pem|' \
-  -e 's|/etc/cfsc/tls/server.key|deploy/dev-tls/server.key|' \
-  -e 's|/etc/cfsc/tls/client-ca.pem|deploy/dev-tls/client-ca.pem|' \
+  -e 's|/etc/cfsc-tls/server.pem|deploy/dev-tls/server.pem|' \
+  -e 's|/etc/cfsc-tls/server.key|deploy/dev-tls/server.key|' \
+  -e 's|/etc/cfsc-tls/ca.pem|deploy/dev-tls/client-ca.pem|' \
   deploy/controller-config.dev.toml
 
 # Build and run.
