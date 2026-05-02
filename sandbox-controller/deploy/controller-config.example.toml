@@ -66,30 +66,58 @@ results_dir_name = ".results"
 # === IMAGE ALLOWLIST (sc-530) ================================================
 #
 # Default-deny. An empty `images.allowed` list means EVERY /run is rejected
-# with image_not_allowed. Add an entry per image you want sandboxed jobs to
-# be allowed to run.
+# with image_not_allowed. Add an entry per (registry, repository) namespace
+# you want sandboxed jobs to be allowed to run.
 #
-# Tag patterns:
-#   "exact"     — match this tag exactly
-#   "10.0-*"    — trailing wildcard; everything starting with "10.0-"
-#   "*"         — any tag (use sparingly)
-#   ""          — defaults to matching "latest" only
+# Pattern semantics (apply to BOTH `repository` and `tag`):
+#   "exact"     — match this value exactly
+#   "prefix-*"  — trailing wildcard; everything starting with "prefix-"
+#   "*"         — any value (use sparingly)
+#
+# Tag-only: empty tag ("") defaults to matching "latest" only.
+#
+# `registry` is always exact-match — no wildcards. By design: an attacker
+# can stand up an arbitrary registry and a registry wildcard would let them
+# in. Pin to known hostnames.
+#
+# Repository wildcards let operators trust namespaces — e.g.
+# `repository = "dotnet/*"` trusts every repo under that prefix at the
+# configured registry. Use `prefix/*` (with the trailing slash) so the
+# match is bounded to that namespace; `prefix*` would also match
+# `prefixcore-imposter` which is rarely what you want.
 #
 # No regex, no internal wildcards — auditable plain English by design.
 #
 # Hot-reload: send SIGHUP to the controller process to reload this section
 # without restarting (TLS / listen address are NOT reloadable on HUP).
 
-# Uncomment + edit per the images you trust.
+# Uncomment the entries that match your trust set. Examples:
+#
+# # Trust every repo under your own GHCR org with any tag.
 # [[images.allowed]]
 # registry   = "ghcr.io"
-# repository = "trefry/dotnet-tester"
-# tag        = "10.0-sdk-*"
+# repository = "trefry/*"
+# tag        = "*"
 #
+# # Trust all of Microsoft's .NET base images at any tag (sdk, runtime, aspnet).
+# [[images.allowed]]
+# registry   = "mcr.microsoft.com"
+# repository = "dotnet/*"
+# tag        = "*"
+#
+# # Trust Docker Hub's official-images namespace pinned to major versions.
+# # `library/*` is the namespace where the curated official images live
+# # (alpine, node, python, golang, postgres, ...).
 # [[images.allowed]]
 # registry   = "docker.io"
-# repository = "library/alpine"
-# tag        = "3"
+# repository = "library/*"
+# tag        = "*"
+#
+# # If you want a tighter posture, prefer narrower entries instead:
+# # [[images.allowed]]
+# # registry   = "ghcr.io"
+# # repository = "trefry/dotnet-tester"
+# # tag        = "10.0-sdk-*"
 
 [sweeper]
 # Periodic cleanup of orphaned containers + stale per-job results dirs (sc-533).

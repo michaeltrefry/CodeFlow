@@ -9,9 +9,14 @@
 //
 //	{ registry: "ghcr.io", repository: "trefry/dotnet-tester", tag: "10.0-sdk-*" }
 //
-// Tag patterns support exact match and a single trailing wildcard ("*").
-// Regex was deliberately not chosen — auditable, plain-English-readable
-// policy was the priority.
+// Both repository and tag patterns support exact match and a single trailing
+// wildcard ("*"). The wildcard is also valid standalone ("*" matches anything
+// in that field). Repository wildcards let operators trust namespaces — for
+// example { registry: "mcr.microsoft.com", repository: "dotnet/*", tag: "*" }
+// trusts all of Microsoft's .NET images while keeping the policy auditable
+// ("we trust this org's namespace") and preserving default-deny against
+// unrelated registries. Regex was deliberately not chosen — auditable,
+// plain-English-readable policy was the priority.
 package whitelist
 
 import (
@@ -30,7 +35,10 @@ type Rule struct {
 	Registry string `toml:"registry"`
 
 	// Repository is the rest of the image path, e.g. "trefry/dotnet-tester"
-	// or "library/alpine". Matches exactly.
+	// or "library/alpine". Exact string match unless it ends with "*", in
+	// which case the prefix must match. The wildcard cannot appear elsewhere
+	// in the string (no internal "*", no "?"). Standalone "*" matches every
+	// repository under the configured registry.
 	Repository string `toml:"repository"`
 
 	// Tag is the tag pattern. Exact string match unless it ends with "*", in
@@ -58,13 +66,19 @@ func Compile(rules []Rule) (*Allowlist, error) {
 		if r.Repository == "" {
 			return nil, fmt.Errorf("images.allowed[%d]: repository is required", i)
 		}
+		if strings.Count(r.Repository, "*") > 1 {
+			return nil, fmt.Errorf("images.allowed[%d]: repository may contain at most one '*'", i)
+		}
+		if star := strings.Index(r.Repository, "*"); star >= 0 && star != len(r.Repository)-1 {
+			return nil, fmt.Errorf("images.allowed[%d]: '*' is only allowed as a trailing wildcard in repository", i)
+		}
 		if strings.Count(r.Tag, "*") > 1 {
 			return nil, fmt.Errorf("images.allowed[%d]: tag may contain at most one '*'", i)
 		}
 		if star := strings.Index(r.Tag, "*"); star >= 0 && star != len(r.Tag)-1 {
 			return nil, fmt.Errorf("images.allowed[%d]: '*' is only allowed as a trailing wildcard", i)
 		}
-		// Catch-all `*` means any tag — explicit, auditable.
+		// Catch-all `*` (in repository or tag) means any value — explicit, auditable.
 		a.rules = append(a.rules, r)
 	}
 	return a, nil
@@ -111,10 +125,24 @@ func matchesRule(r Rule, registry, repo, tag string) bool {
 	case r.Registry != registry:
 		return false
 	}
-	if r.Repository != repo {
+	if !matchRepo(r.Repository, repo) {
 		return false
 	}
 	return matchTag(r.Tag, tag)
+}
+
+// matchRepo implements the repository-pattern semantics: standalone "*" matches
+// any repo (within the rule's registry); trailing "*" is a prefix match;
+// otherwise exact. Empty is rejected at Compile time and never reaches here.
+func matchRepo(rule, actual string) bool {
+	if rule == "*" {
+		return true
+	}
+	if strings.HasSuffix(rule, "*") {
+		prefix := strings.TrimSuffix(rule, "*")
+		return strings.HasPrefix(actual, prefix)
+	}
+	return rule == actual
 }
 
 // matchTag implements the tag-pattern semantics: empty rule tag matches
