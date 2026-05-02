@@ -208,6 +208,35 @@ public sealed class WorkflowPackageDraftToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task SetDraft_RejectsRedactionPlaceholder()
+    {
+        // CE-3 follow-up: a model that copies its own redacted prior emission would otherwise
+        // overwrite the draft with the stub. The tool must refuse the placeholder shape with an
+        // explicit error directing the model to emit a real package.
+        var tool = new SetWorkflowPackageDraftTool(workspace);
+        var args = JsonDocument.Parse("""
+        {
+          "package": {
+            "_redacted": true,
+            "_doNotCopy": "...",
+            "sha256": "deadbeef",
+            "sizeBytes": 200,
+            "summary": { "workflowCount": 1, "nodeCount": 3 }
+          }
+        }
+        """).RootElement;
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("error").GetString().Should().Contain("redaction placeholder");
+
+        // No file should have been written.
+        File.Exists(WorkflowPackageDraftStore.ResolveDraftPath(workspace)).Should().BeFalse();
+    }
+
+    [Fact]
     public void Factory_WithoutWorkspace_StillProvidesSaveTool()
     {
         // The factory must always provide save_workflow_package (so the LLM can save with an

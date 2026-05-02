@@ -102,17 +102,34 @@ public sealed class WorkflowPackageRedactionTests
     }
 
     [Fact]
-    public void RedactArgs_RedactedPayloadIsSmallerThanOriginal()
+    public void RedactArgs_RedactedPayloadIsSmallerThanOriginal_ForRealisticPackages()
     {
-        // The whole point: the redacted form should be drastically smaller. If it isn't, we've
-        // failed to deliver token-count savings, and the test surfaces that regression.
-        var original = JsonDocument.Parse(MultiNodePackageJson).RootElement;
+        // The whole point: for the size of package the model actually emits (10-200KB), the
+        // redacted form is dramatically smaller. The test fixture pads to ~5KB which is well
+        // above the ~500-byte fixed overhead of the redacted shape (sha256 + summary +
+        // _doNotCopy notice).
+        var paddingChars = new string('x', 5000);
+        var bigPackage = $$"""
+            {
+              "package": {
+                "schemaVersion": "codeflow.workflow-package.v1",
+                "entryPoint": { "key": "demo", "version": 1 },
+                "workflows": [
+                  { "key": "demo", "version": 1, "name": "{{paddingChars}}", "nodes": [ {"id":"a"}, {"id":"b"} ] }
+                ],
+                "agents": [ {"key":"writer", "version": 1} ]
+              }
+            }
+            """;
+        var original = JsonDocument.Parse(bigPackage).RootElement;
 
         var redacted = WorkflowPackageRedaction.RedactArgs("set_workflow_package_draft", original);
 
         var originalBytes = Encoding.UTF8.GetByteCount(original.GetRawText());
         var redactedBytes = Encoding.UTF8.GetByteCount(redacted.GetRawText());
         redactedBytes.Should().BeLessThan(originalBytes);
+        // Sanity: the savings are dramatic, not marginal. 5KB → < 1KB is the floor for our shape.
+        redactedBytes.Should().BeLessThan(1500);
     }
 
     [Fact]
@@ -194,5 +211,175 @@ public sealed class WorkflowPackageRedactionTests
         pkg.GetProperty("summary").TryGetProperty("workflowCount", out _).Should().BeFalse();
         pkg.GetProperty("summary").TryGetProperty("agentCount", out _).Should().BeFalse();
         pkg.GetProperty("summary").GetProperty("entryPoint").GetProperty("key").GetString().Should().Be("x");
+    }
+
+    // -- Layer 2 (do-not-copy marker) --------------------------------------------------------
+
+    [Fact]
+    public void RedactArgs_IncludesDoNotCopyMarker()
+    {
+        // The redacted shape MUST carry the _doNotCopy notice so a model that ignores the system
+        // prompt still has the instruction inline. Belt-and-suspenders against pattern-matching.
+        var original = JsonDocument.Parse(MultiNodePackageJson).RootElement;
+
+        var redacted = WorkflowPackageRedaction.RedactArgs("set_workflow_package_draft", original);
+
+        var pkg = redacted.GetProperty("package");
+        pkg.GetProperty("_redacted").GetBoolean().Should().BeTrue();
+        pkg.GetProperty("_doNotCopy").GetString().Should().Contain("transcript stub");
+        pkg.GetProperty("_doNotCopy").GetString().Should().Contain("Do not copy");
+    }
+
+    // -- Layer 1 (placeholder detection on inbound side) -------------------------------------
+
+    [Fact]
+    public void IsRedactionPlaceholder_TrueForRedactedShape()
+    {
+        var redacted = JsonDocument.Parse("""{"_redacted": true, "sha256": "abc"}""").RootElement;
+        WorkflowPackageRedaction.IsRedactionPlaceholder(redacted).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsRedactionPlaceholder_FalseForRealPackageShape()
+    {
+        var realPackage = JsonDocument.Parse("""{"schemaVersion": "codeflow.workflow-package.v1", "workflows": []}""").RootElement;
+        WorkflowPackageRedaction.IsRedactionPlaceholder(realPackage).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsRedactionPlaceholder_FalseForNonObject()
+    {
+        var notObject = JsonDocument.Parse("\"some string\"").RootElement;
+        WorkflowPackageRedaction.IsRedactionPlaceholder(notObject).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsRedactionPlaceholder_FalseWhenRedactedFieldIsNotTrue()
+    {
+        // Defensive: if `_redacted` is present but isn't literal `true` (e.g., string "true"),
+        // treat as a real package — don't reject legitimate input.
+        var stringTrue = JsonDocument.Parse("""{"_redacted": "true"}""").RootElement;
+        WorkflowPackageRedaction.IsRedactionPlaceholder(stringTrue).Should().BeFalse();
+    }
+
+    // -- Layer 4 (result-side redaction) -----------------------------------------------------
+
+    [Theory]
+    [InlineData("get_workflow_package_draft", true)]
+    [InlineData("get_workflow_package", true)]
+    [InlineData("set_workflow_package_draft", false)]
+    [InlineData("read_file", false)]
+    public void IsRedactableResultTool_ReportsExpectedSet(string tool, bool expected)
+    {
+        WorkflowPackageRedaction.IsRedactableResultTool(tool).Should().Be(expected);
+    }
+
+    [Fact]
+    public void RedactResultJson_DraftWrapper_RedactsPackageFieldOnly()
+    {
+        // get_workflow_package_draft returns { status, package: {...} }. Only the package field
+        // gets the redaction shape; status/message survive.
+        var resultJson = """
+            {
+              "status": "ok",
+              "package": {
+                "schemaVersion": "codeflow.workflow-package.v1",
+                "entryPoint": { "key": "demo", "version": 1 },
+                "workflows": [ { "nodes": [{"id":"a"}, {"id":"b"}] } ],
+                "agents": [ {"key":"x"} ]
+              }
+            }
+            """;
+
+        var redacted = WorkflowPackageRedaction.RedactResultJson("get_workflow_package_draft", resultJson);
+        using var doc = JsonDocument.Parse(redacted);
+        var root = doc.RootElement;
+        root.GetProperty("status").GetString().Should().Be("ok");
+        root.GetProperty("package").GetProperty("_redacted").GetBoolean().Should().BeTrue();
+        root.GetProperty("package").GetProperty("_doNotCopy").GetString().Should().Contain("transcript stub");
+        root.GetProperty("package").GetProperty("summary").GetProperty("workflowCount").GetInt32().Should().Be(1);
+        root.GetProperty("package").GetProperty("summary").GetProperty("nodeCount").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
+    public void RedactResultJson_FullPackageBody_ReplacesWholeBody()
+    {
+        // get_workflow_package returns the workflow package object directly — the whole body
+        // gets replaced with the redacted shape.
+        var resultJson = """
+            {
+              "schemaVersion": "codeflow.workflow-package.v1",
+              "entryPoint": { "key": "demo", "version": 1 },
+              "workflows": [ { "nodes": [{"id":"a"}] } ],
+              "agents": []
+            }
+            """;
+
+        var redacted = WorkflowPackageRedaction.RedactResultJson("get_workflow_package", resultJson);
+        using var doc = JsonDocument.Parse(redacted);
+        doc.RootElement.GetProperty("_redacted").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("summary").GetProperty("workflowCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public void RedactResultJson_NotARedactableResultTool_ReturnsOriginal()
+    {
+        var resultJson = """{"status": "ok", "package": {"workflows": []}}""";
+        var redacted = WorkflowPackageRedaction.RedactResultJson("read_file", resultJson);
+        redacted.Should().Be(resultJson);
+    }
+
+    [Fact]
+    public void RedactResultJson_DraftWrapperWithoutPackage_ReturnsOriginal()
+    {
+        // not_found path: { status: "not_found", message: "..." }. Nothing to redact.
+        var resultJson = """{"status": "not_found", "message": "no draft yet"}""";
+        var redacted = WorkflowPackageRedaction.RedactResultJson("get_workflow_package_draft", resultJson);
+        redacted.Should().Be(resultJson);
+    }
+
+    [Fact]
+    public void ResultCarriesPackagePayload_TrueForFreshDraftWrapper()
+    {
+        var resultJson = """{"status": "ok", "package": {"workflows": []}}""";
+        WorkflowPackageRedaction.ResultCarriesPackagePayload("get_workflow_package_draft", resultJson)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResultCarriesPackagePayload_FalseWhenAlreadyRedacted()
+    {
+        var resultJson = """{"status": "ok", "package": {"_redacted": true, "sha256": "abc"}}""";
+        WorkflowPackageRedaction.ResultCarriesPackagePayload("get_workflow_package_draft", resultJson)
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void ResultCarriesPackagePayload_FalseForUnshapedBody()
+    {
+        // get_workflow_package returns either the package or an error body. An error body lacks
+        // schemaVersion / workflows and shouldn't claim a carrier slot.
+        var errorBody = """{"error": "Workflow not found"}""";
+        WorkflowPackageRedaction.ResultCarriesPackagePayload("get_workflow_package", errorBody)
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void InputCarriesPackagePayload_FalseForDraftSavePath()
+    {
+        // The zero-arg form of save_workflow_package omits `package` entirely — not a carrier.
+        var args = JsonDocument.Parse("""{}""").RootElement;
+        WorkflowPackageRedaction.InputCarriesPackagePayload("save_workflow_package", args)
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void InputCarriesPackagePayload_FalseForRedactedPlaceholder()
+    {
+        // If the model copies the redacted shape into the args, it shouldn't claim a carrier
+        // slot — the data is already redacted, nothing to compress.
+        var args = JsonDocument.Parse("""{"package": {"_redacted": true, "sha256": "abc"}}""").RootElement;
+        WorkflowPackageRedaction.InputCarriesPackagePayload("set_workflow_package_draft", args)
+            .Should().BeFalse();
     }
 }

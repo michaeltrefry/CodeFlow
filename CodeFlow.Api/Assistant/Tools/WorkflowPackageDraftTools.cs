@@ -216,6 +216,17 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
             return Error("Argument `package` is required and must be an object.");
         }
 
+        if (WorkflowPackageRedaction.IsRedactionPlaceholder(packageElement))
+        {
+            return Error(
+                "The `package` argument is a redaction placeholder, not a real workflow package. "
+                + "The redacted shape `{\"_redacted\": true, \"sha256\": ..., \"summary\": ...}` "
+                + "is what your prior tool_use Inputs are replaced with in your transcript history "
+                + "to save tokens — it is NOT a callable input. Re-emit the actual workflow-package "
+                + "JSON, or call `get_workflow_package_draft` to read the current draft and "
+                + "`patch_workflow_package_draft` to apply incremental edits.");
+        }
+
         JsonNode? packageNode;
         try
         {
