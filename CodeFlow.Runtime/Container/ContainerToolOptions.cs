@@ -1,8 +1,34 @@
 namespace CodeFlow.Runtime.Container;
 
+/// <summary>
+/// Selects the runtime that handles agent-driven container jobs (sc-532).
+/// </summary>
+public enum ContainerBackend
+{
+    /// <summary>
+    /// Local docker CLI on the host (dev default; sc-528-only fallback). The api/worker
+    /// process directly invokes <c>docker run …</c> via <see cref="DockerCliCommandRunner"/>.
+    /// </summary>
+    Docker = 0,
+
+    /// <summary>
+    /// Out-of-process sandbox controller (sc-526 / Phase 1). The api/worker has no docker
+    /// daemon access — every job goes through the mTLS-only controller, which spawns
+    /// sibling containers under gVisor.
+    /// </summary>
+    SandboxController = 1,
+}
+
 public sealed class ContainerToolOptions
 {
     public const string SectionName = "ContainerTools";
+
+    /// <summary>
+    /// Backend that handles <c>container.run</c>. Default <see cref="ContainerBackend.Docker"/>
+    /// for dev. Production sets <see cref="ContainerBackend.SandboxController"/> via the
+    /// <c>ContainerTools__Backend</c> environment variable.
+    /// </summary>
+    public ContainerBackend Backend { get; set; } = ContainerBackend.Docker;
 
     public IList<string> AllowedImageRegistries { get; set; } = ["docker.io"];
 

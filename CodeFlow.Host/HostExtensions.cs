@@ -226,7 +226,52 @@ public static class HostExtensions
             .Bind(configuration.GetSection(WebToolOptions.SectionName))
             .Validate(options => options.Validate().Count == 0, "WebTools options are invalid.")
             .ValidateOnStart();
-        services.AddSingleton<IDockerCommandRunner, DockerCliCommandRunner>();
+        services.AddOptions<SandboxControllerOptions>()
+            .Bind(configuration.GetSection(SandboxControllerOptions.SectionName))
+            .Validate(
+                options =>
+                {
+                    // Only validate the sandbox-controller block when the backend selects it —
+                    // otherwise empty defaults are fine (the path isn't used).
+                    var backendOptions = configuration.GetSection(ContainerToolOptions.SectionName).Get<ContainerToolOptions>();
+                    if (backendOptions?.Backend == ContainerBackend.SandboxController)
+                    {
+                        return options.Validate().Count == 0;
+                    }
+                    return true;
+                },
+                "SandboxController options are invalid.")
+            .ValidateOnStart();
+
+        // sc-532: backend-aware IDockerCommandRunner registration. Docker (default) keeps
+        // the legacy CLI runner; SandboxController routes runs through the out-of-process
+        // controller via mTLS HTTP and no-ops cleanup commands.
+        services.AddSingleton<IDockerCommandRunner>(sp =>
+        {
+            var containerOptions = sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value;
+            if (containerOptions.Backend == ContainerBackend.SandboxController)
+            {
+                var sandboxOptions = sp.GetRequiredService<IOptions<SandboxControllerOptions>>().Value;
+                var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient(SandboxControllerHttpClientName);
+                return new SandboxControllerRunner(httpClient, sandboxOptions);
+            }
+            return new DockerCliCommandRunner();
+        });
+
+        // mTLS-equipped HttpClient for the sandbox-controller backend. Always registered (no
+        // cost when the backend isn't selected); SocketsHttpHandler loads the client cert,
+        // pins the server CA + CN, and refuses anything else.
+        services.AddHttpClient(SandboxControllerHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(sp =>
+            {
+                var containerOptions = sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value;
+                if (containerOptions.Backend != ContainerBackend.SandboxController)
+                {
+                    return new System.Net.Http.HttpClientHandler();
+                }
+                var sandboxOptions = sp.GetRequiredService<IOptions<SandboxControllerOptions>>().Value;
+                return BuildSandboxControllerHandler(sandboxOptions);
+            });
         services.AddSingleton<ContainerExecutionWorkspaceProvider>(sp =>
         {
             var containerOptions = sp.GetRequiredService<IOptions<ContainerToolOptions>>().Value;
@@ -500,6 +545,66 @@ public static class HostExtensions
     {
         return !string.IsNullOrWhiteSpace(endpointName)
             && endpointName.StartsWith("api-trace-observer-", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // sc-532: name for the typed HttpClient that talks to the sandbox-controller. Used by
+    // the IDockerCommandRunner factory above when Backend == SandboxController.
+    internal const string SandboxControllerHttpClientName = "sandbox-controller";
+
+    // sc-532: build the SocketsHttpHandler for the sandbox-controller HTTP client. Loads
+    // the client cert + key, validates the server cert against ONLY the configured CA
+    // bundle (never the OS trust store), and pins the server cert's Common Name so a
+    // swapped server cert with a different CN is rejected.
+    private static System.Net.Http.HttpMessageHandler BuildSandboxControllerHandler(
+        SandboxControllerOptions options)
+    {
+        var clientCert = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPemFile(
+            options.ClientCertPath,
+            options.ClientKeyPath);
+
+        // Build a trust pool containing ONLY the configured CA. We don't fall back to the
+        // OS trust store — the controller's CA is internal-only and the OS store is
+        // irrelevant for this private mTLS path.
+        var caStore = new System.Security.Cryptography.X509Certificates.X509Certificate2Collection();
+        caStore.ImportFromPemFile(options.ServerCAPath);
+
+        var chainPolicy = new System.Security.Cryptography.X509Certificates.X509ChainPolicy
+        {
+            TrustMode = System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust,
+            RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck,
+            VerificationFlags = System.Security.Cryptography.X509Certificates.X509VerificationFlags.NoFlag,
+        };
+        chainPolicy.CustomTrustStore.AddRange(caStore);
+
+        return new System.Net.Http.SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                ClientCertificates = new System.Security.Cryptography.X509Certificates.X509CertificateCollection { clientCert },
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls13,
+                CertificateChainPolicy = chainPolicy,
+                RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
+                {
+                    // CertificateChainPolicy restricts chain trust to the configured CA. If
+                    // the chain doesn't build against it, .NET sets RemoteCertificateChainErrors
+                    // here — reject. RemoteCertificateNotAvailable / RemoteCertificateNameMismatch
+                    // are also fail conditions; we don't allow any of them.
+                    if (errors != System.Net.Security.SslPolicyErrors.None)
+                    {
+                        return false;
+                    }
+                    if (cert is not System.Security.Cryptography.X509Certificates.X509Certificate2 cert2)
+                    {
+                        return false;
+                    }
+                    // Add the CN pin per docs/sandbox-executor.md §11.5 (defence on top of the
+                    // chain check — a swapped server cert with a different CN is rejected even
+                    // if it chains to the same internal CA).
+                    var commonName = cert2.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false);
+                    return string.Equals(commonName, options.ServerCommonName, StringComparison.Ordinal);
+                },
+            },
+        };
     }
 
     // The canonical workdir-sweep enumerates direct children of WorkingDirectoryRoot looking
