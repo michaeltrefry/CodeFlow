@@ -1,0 +1,125 @@
+// Package config loads the controller's TOML configuration.
+package config
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Config is the top-level controller configuration.
+type Config struct {
+	Server  ServerConfig  `toml:"server"`
+	TLS     TLSConfig     `toml:"tls"`
+	Logging LoggingConfig `toml:"logging"`
+
+	rawHash string
+}
+
+// ServerConfig controls the HTTP listener.
+type ServerConfig struct {
+	// Listen is a host:port to bind. mTLS-only; there is no plaintext listener.
+	Listen string `toml:"listen"`
+}
+
+// TLSConfig points at the server cert/key, the client CA bundle, and the
+// allowlist of client cert subjects (api, worker, etc.).
+type TLSConfig struct {
+	CertPath              string           `toml:"cert_path"`
+	KeyPath               string           `toml:"key_path"`
+	ClientCAPath          string           `toml:"client_ca_path"`
+	AllowedClientSubjects []SubjectPattern `toml:"allowed_client_subjects"`
+}
+
+// SubjectPattern is a per-component match against an X.509 subject DN.
+// At least one of CommonName / Organization / OrganizationalUnit must be set;
+// every set field must match the cert's Subject for the cert to be accepted.
+type SubjectPattern struct {
+	CommonName         string `toml:"common_name"`
+	Organization       string `toml:"organization"`
+	OrganizationalUnit string `toml:"organizational_unit"`
+}
+
+// LoggingConfig configures slog.
+type LoggingConfig struct {
+	Level string `toml:"level"`
+}
+
+// SlogLevel returns the slog.Level for the configured string.
+func (l LoggingConfig) SlogLevel() slog.Level {
+	switch strings.ToLower(strings.TrimSpace(l.Level)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// Load reads and validates the TOML config at the given path.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", path, err)
+	}
+
+	var cfg Config
+	if _, err := toml.Decode(string(raw), &cfg); err != nil {
+		return nil, fmt.Errorf("parse %q: %w", path, err)
+	}
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
+	sum := sha256.Sum256(raw)
+	cfg.rawHash = hex.EncodeToString(sum[:])
+	return &cfg, nil
+}
+
+// Hash returns a SHA-256 hex digest of the raw config file contents. Surfaced via
+// /version so operators can confirm SIGHUP reloads picked up the new file.
+func (c *Config) Hash() string {
+	return c.rawHash
+}
+
+func (c *Config) validate() error {
+	var errs []string
+
+	if strings.TrimSpace(c.Server.Listen) == "" {
+		errs = append(errs, "server.listen must be set (e.g. \"0.0.0.0:8443\")")
+	}
+
+	if strings.TrimSpace(c.TLS.CertPath) == "" {
+		errs = append(errs, "tls.cert_path must be set")
+	}
+	if strings.TrimSpace(c.TLS.KeyPath) == "" {
+		errs = append(errs, "tls.key_path must be set")
+	}
+	if strings.TrimSpace(c.TLS.ClientCAPath) == "" {
+		errs = append(errs, "tls.client_ca_path must be set (mTLS is required)")
+	}
+	if len(c.TLS.AllowedClientSubjects) == 0 {
+		errs = append(errs, "tls.allowed_client_subjects must contain at least one entry")
+	}
+	for i, p := range c.TLS.AllowedClientSubjects {
+		if strings.TrimSpace(p.CommonName) == "" &&
+			strings.TrimSpace(p.Organization) == "" &&
+			strings.TrimSpace(p.OrganizationalUnit) == "" {
+			errs = append(errs, fmt.Sprintf("tls.allowed_client_subjects[%d] must set at least one of common_name, organization, organizational_unit", i))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid config: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}

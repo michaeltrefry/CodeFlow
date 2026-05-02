@@ -1,0 +1,38 @@
+# Local-development compose stack for the sandbox-controller.
+#
+# - Generates dev mTLS material via ./scripts/gen-dev-certs.sh before `compose up`.
+# - The compose stack here is for the controller in isolation; the production
+#   wiring (api/worker on the controller-internal network) lives in
+#   deploy/docker-compose.prod.yml under the main CodeFlow repo and is added in
+#   sc-535.
+#
+# This file does NOT include sc-538 hardening (AppArmor/seccomp/cap_drop/
+# read_only) yet — those land in sc-538. Adding them here without the host-side
+# profiles in place would just confuse local dev.
+
+services:
+  sandbox-controller:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        COMMIT: ${COMMIT:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: codeflow-sandbox-controller:dev
+    container_name: codeflow-sandbox-controller-dev
+    networks:
+      - controller-internal
+    volumes:
+      - ./controller-config.dev.toml:/etc/cfsc/config.toml:ro
+      - ./dev-tls:/etc/cfsc/tls:ro
+    # Local dev only: bind to 127.0.0.1:8443 so an mTLS curl from the host can
+    # reach it. Prod (sc-535) does NOT publish ports — the controller is reachable
+    # only over the controller-internal compose network.
+    ports:
+      - "127.0.0.1:8443:8443"
+    restart: "no"
+
+networks:
+  controller-internal:
+    # Prod sets `internal: true` here (sc-535). For local dev we leave the default
+    # bridge so docker can pull the build base image.
