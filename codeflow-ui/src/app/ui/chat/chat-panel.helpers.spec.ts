@@ -37,6 +37,8 @@ describe('chat panel confirmation helpers', () => {
       confirmLabel: 'Save',
       cancelLabel: 'Cancel',
       state: 'idle',
+      packageSource: 'inline',
+      snapshotId: undefined,
     });
   });
 
@@ -70,6 +72,8 @@ describe('chat panel confirmation helpers', () => {
       confirmLabel: 'Save',
       cancelLabel: 'Cancel',
       state: 'idle',
+      packageSource: 'inline',
+      snapshotId: undefined,
     });
   });
 
