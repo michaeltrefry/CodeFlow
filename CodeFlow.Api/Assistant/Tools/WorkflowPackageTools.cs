@@ -114,6 +114,16 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
 
         if (packagePropertyPresent && packageElement.ValueKind == JsonValueKind.Object)
         {
+            if (WorkflowPackageRedaction.IsRedactionPlaceholder(packageElement))
+            {
+                return Error(
+                    "The `package` argument is a redaction placeholder, not a real workflow package. "
+                    + "The redacted shape `{\"_redacted\": true, \"sha256\": ..., \"summary\": ...}` "
+                    + "is what your prior tool_use Inputs are replaced with in your transcript history "
+                    + "to save tokens — it is NOT a callable input. Either omit the `package` argument "
+                    + "to use the conversation's draft (preferred), or re-emit the actual workflow-package JSON.");
+            }
+
             try
             {
                 package = packageElement.Deserialize<WorkflowPackage>(AssistantToolJson.SerializerOptions);

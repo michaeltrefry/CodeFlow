@@ -473,6 +473,12 @@ public sealed class CodeFlowAssistant(
         }
         messages.Add(new MessageParam { Role = Role.User, Content = userMessage });
 
+        // CE-3 / N=1: keep at most one full workflow-package payload in the transcript at any
+        // time. The tracker remembers the current carrier (an emission OR a fetch result) and
+        // demotes it to the redacted shape when a new carrier replaces it. Symmetric across
+        // input-side and result-side carriers.
+        var carrierTracker = new WorkflowPackageCarrierTracker();
+
         MessageDeltaUsage? finalUsage = null;
         for (var turn = 0; turn < config.MaxTurns; turn++)
         {
@@ -557,9 +563,9 @@ public sealed class CodeFlowAssistant(
             }
 
             // Echo the assistant turn (text + tool_use blocks) back into history so the model has
-            // a coherent transcript when we send tool results. tool_use Input is redacted for
-            // workflow-package tools that succeeded — the giant package JSON is dead weight after
-            // the tool wrote it to disk and would re-bill on every subsequent loop iteration.
+            // a coherent transcript when we send tool results. Inputs are appended in their FULL
+            // form here; the carrier tracker demotes any prior carrier in-place so at most one
+            // full package payload lives in the transcript across the whole AskAsync invocation.
             var assistantBlocks = new List<ContentBlockParam>();
             if (assistantTextThisTurn.Length > 0)
             {
@@ -567,21 +573,40 @@ public sealed class CodeFlowAssistant(
             }
             foreach (var (pending, originalArgs, result) in dispatched)
             {
-                var inputForTranscript = !result.IsError && WorkflowPackageRedaction.IsRedactableTool(pending.Name)
-                    ? WorkflowPackageRedaction.RedactArgsAsDictionary(pending.Name, originalArgs)
-                    : ParseToolInputAsDictionary(pending.JsonBuffer.ToString());
+                var inputForTranscript = ParseToolInputAsDictionary(pending.JsonBuffer.ToString());
                 assistantBlocks.Add((ToolUseBlockParam)new ToolUseBlockParam
                 {
                     ID = pending.Id,
                     Name = pending.Name,
                     Input = inputForTranscript,
                 });
+
+                if (!result.IsError
+                    && WorkflowPackageRedaction.InputCarriesPackagePayload(pending.Name, originalArgs))
+                {
+                    var blocksRef = assistantBlocks;
+                    var blockIdx = assistantBlocks.Count - 1;
+                    var pendingId = pending.Id;
+                    var pendingName = pending.Name;
+                    var argsClone = originalArgs.Clone();
+                    carrierTracker.Replace(() =>
+                    {
+                        var redactedDict = WorkflowPackageRedaction.RedactArgsAsDictionary(pendingName, argsClone);
+                        blocksRef[blockIdx] = (ToolUseBlockParam)new ToolUseBlockParam
+                        {
+                            ID = pendingId,
+                            Name = pendingName,
+                            Input = redactedDict,
+                        };
+                    });
+                }
             }
             messages.Add(new MessageParam { Role = Role.Assistant, Content = assistantBlocks });
 
             // tool_result blocks go in a user-role message that immediately follows the assistant
-            // turn. ToolUseID has to match the assistant block's ID exactly — redaction touches
-            // only Input, never ID, so this still resolves.
+            // turn. ToolUseID has to match the assistant block's ID exactly. Result-side carriers
+            // (get_workflow_package_draft, get_workflow_package) register with the tracker so
+            // they participate in the same N=1 buffer as input-side carriers.
             var resultBlocks = new List<ContentBlockParam>();
             foreach (var (pending, _, result) in dispatched)
             {
@@ -591,6 +616,26 @@ public sealed class CodeFlowAssistant(
                     Content = result.ResultJson,
                     IsError = result.IsError ? true : null,
                 });
+
+                if (!result.IsError
+                    && WorkflowPackageRedaction.ResultCarriesPackagePayload(pending.Name, result.ResultJson))
+                {
+                    var blocksRef = resultBlocks;
+                    var blockIdx = resultBlocks.Count - 1;
+                    var pendingId = pending.Id;
+                    var pendingName = pending.Name;
+                    var resultJsonOriginal = result.ResultJson;
+                    carrierTracker.Replace(() =>
+                    {
+                        var redactedJson = WorkflowPackageRedaction.RedactResultJson(pendingName, resultJsonOriginal);
+                        blocksRef[blockIdx] = (ToolResultBlockParam)new ToolResultBlockParam
+                        {
+                            ToolUseID = pendingId,
+                            Content = redactedJson,
+                            IsError = null,
+                        };
+                    });
+                }
             }
 
             messages.Add(new MessageParam { Role = Role.User, Content = resultBlocks });
@@ -731,6 +776,10 @@ public sealed class CodeFlowAssistant(
         }
         chatMessages.Add(new UserChatMessage(userMessage));
 
+        // CE-3 / N=1: same carrier tracker pattern as the Anthropic path. Bounds the
+        // transcript to at most one full workflow-package payload at any time.
+        var carrierTracker = new WorkflowPackageCarrierTracker();
+
         string responseModel = config.Model;
         for (var turn = 0; turn < config.MaxTurns; turn++)
         {
@@ -833,36 +882,72 @@ public sealed class CodeFlowAssistant(
             }
 
             // Build a single AssistantChatMessage that carries (a) any text the model emitted
-            // before the tool calls and (b) the tool_calls themselves with potentially-redacted
-            // args. OpenAI requires the tool result messages to come AFTER an assistant message
-            // that announces those tool calls.
-            var toolCalls = dispatchedOpenAi
+            // before the tool calls and (b) the tool_calls themselves with FULL args. The
+            // carrier tracker demotes any prior input-carrier in-place so at most one full
+            // payload sits in the OpenAI transcript.
+            var toolCallList = dispatchedOpenAi
                 .Select(d =>
                 {
                     var p = d.Pending;
                     var name = p.Name ?? throw new InvalidOperationException("OpenAI tool call missing function name.");
-                    var argsJsonForTranscript = !d.Result.IsError && WorkflowPackageRedaction.IsRedactableTool(name)
-                        ? WorkflowPackageRedaction.RedactArgsAsJsonString(name, d.OriginalArgs)
-                        : p.JsonBuffer.ToString();
                     return ChatToolCall.CreateFunctionToolCall(
                         p.Id ?? throw new InvalidOperationException("OpenAI tool call missing id."),
                         name,
-                        BinaryData.FromBytes(Encoding.UTF8.GetBytes(argsJsonForTranscript)));
+                        BinaryData.FromBytes(Encoding.UTF8.GetBytes(p.JsonBuffer.ToString())));
                 })
-                .ToArray();
+                .ToList();
 
-            var assistantTurn = new AssistantChatMessage(toolCalls);
-            if (assistantTextThisTurn.Length > 0)
+            var assistantText = assistantTextThisTurn.Length > 0 ? assistantTextThisTurn.ToString() : null;
+            var assistantTurn = new AssistantChatMessage(toolCallList);
+            if (assistantText is not null)
             {
-                assistantTurn.Content.Add(ChatMessageContentPart.CreateTextPart(assistantTextThisTurn.ToString()));
+                assistantTurn.Content.Add(ChatMessageContentPart.CreateTextPart(assistantText));
             }
             chatMessages.Add(assistantTurn);
+            var assistantTurnIdx = chatMessages.Count - 1;
 
-            // tool result messages reference the original tool_call id (preserved through
-            // redaction).
+            for (var i = 0; i < dispatchedOpenAi.Count; i++)
+            {
+                var d = dispatchedOpenAi[i];
+                var name = d.Pending.Name ?? string.Empty;
+                if (d.Result.IsError) continue;
+                if (!WorkflowPackageRedaction.InputCarriesPackagePayload(name, d.OriginalArgs)) continue;
+
+                var idx = i;
+                var pendingId = d.Pending.Id ?? string.Empty;
+                var argsClone = d.OriginalArgs.Clone();
+                carrierTracker.Replace(() =>
+                {
+                    var redactedJson = WorkflowPackageRedaction.RedactArgsAsJsonString(name, argsClone);
+                    toolCallList[idx] = ChatToolCall.CreateFunctionToolCall(
+                        pendingId, name, BinaryData.FromBytes(Encoding.UTF8.GetBytes(redactedJson)));
+                    var rebuilt = new AssistantChatMessage(toolCallList);
+                    if (assistantText is not null)
+                    {
+                        rebuilt.Content.Add(ChatMessageContentPart.CreateTextPart(assistantText));
+                    }
+                    chatMessages[assistantTurnIdx] = rebuilt;
+                });
+            }
+
+            // tool result messages reference the original tool_call id. Result-side carriers
+            // register so they participate in the same N=1 buffer.
             foreach (var d in dispatchedOpenAi)
             {
-                chatMessages.Add(new ToolChatMessage(d.Pending.Id ?? string.Empty, d.Result.ResultJson));
+                var name = d.Pending.Name ?? string.Empty;
+                var pendingId = d.Pending.Id ?? string.Empty;
+                chatMessages.Add(new ToolChatMessage(pendingId, d.Result.ResultJson));
+                var resultMsgIdx = chatMessages.Count - 1;
+
+                if (d.Result.IsError) continue;
+                if (!WorkflowPackageRedaction.ResultCarriesPackagePayload(name, d.Result.ResultJson)) continue;
+
+                var resultJsonOriginal = d.Result.ResultJson;
+                carrierTracker.Replace(() =>
+                {
+                    var redactedJson = WorkflowPackageRedaction.RedactResultJson(name, resultJsonOriginal);
+                    chatMessages[resultMsgIdx] = new ToolChatMessage(pendingId, redactedJson);
+                });
             }
 
             _ = finishReason; // available for future logging
