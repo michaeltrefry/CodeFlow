@@ -27,7 +27,23 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 )
+
+// permissiveAllowlist is the allowlist setup tests use when they need /run to
+// reach the runner. Allows ghcr.io/trefry/* and docker.io/library/alpine:*
+// — covers every image used in tests that assert the happy path.
+func permissiveAllowlist(t *testing.T) *whitelist.Allowlist {
+	t.Helper()
+	a, err := whitelist.Compile([]whitelist.Rule{
+		{Registry: "ghcr.io", Repository: "trefry/dotnet-tester", Tag: "*"},
+		{Registry: "docker.io", Repository: "library/alpine", Tag: "*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
 
 // stubRunner is the minimal JobRunner the handler tests inject. Each test
 // sets the result/err fields and the handler reflects them.
@@ -163,7 +179,7 @@ func setupServer(t *testing.T, pki *testPKI) (string, *stubRunner, func()) {
 	}
 	logger := apilog.New(slog.LevelError)
 	stub := &stubRunner{}
-	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub)
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t))
 
 	httpSrv := httptest.NewUnstartedServer(srv.Handler())
 	httpSrv.TLS = &tls.Config{
@@ -461,4 +477,127 @@ func TestCancel_RejectsBadJobID(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, raw)
 	}
+}
+
+func TestRun_RejectsImageNotOnAllowlist(t *testing.T) {
+	pki := newTestPKI(t)
+	url, stub, cleanup := setupServer(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	jobID := uuid.NewString()
+	req := RunRequest{
+		JobID:    jobID,
+		TraceID:  "abc",
+		RepoSlug: "r",
+		// Not on the permissive allowlist used in setupServer.
+		Image:  "attacker.example/evil:latest",
+		Cmd:    []string{"sh", "-c", "exfiltrate"},
+		Limits: Limits{TimeoutSeconds: 60},
+	}
+	body, _ := json.Marshal(req)
+	resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(raw, []byte("image_not_allowed")) {
+		t.Fatalf("expected image_not_allowed code, got %s", raw)
+	}
+	// Critical: the runner must NOT have been invoked. A whitelist failure
+	// has to bail before any docker call.
+	if stub.gotSpec.JobID != "" {
+		t.Errorf("runner was invoked for a non-allowlisted image: spec=%#v", stub.gotSpec)
+	}
+}
+
+func TestServer_SetAllowlist_HotSwap(t *testing.T) {
+	pki := newTestPKI(t)
+	url, stub, cleanup := setupServer(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	// Default setup permits ghcr.io/trefry/dotnet-tester:* — replace it with
+	// a strict allowlist that only permits docker.io/library/alpine:*. The
+	// previous image now becomes forbidden.
+	stub.result = &runner.Result{ExitCode: 0, Stdout: "ok\n"}
+
+	// Direct access to the *Server isn't easy through httptest, but we can
+	// build a fresh stack that points at a test server and SetAllowlist on it.
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Listen: ":0"},
+		Logging: config.LoggingConfig{Level: "error"},
+	}
+	verifier, err := auth.NewSubjectAllowlist([]config.SubjectPattern{
+		{CommonName: "codeflow-api", Organization: "trefry"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := apilog.New(slog.LevelError)
+	stub2 := &stubRunner{result: &runner.Result{ExitCode: 0, Stdout: "ok\n"}}
+	srv := New(cfg, verifier, BuildInfo{Commit: "t", BuildTime: "n"}, logger, stub2, permissiveAllowlist(t))
+
+	// Hot-swap to a strict allowlist mid-flight.
+	strict, err := whitelist.Compile([]whitelist.Rule{
+		{Registry: "docker.io", Repository: "library/alpine", Tag: "*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetAllowlist(strict)
+
+	httpSrv := httptest.NewUnstartedServer(srv.Handler())
+	httpSrv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{pki.serverPair},
+		ClientCAs:    pki.clientPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	httpSrv.StartTLS()
+	defer httpSrv.Close()
+
+	// ghcr.io/trefry/* was on the original permissive list but not on `strict`.
+	body, _ := json.Marshal(RunRequest{
+		JobID:    uuid.NewString(),
+		TraceID:  "t",
+		RepoSlug: "r",
+		Image:    "ghcr.io/trefry/dotnet-tester:10.0",
+		Cmd:      []string{"x"},
+		Limits:   Limits{TimeoutSeconds: 60},
+	})
+	resp, err := c.Post(httpSrv.URL+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 after hot-swap to strict allowlist, got %d: %s", resp.StatusCode, raw)
+	}
+
+	// alpine:3 is on `strict` — should pass.
+	body2, _ := json.Marshal(RunRequest{
+		JobID:    uuid.NewString(),
+		TraceID:  "t",
+		RepoSlug: "r",
+		Image:    "alpine:3",
+		Cmd:      []string{"echo", "hi"},
+		Limits:   Limits{TimeoutSeconds: 60},
+	})
+	resp2, err := c.Post(httpSrv.URL+"/run", "application/json", bytes.NewReader(body2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("expected 200 for alpine after swap, got %d: %s", resp2.StatusCode, raw)
+	}
+	_ = url // unused: this test builds its own httptest server
 }

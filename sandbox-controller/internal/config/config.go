@@ -18,8 +18,27 @@ type Config struct {
 	TLS     TLSConfig     `toml:"tls"`
 	Logging LoggingConfig `toml:"logging"`
 	Runner  RunnerConfig  `toml:"runner"`
+	Images  ImagesConfig  `toml:"images"`
 
 	rawHash string
+}
+
+// ImagesConfig is the controller's default-deny image policy (sc-530). An
+// empty Allowed list is intentionally allowed at config-load time but every
+// /run will be rejected with image_not_allowed — operators opt in to specific
+// images explicitly.
+type ImagesConfig struct {
+	Allowed []ImageRule `toml:"allowed"`
+}
+
+// ImageRule is one entry in the allowlist. Mirrors whitelist.Rule; we don't
+// import the whitelist package here to avoid a cycle (whitelist depends on
+// config types only by structural equivalence — the controller adapts at
+// startup time).
+type ImageRule struct {
+	Registry   string `toml:"registry"`
+	Repository string `toml:"repository"`
+	Tag        string `toml:"tag"`
 }
 
 // RunnerConfig knobs for the runsc-backed job runner (sc-529).

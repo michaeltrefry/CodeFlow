@@ -9,10 +9,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 )
 
 // BuildInfo is surfaced by GET /version.
@@ -35,6 +37,22 @@ type Server struct {
 	build     BuildInfo
 	logger    *slog.Logger
 	jobRunner JobRunner
+
+	// allowlistRef is read atomically on every /run so SIGHUP can swap the
+	// image policy without restarting the process (sc-530).
+	allowlistRef atomic.Pointer[whitelist.Allowlist]
+}
+
+// allowlist returns the current Allowlist (may be nil, which is treated as
+// default-deny by the handler).
+func (s *Server) allowlist() *whitelist.Allowlist {
+	return s.allowlistRef.Load()
+}
+
+// SetAllowlist atomically swaps the active image allowlist. Used on startup
+// and again from the SIGHUP reload handler in main.
+func (s *Server) SetAllowlist(a *whitelist.Allowlist) {
+	s.allowlistRef.Store(a)
 }
 
 // New returns a Server. It does not start the HTTP listener; the caller wires
@@ -42,17 +60,30 @@ type Server struct {
 //
 // jobRunner may be nil during scaffold-only deployments (sc-528). When nil,
 // /run returns 503 service_unavailable. sc-529 onward always passes a runner.
-func New(cfg *config.Config, verifier *auth.SubjectAllowlist, build BuildInfo, logger *slog.Logger, jobRunner JobRunner) *Server {
+//
+// allowlist may be nil to opt out of layer-2 image-policy checks (test only —
+// production code MUST pass a compiled allowlist; nil rejects every /run with
+// image_not_allowed once sc-530 is in effect).
+func New(
+	cfg *config.Config,
+	verifier *auth.SubjectAllowlist,
+	build BuildInfo,
+	logger *slog.Logger,
+	jobRunner JobRunner,
+	allowlist *whitelist.Allowlist,
+) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	s := &Server{
 		cfg:       cfg,
 		verifier:  verifier,
 		build:     build,
 		logger:    logger,
 		jobRunner: jobRunner,
 	}
+	s.SetAllowlist(allowlist)
+	return s
 }
 
 // Handler returns an http.Handler with the four endpoints mounted and the mTLS
