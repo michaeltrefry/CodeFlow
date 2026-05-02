@@ -26,6 +26,7 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/dockerd"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/server"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/sweeper"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
@@ -110,6 +111,22 @@ func main() {
 	build := server.BuildInfo{Commit: commit, BuildTime: buildTime, ConfigHash: cfg.Hash()}
 	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist, wsValidator)
 
+	// sc-533 — periodic sweep of orphaned containers + stale per-job results
+	// dirs. Per-job teardown is synchronous to /run; the sweep handles the
+	// crashed-controller / failed-teardown residuals. The CodeFlow side's
+	// in-process sweep no-ops on this backend (sc-532).
+	sweepDaemon := sweeper.Daemon(&sweeperDaemonAdapter{c: dockerClient})
+	cleanupSweeper := sweeper.New(sweepDaemon, sweeper.Config{
+		Interval:       time.Duration(cfg.Sweeper.IntervalSeconds) * time.Second,
+		ContainerTTL:   time.Duration(cfg.Sweeper.ContainerTTLSeconds) * time.Second,
+		ResultsTTL:     time.Duration(cfg.Sweeper.ResultsTTLSeconds) * time.Second,
+		WorkdirRoot:    wsValidator.Root(),
+		ResultsDirName: wsValidator.ResultsDirName(),
+	}, logger)
+
+	sweeperCtx, sweeperCancel := context.WithCancel(context.Background())
+	go cleanupSweeper.Run(sweeperCtx)
+
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           srv.Handler(),
@@ -175,6 +192,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	sweeperCancel()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
@@ -182,4 +201,15 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("sandbox-controller stopped")
+}
+
+// sweeperDaemonAdapter exposes the subset of *dockerd.Client the sweeper
+// needs (ListContainers, RemoveContainer) under the sweeper.Daemon interface.
+type sweeperDaemonAdapter struct{ c *dockerd.Client }
+
+func (a *sweeperDaemonAdapter) ListContainers(ctx context.Context, filter string, all bool) ([]dockerd.ContainerListItem, error) {
+	return a.c.ListContainers(ctx, filter, all)
+}
+func (a *sweeperDaemonAdapter) RemoveContainer(ctx context.Context, id string, force bool) error {
+	return a.c.RemoveContainer(ctx, id, force)
 }

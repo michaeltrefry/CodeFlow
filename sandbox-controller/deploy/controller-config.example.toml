@@ -85,3 +85,16 @@ results_dir_name = ".results"
 # registry   = "docker.io"
 # repository = "library/alpine"
 # tag        = "3"
+
+[sweeper]
+# Periodic cleanup of orphaned containers + stale per-job results dirs (sc-533).
+# Per-job teardown is synchronous to /run; these settings cover the residual
+# crashed-controller / failed-teardown cases. ContainerTTL must be larger than
+# any per-job timeout the controller will accept — otherwise in-flight jobs
+# could be killed mid-run.
+#
+# Zero values fall back to package defaults: 30m interval, 24h container TTL,
+# 7d results TTL.
+interval_seconds      = 1800   # 30m
+container_ttl_seconds = 86400  # 24h
+results_ttl_seconds   = 604800 # 7d
