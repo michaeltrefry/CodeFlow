@@ -7,6 +7,7 @@ using Anthropic.Models.Messages;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
+using CodeFlow.Runtime.LMStudio;
 using CodeFlow.Runtime.Workspace;
 using Microsoft.Extensions.Logging;
 using OpenAI;
@@ -759,8 +760,15 @@ public sealed class CodeFlowAssistant(
         AssistantToolDispatcher dispatcher,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var apiKey = await providerSettings.GetDecryptedApiKeyAsync(config.Provider, cancellationToken)
-            ?? throw new InvalidOperationException($"{config.Provider} API key is not configured.");
+        var apiKey = await providerSettings.GetDecryptedApiKeyAsync(config.Provider, cancellationToken);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            if (LlmProviderAuthentication.RequiresApiKey(config.Provider))
+            {
+                throw new InvalidOperationException($"{config.Provider} API key is not configured.");
+            }
+            apiKey = LlmProviderAuthentication.FallbackApiKey(config.Provider);
+        }
 
         var settings = await providerSettings.GetAsync(config.Provider, cancellationToken);
         var endpointUrl = settings?.EndpointUrl;
@@ -768,6 +776,10 @@ public sealed class CodeFlowAssistant(
         var clientOptions = new OpenAIClientOptions();
         if (!string.IsNullOrWhiteSpace(endpointUrl) && Uri.TryCreate(endpointUrl, UriKind.Absolute, out var endpointUri))
         {
+            if (string.Equals(config.Provider, LlmProviderKeys.LmStudio, StringComparison.OrdinalIgnoreCase))
+            {
+                endpointUri = LMStudioEndpoint.NormalizeForCurrentProcess(endpointUri);
+            }
             clientOptions.Endpoint = endpointUri;
         }
 

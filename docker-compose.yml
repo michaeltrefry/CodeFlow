@@ -118,6 +118,7 @@ services:
       Secrets__MasterKey: ${Secrets__MasterKey:-}
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
+      LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
     ports:
       - "5080:8080"
     volumes:
@@ -128,6 +129,8 @@ services:
       - default
       - mcp-shared
       - trefry-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   codeflow-worker:
     build:
@@ -162,6 +165,7 @@ services:
       Secrets__MasterKey: ${Secrets__MasterKey:-}
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
+      LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
     volumes:
       - codeflow-artifacts:/app/artifacts
       - codeflow-workdir:/app/codeflow/workdir
@@ -169,6 +173,8 @@ services:
       - default
       - mcp-shared
       - trefry-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   codeflow-ui:
     build:

@@ -8,6 +8,10 @@ Secrets__MasterKey={32-byte base64 key}
 OpenAI__ApiKey={Open Api Key}
 Anthropic__ApiKey={Anthropic Api Key}
 
+# Optional LM Studio endpoint. For the Docker stack, host.docker.internal reaches LM Studio on
+# your host machine. For native dotnet run, http://localhost:1234/v1/responses also works.
+LMStudio__ResponsesEndpoint=http://host.docker.internal:1234/v1/responses
+
 # Local DB password used by the docker-compose `codeflow-api` connection string.
 CODEFLOW_DB_PASSWORD={dev password}
 

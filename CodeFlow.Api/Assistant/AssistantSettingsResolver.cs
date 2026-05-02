@@ -10,10 +10,11 @@ namespace CodeFlow.Api.Assistant;
 ///   <item>DB-backed admin defaults from <see cref="IAssistantSettingsRepository"/> (HAA-15).</item>
 ///   <item>Appsettings <see cref="AssistantOptions"/> baseline.</item>
 /// </list>
-/// At each layer a non-null/non-blank value wins. The chosen provider must have an api key
-/// configured in <see cref="ILlmProviderSettingsRepository"/>; the chosen model must be either
-/// supplied explicitly or be present in that provider's listed models. Configuration gaps throw
-/// so callers see a clear error rather than a silent fallback to a wrong provider.
+/// At each layer a non-null/non-blank value wins. Providers that require authentication must
+/// have an api key configured in <see cref="ILlmProviderSettingsRepository"/>; the chosen model
+/// must be either supplied explicitly or be present in that provider's listed models.
+/// Configuration gaps throw so callers see a clear error rather than a silent fallback to a wrong
+/// provider.
 /// </summary>
 public sealed class AssistantSettingsResolver(
     IOptions<AssistantOptions> optionsAccessor,
@@ -36,7 +37,7 @@ public sealed class AssistantSettingsResolver(
             ?? throw new InvalidOperationException(
                 $"Assistant provider '{provider}' is not configured. Add a row in the LLM providers admin first.");
 
-        if (!settings.HasApiKey)
+        if (LlmProviderAuthentication.RequiresApiKey(provider) && !settings.HasApiKey)
         {
             throw new InvalidOperationException(
                 $"Assistant provider '{provider}' has no API key configured.");
