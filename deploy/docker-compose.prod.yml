@@ -13,6 +13,13 @@
 networks:
   trefry-network:
     external: true
+  # sc-535: controller-internal network — internal: true means containers on
+  # this network have NO route to the public internet. Image pulls happen at
+  # dockerd (host-network), not from inside the controller. See
+  # docs/sandbox-executor.md §6.2.
+  controller-internal:
+    internal: true
+    driver: bridge
 
 services:
   # Init container: chowns the bind-mounted host dirs to the app uid (1654, see
@@ -81,6 +88,16 @@ services:
       # --- Optional: OTLP observability sink. ---
       Observability__OtlpEndpoint: ${CODEFLOW_OTLP_ENDPOINT:-}
       Observability__EnableConsoleExporter: "false"
+      # --- sc-532: sandbox-controller backend selection. Default Docker keeps the legacy
+      # CLI runner (which is inert in this container — see PR #208 / sc-526). Prod sets
+      # SandboxController to route through the new mTLS controller below.
+      ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
+      SandboxController__Url: http://codeflow-sandbox-controller:8443
+      SandboxController__ClientCertPath: /etc/cfsc-client/client.pem
+      SandboxController__ClientKeyPath: /etc/cfsc-client/client.key
+      SandboxController__ServerCAPath: /etc/cfsc-client/server-ca.pem
+      SandboxController__ServerCommonName: codeflow-sandbox-controller
+      SandboxController__RequestTimeoutSeconds: ${CODEFLOW_CONTAINER_REQUEST_TIMEOUT_SECONDS:-1800}
     ports:
       - "127.0.0.1:${CODEFLOW_API_HOST_PORT:-5080}:8080"
     volumes:
@@ -97,9 +114,13 @@ services:
       # Container path is locked to WorkspaceOptions.AssistantWorkspaceRoot's default — override
       # via Workspace__AssistantWorkspaceRoot if a deployment needs a different mount target.
       - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/app/codeflow/assistant
+      # sc-535: client mTLS material for the sandbox-controller. Same dir on every host;
+      # sc-535 host-setup runbook documents how to provision it.
+      - ${CODEFLOW_CFSC_CLIENT_DIR:-/opt/codeflow/cfsc-client/api}:/etc/cfsc-client:ro
     networks:
       - default
       - trefry-network
+      - controller-internal
 
   codeflow-worker:
     image: ${CODEFLOW_WORKER_IMAGE:?CODEFLOW_WORKER_IMAGE must be set (full ghcr.io/<owner>/codeflow-worker:<tag>)}
@@ -126,12 +147,23 @@ services:
       Artifacts__RootDirectory: /app/artifacts
       Observability__OtlpEndpoint: ${CODEFLOW_OTLP_ENDPOINT:-}
       Observability__EnableConsoleExporter: "false"
+      # sc-532: sandbox-controller backend (same wiring as codeflow-api).
+      ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
+      SandboxController__Url: http://codeflow-sandbox-controller:8443
+      SandboxController__ClientCertPath: /etc/cfsc-client/client.pem
+      SandboxController__ClientKeyPath: /etc/cfsc-client/client.key
+      SandboxController__ServerCAPath: /etc/cfsc-client/server-ca.pem
+      SandboxController__ServerCommonName: codeflow-sandbox-controller
+      SandboxController__RequestTimeoutSeconds: ${CODEFLOW_CONTAINER_REQUEST_TIMEOUT_SECONDS:-1800}
     volumes:
       - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
       - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/codeflow/workdir
+      # sc-535: separate client cert dir for the worker (different subject than api).
+      - ${CODEFLOW_CFSC_CLIENT_WORKER_DIR:-/opt/codeflow/cfsc-client/worker}:/etc/cfsc-client:ro
     networks:
       - default
       - trefry-network
+      - controller-internal
 
   codeflow-ui:
     image: ${CODEFLOW_UI_IMAGE:?CODEFLOW_UI_IMAGE must be set (full ghcr.io/<owner>/codeflow-ui:<tag>)}
@@ -145,3 +177,71 @@ services:
       OAUTH_SCOPE: ${CODEFLOW_OAUTH_SCOPE:-openid profile email}
     ports:
       - "127.0.0.1:${CODEFLOW_UI_HOST_PORT:-4200}:80"
+
+  # ===========================================================================
+  # sc-535: Sandbox controller. Phase 1 deploy — same VM as the rest of the
+  # CodeFlow stack but the only service with /var/run/docker.sock access. The
+  # api/worker have NO docker access; they call the controller over the
+  # internal-only `controller-internal` network. See docs/sandbox-executor.md
+  # §6 for the architecture.
+  #
+  # Hardening flags (sc-538): distroless static base, read_only rootfs,
+  # cap_drop ALL, no-new-privileges, AppArmor + seccomp profiles, nonroot uid,
+  # internal-only network, never published to the host.
+  #
+  # Host setup is documented in deploy/sandbox-controller/host-setup.md —
+  # runsc / AppArmor / seccomp / mTLS material must be in place before
+  # `docker compose up codeflow-sandbox-controller`.
+  # ===========================================================================
+  codeflow-sandbox-controller:
+    image: ${CODEFLOW_SANDBOX_CONTROLLER_IMAGE:?CODEFLOW_SANDBOX_CONTROLLER_IMAGE must be set (full ghcr.io/<owner>/codeflow-sandbox-controller:<tag>)}
+    container_name: codeflow-sandbox-controller
+    restart: unless-stopped
+
+    # === Runtime hardening (sc-538). Each lever is independent — removing any
+    # of them is a security regression. See deploy/sandbox-controller/HARDENING.md
+    # in the sandbox-controller subtree for the lever-to-threat mapping.
+    read_only: true
+    user: "65532:65532"   # distroless `nonroot`
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+      - "apparmor=codeflow-sandbox-controller"
+      - "seccomp=/etc/docker/seccomp/cfsc.json"
+
+    # group_add gives uid 65532 supplementary membership in the host's docker
+    # group (variable gid). Required for socket access — sc-535 host-setup
+    # writes DOCKER_GID into .env.release.
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be set (run `getent group docker | cut -d: -f3` on the host)}"
+
+    tmpfs:
+      - /tmp:size=16m,mode=1700,uid=65532,gid=65532
+
+    volumes:
+      # The one privileged operation: socket access. read_only on the container
+      # filesystem doesn't apply to bind-mounted hosts; the daemon ACL is what
+      # gates this.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Workspace root — read-only. Controller doesn't write to workspaces.
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/opt/codeflow/workdirs:ro
+      # Per-host config + cert material from the secret store.
+      - ${CODEFLOW_CFSC_CONFIG_DIR:-/opt/codeflow/cfsc/config}:/etc/cfsc:ro
+
+    # NO `ports:` — controller is reachable only via controller-internal.
+    networks:
+      - controller-internal
+
+    # Wait until the api/worker are likely scheduled before starting; not strictly
+    # required (controller is mTLS-only, callers retry), but it cleans up startup
+    # log noise.
+    depends_on:
+      codeflow-init:
+        condition: service_completed_successfully
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
