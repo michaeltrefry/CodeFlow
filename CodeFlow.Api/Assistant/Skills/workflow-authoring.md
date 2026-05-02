@@ -12,6 +12,25 @@ multi-turn dialogue with the user and emit a complete, importable workflow
 package. The package is a draft only — the user explicitly clicks Save (or
 imports the JSON file) to persist anything to the library.
 
+## READ THIS FIRST: jump to the canonical exemplar
+
+Before you write a single line of package JSON, scroll to the end of this
+skill ("Canonical shape exemplar") and read it. It is a complete,
+importable package showing every field name, enum casing, and nesting
+the importer expects. Mirror it exactly. Common shape mistakes that
+guarantee a save round-trip:
+
+- The schema field is `schemaVersion`, not `$schema` or `schema`. Its value
+  is the literal string `"codeflow.workflow-package.v1"`.
+- Node `id` MUST be a fresh GUID (e.g., `"11111111-1111-1111-1111-000000000001"`).
+  Slug-style ids like `"start-node"` are rejected by the typed binding.
+- Workflow `key` is slug-shaped (`lowercase-dashed`), but node `id` is a GUID.
+  These are different rules — don't mix them up.
+
+If a save attempt rejects on a structural / shape issue, your next
+action is to re-read the exemplar at the bottom of this skill — NOT
+another save attempt with a guess.
+
 ## Authoring vocabulary
 
 ### Agents
@@ -314,6 +333,15 @@ Discipline:
 These are the field-shape pitfalls the validator's error messages don't
 make obvious. They account for nearly every guess-and-retry cycle:
 
+- **Top-level field is `schemaVersion`**, not `$schema` or `schema`. Value
+  is the literal string `"codeflow.workflow-package.v1"`. Any other shape
+  (including the `$schema` keyword from JSON Schema) is rejected with code
+  `package-schema-unsupported`.
+- **Node `id` MUST be a fresh GUID** — the DTO's `Id` field is typed as
+  `Guid`. Slug-style ids like `"start"` or `"intake-node"` fail typed
+  deserialization at the apply endpoint. The exemplar uses
+  `"11111111-1111-1111-1111-000000000001"` style placeholders; pick fresh
+  ones (any UUID generator works).
 - **`agents[].kind`** is `"Agent"` or `"Hitl"`. PascalCase. Nothing else
   — not `"Standard"`, not `"Llm"`, not `"LlmAgent"`.
 - **`nodes[].outputPorts`** is `string[]` — port names only. Do NOT emit

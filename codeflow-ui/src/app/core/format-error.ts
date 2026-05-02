@@ -21,14 +21,33 @@ export function formatHttpError(err: unknown, fallback = 'Request failed.'): str
     const status = (err as { status?: unknown }).status;
     if (typeof status === 'number') {
       const statusText = (err as { statusText?: unknown }).statusText;
-      if (status === 400) {
-        return 'Bad request (HTTP 400). The server rejected the request but did not return validation details.';
+      const statusTextStr = typeof statusText === 'string' && statusText.trim().length > 0
+        && statusText.trim().toUpperCase() !== 'OK'
+        ? statusText.trim()
+        : null;
+      const url = (err as { url?: unknown }).url;
+      const urlStr = typeof url === 'string' && url.trim().length > 0 ? url.trim() : null;
+
+      // Log the raw error to the console so a developer (or a curious user with DevTools open)
+      // can inspect the response body even if the formatter can't extract a message from it.
+      // This is a deliberate net for the case where `body` is null/undefined or arrives as an
+      // unexpected shape — the dev console becomes the diagnostic surface of last resort.
+      try {
+        // eslint-disable-next-line no-console
+        console.error('[formatHttpError] No message extractable from response body:', err);
+      } catch {
+        // Swallow — defensive for old browsers / restricted contexts.
       }
 
-      return typeof statusText === 'string'
-        && statusText.trim().length > 0
-        && statusText.trim().toUpperCase() !== 'OK'
-        ? `HTTP ${status} ${statusText}`
+      if (status === 400) {
+        const where = urlStr ? ` Endpoint: ${urlStr}.` : '';
+        return `Bad request (HTTP 400${statusTextStr ? ' ' + statusTextStr : ''}). `
+          + `The server rejected the request and did not return a parseable message body. `
+          + `Open the browser devtools (Network tab) to inspect the response.${where}`;
+      }
+
+      return statusTextStr
+        ? `HTTP ${status} ${statusTextStr}`
         : `HTTP ${status}`;
     }
   }
