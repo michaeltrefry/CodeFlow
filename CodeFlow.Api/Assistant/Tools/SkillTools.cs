@@ -58,7 +58,14 @@ public sealed class ListAssistantSkillsTool(IAssistantSkillProvider skills) : IA
 /// </summary>
 public sealed class LoadAssistantSkillTool(IAssistantSkillProvider skills) : IAssistantTool
 {
-    public string Name => "load_assistant_skill";
+    /// <summary>
+    /// Stable tool identifier. Exposed so other dispatch-path code (e.g. the Anthropic
+    /// cache-control marker for skill-load tool_results) can reference the same string without
+    /// duplicating it.
+    /// </summary>
+    public const string ToolName = "load_assistant_skill";
+
+    public string Name => ToolName;
 
     public string Description =>
         "Load one assistant skill's body into the conversation. Returns `{ key, body }` where " +
