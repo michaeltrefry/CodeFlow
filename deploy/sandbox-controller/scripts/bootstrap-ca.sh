@@ -107,7 +107,7 @@ cp "$ca_cert" "$CLIENT_ROOT/worker/server-ca.pem"
 # --- 4. Summary ----------------------------------------------------------
 echo
 echo "[bootstrap-ca] done. Place these in compose's volume mounts:"
-echo "  controller:  $CFSC_ROOT/tls/{server.pem,server.key,ca.pem}  ->  /etc/cfsc/tls/"
+echo "  controller:  $CFSC_ROOT/tls/{server.pem,server.key,ca.pem}  ->  /etc/cfsc-tls/"
 echo "  api:         $CLIENT_ROOT/api/{client.pem,client.key,server-ca.pem}  ->  /etc/cfsc-client/"
 echo "  worker:      $CLIENT_ROOT/worker/{client.pem,client.key,server-ca.pem}  ->  /etc/cfsc-client/"
 echo

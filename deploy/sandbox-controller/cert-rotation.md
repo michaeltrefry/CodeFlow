@@ -6,9 +6,9 @@ The sandbox-controller's mTLS material is issued from an internal-only CA. Defau
 
 | Material | Path on host | Mounted into | Used as |
 |---|---|---|---|
-| CA root cert | `/opt/codeflow/cfsc/tls/ca.pem` | `/etc/cfsc/tls/ca.pem` (controller) | controller `ClientCAPath` (verifies api/worker client certs) |
+| CA root cert | `/opt/codeflow/cfsc/tls/ca.pem` | `/etc/cfsc-tls/ca.pem` (controller) | controller `ClientCAPath` (verifies api/worker client certs) |
 | CA root key | `/opt/codeflow/cfsc/tls/ca.key` | not mounted | issuance only |
-| Server cert + key | `/opt/codeflow/cfsc/tls/server.{pem,key}` | `/etc/cfsc/tls/` | controller server cert |
+| Server cert + key | `/opt/codeflow/cfsc/tls/server.{pem,key}` | `/etc/cfsc-tls/` | controller server cert |
 | api client cert + key | `/opt/codeflow/cfsc-client/api/client.{pem,key}` | `/etc/cfsc-client/` (api) | api's mTLS client cert |
 | api server CA | `/opt/codeflow/cfsc-client/api/server-ca.pem` | `/etc/cfsc-client/` (api) | api's `ServerCAPath` |
 | worker client cert + key | `/opt/codeflow/cfsc-client/worker/client.{pem,key}` | `/etc/cfsc-client/` (worker) | worker's mTLS client cert |
