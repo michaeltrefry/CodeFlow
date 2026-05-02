@@ -37,11 +37,39 @@ services:
     command:
       - sh
       - -c
-      - "mkdir -p /target/assistant /target/workdir /target/artifacts && chown -R 1654:1654 /target/assistant /target/workdir /target/artifacts"
+      - |
+        set -e
+        # App-uid-owned dirs (api/worker run as 1654).
+        mkdir -p /target/assistant /target/workdir /target/artifacts
+        chown -R 1654:1654 /target/assistant /target/workdir /target/artifacts
+        # sc-535: api + worker mTLS client material. bootstrap-ca.sh writes
+        # client.{pem,key} as the bootstrap user (often root) at mode 0640;
+        # without a chown the api/worker can't read client.key and every /run
+        # call into the controller fails with UnauthorizedAccessException.
+        # The dirs may not exist yet on a fresh host (controller hasn't been
+        # bootstrapped) — `|| true` keeps init green so the api/worker can
+        # still come up; they fail-soft on /run when certs are missing.
+        if [ -d /target/cfsc-client-api ]; then
+          chown -R 1654:1654 /target/cfsc-client-api || true
+        fi
+        if [ -d /target/cfsc-client-worker ]; then
+          chown -R 1654:1654 /target/cfsc-client-worker || true
+        fi
+        # sc-535: controller TLS material. Controller runs as 65532 (distroless
+        # nonroot) and needs to read server.key (mode 0640). Same problem,
+        # different uid.
+        if [ -d /target/cfsc-tls ]; then
+          chown -R 65532:65532 /target/cfsc-tls || true
+        fi
     volumes:
       - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/target/assistant
       - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/target/workdir
       - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/target/artifacts
+      # sc-535: client mTLS dirs are bind-mounted RW here so we can chown
+      # them to the api/worker uid before the api/worker mount them :ro.
+      - ${CODEFLOW_CFSC_CLIENT_DIR:-/opt/codeflow/cfsc-client/api}:/target/cfsc-client-api
+      - ${CODEFLOW_CFSC_CLIENT_WORKER_DIR:-/opt/codeflow/cfsc-client/worker}:/target/cfsc-client-worker
+      - ${CODEFLOW_CFSC_TLS_DIR:-/opt/codeflow/cfsc/tls}:/target/cfsc-tls
     restart: "no"
 
   codeflow-api:
