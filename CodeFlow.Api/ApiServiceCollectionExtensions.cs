@@ -1,5 +1,6 @@
 using Anthropic;
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Skills;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.CascadeBump;
 using CodeFlow.Api.Mcp;
@@ -185,6 +186,13 @@ public static class ApiServiceCollectionExtensions
         // HAA-13: confirmation-gated Replay-with-Edit bridge. Validation-only tool; the UI POSTs
         // to /api/traces/{id}/replay (DryRunExecutor v4) when the user clicks the Replay chip.
         services.AddScoped<IAssistantTool, ProposeReplayWithEditTool>();
+
+        // AS-1: on-demand assistant skills. Provider parses embedded markdown resources at
+        // construction (singleton — content is fixed per deploy). The list/load tools are
+        // scoped to match the rest of the registry, but they're stateless.
+        services.AddSingleton<IAssistantSkillProvider, EmbeddedAssistantSkillProvider>();
+        services.AddScoped<IAssistantTool, ListAssistantSkillsTool>();
+        services.AddScoped<IAssistantTool, LoadAssistantSkillTool>();
 
         services.AddScoped<AssistantToolDispatcher>();
 

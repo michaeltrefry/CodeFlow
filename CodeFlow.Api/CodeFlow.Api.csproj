@@ -24,6 +24,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- AS-1: assistant skills are committed as markdown alongside the code that loads them.
+         Embedded so a deployed binary carries every skill it advertises without depending on
+         filesystem layout. AS-1 ships zero files; AS-3/4/5 add the actual skill content. -->
+    <EmbeddedResource Include="Assistant\Skills\*.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodeFlow.Contracts\CodeFlow.Contracts.csproj" />
     <ProjectReference Include="..\CodeFlow.Host\CodeFlow.Host.csproj" />
     <ProjectReference Include="..\CodeFlow.Orchestration\CodeFlow.Orchestration.csproj" />
