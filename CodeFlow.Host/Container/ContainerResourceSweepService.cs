@@ -51,6 +51,12 @@ internal sealed class ContainerResourceSweepService : BackgroundService
             {
                 return;
             }
+            catch (DockerCliNotAvailableException)
+            {
+                logger.LogInformation(
+                    "docker CLI is not available on PATH; container resource sweeps are disabled for this process.");
+                return;
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Container resource sweep failed; continuing.");

@@ -1,7 +1,17 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace CodeFlow.Runtime.Container;
+
+public sealed class DockerCliNotAvailableException : InvalidOperationException
+{
+    public DockerCliNotAvailableException(Exception innerException)
+        : base("Unable to start the 'docker' process. Ensure Docker is installed and available on PATH.", innerException)
+    {
+    }
+}
 
 public interface IDockerCommandRunner
 {
@@ -72,6 +82,10 @@ public sealed class DockerCliCommandRunner : IDockerCommandRunner
         {
             process.Start();
         }
+        catch (Win32Exception ex) when (IsExecutableNotFound(ex))
+        {
+            throw new DockerCliNotAvailableException(ex);
+        }
         catch (Exception ex)
         {
             throw new InvalidOperationException(
@@ -114,6 +128,20 @@ public sealed class DockerCliCommandRunner : IDockerCommandRunner
             stdout.Truncated,
             stderr.Truncated,
             TimedOut: false);
+    }
+
+    private static bool IsExecutableNotFound(Win32Exception ex)
+    {
+        // ENOENT on Linux/macOS, ERROR_FILE_NOT_FOUND/ERROR_PATH_NOT_FOUND on Windows.
+        if (ex.NativeErrorCode is 2 or 3)
+        {
+            return true;
+        }
+
+        // ENOENT also surfaces on some macOS configurations as "No such file or directory" with
+        // a non-canonical native code; fall back to message inspection for that case.
+        return RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+            && ex.Message.Contains("No such file or directory", StringComparison.Ordinal);
     }
 
     private static void TryKill(Process process)
