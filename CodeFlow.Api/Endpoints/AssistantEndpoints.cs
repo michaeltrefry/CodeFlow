@@ -1,4 +1,5 @@
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TokenTracking;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 
@@ -394,6 +396,9 @@ public static class AssistantEndpoints
         IRefusalEventSink refusalSink,
         IIntentClarityAssessor preflightAssessor,
         IOptions<PreflightOptions> preflightOptions,
+        IAssistantTurnIdempotencyCoordinator idempotencyCoordinator,
+        IOptions<AssistantTurnIdempotencyOptions> idempotencyOptions,
+        ILogger<AssistantEndpointsLogCategory> logger,
         CancellationToken cancellationToken)
     {
         var conversation = await repository.GetByIdAsync(id, cancellationToken);
@@ -420,6 +425,25 @@ public static class AssistantEndpoints
                 {
                     Status = StatusCodes.Status400BadRequest,
                     Detail = "content is required.",
+                },
+                cancellationToken);
+            return;
+        }
+
+        // sc-525 — read + validate the optional Idempotency-Key header before preflight, so a
+        // malformed key never quietly turns into a real LLM call. Absent header → existing
+        // behavior unchanged. Preflight runs BEFORE we claim a row: a refused turn never
+        // reached the model, so it's safe to refuse subsequent retries deterministically by
+        // re-running the assessor.
+        var keyValidation = AssistantTurnIdempotencyKeys.TryRead(httpContext, out var idempotencyKey);
+        if (keyValidation == AssistantTurnIdempotencyKeys.KeyValidation.Malformed)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await httpContext.Response.WriteAsJsonAsync(
+                new Microsoft.AspNetCore.Mvc.ProblemDetails
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Detail = $"{AssistantTurnIdempotencyKeys.HeaderName} must be {AssistantTurnIdempotencyKeys.MinKeyLength}-{AssistantTurnIdempotencyKeys.MaxKeyLength} characters of [A-Za-z0-9_-].",
                 },
                 cancellationToken);
             return;
@@ -458,28 +482,153 @@ public static class AssistantEndpoints
             }
         }
 
-        httpContext.Response.Headers.ContentType = "text/event-stream";
-        httpContext.Response.Headers.CacheControl = "no-cache";
-        httpContext.Response.Headers.Connection = "keep-alive";
-        httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+        IAssistantTurnRecorder? recorder = null;
+        if (keyValidation == AssistantTurnIdempotencyKeys.KeyValidation.Valid)
+        {
+            var requestHash = AssistantTurnIdempotencyKeys.ComputeRequestHash(request);
+            var dispatch = await idempotencyCoordinator.DispatchAsync(
+                id,
+                idempotencyKey!,
+                userId,
+                requestHash,
+                cancellationToken);
 
+            switch (dispatch)
+            {
+                case AssistantTurnDispatchOutcome.HashMismatch:
+                    httpContext.Response.StatusCode = StatusCodes.Status409Conflict;
+                    await httpContext.Response.WriteAsJsonAsync(
+                        new Microsoft.AspNetCore.Mvc.ProblemDetails
+                        {
+                            Status = StatusCodes.Status409Conflict,
+                            Title = "idempotency-key-conflict",
+                            Detail = $"{AssistantTurnIdempotencyKeys.HeaderName} was previously used with a different request body for this conversation.",
+                        },
+                        cancellationToken);
+                    return;
+
+                case AssistantTurnDispatchOutcome.UserMismatch:
+                    // Don't confirm row existence to a different caller — surface as not-found.
+                    httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+
+                case AssistantTurnDispatchOutcome.Replay replay:
+                    OpenSseResponse(httpContext);
+                    await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
+                    await httpContext.Response.Body.FlushAsync(cancellationToken);
+                    await idempotencyCoordinator.ReplayAsync(
+                        replay.Record,
+                        (name, payload, ct) => WriteRawEventAsync(httpContext, name, payload, ct),
+                        cancellationToken);
+                    await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                    return;
+
+                case AssistantTurnDispatchOutcome.WaitThenReplay wait:
+                    OpenSseResponse(httpContext);
+                    await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
+                    await httpContext.Response.Body.FlushAsync(cancellationToken);
+                    AssistantTurnIdempotencyRecord terminal;
+                    try
+                    {
+                        terminal = await idempotencyCoordinator.WaitForTerminalAsync(
+                            wait.Record.Id,
+                            idempotencyOptions.Value.WaitTimeout,
+                            cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+
+                    if (terminal.Status == AssistantTurnIdempotencyStatus.InFlight)
+                    {
+                        await WriteRawEventAsync(
+                            httpContext,
+                            "error",
+                            JsonSerializer.Serialize(new { message = "Original request is still in progress; please retry." }, JsonOptions),
+                            cancellationToken);
+                        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                        return;
+                    }
+
+                    await idempotencyCoordinator.ReplayAsync(
+                        terminal,
+                        (name, payload, ct) => WriteRawEventAsync(httpContext, name, payload, ct),
+                        cancellationToken);
+                    await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                    return;
+
+                case AssistantTurnDispatchOutcome.Claimed claimed:
+                    recorder = claimed.Recorder;
+                    break;
+            }
+        }
+
+        OpenSseResponse(httpContext);
         await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
 
-        await foreach (var evt in chatService.SendMessageAsync(
-            id,
-            request.Content,
-            request.PageContext,
-            request.Provider,
-            request.Model,
-            request.WorkspaceOverride,
-            cancellationToken))
+        var terminalStatus = AssistantTurnIdempotencyStatus.Completed;
+        try
         {
-            await WriteEventAsync(httpContext, evt, cancellationToken);
+            await foreach (var evt in chatService.SendMessageAsync(
+                id,
+                request.Content,
+                request.PageContext,
+                request.Provider,
+                request.Model,
+                request.WorkspaceOverride,
+                cancellationToken))
+            {
+                await WriteEventAsync(httpContext, evt, recorder, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            terminalStatus = AssistantTurnIdempotencyStatus.Failed;
+            throw;
+        }
+        catch (Exception)
+        {
+            terminalStatus = AssistantTurnIdempotencyStatus.Failed;
+            throw;
+        }
+        finally
+        {
+            if (recorder is not null)
+            {
+                try
+                {
+                    // CancellationToken.None: the request token may already be cancelled (network
+                    // drop), but we still want to persist what we recorded so the retry can
+                    // replay. The flush is bounded — a single MarkTerminalAsync DB call.
+                    await recorder.FlushAsync(terminalStatus, CancellationToken.None);
+                }
+                catch (Exception flushEx)
+                {
+                    logger.LogWarning(
+                        flushEx,
+                        "Failed to flush idempotency record {RecordId} for conversation {ConversationId}.",
+                        recorder.RecordId,
+                        id);
+                }
+            }
         }
 
         await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
     }
+
+    private static void OpenSseResponse(HttpContext httpContext)
+    {
+        httpContext.Response.Headers.ContentType = "text/event-stream";
+        httpContext.Response.Headers.CacheControl = "no-cache";
+        httpContext.Response.Headers.Connection = "keep-alive";
+        httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+    }
+
+    /// <summary>Marker type for an <see cref="ILogger{T}"/> category specific to the assistant
+    /// endpoints — the static handler has no natural enclosing type to log under.</summary>
+    public sealed class AssistantEndpointsLogCategory { }
 
     /// <summary>
     /// sc-274 phase 2 — emit a <see cref="RefusalStages.Preflight"/> refusal when the
@@ -534,7 +683,11 @@ public static class AssistantEndpoints
             MissingFields: assessment.MissingFields,
             ClarificationQuestions: assessment.ClarificationQuestions);
 
-    private static async Task WriteEventAsync(HttpContext httpContext, AssistantTurnEvent evt, CancellationToken ct)
+    private static async Task WriteEventAsync(
+        HttpContext httpContext,
+        AssistantTurnEvent evt,
+        IAssistantTurnRecorder? recorder,
+        CancellationToken ct)
     {
         var (eventName, payload) = evt switch
         {
@@ -567,6 +720,10 @@ public static class AssistantEndpoints
             _ => ("unknown", "{}")
         };
 
+        // sc-525 — record before writing so a wire failure still leaves a complete event log
+        // for the retry to replay. The trailing `done` frame is intentionally NOT recorded;
+        // replay regenerates it after walking the captured events.
+        recorder?.Record(eventName, payload);
         await WriteRawEventAsync(httpContext, eventName, payload, ct);
     }
 

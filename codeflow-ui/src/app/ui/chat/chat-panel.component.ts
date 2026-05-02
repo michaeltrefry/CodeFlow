@@ -129,7 +129,19 @@ interface PinnedMutationChip {
           }
         }
         @if (turnError()) {
-          <p class="chat-panel-error">{{ turnError() }}</p>
+          <div class="chat-panel-error" role="alert">
+            <span>{{ turnError() }}</span>
+            @if (canRetryLastTurn()) {
+              <button
+                type="button"
+                class="chat-panel-error-retry"
+                data-testid="chat-retry-turn"
+                (click)="retryLastTurn()"
+              >
+                Retry
+              </button>
+            }
+          </div>
         }
         @if (preflightError(); as pf) {
           <div class="chat-panel-preflight" data-testid="preflight-banner" role="status">
@@ -351,6 +363,25 @@ interface PinnedMutationChip {
     }
     .chat-panel-error {
       color: var(--sem-red, #f85149);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .chat-panel-error-retry {
+      appearance: none;
+      border: 1px solid var(--sem-red, #f85149);
+      background: transparent;
+      color: var(--sem-red, #f85149);
+      font: inherit;
+      padding: 2px 10px;
+      border-radius: var(--radius-sm, 4px);
+      cursor: pointer;
+    }
+    .chat-panel-error-retry:hover,
+    .chat-panel-error-retry:focus-visible {
+      background: color-mix(in oklab, var(--sem-red, #f85149) 14%, transparent);
     }
     /* sc-274 phase 2 — preflight clarification banner. Warn-tinted (not error-tinted) because
        this is "you didn't say enough yet" feedback, not a failure. Mirrors the replay panel's
@@ -596,6 +627,12 @@ export class ChatPanelComponent implements OnDestroy {
    */
   protected readonly preflightError = signal<AssistantPreflightRefusal | null>(null);
 
+  /** sc-525 — the Retry button only renders when there's a captured key and prompt to replay. */
+  protected readonly canRetryLastTurn = computed(() =>
+    !this.streaming()
+    && !!this.activeIdempotencyKey()
+    && !!this.optimisticUser());
+
   /** sc-274 phase 2 — convenience for the template: the lowest-scoring dimension with a reason. */
   protected readonly preflightWeakest = computed(() => {
     const refusal = this.preflightError();
@@ -621,6 +658,13 @@ export class ChatPanelComponent implements OnDestroy {
   private readonly pending = signal<PendingAssistantTurn | null>(null);
   /** The current user turn rendered immediately while waiting for server-id assignment. */
   private readonly optimisticUser = signal<string | null>(null);
+  /**
+   * sc-525 — Idempotency key for the in-flight (or most recently failed) turn. Generated
+   * fresh by {@link sendMessage} and reused by {@link retryLastTurn} so a user-initiated
+   * retry replays the recorded server stream instead of duplicating the user message or
+   * the LLM call. Cleared on successful completion and on cancel.
+   */
+  private readonly activeIdempotencyKey = signal<string | null>(null);
   /**
    * Tool-call cards for the in-flight turn, in insertion order. Reset at the start of each new
    * user message — only the FINAL assistant text is persisted to history, so tool cards from
@@ -919,6 +963,27 @@ export class ChatPanelComponent implements OnDestroy {
     if (!conversationId || this.streaming()) {
       return;
     }
+    // sc-525 — fresh idempotency key per user-initiated turn. Reused by retryLastTurn so a
+    // user-driven retry of the SAME turn replays server-side instead of double-billing.
+    this.activeIdempotencyKey.set(generateIdempotencyKey());
+    this.runTurn(conversationId, content);
+  }
+
+  /**
+   * sc-525 — Replay the most recent user turn using the same idempotency key. Triggered by
+   * the "Retry" button on the {@link turnError} banner. Safe to invoke repeatedly: the
+   * server replays the recorded SSE event stream instead of running the turn again.
+   */
+  protected retryLastTurn(): void {
+    const conversationId = this.conversationId();
+    const content = this.optimisticUser();
+    if (!conversationId || !content || this.streaming() || !this.activeIdempotencyKey()) {
+      return;
+    }
+    this.runTurn(conversationId, content);
+  }
+
+  private runTurn(conversationId: string, content: string): void {
     this.turnError.set(null);
     // sc-274 phase 2 — clear any prior preflight refusal so the banner doesn't linger over a
     // new (and presumably refined) attempt.
@@ -933,11 +998,13 @@ export class ChatPanelComponent implements OnDestroy {
     const provider = this.selectedProvider() ?? undefined;
     const model = this.selectedModel() ?? undefined;
     const workspaceOverride = this.buildWorkspaceOverride();
+    const idempotencyKey = this.activeIdempotencyKey() ?? undefined;
     this.streamSub = streamAssistantTurn(conversationId, content, this.auth, {
       pageContext: dto,
       provider,
       model,
       workspaceOverride,
+      idempotencyKey,
     }).pipe(
       takeUntilDestroyed(this.destroyRef),
     ).subscribe({
@@ -947,12 +1014,16 @@ export class ChatPanelComponent implements OnDestroy {
         this.streamSub = null;
         this.turnError.set(formatHttpError(err));
         // Roll back: drop the in-flight assistant bubble, keep the user message visible so the
-        // user can retry.
+        // user can retry. Idempotency key intentionally preserved so retryLastTurn can reuse it.
         this.pending.set(null);
       },
       complete: () => {
         this.streaming.set(false);
         this.streamSub = null;
+        // Successful completion — the turn is done. Drop the key so the next sendMessage
+        // call generates a fresh one and we don't accidentally tie an unrelated turn to a
+        // stale idempotency record.
+        this.activeIdempotencyKey.set(null);
       },
     });
   }
@@ -972,6 +1043,9 @@ export class ChatPanelComponent implements OnDestroy {
     // sc-274 phase 2 — cancel also clears preflight; the user may have hit cancel because the
     // banner surfaced a needed clarification and they want to start over.
     this.preflightError.set(null);
+    // sc-525 — abandoning the turn means the user is no longer interested in this attempt;
+    // drop the key so the next sendMessage starts a clean idempotency record.
+    this.activeIdempotencyKey.set(null);
   }
 
   /**
@@ -1927,4 +2001,30 @@ function truncatePreview(value: string): string {
   const PREVIEW_CAP = 4_000;
   if (value.length <= PREVIEW_CAP) return value;
   return value.slice(0, PREVIEW_CAP) + `\n... [truncated, original was ${value.length} chars]`;
+}
+
+/**
+ * sc-525 — Per-turn idempotency key. UUID v4 from the platform crypto API when available;
+ * fallback to a randomized string of the same shape for environments without
+ * `crypto.randomUUID` (older specs, certain test runners).
+ */
+function generateIdempotencyKey(): string {
+  const cryptoApi: Crypto | undefined = typeof globalThis !== 'undefined'
+    ? (globalThis as { crypto?: Crypto }).crypto
+    : undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID();
+  }
+  // Fallback: 32 hex chars dashed into UUID-like form. Server only validates length +
+  // charset, so the precise shape doesn't matter as long as it's unique.
+  const bytes = new Uint8Array(16);
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+    cryptoApi.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

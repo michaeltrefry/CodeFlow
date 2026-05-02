@@ -82,6 +82,14 @@ export interface SendTurnOptions {
    * absent. Use Trace to point the assistant's host tools at a code-aware workflow's workdir.
    */
   workspaceOverride?: AssistantWorkspaceTargetDto;
+  /**
+   * sc-525 — Opaque per-turn idempotency key (UUID-shaped). When supplied, sent as the
+   * `Idempotency-Key` header so server-side dedupe can replay the recorded SSE events on
+   * retried POSTs without persisting a second user message or invoking the LLM twice. Also
+   * gates auto-retry in <c>streamSse</c> on transient network failures: callers that don't
+   * pass a key keep the current "fail loud" behavior so they can't accidentally duplicate.
+   */
+  idempotencyKey?: string;
 }
 
 export function streamAssistantTurn(
@@ -110,14 +118,23 @@ export function streamAssistantTurn(
     body.workspaceOverride = options.workspaceOverride;
   }
 
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options?.idempotencyKey) {
+    headers['Idempotency-Key'] = options.idempotencyKey;
+  }
+
   return streamSse(
     `/api/assistant/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       accessToken: auth.getValidAccessToken(),
       handleErrorResponse: handlePreflightRefusal,
+      // sc-525 — only retry transient network failures when the caller has set an
+      // idempotency key. Without one, a silent retry could create duplicate user messages
+      // or duplicate billable LLM turns; with one, the server replays recorded events.
+      retry: options?.idempotencyKey ? { attempts: 3 } : undefined,
     },
     parseSseFrame,
   );

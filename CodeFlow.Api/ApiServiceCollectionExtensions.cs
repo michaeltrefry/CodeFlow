@@ -1,5 +1,6 @@
 using Anthropic;
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Api.Assistant.Skills;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.CascadeBump;
@@ -17,6 +18,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net;
 using System.Text.Json.Serialization;
 
@@ -120,6 +122,17 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
+
+        // sc-525: idempotency for retried assistant turn POSTs. Repository is scoped (DbContext);
+        // signal registry is singleton (in-process waiter map); coordinator is scoped because it
+        // depends on the scoped repository.
+        services.Configure<AssistantTurnIdempotencyOptions>(
+            configuration.GetSection("Assistant:Idempotency"));
+        services.AddScoped<IAssistantTurnIdempotencyRepository, AssistantTurnIdempotencyRepository>();
+        services.AddSingleton<AssistantTurnSignalRegistry>();
+        services.AddScoped<IAssistantTurnIdempotencyCoordinator, AssistantTurnIdempotencyCoordinator>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddHostedService<AssistantTurnIdempotencySweepService>();
         services.AddSingleton<IAssistantSystemPromptProvider, DefaultAssistantSystemPromptProvider>();
         services.AddScoped<ICodeFlowAssistant, CodeFlowAssistant>();
         services.AddScoped<AssistantChatService>();
