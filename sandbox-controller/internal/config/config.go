@@ -20,8 +20,18 @@ type Config struct {
 	Runner    RunnerConfig    `toml:"runner"`
 	Images    ImagesConfig    `toml:"images"`
 	Workspace WorkspaceConfig `toml:"workspace"`
+	Sweeper   SweeperConfig   `toml:"sweeper"`
 
 	rawHash string
+}
+
+// SweeperConfig governs sc-533's periodic cleanup. Zero values fall back to
+// the sweeper package defaults (30m interval, 24h container TTL, 7d results
+// TTL).
+type SweeperConfig struct {
+	IntervalSeconds     int `toml:"interval_seconds"`
+	ContainerTTLSeconds int `toml:"container_ttl_seconds"`
+	ResultsTTLSeconds   int `toml:"results_ttl_seconds"`
 }
 
 // WorkspaceConfig governs sc-531's workspace path validation. WorkdirRoot must

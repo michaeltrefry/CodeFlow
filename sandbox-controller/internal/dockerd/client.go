@@ -166,6 +166,58 @@ func (c *Client) CreateContainer(ctx context.Context, name string, req CreateCon
 	return &out, nil
 }
 
+// ContainerListItem is one entry in the response from ListContainers.
+type ContainerListItem struct {
+	ID      string            `json:"Id"`
+	Names   []string          `json:"Names"`
+	Labels  map[string]string `json:"Labels"`
+	State   string            `json:"State"`
+	Status  string            `json:"Status"`
+	Created int64             `json:"Created"` // unix timestamp seconds
+}
+
+// CreatedAt returns the container's creation timestamp as a time.Time.
+func (i ContainerListItem) CreatedAt() time.Time {
+	return time.Unix(i.Created, 0).UTC()
+}
+
+// ListContainers calls GET /containers/json. labelFilter is the label key
+// (e.g. "cf-managed=true") that scopes the listing — empty returns
+// everything. all=true includes stopped containers (sweep needs both running
+// and exited).
+func (c *Client) ListContainers(ctx context.Context, labelFilter string, all bool) ([]ContainerListItem, error) {
+	q := url.Values{}
+	if all {
+		q.Set("all", "1")
+	}
+	if labelFilter != "" {
+		// Docker's filters parameter is a JSON-encoded {"label":["key=value", …]} blob.
+		filters := map[string][]string{"label": {labelFilter}}
+		raw, err := json.Marshal(filters)
+		if err != nil {
+			return nil, fmt.Errorf("docker container list: marshal filters: %w", err)
+		}
+		q.Set("filters", string(raw))
+	}
+	req, err := c.newRequest(ctx, http.MethodGet, "/containers/json?"+q.Encode(), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("docker container list: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.errorFromResponse(resp, "container list")
+	}
+	var out []ContainerListItem
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("docker container list: decode response: %w", err)
+	}
+	return out, nil
+}
+
 // StartContainer calls POST /containers/{id}/start.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
 	req, err := c.newRequest(ctx, http.MethodPost, "/containers/"+id+"/start", nil, nil)
