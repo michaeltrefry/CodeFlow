@@ -59,3 +59,10 @@ jobs:
 
       - name: Validate production compose renders
         run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.prod.yml config > /dev/null
+
+      # sc-537: defensive audit. Fails CI if an api/worker Dockerfile or compose service ever
+      # gains DooD vestiges (docker socket mount, docker CLI install, or unjustified group_add).
+      # The sandbox-controller subtree is allowed to mount the socket — that's the whole
+      # point of having it.
+      - name: Audit no DooD on app tier
+        run: ./scripts/audit-no-dood-on-app-tier.sh

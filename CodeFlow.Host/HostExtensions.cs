@@ -292,7 +292,20 @@ public static class HostExtensions
                 sp.GetRequiredService<IDockerCommandRunner>(),
                 sp.GetRequiredService<DockerLifecycleService>(),
                 sp.GetRequiredService<ContainerExecutionWorkspaceProvider>()));
-        services.AddHostedService<ContainerResourceSweepService>();
+        // sc-537: register the in-process container sweep ONLY when the Docker
+        // backend is selected. On the SandboxController backend the controller
+        // owns its own per-job + periodic sweep (sc-533), and the in-process
+        // service has nothing to do — register-then-noop was a v1 step;
+        // Phase-1 cutover skips registration entirely. This is the prod path
+        // by default; the rollback flow re-enables the legacy sweep by
+        // setting ContainerTools__Backend=Docker.
+        var registeredBackend = configuration
+            .GetSection(ContainerToolOptions.SectionName)
+            .Get<ContainerToolOptions>()?.Backend ?? ContainerBackend.Docker;
+        if (registeredBackend == ContainerBackend.Docker)
+        {
+            services.AddHostedService<ContainerResourceSweepService>();
+        }
         services.TryAddSingleton<IWebSearchProvider, NullWebSearchProvider>();
         services.AddSingleton<WebHostToolService>(sp =>
             new WebHostToolService(
