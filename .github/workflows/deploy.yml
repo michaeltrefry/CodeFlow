@@ -304,6 +304,7 @@ jobs:
           CODEFLOW_SANDBOX_CONTROLLER_IMAGE: ${{ needs.images.outputs.sandbox_controller_image }}
           CODEFLOW_CONTAINER_BACKEND: ${{ vars.CODEFLOW_CONTAINER_BACKEND || 'SandboxController' }}
           CODEFLOW_CFSC_CONFIG_DIR: ${{ vars.CODEFLOW_CFSC_CONFIG_DIR || '/opt/codeflow/cfsc/config' }}
+          CODEFLOW_CFSC_TLS_DIR: ${{ vars.CODEFLOW_CFSC_TLS_DIR || '/opt/codeflow/cfsc/tls' }}
           CODEFLOW_CFSC_CLIENT_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_DIR || '/opt/codeflow/cfsc-client/api' }}
           CODEFLOW_CFSC_CLIENT_WORKER_DIR: ${{ vars.CODEFLOW_CFSC_CLIENT_WORKER_DIR || '/opt/codeflow/cfsc-client/worker' }}
           # Seccomp profile path on the host (deploy workflow scps the file
@@ -349,6 +350,7 @@ jobs:
             q CODEFLOW_SANDBOX_CONTROLLER_IMAGE "${CODEFLOW_SANDBOX_CONTROLLER_IMAGE}"
             q CODEFLOW_CONTAINER_BACKEND "${CODEFLOW_CONTAINER_BACKEND}"
             q CODEFLOW_CFSC_CONFIG_DIR "${CODEFLOW_CFSC_CONFIG_DIR}"
+            q CODEFLOW_CFSC_TLS_DIR "${CODEFLOW_CFSC_TLS_DIR}"
             q CODEFLOW_CFSC_CLIENT_DIR "${CODEFLOW_CFSC_CLIENT_DIR}"
             q CODEFLOW_CFSC_CLIENT_WORKER_DIR "${CODEFLOW_CFSC_CLIENT_WORKER_DIR}"
             q CFSC_SECCOMP_PROFILE_PATH "${CFSC_SECCOMP_PROFILE_PATH}"
