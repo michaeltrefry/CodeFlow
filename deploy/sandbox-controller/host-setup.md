@@ -122,6 +122,21 @@ sudo chmod 0640 /opt/codeflow/cfsc-client/api/client.key
 sudo chmod 0640 /opt/codeflow/cfsc-client/worker/client.key
 ```
 
+> **Ownership is fixed up automatically.** `bootstrap-ca.sh` writes the files
+> as the invoking user (typically root via sudo). The api/worker run as uid
+> 1654 and the controller runs as uid 65532 (distroless `nonroot`), so they
+> can't read root-owned 0640 files. The `codeflow-init` container in
+> `deploy/docker-compose.prod.yml` chowns these dirs to the right uids on
+> every `docker compose up`, so you don't need to chown manually. If you
+> need to start the controller without compose (rare), apply the chowns by
+> hand:
+>
+> ```bash
+> sudo chown -R 65532:65532 /opt/codeflow/cfsc/tls
+> sudo chown -R 1654:1654   /opt/codeflow/cfsc-client/api \
+>                           /opt/codeflow/cfsc-client/worker
+> ```
+
 See [`cert-rotation.md`](cert-rotation.md) for the rotation procedure (90-day default lifetime).
 
 ## 5. Place the controller config
