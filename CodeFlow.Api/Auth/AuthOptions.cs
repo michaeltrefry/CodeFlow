@@ -37,6 +37,20 @@ public sealed class AuthOptions
 
     public bool DevelopmentBypass { get; set; }
 
+    /// <summary>
+    /// Public OAuth client id advertised to first-run CLI clients via
+    /// <c>GET /api/auth/config</c>. Defaults to <c>codeflow-cli</c> so a stock
+    /// Keycloak realm following the CodeFlow convention works without extra config.
+    /// </summary>
+    public string CliClientId { get; set; } = "codeflow-cli";
+
+    /// <summary>
+    /// Space-separated OAuth scopes the CLI should request, advertised via
+    /// <c>GET /api/auth/config</c>. Defaults to the standard OIDC profile so the
+    /// CLI receives an id token plus name/email claims.
+    /// </summary>
+    public string CliScopes { get; set; } = "openid profile email";
+
     public string DevelopmentUserId { get; set; } = "local-dev";
 
     public string DevelopmentUserEmail { get; set; } = "local-dev@codeflow.local";

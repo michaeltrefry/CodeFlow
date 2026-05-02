@@ -9,6 +9,7 @@ public static class CodeFlowEndpoints
     {
         ArgumentNullException.ThrowIfNull(routes);
 
+        routes.MapAuthDiscoveryEndpoints();
         routes.MapMeEndpoints();
         routes.MapAgentsEndpoints();
         routes.MapAgentTestEndpoints();
