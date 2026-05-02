@@ -610,12 +610,7 @@ public sealed class CodeFlowAssistant(
             var resultBlocks = new List<ContentBlockParam>();
             foreach (var (pending, _, result) in dispatched)
             {
-                resultBlocks.Add((ToolResultBlockParam)new ToolResultBlockParam
-                {
-                    ToolUseID = pending.Id,
-                    Content = result.ResultJson,
-                    IsError = result.IsError ? true : null,
-                });
+                resultBlocks.Add(BuildAnthropicToolResultBlock(pending.Id, pending.Name, result));
 
                 if (!result.IsError
                     && WorkflowPackageRedaction.ResultCarriesPackagePayload(pending.Name, result.ResultJson))
@@ -698,6 +693,34 @@ public sealed class CodeFlowAssistant(
                 Messages = messages,
                 Tools = tools.ToList()
             };
+    }
+
+    /// <summary>
+    /// AS-6: build a tool_result block for the Anthropic transcript. A successful
+    /// <see cref="LoadAssistantSkillTool.ToolName"/> result carries a content-stable skill body the
+    /// model will reference for the rest of the session — marking the block
+    /// <c>cache_control=ephemeral</c> lets Anthropic anchor a prompt-cache prefix on it so
+    /// subsequent turns hit <c>cache_read</c> on the body instead of paying the load each time.
+    /// Errored skill loads, every other tool, and the redaction tracker's demoted blocks are
+    /// intentionally NOT marked — cache breakpoints are scarce (Anthropic allows up to four per
+    /// request) and only worth spending on bytes the model will actually read again.
+    /// </summary>
+    internal static ToolResultBlockParam BuildAnthropicToolResultBlock(
+        string toolUseId,
+        string toolName,
+        AssistantToolResult result)
+    {
+        var isCacheableSkillLoad =
+            !result.IsError
+            && string.Equals(toolName, LoadAssistantSkillTool.ToolName, StringComparison.Ordinal);
+
+        return new ToolResultBlockParam
+        {
+            ToolUseID = toolUseId,
+            Content = result.ResultJson,
+            IsError = result.IsError ? true : null,
+            CacheControl = isCacheableSkillLoad ? new CacheControlEphemeral() : null,
+        };
     }
 
     /// <summary>
@@ -932,6 +955,11 @@ public sealed class CodeFlowAssistant(
 
             // tool result messages reference the original tool_call id. Result-side carriers
             // register so they participate in the same N=1 buffer.
+            //
+            // AS-6: OpenAI prompt caching is automatic on prefixes (no per-block marker exists in
+            // the Chat Completions schema), so the `load_assistant_skill` body benefits from
+            // OpenAI's prefix cache without an explicit opt-in here. The Anthropic path adds an
+            // explicit cache_control=ephemeral marker — see the Anthropic loop above.
             foreach (var d in dispatchedOpenAi)
             {
                 var name = d.Pending.Name ?? string.Empty;
