@@ -130,6 +130,10 @@ public sealed class WorkflowAuthoringSkillTests
     [InlineData("agentRoleAssignments")]
     [InlineData("Embedding rule")]
     [InlineData("cf-workflow-package")]
+    // Field-name and id-shape gotchas — observed real-world spirals from sessions where the
+    // model defaulted to JSON Schema dialects (`$schema`) or to slug-style ids.
+    [InlineData("$schema")]
+    [InlineData("MUST be a fresh GUID")]
     public void Skill_PinsShapeGotchasAndEmissionContract(string token)
     {
         LoadSkill().Body.Should().Contain(token);

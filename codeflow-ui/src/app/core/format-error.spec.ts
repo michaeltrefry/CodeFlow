@@ -42,12 +42,26 @@ describe('formatHttpError', () => {
   });
 
   it('does not show Angular transport wording for empty 400 responses', () => {
-    expect(formatHttpError({
+    const message = formatHttpError({
       status: 400,
       statusText: 'OK',
       message: 'Http failure response for /api/workflows/package/apply-from-draft: 400 OK',
-    })).toBe(
-      'Bad request (HTTP 400). The server rejected the request but did not return validation details.'
-    );
+    });
+    // Empty-body 400s are surfaced with a devtools hint so users / devs can inspect the
+    // response in the Network tab when no parseable body is available. The exact wording is
+    // tolerant — assert on the load-bearing tokens rather than the full string so the message
+    // can evolve without churning tests.
+    expect(message).toMatch(/Bad request \(HTTP 400/);
+    expect(message).toMatch(/devtools/i);
+    expect(message).not.toMatch(/Http failure response for/);
+  });
+
+  it('includes the request URL in the empty-400 hint when Angular provides it', () => {
+    const message = formatHttpError({
+      status: 400,
+      statusText: 'Bad Request',
+      url: '/api/workflows/package/apply-from-draft',
+    });
+    expect(message).toMatch(/apply-from-draft/);
   });
 });

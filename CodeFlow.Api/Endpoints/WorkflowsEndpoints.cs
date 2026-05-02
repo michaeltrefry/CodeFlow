@@ -218,6 +218,7 @@ public static class WorkflowsEndpoints
     private static async Task<IResult> ApplyPackageImportAsync(
         WorkflowPackage package,
         IWorkflowPackageImporter importer,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         try
@@ -228,6 +229,17 @@ public static class WorkflowsEndpoints
         catch (WorkflowPackageResolutionException exception)
         {
             return WorkflowPackageImportValidationProblem(exception);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Catch-all: an unhandled exception escaping this endpoint becomes either a 500 or a
+            // 400 with no body — both surface in the chat-panel chip as "did not return validation
+            // details" and leave the user stranded. Convert to a structured ProblemDetails so the
+            // chip's `formatHttpError` can render something actionable. Logged at Error so an
+            // operator can correlate.
+            loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.WorkflowsEndpoints")
+                .LogError(exception, "Unhandled exception in apply-package-import.");
+            return UnhandledImportProblem(exception);
         }
     }
 
@@ -250,6 +262,7 @@ public static class WorkflowsEndpoints
         IAssistantConversationRepository conversations,
         IAssistantWorkspaceProvider workspaceProvider,
         IWorkflowPackageImporter importer,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (request is null || request.ConversationId == Guid.Empty)
@@ -344,6 +357,43 @@ public static class WorkflowsEndpoints
         {
             return WorkflowPackageImportValidationProblem(exception);
         }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Catch-all: same rationale as ApplyPackageImportAsync — the chat-panel chip surfaces
+            // an empty-body 400 as "did not return validation details," which strands the user.
+            // Convert to a structured ProblemDetails carrying the exception message + class so
+            // the chip can render something actionable.
+            loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.WorkflowsEndpoints")
+                .LogError(exception, "Unhandled exception in apply-package-import-from-draft for conversation {ConversationId}.",
+                    request.ConversationId);
+            return UnhandledImportProblem(exception);
+        }
+    }
+
+    /// <summary>
+    /// Convert an unexpected exception that escaped the structured-validation paths into a
+    /// ProblemDetails the chat-panel can render. Without this any non-WorkflowPackageResolutionException
+    /// would either bubble to ASP.NET's default exception handler (500 / generic 400 with no body)
+    /// or be swallowed by middleware — either way the chip shows "did not return validation
+    /// details" and the user has no path forward.
+    /// </summary>
+    private static IResult UnhandledImportProblem(Exception exception)
+    {
+        var detail = string.IsNullOrWhiteSpace(exception.Message)
+            ? exception.GetType().Name
+            : $"{exception.GetType().Name}: {exception.Message}";
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["package"] = new[]
+                {
+                    "Workflow package import failed with an unexpected error. "
+                    + "This usually means the package shape was rejected at apply time on a rule the "
+                    + "preview validator did not catch (a typed-deserialization failure, for example). "
+                    + $"Details: {detail}",
+                },
+            },
+            title: "Workflow package import failed.");
     }
 
     public sealed record ApplyPackageImportFromDraftRequest(Guid ConversationId, Guid SnapshotId);
