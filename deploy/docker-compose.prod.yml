@@ -92,7 +92,7 @@ services:
       # CLI runner (which is inert in this container — see PR #208 / sc-526). Prod sets
       # SandboxController to route through the new mTLS controller below.
       ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
-      SandboxController__Url: http://codeflow-sandbox-controller:8443
+      SandboxController__Url: https://codeflow-sandbox-controller:8443
       SandboxController__ClientCertPath: /etc/cfsc-client/client.pem
       SandboxController__ClientKeyPath: /etc/cfsc-client/client.key
       SandboxController__ServerCAPath: /etc/cfsc-client/server-ca.pem
@@ -149,7 +149,7 @@ services:
       Observability__EnableConsoleExporter: "false"
       # sc-532: sandbox-controller backend (same wiring as codeflow-api).
       ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
-      SandboxController__Url: http://codeflow-sandbox-controller:8443
+      SandboxController__Url: https://codeflow-sandbox-controller:8443
       SandboxController__ClientCertPath: /etc/cfsc-client/client.pem
       SandboxController__ClientKeyPath: /etc/cfsc-client/client.key
       SandboxController__ServerCAPath: /etc/cfsc-client/server-ca.pem
