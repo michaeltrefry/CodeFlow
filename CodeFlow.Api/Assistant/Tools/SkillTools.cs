@@ -20,9 +20,9 @@ public sealed class ListAssistantSkillsTool(IAssistantSkillProvider skills) : IA
         "List the assistant skills you can load on demand. Each skill bundles a slice of the " +
         "platform's curated knowledge (workflow authoring, runtime vocabulary, trace diagnosis, " +
         "etc.) that you only pay for when the conversation actually needs it. Returns a row per " +
-        "skill with `key`, `name`, and `description`. Call `load_assistant_skill({ key })` to " +
-        "pull a skill's body into the transcript before answering domain-specific questions. " +
-        "No arguments.";
+        "skill with `key`, `name`, `description`, and `trigger` (a short hint about when to " +
+        "load the skill). Call `load_assistant_skill({ key })` to pull a skill's body into the " +
+        "transcript before answering domain-specific questions. No arguments.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
@@ -42,6 +42,7 @@ public sealed class ListAssistantSkillsTool(IAssistantSkillProvider skills) : IA
                     key = s.Key,
                     name = s.Name,
                     description = s.Description,
+                    trigger = s.Trigger,
                 })
                 .ToArray(),
         };

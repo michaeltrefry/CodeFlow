@@ -10,6 +10,7 @@ namespace CodeFlow.Api.Assistant.Skills;
 /// key: workflow-authoring
 /// name: Workflow authoring
 /// description: Use when drafting / saving / editing workflows.
+/// trigger: user wants to author or edit a workflow.
 /// ---
 ///
 /// Body markdown...
@@ -107,6 +108,7 @@ internal static class AssistantSkillParser
         var key = RequireField(fields, "key", fileName);
         var displayName = RequireField(fields, "name", fileName);
         var description = RequireField(fields, "description", fileName);
+        var trigger = RequireField(fields, "trigger", fileName);
 
         if (!KeyPattern.IsMatch(key))
         {
@@ -129,7 +131,7 @@ internal static class AssistantSkillParser
                 "Skill body is empty — every skill must contribute markdown content the model can read.");
         }
 
-        return new AssistantSkill(key, displayName, description, body);
+        return new AssistantSkill(key, displayName, description, trigger, body);
     }
 
     private static string RequireField(Dictionary<string, string> fields, string name, string fileName)

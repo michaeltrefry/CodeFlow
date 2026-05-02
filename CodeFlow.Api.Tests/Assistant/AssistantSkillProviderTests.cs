@@ -11,6 +11,12 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// </summary>
 public sealed class AssistantSkillProviderTests
 {
+    private const string MinimalFrontmatter =
+        "key: alpha\nname: Alpha\ndescription: Alpha desc\ntrigger: alpha trigger\n";
+
+    private static string MinimalSkillSource(string body = "Body.")
+        => $"---\n{MinimalFrontmatter}---\n\n{body}";
+
     [Fact]
     public void EmptySources_ProducesEmptyCatalog()
     {
@@ -21,13 +27,14 @@ public sealed class AssistantSkillProviderTests
     }
 
     [Fact]
-    public void Parse_ExtractsKeyNameDescriptionAndBody()
+    public void Parse_ExtractsKeyNameDescriptionTriggerAndBody()
     {
         var content = """
             ---
             key: workflow-authoring
             name: Workflow authoring
             description: Use when drafting or saving workflow JSON.
+            trigger: user wants to author or edit a workflow.
             ---
 
             Body line 1.
@@ -40,23 +47,26 @@ public sealed class AssistantSkillProviderTests
         skill.Key.Should().Be("workflow-authoring");
         skill.Name.Should().Be("Workflow authoring");
         skill.Description.Should().Be("Use when drafting or saving workflow JSON.");
+        skill.Trigger.Should().Be("user wants to author or edit a workflow.");
         skill.Body.Should().Be("Body line 1.\n\nBody line 2.");
     }
 
     [Fact]
     public void Parse_NormalizesCrlfLineEndings()
     {
-        var content = "---\r\nkey: alpha\r\nname: Alpha\r\ndescription: Alpha desc\r\n---\r\n\r\nBody.\r\n";
+        var content = "---\r\nkey: alpha\r\nname: Alpha\r\ndescription: Alpha desc\r\n"
+            + "trigger: alpha trigger\r\n---\r\n\r\nBody.\r\n";
 
         var skill = AssistantSkillParser.Parse("alpha.md", content);
 
         skill.Body.Should().Be("Body.");
+        skill.Trigger.Should().Be("alpha trigger");
     }
 
     [Fact]
     public void Parse_ToleratesLeadingBlankLines()
     {
-        var content = "\n\n---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nBody.";
+        var content = "\n\n" + MinimalSkillSource();
 
         var skill = AssistantSkillParser.Parse("alpha.md", content);
 
@@ -67,7 +77,7 @@ public sealed class AssistantSkillProviderTests
     [Fact]
     public void Parse_RejectsMissingFrontmatterDelimiter()
     {
-        var content = "key: alpha\nname: Alpha\ndescription: Alpha desc\n\nBody.";
+        var content = MinimalFrontmatter + "\nBody.";
 
         var act = () => AssistantSkillParser.Parse("alpha.md", content);
 
@@ -78,7 +88,7 @@ public sealed class AssistantSkillProviderTests
     [Fact]
     public void Parse_RejectsUnclosedFrontmatter()
     {
-        var content = "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n\nBody (but no closing ---)";
+        var content = "---\n" + MinimalFrontmatter + "\nBody (but no closing ---)";
 
         var act = () => AssistantSkillParser.Parse("alpha.md", content);
 
@@ -87,29 +97,20 @@ public sealed class AssistantSkillProviderTests
     }
 
     [Theory]
-    [InlineData("name", "missing key")]
-    [InlineData("key", "missing name")]
-    [InlineData("description", "missing description")]
-    public void Parse_RejectsMissingRequiredField(string presentField, string _)
+    [InlineData("key")]
+    [InlineData("name")]
+    [InlineData("description")]
+    [InlineData("trigger")]
+    public void Parse_RejectsMissingRequiredField(string omitted)
     {
-        // Build a frontmatter that has every field except `presentField`'s sibling so we can
-        // assert exactly which field is reported as missing. (`presentField` here is the field
-        // that REMAINS — the one we omit from the input is the one we expect to be flagged.)
+        // Build a frontmatter with every required field except `omitted`, then assert the parser
+        // identifies the missing field by name in its error.
         var fields = new Dictionary<string, string>
         {
             ["key"] = "alpha",
             ["name"] = "Alpha",
             ["description"] = "Alpha desc",
-        };
-        // Drop one field by re-keying: keep only `presentField` and exactly one other so the
-        // parser sees a frontmatter that's missing the remaining required entry.
-        // Simpler: omit each in turn explicitly.
-        var omitted = presentField switch
-        {
-            "name" => "key",
-            "key" => "name",
-            "description" => "description",
-            _ => throw new InvalidOperationException(),
+            ["trigger"] = "Alpha trigger",
         };
 
         var lines = new List<string> { "---" };
@@ -137,7 +138,7 @@ public sealed class AssistantSkillProviderTests
     [InlineData("under_score")]
     public void Parse_RejectsInvalidKeySlug(string key)
     {
-        var content = $"---\nkey: {key}\nname: Alpha\ndescription: Alpha desc\n---\n\nBody.";
+        var content = $"---\nkey: {key}\nname: Alpha\ndescription: Alpha desc\ntrigger: t\n---\n\nBody.";
 
         var act = () => AssistantSkillParser.Parse("alpha.md", content);
 
@@ -148,7 +149,7 @@ public sealed class AssistantSkillProviderTests
     [Fact]
     public void Parse_RejectsEmptyBody()
     {
-        var content = "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\n";
+        var content = "---\n" + MinimalFrontmatter + "---\n";
 
         var act = () => AssistantSkillParser.Parse("alpha.md", content);
 
@@ -161,8 +162,9 @@ public sealed class AssistantSkillProviderTests
     {
         var sources = new[]
         {
-            ("first.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nBody A."),
-            ("second.md", "---\nkey: alpha\nname: Alpha 2\ndescription: Alpha desc 2\n---\nBody B."),
+            ("first.md", MinimalSkillSource("Body A.")),
+            ("second.md",
+                "---\nkey: alpha\nname: Alpha 2\ndescription: Alpha desc 2\ntrigger: t2\n---\nBody B."),
         };
 
         var act = () => new EmbeddedAssistantSkillProvider(sources);
@@ -177,15 +179,16 @@ public sealed class AssistantSkillProviderTests
     {
         var sources = new[]
         {
-            ("z.md", "---\nkey: zulu\nname: Zulu\ndescription: Zulu desc\n---\nZ body."),
-            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nA body."),
-            ("m.md", "---\nkey: mike\nname: Mike\ndescription: Mike desc\n---\nM body."),
+            ("z.md", "---\nkey: zulu\nname: Zulu\ndescription: Zulu desc\ntrigger: tz\n---\nZ body."),
+            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\ntrigger: ta\n---\nA body."),
+            ("m.md", "---\nkey: mike\nname: Mike\ndescription: Mike desc\ntrigger: tm\n---\nM body."),
         };
 
         var provider = new EmbeddedAssistantSkillProvider(sources);
 
         provider.List().Select(s => s.Key).Should().Equal("alpha", "mike", "zulu");
         provider.Get("mike")!.Body.Should().Be("M body.");
+        provider.Get("mike")!.Trigger.Should().Be("tm");
         provider.Get("Mike").Should().BeNull(because: "key lookups are case-sensitive");
         provider.Get("nope").Should().BeNull();
     }

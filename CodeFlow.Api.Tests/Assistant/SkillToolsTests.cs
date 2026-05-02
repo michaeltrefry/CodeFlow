@@ -19,6 +19,10 @@ public sealed class SkillToolsTests
     private static IAssistantSkillProvider ProviderWith(params (string FileName, string Content)[] sources)
         => new EmbeddedAssistantSkillProvider(sources);
 
+    private static (string FileName, string Content) Skill(string key, string name, string description, string trigger, string body)
+        => ($"{key}.md",
+            $"---\nkey: {key}\nname: {name}\ndescription: {description}\ntrigger: {trigger}\n---\n{body}");
+
     private static JsonElement ParseObject(AssistantToolResult result)
     {
         result.IsError.Should().BeFalse(because: result.ResultJson);
@@ -38,11 +42,11 @@ public sealed class SkillToolsTests
     }
 
     [Fact]
-    public async Task ListAssistantSkills_ReturnsKeyNameDescription_ButNotBody()
+    public async Task ListAssistantSkills_ReturnsKeyNameDescriptionTrigger_ButNotBody()
     {
         var tool = new ListAssistantSkillsTool(ProviderWith(
-            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nA body."),
-            ("b.md", "---\nkey: bravo\nname: Bravo\ndescription: Bravo desc\n---\nB body.")));
+            Skill("alpha", "Alpha", "Alpha desc", "alpha trigger", "A body."),
+            Skill("bravo", "Bravo", "Bravo desc", "bravo trigger", "B body.")));
 
         var result = ParseObject(await tool.InvokeAsync(EmptyArgs, CancellationToken.None));
 
@@ -53,6 +57,7 @@ public sealed class SkillToolsTests
                 Key = r.GetProperty("key").GetString(),
                 Name = r.GetProperty("name").GetString(),
                 Description = r.GetProperty("description").GetString(),
+                Trigger = r.GetProperty("trigger").GetString(),
                 HasBody = r.TryGetProperty("body", out _),
             })
             .ToArray();
@@ -61,6 +66,7 @@ public sealed class SkillToolsTests
         rows[0].Key.Should().Be("alpha");
         rows[0].Name.Should().Be("Alpha");
         rows[0].Description.Should().Be("Alpha desc");
+        rows[0].Trigger.Should().Be("alpha trigger");
         rows[0].HasBody.Should().BeFalse(because: "the catalog must not pay the body cost");
         rows[1].Key.Should().Be("bravo");
     }
@@ -69,7 +75,7 @@ public sealed class SkillToolsTests
     public async Task LoadAssistantSkill_ReturnsKeyAndBody()
     {
         var tool = new LoadAssistantSkillTool(ProviderWith(
-            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nFull body content here.")));
+            Skill("alpha", "Alpha", "Alpha desc", "alpha trigger", "Full body content here.")));
 
         var result = ParseObject(await tool.InvokeAsync(Args(new { key = "alpha" }), CancellationToken.None));
 
@@ -81,8 +87,8 @@ public sealed class SkillToolsTests
     public async Task LoadAssistantSkill_UnknownKey_ReturnsErrorWithAvailableKeys()
     {
         var tool = new LoadAssistantSkillTool(ProviderWith(
-            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nA body."),
-            ("b.md", "---\nkey: bravo\nname: Bravo\ndescription: Bravo desc\n---\nB body.")));
+            Skill("alpha", "Alpha", "Alpha desc", "alpha trigger", "A body."),
+            Skill("bravo", "Bravo", "Bravo desc", "bravo trigger", "B body.")));
 
         var result = await tool.InvokeAsync(Args(new { key = "nope" }), CancellationToken.None);
 
@@ -107,7 +113,7 @@ public sealed class SkillToolsTests
     public async Task LoadAssistantSkill_MissingKeyArgument_ReturnsError()
     {
         var tool = new LoadAssistantSkillTool(ProviderWith(
-            ("a.md", "---\nkey: alpha\nname: Alpha\ndescription: Alpha desc\n---\nA body.")));
+            Skill("alpha", "Alpha", "Alpha desc", "alpha trigger", "A body.")));
 
         var result = await tool.InvokeAsync(EmptyArgs, CancellationToken.None);
 
