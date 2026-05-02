@@ -178,6 +178,52 @@ public sealed class AssistantTurnIdempotencyRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TryClaimAsync_concurrent_first_writes_resolves_one_Claimed_and_one_Existing()
+    {
+        // Two requests race past the pre-check and both try to insert. The unique index
+        // promotes one to Claimed and forces the loser through the DbUpdateException catch,
+        // where it reads back the winner's row and surfaces it as Existing. The test exists
+        // primarily to keep the catch path covered by CI — without it, a future refactor
+        // could swap to a code path that silently drops the winner's claim.
+        var conversationId = Guid.NewGuid();
+        var key = NewKey();
+        var now = DateTime.UtcNow;
+
+        // Each task gets its own DbContext (mirrors per-request scoping in production —
+        // sharing a context across racing tasks isn't supported by EF Core).
+        var taskA = Task.Run(async () =>
+        {
+            await using var ctx = CreateDbContext();
+            var repo = new AssistantTurnIdempotencyRepository(ctx);
+            return await repo.TryClaimAsync(conversationId, key, "u", "h", now, TimeSpan.FromMinutes(10));
+        });
+        var taskB = Task.Run(async () =>
+        {
+            await using var ctx = CreateDbContext();
+            var repo = new AssistantTurnIdempotencyRepository(ctx);
+            return await repo.TryClaimAsync(conversationId, key, "u", "h", now, TimeSpan.FromMinutes(10));
+        });
+
+        var outcomes = await Task.WhenAll(taskA, taskB);
+
+        var claimed = outcomes.OfType<AssistantTurnClaimOutcome.Claimed>().ToArray();
+        var existing = outcomes.OfType<AssistantTurnClaimOutcome.Existing>().ToArray();
+
+        // Either the catch path triggered (1 + 1) — the case we care about — or both pre-checks
+        // missed and one inserted while the other read back the winner via Existing on retry.
+        // What we MUST avoid is two Claimed outcomes pointing at distinct rows.
+        (claimed.Length + existing.Length).Should().Be(2);
+        claimed.Should().HaveCount(1);
+        existing.Should().HaveCount(1);
+        existing[0].Record.Id.Should().Be(claimed[0].Record.Id, "both outcomes must resolve to the same winning row");
+
+        await using var verifyCtx = CreateDbContext();
+        (await verifyCtx.AssistantTurnIdempotency.CountAsync(e =>
+            e.ConversationId == conversationId && e.IdempotencyKey == key))
+            .Should().Be(1, "the unique index must keep exactly one row in the table");
+    }
+
+    [Fact]
     public async Task PurgeExpiredAsync_removes_only_expired_rows()
     {
         var now = DateTime.UtcNow;

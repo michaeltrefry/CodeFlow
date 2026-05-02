@@ -2006,9 +2006,10 @@ function truncatePreview(value: string): string {
 /**
  * sc-525 — Per-turn idempotency key. UUID v4 from the platform crypto API when available;
  * fallback to a randomized string of the same shape for environments without
- * `crypto.randomUUID` (older specs, certain test runners).
+ * `crypto.randomUUID` (older specs, certain test runners). Exported for the chat-panel
+ * spec — internal callers don't need it directly.
  */
-function generateIdempotencyKey(): string {
+export function generateIdempotencyKey(): string {
   const cryptoApi: Crypto | undefined = typeof globalThis !== 'undefined'
     ? (globalThis as { crypto?: Crypto }).crypto
     : undefined;
