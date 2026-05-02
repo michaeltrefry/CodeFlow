@@ -196,5 +196,6 @@ function workflowSummary(key: string, name: string): WorkflowSummary {
     edgeCount: 1,
     inputCount: 1,
     createdAtUtc: '2026-04-30T09:00:00Z',
+    isRetired: false,
   };
 }

@@ -101,6 +101,7 @@ function workflow(overrides: Partial<WorkflowDetail> = {}): WorkflowDetail {
     category: 'Workflow',
     tags: [],
     createdAtUtc: '2026-04-29T00:00:00Z',
+    isRetired: false,
     nodes: [],
     edges: [],
     inputs: [],

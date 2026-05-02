@@ -143,6 +143,46 @@ describe('streamAssistantTurn', () => {
     ]);
   });
 
+  it('plumbs the supplied idempotencyKey through as the Idempotency-Key header', async () => {
+    // sc-525 — the chat panel generates a UUID per turn and passes it in. The wrapper must
+    // forward it as a header (not in the body) so the server-side request_hash stays stable
+    // across retries with the same key.
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse(['event: done\ndata: {}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await collect(streamAssistantTurn(
+      'conv-1',
+      'hi',
+      authWithToken(null),
+      { idempotencyKey: '550e8400-e29b-41d4-a716-446655440000' },
+    ));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/assistant/conversations/conv-1/messages',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'Idempotency-Key': '550e8400-e29b-41d4-a716-446655440000',
+        }),
+      }),
+    );
+  });
+
+  it('omits the Idempotency-Key header when no key is supplied', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse(['event: done\ndata: {}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await collect(streamAssistantTurn('conv-1', 'hi', authWithToken(null)));
+
+    const callArgs = fetchMock.mock.calls[0]!;
+    const init = callArgs[1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers).not.toHaveProperty('Idempotency-Key');
+  });
+
   it('falls through to the error path when a 422 lacks the assistant-preflight-ambiguous code', async () => {
     // Validation 422s (e.g. ProblemDetails-shape from a malformed request) must not be
     // mistaken for a preflight refusal — the banner would then render with empty fields.
