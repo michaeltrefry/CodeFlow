@@ -28,6 +28,10 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
+
+	"os"
+	"path/filepath"
 )
 
 // permissiveAllowlist is the allowlist setup tests use when they need /run to
@@ -179,7 +183,7 @@ func setupServer(t *testing.T, pki *testPKI) (string, *stubRunner, func()) {
 	}
 	logger := apilog.New(slog.LevelError)
 	stub := &stubRunner{}
-	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t))
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), nil)
 
 	httpSrv := httptest.NewUnstartedServer(srv.Handler())
 	httpSrv.TLS = &tls.Config{
@@ -541,7 +545,7 @@ func TestServer_SetAllowlist_HotSwap(t *testing.T) {
 	}
 	logger := apilog.New(slog.LevelError)
 	stub2 := &stubRunner{result: &runner.Result{ExitCode: 0, Stdout: "ok\n"}}
-	srv := New(cfg, verifier, BuildInfo{Commit: "t", BuildTime: "n"}, logger, stub2, permissiveAllowlist(t))
+	srv := New(cfg, verifier, BuildInfo{Commit: "t", BuildTime: "n"}, logger, stub2, permissiveAllowlist(t), nil)
 
 	// Hot-swap to a strict allowlist mid-flight.
 	strict, err := whitelist.Compile([]whitelist.Rule{
@@ -600,4 +604,159 @@ func TestServer_SetAllowlist_HotSwap(t *testing.T) {
 		t.Fatalf("expected 200 for alpine after swap, got %d: %s", resp2.StatusCode, raw)
 	}
 	_ = url // unused: this test builds its own httptest server
+}
+
+// setupServerWithWorkspace stands up the server with a real workspace.Validator
+// rooted at a tempdir. Returns the server URL, the runner stub, the workdir
+// root (so tests can populate it), and a cleanup func.
+func setupServerWithWorkspace(t *testing.T, pki *testPKI) (string, *stubRunner, string, func()) {
+	t.Helper()
+	root := t.TempDir()
+	v, err := workspace.New(root, ".results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Listen: ":0"},
+		Logging: config.LoggingConfig{Level: "error"},
+	}
+	verifier, err := auth.NewSubjectAllowlist([]config.SubjectPattern{
+		{CommonName: "codeflow-api", Organization: "trefry"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := apilog.New(slog.LevelError)
+	stub := &stubRunner{}
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub, permissiveAllowlist(t), v)
+
+	httpSrv := httptest.NewUnstartedServer(srv.Handler())
+	httpSrv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{pki.serverPair},
+		ClientCAs:    pki.clientPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	httpSrv.StartTLS()
+	return httpSrv.URL, stub, root, httpSrv.Close
+}
+
+func TestRun_RejectsBadWorkspacePath(t *testing.T) {
+	pki := newTestPKI(t)
+	url, stub, root, cleanup := setupServerWithWorkspace(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	// Trace dir doesn't exist — workspace_invalid.
+	body, _ := json.Marshal(RunRequest{
+		JobID:    uuid.NewString(),
+		TraceID:  "no-such-trace",
+		RepoSlug: "no-such-repo",
+		Image:    "alpine:3",
+		Cmd:      []string{"echo", "hi"},
+		Limits:   Limits{TimeoutSeconds: 60},
+	})
+	resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 workspace_invalid, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(raw, []byte("workspace_invalid")) {
+		t.Fatalf("expected workspace_invalid code, got %s", raw)
+	}
+	// Runner must NOT have been invoked.
+	if stub.gotSpec.JobID != "" {
+		t.Errorf("runner reached for invalid workspace: %#v", stub.gotSpec)
+	}
+	_ = root
+}
+
+func TestRun_RejectsTraversalAttempt(t *testing.T) {
+	pki := newTestPKI(t)
+	url, _, _, cleanup := setupServerWithWorkspace(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	cases := []struct {
+		name     string
+		traceId  string
+		repoSlug string
+	}{
+		{"traceId is ..", "..", "repo"},
+		{"repoSlug is ..", "trace", ".."},
+		{"traceId contains slash", "../etc", "repo"},
+		{"repoSlug contains slash", "trace", "../../etc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(RunRequest{
+				JobID:    uuid.NewString(),
+				TraceID:  tc.traceId,
+				RepoSlug: tc.repoSlug,
+				Image:    "alpine:3",
+				Cmd:      []string{"x"},
+				Limits:   Limits{TimeoutSeconds: 60},
+			})
+			resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Errorf("expected 400, got %d: %s", resp.StatusCode, raw)
+			}
+		})
+	}
+}
+
+func TestRun_PassesResolvedWorkspacePathsToRunner(t *testing.T) {
+	pki := newTestPKI(t)
+	url, stub, root, cleanup := setupServerWithWorkspace(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	// Populate the workdir tree.
+	if err := os.MkdirAll(filepath.Join(root, "trace1", "repo1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	jobID := uuid.NewString()
+	stub.result = &runner.Result{JobID: jobID, ExitCode: 0, Stdout: "ok\n"}
+
+	body, _ := json.Marshal(RunRequest{
+		JobID:    jobID,
+		TraceID:  "trace1",
+		RepoSlug: "repo1",
+		Image:    "alpine:3",
+		Cmd:      []string{"echo", "hi"},
+		Limits:   Limits{TimeoutSeconds: 60},
+	})
+	resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	// Verify the runner saw the resolved paths, not the raw traceId / repoSlug.
+	if stub.gotSpec.WorkspaceHostPath == "" {
+		t.Error("WorkspaceHostPath was not populated on the spec")
+	}
+	if stub.gotSpec.ResultsHostPath == "" {
+		t.Error("ResultsHostPath was not populated on the spec")
+	}
+	expectWS := filepath.Join(root, "trace1", "repo1")
+	wsCanon, _ := filepath.EvalSymlinks(expectWS)
+	if stub.gotSpec.WorkspaceHostPath != wsCanon {
+		t.Errorf("workspace path mismatch:\n got %q\n want %q", stub.gotSpec.WorkspaceHostPath, wsCanon)
+	}
 }

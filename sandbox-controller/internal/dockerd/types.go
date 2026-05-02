@@ -42,6 +42,7 @@ type containerHostConfig struct {
 	CapDrop        []string          `json:"CapDrop,omitempty"`
 	SecurityOpt    []string          `json:"SecurityOpt,omitempty"`
 	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
+	Mounts         []containerMount  `json:"Mounts,omitempty"`
 
 	// Resource limits — docker uses the cgroups cpu period/quota model and
 	// memory in bytes. CPUs (fractional) is converted via period=100000.
@@ -58,6 +59,14 @@ type containerHostConfig struct {
 	// AutoRemove is FALSE so the controller can read logs after exit. The
 	// controller's runner explicitly removes the container after capture.
 	AutoRemove bool `json:"AutoRemove"`
+}
+
+// containerMount is the docker Engine API "Mounts" array element (Type=bind).
+type containerMount struct {
+	Type     string `json:"Type"`     // always "bind"
+	Source   string `json:"Source"`   // host path (validated by workspace.Validator)
+	Target   string `json:"Target"`   // path inside the container
+	ReadOnly bool   `json:"ReadOnly"`
 }
 
 type containerNetworkConfig struct {
@@ -94,6 +103,7 @@ func buildCreateBody(req CreateContainerRequest) containerCreatePayload {
 			CapDrop:        []string{"ALL"},
 			SecurityOpt:    []string{"no-new-privileges:true"},
 			Tmpfs:          req.Tmpfs,
+			Mounts:         buildMounts(req.BindMounts),
 			CPUPeriod:      cpuPeriod,
 			CPUQuota:       cpuQuota,
 			Memory:         req.MemoryBytes,
@@ -104,6 +114,22 @@ func buildCreateBody(req CreateContainerRequest) containerCreatePayload {
 			}{Name: "no"},
 		},
 	}
+}
+
+func buildMounts(binds []BindMount) []containerMount {
+	if len(binds) == 0 {
+		return nil
+	}
+	out := make([]containerMount, 0, len(binds))
+	for _, b := range binds {
+		out = append(out, containerMount{
+			Type:     "bind",
+			Source:   b.HostPath,
+			Target:   b.ContainerPath,
+			ReadOnly: b.ReadOnly,
+		})
+	}
+	return out
 }
 
 // MarshalJSON is provided so callers (and tests) can inspect the wire format

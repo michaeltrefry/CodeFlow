@@ -46,6 +46,18 @@ image_pull_timeout_seconds = 600
 # kill/remove before logging a warning and giving up.
 container_teardown_timeout_seconds = 30
 
+[workspace]
+# Absolute path to the per-trace workspace root (sc-531). Phase 1 uses a
+# host bind-mount; Phase 2 uses a shared NFS mount on both VMs at the same
+# path. The controller's container mounts this read-only.
+workdir_root = "/opt/codeflow/workdirs"
+
+# Subdirectory name (single segment, no separators) where per-job results
+# live under each trace dir. Default ".results". The controller creates
+# {workdir_root}/{traceId}/{results_dir_name}/{jobId}/ at /run time and
+# mounts it rw at /artifacts inside the sandbox.
+results_dir_name = ".results"
+
 # === IMAGE ALLOWLIST (sc-530) ================================================
 #
 # Default-deny. An empty `images.allowed` list means EVERY /run is rejected

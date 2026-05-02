@@ -31,6 +31,11 @@ type JobSpec struct {
 	// Output capture caps.
 	StdoutMaxBytes int64
 	StderrMaxBytes int64
+
+	// Workspace paths — populated by sc-531's workspace.Validator. Empty when
+	// the controller is configured without a workdir root (test-only path).
+	WorkspaceHostPath string // mounted ro at /workspace
+	ResultsHostPath   string // mounted rw at /artifacts; runner walks this for the manifest
 }
 
 // ContainerLabels are stamped on every spawned container so the cleanup
@@ -57,6 +62,14 @@ func (s JobSpec) ContainerName() string {
 // Independent of the agent-supplied image's USER directive.
 const SandboxUserUID = "65534:65534"
 
+// Sandbox container paths — fixed regardless of the agent's image, so build
+// scripts have a stable contract.
+const (
+	WorkspaceContainerPath = "/workspace"
+	ScratchContainerPath   = "/workspace/.scratch"
+	ArtifactsContainerPath = "/artifacts"
+)
+
 // ToCreateRequest converts a JobSpec into the dockerd-level create request.
 // This is the single place where the controller's locked-down container
 // settings (runsc, no-network, read-only, no-new-privileges, cap_drop ALL,
@@ -66,6 +79,30 @@ func (s JobSpec) ToCreateRequest() dockerd.CreateContainerRequest {
 	env := make([]string, 0, len(s.Env))
 	for k, v := range s.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	tmpfs := map[string]string{
+		// Writable scratch inside the otherwise read-only filesystem.
+		"/tmp": "size=64m,exec",
+	}
+	var bindMounts []dockerd.BindMount
+	if s.WorkspaceHostPath != "" {
+		// sc-531: workspace bind, read-only, with a tmpfs writable scratch
+		// overlay at /workspace/.scratch so build outputs (bin/, obj/,
+		// node_modules/, etc.) have somewhere to land per-job.
+		bindMounts = append(bindMounts, dockerd.BindMount{
+			HostPath:      s.WorkspaceHostPath,
+			ContainerPath: WorkspaceContainerPath,
+			ReadOnly:      true,
+		})
+		tmpfs[ScratchContainerPath] = "size=2g,exec"
+	}
+	if s.ResultsHostPath != "" {
+		bindMounts = append(bindMounts, dockerd.BindMount{
+			HostPath:      s.ResultsHostPath,
+			ContainerPath: ArtifactsContainerPath,
+			ReadOnly:      false,
+		})
 	}
 
 	return dockerd.CreateContainerRequest{
@@ -78,13 +115,9 @@ func (s JobSpec) ToCreateRequest() dockerd.CreateContainerRequest {
 		CPUs:        s.CPUs,
 		MemoryBytes: s.MemoryBytes,
 		PidsLimit:   s.PidsLimit,
-		Tmpfs: map[string]string{
-			// Writable scratch inside the otherwise read-only filesystem.
-			// Sized at 64 MiB by default; sc-531 will add the workspace
-			// scratch tmpfs at /workspace/.scratch alongside this one.
-			"/tmp": "size=64m,exec",
-		},
-		Labels: s.ContainerLabels(),
+		Tmpfs:       tmpfs,
+		BindMounts:  bindMounts,
+		Labels:      s.ContainerLabels(),
 	}
 }
 

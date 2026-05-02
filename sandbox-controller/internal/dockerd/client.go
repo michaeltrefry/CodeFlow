@@ -114,6 +114,21 @@ type CreateContainerRequest struct {
 	MemoryBytes int64
 	PidsLimit   int64
 	Tmpfs       map[string]string // path -> options (e.g. "/tmp" -> "size=64m,exec")
+
+	// BindMounts are bind-mounts the controller is allowed to set up. The
+	// only callers today (sc-531) supply two: workspace (read-only) and
+	// per-job artifacts (read-write). Arbitrary mounts MUST NOT be wired
+	// from the wire format — the runner constructs these from validated
+	// host paths only.
+	BindMounts []BindMount
+}
+
+// BindMount is one host->container bind. Controller-only — wire format never
+// surfaces this; only the runner populates it from validated paths.
+type BindMount struct {
+	HostPath      string
+	ContainerPath string
+	ReadOnly      bool
 }
 
 // CreateContainerResponse matches Docker's POST /containers/create response.

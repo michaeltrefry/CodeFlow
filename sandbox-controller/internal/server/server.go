@@ -15,6 +15,7 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
 
 // BuildInfo is surfaced by GET /version.
@@ -37,11 +38,16 @@ type Server struct {
 	build     BuildInfo
 	logger    *slog.Logger
 	jobRunner JobRunner
+	wsValidator *workspace.Validator
 
 	// allowlistRef is read atomically on every /run so SIGHUP can swap the
 	// image policy without restarting the process (sc-530).
 	allowlistRef atomic.Pointer[whitelist.Allowlist]
 }
+
+// WorkspaceValidator returns the configured validator, or nil if the
+// controller was set up without one (test path).
+func (s *Server) WorkspaceValidator() *workspace.Validator { return s.wsValidator }
 
 // allowlist returns the current Allowlist (may be nil, which is treated as
 // default-deny by the handler).
@@ -64,6 +70,10 @@ func (s *Server) SetAllowlist(a *whitelist.Allowlist) {
 // allowlist may be nil to opt out of layer-2 image-policy checks (test only —
 // production code MUST pass a compiled allowlist; nil rejects every /run with
 // image_not_allowed once sc-530 is in effect).
+//
+// wsValidator may be nil to opt out of workspace-path validation (test only —
+// production code MUST pass a configured workspace.Validator; sc-531 onward
+// rejects every /run that wants a workspace when wsValidator is nil).
 func New(
 	cfg *config.Config,
 	verifier *auth.SubjectAllowlist,
@@ -71,16 +81,18 @@ func New(
 	logger *slog.Logger,
 	jobRunner JobRunner,
 	allowlist *whitelist.Allowlist,
+	wsValidator *workspace.Validator,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &Server{
-		cfg:       cfg,
-		verifier:  verifier,
-		build:     build,
-		logger:    logger,
-		jobRunner: jobRunner,
+		cfg:         cfg,
+		verifier:    verifier,
+		build:       build,
+		logger:      logger,
+		jobRunner:   jobRunner,
+		wsValidator: wsValidator,
 	}
 	s.SetAllowlist(allowlist)
 	return s
