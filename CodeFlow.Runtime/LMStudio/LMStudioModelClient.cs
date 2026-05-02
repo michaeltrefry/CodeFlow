@@ -24,7 +24,7 @@ public sealed class LMStudioModelClient : OpenAiCompatibleResponsesModelClientBa
             var options = optionsResolver()
                 ?? throw new InvalidOperationException("LMStudioModelClientOptions resolver returned null.");
             return new OpenAiCompatibleResponsesRuntimeOptions(
-                options.ResponsesEndpoint,
+                LMStudioEndpoint.NormalizeForCurrentProcess(options.ResponsesEndpoint),
                 options.ApiKey,
                 options.MaxRetryAttempts,
                 options.InitialRetryDelay);

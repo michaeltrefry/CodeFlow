@@ -201,6 +201,73 @@ public sealed class LMStudioModelClientTests
     }
 
     [Fact]
+    public async Task InvokeAsync_WhenRunningInContainer_RewritesLoopbackEndpointToDockerHost()
+    {
+        using var containerEnv = TemporaryEnvironmentVariable.Set("DOTNET_RUNNING_IN_CONTAINER", "true");
+        using var containerHostEnv = TemporaryEnvironmentVariable.Set("LMStudio__ContainerHost", null);
+        var handler = new StubHttpMessageHandler(
+        [
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent("""
+                {
+                  "status": "completed",
+                  "output": [
+                    {
+                      "type": "message",
+                      "role": "assistant",
+                      "content": [
+                        { "type": "output_text", "text": "ok" }
+                      ]
+                    }
+                  ]
+                }
+                """)
+            }
+        ]);
+
+        using var httpClient = new HttpClient(handler);
+        var client = new LMStudioModelClient(
+            httpClient,
+            new LMStudioModelClientOptions
+            {
+                ResponsesEndpoint = new Uri("http://127.0.0.1:1234/v1/responses"),
+                InitialRetryDelay = TimeSpan.Zero
+            });
+
+        await client.InvokeAsync(new InvocationRequest(
+            Messages: [new ChatMessage(ChatMessageRole.User, "Hi.")],
+            Tools: null,
+            Model: "local-model"));
+
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Uri.Should().Be(new Uri("http://host.docker.internal:1234/v1/responses"));
+    }
+
+    [Fact]
+    public void NormalizeForCurrentProcess_WhenRunningNatively_KeepsLoopbackEndpoint()
+    {
+        using var containerEnv = TemporaryEnvironmentVariable.Set("DOTNET_RUNNING_IN_CONTAINER", null);
+
+        var normalized = LMStudioEndpoint.NormalizeForCurrentProcess(
+            new Uri("http://localhost:1234/v1/responses"));
+
+        normalized.Should().Be(new Uri("http://localhost:1234/v1/responses"));
+    }
+
+    [Fact]
+    public void NormalizeForCurrentProcess_WhenContainerHostOverrideSet_UsesOverride()
+    {
+        using var containerEnv = TemporaryEnvironmentVariable.Set("DOTNET_RUNNING_IN_CONTAINER", "true");
+        using var containerHostEnv = TemporaryEnvironmentVariable.Set("LMStudio__ContainerHost", "gateway.local");
+
+        var normalized = LMStudioEndpoint.NormalizeForCurrentProcess(
+            new Uri("http://localhost:1234/v1/responses"));
+
+        normalized.Should().Be(new Uri("http://gateway.local:1234/v1/responses"));
+    }
+
+    [Fact]
     public void ModelClientRegistry_ShouldResolveLmStudioProviderSeparatelyFromOpenAi()
     {
         using var openAiHttpClient = new HttpClient(new StubHttpMessageHandler([]));
@@ -265,4 +332,24 @@ public sealed class LMStudioModelClientTests
         string? AuthorizationScheme,
         string? AuthorizationParameter,
         string Body);
+
+    private sealed class TemporaryEnvironmentVariable : IDisposable
+    {
+        private readonly string name;
+        private readonly string? originalValue;
+
+        private TemporaryEnvironmentVariable(string name, string? value)
+        {
+            this.name = name;
+            originalValue = Environment.GetEnvironmentVariable(name);
+            Environment.SetEnvironmentVariable(name, value);
+        }
+
+        public static TemporaryEnvironmentVariable Set(string name, string? value) => new(name, value);
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable(name, originalValue);
+        }
+    }
 }

@@ -59,6 +59,11 @@ Default local infrastructure credentials:
 
 Optional model/secrets configuration can be provided through environment variables. See [dot_env_sample.txt](./dot_env_sample.txt).
 
+For LM Studio with the Docker stack, keep LM Studio's local server running on your host and use
+`http://host.docker.internal:1234/v1/responses` as the LM Studio endpoint. If you previously saved
+`http://localhost:1234/v1/responses` in the LLM providers admin, CodeFlow rewrites that loopback
+address to the Docker host while running in the API/worker containers.
+
 To stop the stack:
 
 ```bash
