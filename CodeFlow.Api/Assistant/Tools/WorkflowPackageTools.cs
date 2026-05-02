@@ -304,8 +304,12 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             // chip to the exact bytes that were validated, immune to subsequent draft mutations.
             packageSource,
             // null on the inline path; populated GUID on the draft path when preview.CanApply.
-            // Format as "N" (32 hex chars no dashes) for compact transport in the chip cache.
-            snapshotId = draftSnapshotId?.ToString("N"),
+            // Emit in default "D" (hyphenated) format. The chat panel passes this string straight
+            // through to the apply-from-draft body, where it binds to a `Guid` field — and
+            // System.Text.Json's default Guid converter ONLY accepts D-format. An "N"-format id
+            // (32 hex, no dashes) fails model binding before the handler runs and produces a
+            // 400 with an empty body that the chip's error formatter can't surface.
+            snapshotId = draftSnapshotId?.ToString(),
             note,
             message = preview.CanApply
                 ? "Preview validated. The user must click the 'Save' chip in chat to confirm — do not call this tool again or take further action until the user responds."
