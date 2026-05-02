@@ -9,11 +9,66 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/dockerd"
 )
+
+// collectArtifacts walks the per-job results dir and returns one Artifact
+// per regular file. The Path is relative to the dir root (the same path the
+// sandbox saw under /artifacts). Best-effort kind heuristic from the file
+// extension — the agent / api decide what to do with each file.
+func collectArtifacts(root string) ([]Artifact, error) {
+	var out []Artifact
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil // skip unreadable
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		out = append(out, Artifact{
+			Path:      filepath.ToSlash(rel),
+			SizeBytes: info.Size(),
+			Kind:      classifyArtifact(rel),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// classifyArtifact is a small heuristic so consumers can tell at a glance
+// what kind of file each entry is. Lowercased extensions only.
+func classifyArtifact(rel string) string {
+	lower := strings.ToLower(rel)
+	switch {
+	case strings.HasSuffix(lower, ".trx"):
+		return "test-results"
+	case strings.HasSuffix(lower, ".junit.xml"), strings.HasSuffix(lower, "junit-results.xml"):
+		return "test-results"
+	case strings.Contains(lower, "coverage") && (strings.HasSuffix(lower, ".xml") || strings.HasSuffix(lower, ".cobertura.xml")):
+		return "coverage"
+	case strings.HasSuffix(lower, ".log"):
+		return "log"
+	default:
+		return "file"
+	}
+}
 
 // Result is the outcome of a Run call. Fields mirror the controller's
 // /run response shape (see docs/sandbox-executor.md §11.3).
@@ -27,6 +82,17 @@ type Result struct {
 	TimedOut        bool
 	Cancelled       bool
 	DurationMs      int64
+	Artifacts       []Artifact // sc-531 — files the job left in /artifacts
+}
+
+// Artifact is one file in the per-job results directory. The path is relative
+// to the per-job /artifacts root inside the sandbox (== ResultsHostPath on the
+// host); api/worker resolves the host path on its side via the same NFS or
+// bind-mount it shares with the controller.
+type Artifact struct {
+	Path      string
+	SizeBytes int64
+	Kind      string // "test-results", "coverage", "file"
 }
 
 // Daemon is the subset of dockerd.Client the runner uses. Defined here as an
@@ -174,6 +240,19 @@ func (r *Runner) Run(ctx context.Context, spec JobSpec) (*Result, error) {
 	res.Stderr = stderrBuf.String()
 	res.StdoutTruncated = stdoutBuf.Truncated()
 	res.StderrTruncated = stderrBuf.Truncated()
+
+	// 6) Walk the per-job results dir to build the artifacts manifest. Best
+	// effort — if the dir wasn't configured (test path) or the walk fails,
+	// the result still surfaces the captured streams.
+	if spec.ResultsHostPath != "" {
+		artifacts, err := collectArtifacts(spec.ResultsHostPath)
+		if err != nil {
+			r.logger.Warn("artifact collection failed",
+				"job_id", spec.JobID, "results_dir", spec.ResultsHostPath, "err", err.Error())
+		} else {
+			res.Artifacts = artifacts
+		}
+	}
 	return res, nil
 }
 

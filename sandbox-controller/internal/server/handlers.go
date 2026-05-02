@@ -13,6 +13,7 @@ import (
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
 
 // hashImage returns a short stable digest for log correlation. We deliberately
@@ -47,20 +48,27 @@ type Limits struct {
 	StderrMaxBytes int64   `json:"stderrMaxBytes"`
 }
 
-// RunResponse mirrors docs/sandbox-executor.md §11.3. sc-529 populates exit
-// code, captured streams, and the truncation/timeout/cancel flags. The
-// artifacts manifest field is reserved for sc-531 — empty array for now.
+// RunResponse mirrors docs/sandbox-executor.md §11.3.
 type RunResponse struct {
-	JobID           string    `json:"jobId"`
-	ExitCode        int       `json:"exitCode"`
-	Stdout          string    `json:"stdout"`
-	Stderr          string    `json:"stderr"`
-	StdoutTruncated bool      `json:"stdoutTruncated"`
-	StderrTruncated bool      `json:"stderrTruncated"`
-	TimedOut        bool      `json:"timedOut"`
-	Cancelled       bool      `json:"cancelled"`
-	DurationMs      int64     `json:"durationMs"`
-	Artifacts       []any     `json:"artifacts"` // sc-531 will populate
+	JobID           string          `json:"jobId"`
+	ExitCode        int             `json:"exitCode"`
+	Stdout          string          `json:"stdout"`
+	Stderr          string          `json:"stderr"`
+	StdoutTruncated bool            `json:"stdoutTruncated"`
+	StderrTruncated bool            `json:"stderrTruncated"`
+	TimedOut        bool            `json:"timedOut"`
+	Cancelled       bool            `json:"cancelled"`
+	DurationMs      int64           `json:"durationMs"`
+	Artifacts       []ArtifactEntry `json:"artifacts"`
+}
+
+// ArtifactEntry is one file in the per-job /artifacts directory. sc-531
+// populates this from runner.Result.Artifacts; api/worker resolves the host
+// path on its side via the same workspace mount.
+type ArtifactEntry struct {
+	Path      string `json:"path"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Kind      string `json:"kind"`
 }
 
 // CancelRequest is the cancel-by-jobId payload.
@@ -152,6 +160,33 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := req.toJobSpec()
+
+	// Layer-2 workspace-path resolution + validation (sc-531). When the
+	// controller is configured without a validator (test path), spec is
+	// passed through with empty workspace paths and the runner skips the
+	// bind-mount. In production main.go always passes a validator.
+	if s.wsValidator != nil {
+		resolved, err := s.wsValidator.Resolve(req.TraceID, req.RepoSlug, req.JobID)
+		if err != nil {
+			s.logger.Info("rejected: workspace invalid",
+				"job_id", req.JobID,
+				"trace_id", req.TraceID,
+				"err", err.Error(),
+			)
+			code := "workspace_invalid"
+			msg := workspace.ErrWorkspaceInvalid.Error()
+			if !errors.Is(err, workspace.ErrWorkspaceInvalid) {
+				// Programmer error — surface internally.
+				code = "internal_error"
+				msg = err.Error()
+			}
+			writeError(w, http.StatusBadRequest, code, msg, "validator.workspacePath", req.JobID)
+			return
+		}
+		spec.WorkspaceHostPath = resolved.Workspace
+		spec.ResultsHostPath = resolved.Results
+	}
+
 	res, err := s.jobRunner.Run(r.Context(), spec)
 	if err != nil {
 		s.logger.Warn("job run failed",
@@ -184,8 +219,22 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		TimedOut:        res.TimedOut,
 		Cancelled:       res.Cancelled,
 		DurationMs:      res.DurationMs,
-		Artifacts:       []any{}, // sc-531
+		Artifacts:       toResponseArtifacts(res.Artifacts),
 	})
+}
+
+// toResponseArtifacts maps the runner's artifact list to the wire-format
+// shape (capitalised field names → camelCase JSON).
+func toResponseArtifacts(in []runner.Artifact) []ArtifactEntry {
+	out := make([]ArtifactEntry, 0, len(in))
+	for _, a := range in {
+		out = append(out, ArtifactEntry{
+			Path:      a.Path,
+			SizeBytes: a.SizeBytes,
+			Kind:      a.Kind,
+		})
+	}
+	return out
 }
 
 // toJobSpec converts the wire-format RunRequest into the runner's internal

@@ -27,6 +27,7 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/server"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/whitelist"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/workspace"
 )
 
 // compileImageAllowlist adapts the config-shaped rules into a whitelist.Allowlist.
@@ -100,8 +101,14 @@ func main() {
 		os.Exit(2)
 	}
 
+	wsValidator, err := workspace.New(cfg.Workspace.WorkdirRoot, cfg.Workspace.ResultsDirName)
+	if err != nil {
+		logger.Error("failed to compile workspace validator", "err", err)
+		os.Exit(2)
+	}
+
 	build := server.BuildInfo{Commit: commit, BuildTime: buildTime, ConfigHash: cfg.Hash()}
-	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist)
+	srv := server.New(cfg, verifier, build, logger, jobRunner, imageAllowlist, wsValidator)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -120,6 +127,7 @@ func main() {
 		"build_time", buildTime,
 		"allowed_subjects", verifier.Count(),
 		"allowed_images", imageAllowlist.Count(),
+		"workdir_root", wsValidator.Root(),
 	)
 
 	errCh := make(chan error, 1)

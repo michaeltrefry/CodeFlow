@@ -14,13 +14,22 @@ import (
 
 // Config is the top-level controller configuration.
 type Config struct {
-	Server  ServerConfig  `toml:"server"`
-	TLS     TLSConfig     `toml:"tls"`
-	Logging LoggingConfig `toml:"logging"`
-	Runner  RunnerConfig  `toml:"runner"`
-	Images  ImagesConfig  `toml:"images"`
+	Server    ServerConfig    `toml:"server"`
+	TLS       TLSConfig       `toml:"tls"`
+	Logging   LoggingConfig   `toml:"logging"`
+	Runner    RunnerConfig    `toml:"runner"`
+	Images    ImagesConfig    `toml:"images"`
+	Workspace WorkspaceConfig `toml:"workspace"`
 
 	rawHash string
+}
+
+// WorkspaceConfig governs sc-531's workspace path validation. WorkdirRoot must
+// be an absolute, existing directory at startup. ResultsDirName defaults to
+// ".results" if empty.
+type WorkspaceConfig struct {
+	WorkdirRoot    string `toml:"workdir_root"`
+	ResultsDirName string `toml:"results_dir_name"`
 }
 
 // ImagesConfig is the controller's default-deny image policy (sc-530). An
