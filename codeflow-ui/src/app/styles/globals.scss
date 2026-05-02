@@ -92,6 +92,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .shell[data-nav="collapsed"] .nav-link { justify-content: center; padding: 8px; }
 .shell[data-nav="collapsed"] .nav-section-spacer { height: 8px; border-top: 1px solid var(--border); margin: 8px 4px; }
 
+@media (max-width: 720px) {
+  .shell { grid-template-columns: 56px minmax(0, 1fr); }
+  .brand-wordmark,
+  .nav-section-label,
+  .nav-link-label,
+  .nav-user-body,
+  .nav-toggle-label { display: none; }
+  .nav-link { justify-content: center; padding: 8px; }
+  .nav-section-spacer { height: 8px; border-top: 1px solid var(--border); margin: 8px 4px; }
+  .topbar { padding: 10px 12px; }
+}
+
 .nav-links { display: flex; flex-direction: column; gap: 1px; flex: 1; padding: 4px 0; }
 .nav-section-label {
   padding: 14px 10px 6px;

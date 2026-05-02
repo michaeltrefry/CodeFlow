@@ -15,8 +15,9 @@ import { ThemeService } from '../core/theme.service';
  * the user into agents, workflows, traces, and other authoring surfaces. The page context is
  * still forwarded per turn so the assistant can reason about the current screen.
  *
- * Suppresses itself on the home page — the home page's main pane already mounts the chat in a
- * larger layout, so a parallel sidebar would just show the same conversation twice.
+ * The sidebar owns the assistant surface everywhere in the authenticated shell, including home.
+ * The home page no longer mounts its own chat panel, so this keeps one durable assistant thread
+ * without duplicate token-spending surfaces.
  */
 @Component({
   selector: 'cf-assistant-sidebar',
@@ -27,6 +28,7 @@ import { ThemeService } from '../core/theme.service';
     @if (scope(); as resolvedScope) {
       <aside
         class="sidebar"
+        [attr.data-mode]="mode()"
         [attr.data-collapsed]="collapsed() ? 'true' : 'false'"
         [attr.aria-label]="'Assistant sidebar'"
         data-testid="assistant-sidebar"
@@ -35,7 +37,7 @@ import { ThemeService } from '../core/theme.service';
           <button
             type="button"
             class="sidebar-rail"
-            (click)="theme.setAssistantSidebarCollapsed(false)"
+            (click)="theme.setAssistantSidebarMode('docked')"
             title="Open assistant"
             data-testid="assistant-sidebar-expand"
           >
@@ -43,16 +45,29 @@ import { ThemeService } from '../core/theme.service';
             <span class="sidebar-rail-label">Assistant</span>
           </button>
         } @else {
-          <button
-            type="button"
-            class="sidebar-collapse"
-            (click)="theme.setAssistantSidebarCollapsed(true)"
-            [title]="'Collapse assistant — ' + scopeLabel()"
-            [attr.aria-label]="'Collapse assistant'"
-            data-testid="assistant-sidebar-collapse"
-          >
-            <cf-icon name="panelL"></cf-icon>
-          </button>
+          <div class="sidebar-actions" aria-label="Assistant display controls">
+            <button
+              type="button"
+              class="sidebar-action"
+              (click)="toggleExpanded()"
+              [title]="expanded() ? 'Dock assistant' : 'Expand assistant'"
+              [attr.aria-label]="expanded() ? 'Dock assistant' : 'Expand assistant'"
+              [attr.aria-pressed]="expanded() ? 'true' : 'false'"
+              data-testid="assistant-sidebar-mode-toggle"
+            >
+              <cf-icon [name]="expanded() ? 'minimize' : 'maximize'"></cf-icon>
+            </button>
+            <button
+              type="button"
+              class="sidebar-action"
+              (click)="theme.setAssistantSidebarCollapsed(true)"
+              [title]="'Collapse assistant — ' + scopeLabel()"
+              [attr.aria-label]="'Collapse assistant'"
+              data-testid="assistant-sidebar-collapse"
+            >
+              <cf-icon name="panelL"></cf-icon>
+            </button>
+          </div>
           <div class="sidebar-body">
             <cf-chat-panel
               [scope]="resolvedScope"
@@ -71,19 +86,25 @@ import { ThemeService } from '../core/theme.service';
     .sidebar {
       display: flex;
       flex-direction: column;
-      flex: 0 0 360px;
+      flex: 0 0 400px;
+      align-self: stretch;
       min-height: 0;
       height: 100%;
       max-height: 100%;
       overflow: hidden;
       background: var(--surface, #131519);
       border-left: 1px solid var(--border, rgba(255,255,255,0.08));
-      width: 360px;
-      transition: width 120ms ease;
+      width: 400px;
+      transition: width 120ms ease, flex-basis 120ms ease;
     }
     .sidebar[data-collapsed='true'] {
       flex-basis: 44px;
       width: 44px;
+    }
+    .sidebar[data-mode='expanded'] {
+      flex-basis: 100%;
+      width: 100%;
+      border-left-color: transparent;
     }
     .sidebar-rail {
       display: flex;
@@ -109,14 +130,18 @@ import { ThemeService } from '../core/theme.service';
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
-    /* The chat panel renders its own header (title, conversation id). The collapse button sits
-       in the sidebar's top-right as a compact icon overlay so the chat panel keeps full
-       vertical real estate without the sidebar duplicating its title. */
-    .sidebar-collapse {
+    /* The chat panel renders its own header (title, conversation id). Sidebar controls sit
+       in the top-right as a compact overlay so the chat panel keeps full vertical real estate
+       without the sidebar duplicating its title. */
+    .sidebar-actions {
       position: absolute;
       top: 8px;
       right: 8px;
       z-index: 1;
+      display: inline-flex;
+      gap: 4px;
+    }
+    .sidebar-action {
       background: transparent;
       border: 0;
       color: var(--text-muted, #9aa3b2);
@@ -125,7 +150,7 @@ import { ThemeService } from '../core/theme.service';
       border-radius: 4px;
       display: inline-flex;
     }
-    .sidebar-collapse:hover {
+    .sidebar-action:hover {
       color: var(--text, #E7E9EE);
       background: var(--surface-hover, rgba(255,255,255,0.04));
     }
@@ -140,7 +165,7 @@ import { ThemeService } from '../core/theme.service';
       flex-direction: column;
     }
     .sidebar-body cf-chat-panel {
-      --chat-panel-head-padding-right: 44px;
+      --chat-panel-head-padding-right: 74px;
       flex: 1 1 auto;
       display: flex;
       flex-direction: column;
@@ -162,12 +187,12 @@ export class AssistantSidebarComponent {
     { initialValue: this.router.url },
   );
 
-  // The sidebar shares the home page's assistant conversation across all non-home pages; page
+  // The sidebar shares the home page's assistant conversation across all shell pages; page
   // context travels separately through the chat panel's per-turn PageContext input.
-  protected readonly scope = computed(() =>
-    this.pageContext.current().kind === 'home' ? null : { kind: 'homepage' as const },
-  );
-  protected readonly collapsed = computed(() => this.theme.assistantSidebarCollapsed());
+  protected readonly scope = computed(() => ({ kind: 'homepage' as const }));
+  protected readonly mode = computed(() => this.theme.assistantSidebarMode());
+  protected readonly collapsed = computed(() => this.mode() === 'collapsed');
+  protected readonly expanded = computed(() => this.mode() === 'expanded');
   protected readonly selectedConversationId = computed(() => {
     const value = this.router.parseUrl(this.url()).queryParams['assistantConversation'];
     return typeof value === 'string' && value ? value : null;
@@ -185,4 +210,8 @@ export class AssistantSidebarComponent {
       case 'other': return 'Assistant';
     }
   });
+
+  protected toggleExpanded(): void {
+    this.theme.setAssistantSidebarMode(this.expanded() ? 'docked' : 'expanded');
+  }
 }

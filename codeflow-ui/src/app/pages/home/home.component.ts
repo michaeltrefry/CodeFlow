@@ -1,24 +1,19 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute } from '@angular/router';
-import { ChatPanelComponent } from '../../ui/chat';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { RouterLink } from '@angular/router';
+import { catchError, of } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
-import { HomeRailComponent } from './home-rail.component';
+import { WorkflowSummary } from '../../core/models';
+import { WorkflowsApi } from '../../core/workflows.api';
+import { formatHttpError } from '../../core/format-error';
 import { ButtonComponent } from '../../ui/button.component';
 import { IconComponent } from '../../ui/icon.component';
 
 /**
  * HAA-6: Homepage shell. Replaces "land on Traces" as the default landing experience.
  *
- * Layout: chat-first, with a thin right-side context rail. HAA-14 fills the rail with live
- * sections (assistant token chip, resume conversations, recent traces, recently used
- * workflows). Demo mode keeps a stripped-down version: just the resume-conversation slot —
- * the others require live tool access — plus the existing capability blurb so anonymous
- * users still understand what they can ask.
- *
- * The chat panel mounts with <c>scope: { kind: 'homepage' }</c> so all conversations the user
- * has on the homepage land in the same persistent thread, distinct from any entity-scoped
- * sidebar conversations that ship in HAA-7.
+ * Authenticated users get a compact getting-started surface. The assistant chat is owned by
+ * AssistantSidebarComponent so the homepage never mounts a second chat panel.
  *
  * Anonymous visitors land on a public page with no chat panel mounted. The assistant is an
  * authenticated feature only, so guests cannot spend LLM tokens.
@@ -27,7 +22,7 @@ import { IconComponent } from '../../ui/icon.component';
   selector: 'cf-home-page',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChatPanelComponent, HomeRailComponent, ButtonComponent, IconComponent],
+  imports: [RouterLink, ButtonComponent, IconComponent],
   template: `
     @if (auth.loading()) {
       <main class="auth-wait" data-testid="home-auth-loading">
@@ -36,20 +31,71 @@ import { IconComponent } from '../../ui/icon.component';
       </main>
     } @else if (isAuthenticated()) {
       <main class="home" data-testid="home-page">
-        <section class="home-chat">
-          <cf-chat-panel
-            [scope]="{ kind: 'homepage' }"
-            [conversationIdOverride]="selectedConversationId()"
-            layout="wide"
-          />
+        <section class="home-intro" aria-labelledby="home-title">
+          <div class="home-kicker">
+            <cf-icon name="codeflowApp" [sizeOverride]="26"></cf-icon>
+            <span>CodeFlow</span>
+          </div>
+          <h1 id="home-title">Build agents into reliable workflows.</h1>
+          <p>
+            Create agents, connect them into versioned workflows, then run and inspect traces
+            without leaving the workspace.
+          </p>
+          <div class="home-actions">
+            <a routerLink="/agents/new">
+              <button type="button" cf-button variant="primary" icon="plus">Create an Agent</button>
+            </a>
+            <a routerLink="/workflows/new">
+              <button type="button" cf-button icon="workflows">Create a Workflow</button>
+            </a>
+            <a routerLink="/workflows">
+              <button type="button" cf-button variant="ghost" icon="traces">Run a Workflow</button>
+            </a>
+          </div>
         </section>
-        <aside class="home-rail" aria-label="Homepage rail">
-          <header class="rail-head">
-            <span class="rail-eyebrow">Assistant</span>
-            <h2 class="rail-title">CodeFlow copilot</h2>
+
+        <section class="run-panel" id="run-workflow" aria-labelledby="run-workflow-title">
+          <header class="run-head">
+            <div>
+              <span class="section-eyebrow">Run</span>
+              <h2 id="run-workflow-title">Runnable workflows</h2>
+            </div>
+            <button type="button" cf-button size="sm" variant="ghost" icon="refresh" (click)="loadWorkflows()" [disabled]="workflowsLoading()">
+              {{ workflowsLoading() ? 'Loading...' : 'Refresh' }}
+            </button>
           </header>
-          <cf-home-rail />
-        </aside>
+
+          @if (workflowsError()) {
+            <p class="state state-error" data-testid="home-workflows-error">{{ workflowsError() }}</p>
+          } @else if (workflowsLoading()) {
+            <p class="state" data-testid="home-workflows-loading">Loading workflows...</p>
+          } @else if (runnableWorkflows().length === 0) {
+            <div class="empty-state" data-testid="home-workflows-empty">
+              <p>No runnable workflows yet.</p>
+              <a routerLink="/workflows/new">
+                <button type="button" cf-button size="sm" variant="primary" icon="plus">Create a Workflow</button>
+              </a>
+            </div>
+          } @else {
+            <div class="workflow-list" data-testid="home-runnable-workflows">
+              @for (workflow of runnableWorkflows(); track workflow.key) {
+                <a
+                  class="workflow-row"
+                  routerLink="/traces/new"
+                  [queryParams]="{ workflow: workflow.key }"
+                  [attr.data-testid]="'home-runnable-workflow-' + workflow.key"
+                >
+                  <span class="workflow-icon"><cf-icon name="traces"></cf-icon></span>
+                  <span class="workflow-main">
+                    <strong>{{ workflow.name }}</strong>
+                    <span class="mono">{{ workflow.key }}</span>
+                  </span>
+                  <span class="workflow-meta">v{{ workflow.latestVersion }}</span>
+                </a>
+              }
+            </div>
+          }
+        </section>
       </main>
     } @else {
       <main class="landing" data-testid="public-landing">
@@ -116,89 +162,153 @@ import { IconComponent } from '../../ui/icon.component';
       color: var(--text-muted, #9aa3b2);
     }
     .home {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
-      grid-template-rows: minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
       gap: 24px;
       padding: 24px;
       width: 100%;
-      height: 100%;
-      max-width: 1480px;
+      max-width: 1040px;
       margin: 0 auto;
       min-height: 0;
-      overflow: hidden;
+      overflow-y: auto;
     }
-    .home-chat {
+    .home-intro,
+    .run-panel {
+      border: 1px solid var(--border, rgba(255,255,255,0.08));
+      background: var(--surface, #131519);
+      border-radius: var(--radius-md, 8px);
+      padding: 22px;
+    }
+    .home-intro {
       display: flex;
       flex-direction: column;
-      min-height: 0;
-      min-width: 0;
+      align-items: flex-start;
+      gap: 16px;
     }
-    .home-chat cf-chat-panel {
-      flex: 1 1 auto;
+    .home-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text, #E7E9EE);
+      font-weight: 700;
+    }
+    .home h1 {
+      margin: 0;
+      max-width: 720px;
+      color: var(--text, #E7E9EE);
+      font-size: 34px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+    .home-intro p {
+      margin: 0;
+      max-width: 700px;
+      color: var(--text-muted, #9aa3b2);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+    .home-actions {
       display: flex;
-      flex-direction: column;
-      min-height: 0;
+      flex-wrap: wrap;
+      gap: 10px;
     }
-    .home-rail {
+    .home-actions a,
+    .empty-state a {
+      text-decoration: none;
+    }
+    .run-panel {
       display: flex;
       flex-direction: column;
       gap: 14px;
-      padding: 18px;
-      background: var(--surface, #131519);
-      border: 1px solid var(--border, rgba(255,255,255,0.08));
-      border-radius: var(--radius-md, 8px);
-      align-self: start;
-      position: sticky;
-      top: 24px;
     }
-    .rail-eyebrow {
+    .run-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .section-eyebrow {
       display: block;
       font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--text-muted, #9aa3b2);
     }
-    .rail-title {
+    .run-head h2 {
       margin: 4px 0 0 0;
       font-size: 18px;
       color: var(--text, #E7E9EE);
     }
-    .rail-blurb {
+    .state,
+    .empty-state p {
       margin: 0;
       color: var(--text-muted, #9aa3b2);
-      font-size: var(--fs-md, 13px);
-      line-height: 1.5;
+      font-size: 13px;
     }
-    .rail-list {
-      list-style: none;
-      padding: 0;
-      margin: 0;
+    .state-error {
+      color: #ffc9c5;
+    }
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px;
+      border: 1px dashed var(--border, rgba(255,255,255,0.08));
+      border-radius: 8px;
+    }
+    .workflow-list {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      font-size: var(--fs-sm, 12px);
-      color: var(--text, #E7E9EE);
-      line-height: 1.5;
+      gap: 8px;
     }
-    .rail-list li {
-      padding-left: 14px;
-      border-left: 2px solid var(--border, rgba(255,255,255,0.08));
+    .workflow-row {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 58px;
+      padding: 10px 12px;
+      color: inherit;
+      text-decoration: none;
+      border: 1px solid var(--border, rgba(255,255,255,0.08));
+      border-radius: 8px;
+      background: color-mix(in oklab, var(--surface) 92%, var(--text) 8%);
     }
-    .rail-list strong {
+    .workflow-row:hover {
+      border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+      background: var(--surface-hover, rgba(255,255,255,0.04));
+    }
+    .workflow-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      color: var(--accent, #7c9cff);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+    }
+    .workflow-main {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .workflow-main strong,
+    .workflow-main span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workflow-main strong {
       color: var(--text, #E7E9EE);
       font-weight: 600;
     }
-    .rail-foot {
-      margin: 0;
-      padding-top: 8px;
-      border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+    .workflow-main span,
+    .workflow-meta {
       color: var(--text-muted, #9aa3b2);
-      font-size: 11px;
-    }
-    .rail-foot-cta {
-      color: var(--text, #E7E9EE);
-      font-weight: 600;
+      font-size: 12px;
     }
     .landing {
       display: grid;
@@ -334,15 +444,7 @@ import { IconComponent } from '../../ui/icon.component';
     }
     @media (max-width: 1080px) {
       .home {
-        grid-template-columns: 1fr;
-        grid-template-rows: minmax(0, 1fr) auto;
-        overflow-y: auto;
-      }
-      .home-chat {
-        min-height: min(640px, calc(100vh - 112px));
-      }
-      .home-rail {
-        position: static;
+        padding: 18px;
       }
       .landing {
         grid-template-columns: 1fr;
@@ -356,6 +458,20 @@ import { IconComponent } from '../../ui/icon.component';
       }
     }
     @media (max-width: 640px) {
+      .home h1 {
+        font-size: 28px;
+      }
+      .run-head,
+      .empty-state {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .workflow-row {
+        grid-template-columns: 32px minmax(0, 1fr);
+      }
+      .workflow-meta {
+        grid-column: 2;
+      }
       .landing h1 {
         font-size: 40px;
       }
@@ -367,15 +483,46 @@ import { IconComponent } from '../../ui/icon.component';
 })
 export class HomeComponent {
   protected readonly auth = inject(AuthService);
-  private readonly route = inject(ActivatedRoute);
-  private readonly queryParamMap = toSignal(this.route.queryParamMap, {
-    initialValue: this.route.snapshot.queryParamMap,
-  });
+  private readonly workflowsApi = inject(WorkflowsApi);
+  private readonly destroyRef = inject(DestroyRef);
 
   protected readonly isAuthenticated = computed(() => this.auth.currentUser() !== null);
-  protected readonly selectedConversationId = computed(() => this.queryParamMap().get('assistantConversation'));
+  protected readonly workflows = signal<WorkflowSummary[]>([]);
+  protected readonly workflowsLoading = signal(false);
+  protected readonly workflowsError = signal<string | null>(null);
+  private readonly workflowsLoaded = signal(false);
+  protected readonly runnableWorkflows = computed(() =>
+    this.workflows()
+      .filter(workflow => workflow.category === 'Workflow' && !workflow.isRetired)
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  );
+
+  constructor() {
+    effect(() => {
+      if (this.isAuthenticated() && !this.workflowsLoaded() && !this.workflowsLoading()) {
+        this.loadWorkflows();
+      }
+    });
+  }
 
   protected signIn(): void {
     this.auth.login();
+  }
+
+  protected loadWorkflows(): void {
+    this.workflowsLoading.set(true);
+    this.workflowsError.set(null);
+    this.workflowsApi.list().pipe(
+      takeUntilDestroyed(this.destroyRef),
+      catchError(err => {
+        this.workflowsError.set(formatHttpError(err, 'Failed to load workflows.'));
+        return of([] as WorkflowSummary[]);
+      }),
+    ).subscribe(workflows => {
+      this.workflows.set(workflows);
+      this.workflowsLoaded.set(true);
+      this.workflowsLoading.set(false);
+    });
   }
 }

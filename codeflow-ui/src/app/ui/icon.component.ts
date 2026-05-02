@@ -5,7 +5,7 @@ export type IconName =
   | 'traces' | 'agents' | 'workflows' | 'hitl' | 'dlq'
   | 'settings' | 'mcp' | 'roles' | 'skills' | 'git' | 'inventory'
   | 'search' | 'bell' | 'plus' | 'chevL' | 'chevR' | 'chevD' | 'close'
-  | 'panelL' | 'trash' | 'play' | 'check' | 'x' | 'alert'
+  | 'panelL' | 'maximize' | 'minimize' | 'trash' | 'play' | 'check' | 'x' | 'alert'
   | 'logic' | 'bot' | 'copy' | 'refresh' | 'back' | 'fork' | 'download';
 
 @Component({
@@ -130,6 +130,12 @@ export type IconName =
       }
       @case ('panelL') {
         <svg [attr.width]="size(14)" [attr.height]="size(14)" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="2.5" width="10" height="9" rx="1"/><path d="M6 2.5v9"/></svg>
+      }
+      @case ('maximize') {
+        <svg [attr.width]="size(14)" [attr.height]="size(14)" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 2.5H2.5v2.3M9.2 2.5h2.3v2.3M11.5 9.2v2.3H9.2M4.8 11.5H2.5V9.2"/></svg>
+      }
+      @case ('minimize') {
+        <svg [attr.width]="size(14)" [attr.height]="size(14)" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.8h2.3V2.5M11.5 4.8H9.2V2.5M9.2 11.5V9.2h2.3M4.8 11.5V9.2H2.5"/></svg>
       }
       @case ('trash') {
         <svg [attr.width]="size(14)" [attr.height]="size(14)" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
