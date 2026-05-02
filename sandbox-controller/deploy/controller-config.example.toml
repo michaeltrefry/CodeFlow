@@ -32,3 +32,16 @@ organization = "trefry"
 [logging]
 # debug | info | warn | error
 level = "info"
+
+[runner]
+# Path to the docker daemon's unix socket. Defaults to /var/run/docker.sock
+# when empty. The controller's container mounts this from the host (sc-538).
+docker_socket_path = "/var/run/docker.sock"
+
+# Image pull timeout (separate budget from per-job timeout so a slow registry
+# doesn't eat into the job's budget).
+image_pull_timeout_seconds = 600
+
+# Best-effort teardown budget — controller waits up to this long for a
+# kill/remove before logging a warning and giving up.
+container_teardown_timeout_seconds = 30

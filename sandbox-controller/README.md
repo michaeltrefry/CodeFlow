@@ -6,22 +6,22 @@ This directory holds the Go service that the CodeFlow API/Worker call when an ag
 
 ## Status
 
-This is the sc-528 scaffold. The service exposes the four endpoints with mTLS-only authentication and unknown-field-strict JSON decoding, but `/run` echoes the request rather than spawning a container. Subsequent slices add real behaviour:
+As of sc-529, `/run` actually spawns sibling containers under gVisor (`runsc`) with the locked-down defaults (read-only rootfs, `cap_drop ALL`, `no-new-privileges`, `network=none`, nonroot uid). Subsequent slices add the validator and the workspace plumbing:
 
-| Slice | What it adds |
-|---|---|
-| sc-528 (this) | Service skeleton, mTLS, endpoint stubs, structured logging, distroless image |
-| sc-529 | gVisor (`runsc`) wiring — `/run` actually spawns sibling containers |
-| sc-530 | Image whitelist + policy store on the controller |
-| sc-531 | Workspace path validation + read-only mount + tmpfs scratch |
-| sc-532 | CodeFlow side: `SandboxControllerRunner` + `ContainerTools:Backend` flag |
-| sc-533 | Lifecycle + cleanup on the controller |
-| sc-534 | OTLP traces + metrics + W3C trace propagation |
-| sc-535 | Phase 1 deployment — sibling compose service in CodeFlow VM |
-| sc-536 | Threat-model conformance tests |
-| sc-537 | Production cutover + permanent DooD removal |
-| sc-538 | Controller container deploy hardening (AppArmor, seccomp, cap_drop, etc.) |
-| sc-539 | Phase 2 graduation — separate executor VM + NFS |
+| Slice | What it adds | Status |
+|---|---|---|
+| sc-528 | Service skeleton, mTLS, endpoint stubs, structured logging, distroless image | Done |
+| sc-529 | gVisor (`runsc`) wiring — `/run` actually spawns sibling containers | Done |
+| sc-538 | Controller container deploy hardening (AppArmor, seccomp, cap_drop, etc.) | Done |
+| sc-530 | Image whitelist + policy store on the controller | Next |
+| sc-531 | Workspace path validation + read-only mount + tmpfs scratch | Pending |
+| sc-532 | CodeFlow side: `SandboxControllerRunner` + `ContainerTools:Backend` flag | Pending |
+| sc-533 | Lifecycle + cleanup on the controller | Pending |
+| sc-534 | OTLP traces + metrics + W3C trace propagation | Pending |
+| sc-535 | Phase 1 deployment — sibling compose service in CodeFlow VM | Pending |
+| sc-536 | Threat-model conformance tests | Pending |
+| sc-537 | Production cutover + permanent DooD removal | Pending |
+| sc-539 | Phase 2 graduation — separate executor VM + NFS | Backlog |
 
 ## Quick start (local dev)
 
@@ -65,8 +65,21 @@ sandbox-controller/
 │   ├── auth/mtls.go                  # post-handshake subject allowlist verifier
 │   ├── auth/mtls_test.go
 │   ├── config/config.go              # TOML loader + validation + raw-file SHA256 hash for /version
+│   ├── dockerd/                      # sc-529 — minimal hand-rolled HTTP client for the docker daemon
+│   │   ├── client.go                 # ping, image pull, container create/start/wait/logs/kill/remove
+│   │   ├── types.go                  # locked-down create payload (CapDrop ALL, ReadonlyRootfs, etc.)
+│   │   ├── demux.go                  # docker logs multiplex demuxer (reimpl of moby/pkg/stdcopy)
+│   │   └── client_test.go
+│   ├── runner/                       # sc-529 — per-job orchestration (pull, create, run, capture, teardown)
+│   │   ├── spec.go                   # JobSpec → CreateContainerRequest with security defaults
+│   │   ├── runner.go                 # Run() with timeout/cancel paths
+│   │   ├── stream.go                 # bounded buffer for stdout/stderr capture
+│   │   ├── runner_test.go            # unit tests with stub Daemon
+│   │   ├── stream_test.go
+│   │   ├── spec_test.go
+│   │   └── integration_test.go       # //go:build integration — real daemon + runsc required
 │   └── server/
-│       ├── server.go                 # Server type, Handler() mounting, LoadTLSConfig
+│       ├── server.go                 # Server type, Handler() mounting, LoadTLSConfig, JobRunner interface
 │       ├── handlers.go               # POST /run, POST /cancel, GET /healthz, GET /version
 │       ├── handlers_test.go          # mTLS + endpoint integration tests with self-signed PKI
 │       └── middleware.go             # subject-allowlist + structured-logging middleware

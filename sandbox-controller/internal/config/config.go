@@ -17,8 +17,23 @@ type Config struct {
 	Server  ServerConfig  `toml:"server"`
 	TLS     TLSConfig     `toml:"tls"`
 	Logging LoggingConfig `toml:"logging"`
+	Runner  RunnerConfig  `toml:"runner"`
 
 	rawHash string
+}
+
+// RunnerConfig knobs for the runsc-backed job runner (sc-529).
+type RunnerConfig struct {
+	// DockerSocketPath is the unix socket the controller dials. Defaults to
+	// /var/run/docker.sock when empty.
+	DockerSocketPath string `toml:"docker_socket_path"`
+
+	// ImagePullTimeoutSeconds caps how long an image pull may take. Separate
+	// budget from the per-job timeout so a slow registry doesn't eat into it.
+	ImagePullTimeoutSeconds int `toml:"image_pull_timeout_seconds"`
+
+	// ContainerTeardownTimeoutSeconds caps best-effort kill+remove on tear-down.
+	ContainerTeardownTimeoutSeconds int `toml:"container_teardown_timeout_seconds"`
 }
 
 // ServerConfig controls the HTTP listener.

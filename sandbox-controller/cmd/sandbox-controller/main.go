@@ -1,10 +1,9 @@
 // Command sandbox-controller is the agent-driven container-job sandbox controller.
 //
-// This is the scaffold from sc-528. The service exposes an mTLS-only HTTP API
-// (POST /run, POST /cancel, GET /healthz, GET /version). For now /run echoes the
-// validated request back; sc-529 wires it to dockerd+runsc, sc-530 adds the image
-// whitelist, sc-531 adds workspace path validation. sc-538 adds the deploy-time
-// hardening (distroless image, AppArmor, seccomp, cap_drop, no egress).
+// As of sc-529, /run actually spawns sibling containers under gVisor (runsc).
+// sc-530 adds the image whitelist, sc-531 adds workspace path validation,
+// sc-538 lands the deploy-time hardening (distroless image, AppArmor, seccomp,
+// cap_drop, no egress).
 //
 // See docs/sandbox-executor.md (sc-527) for the full architecture.
 package main
@@ -24,6 +23,8 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/apilog"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/dockerd"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/server"
 )
 
@@ -60,8 +61,23 @@ func main() {
 		os.Exit(2)
 	}
 
+	dockerClient := dockerd.New(cfg.Runner.DockerSocketPath)
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := dockerClient.Ping(pingCtx); err != nil {
+		// Don't os.Exit — the controller can still serve /healthz/version on a
+		// host that's mid-deploy. /run will surface daemon_error per request,
+		// which is the right behaviour to let monitoring pick it up.
+		logger.Warn("docker daemon unreachable at startup; /run will fail until it recovers",
+			"socket", cfg.Runner.DockerSocketPath, "err", err.Error())
+	}
+	pingCancel()
+
+	imagePullTimeout := time.Duration(cfg.Runner.ImagePullTimeoutSeconds) * time.Second
+	teardownTimeout := time.Duration(cfg.Runner.ContainerTeardownTimeoutSeconds) * time.Second
+	jobRunner := runner.New(runner.NewRealDaemon(dockerClient), logger, imagePullTimeout, teardownTimeout)
+
 	build := server.BuildInfo{Commit: commit, BuildTime: buildTime, ConfigHash: cfg.Hash()}
-	srv := server.New(cfg, verifier, build, logger)
+	srv := server.New(cfg, verifier, build, logger, jobRunner)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,

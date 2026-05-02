@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 )
 
 // BuildInfo is surfaced by GET /version.
@@ -20,25 +22,36 @@ type BuildInfo struct {
 	ConfigHash string `json:"configHash"`
 }
 
+// JobRunner is the contract /run uses. *runner.Runner satisfies it; tests
+// inject a tiny stub implementation.
+type JobRunner interface {
+	Run(ctx context.Context, spec runner.JobSpec) (*runner.Result, error)
+}
+
 // Server is the controller's HTTP server. Construct with New, mount with Handler.
 type Server struct {
-	cfg      *config.Config
-	verifier *auth.SubjectAllowlist
-	build    BuildInfo
-	logger   *slog.Logger
+	cfg       *config.Config
+	verifier  *auth.SubjectAllowlist
+	build     BuildInfo
+	logger    *slog.Logger
+	jobRunner JobRunner
 }
 
 // New returns a Server. It does not start the HTTP listener; the caller wires
 // the returned Handler into an *http.Server with the TLSConfig from LoadTLSConfig.
-func New(cfg *config.Config, verifier *auth.SubjectAllowlist, build BuildInfo, logger *slog.Logger) *Server {
+//
+// jobRunner may be nil during scaffold-only deployments (sc-528). When nil,
+// /run returns 503 service_unavailable. sc-529 onward always passes a runner.
+func New(cfg *config.Config, verifier *auth.SubjectAllowlist, build BuildInfo, logger *slog.Logger, jobRunner JobRunner) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Server{
-		cfg:      cfg,
-		verifier: verifier,
-		build:    build,
-		logger:   logger,
+		cfg:       cfg,
+		verifier:  verifier,
+		build:     build,
+		logger:    logger,
+		jobRunner: jobRunner,
 	}
 }
 

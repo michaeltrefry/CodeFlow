@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 )
 
 // RunRequest matches the schema in docs/sandbox-executor.md §11.2. Decoded
@@ -35,12 +36,20 @@ type Limits struct {
 	StderrMaxBytes int64   `json:"stderrMaxBytes"`
 }
 
-// RunResponse — for sc-528, the request fields plus a synthetic acceptedAt.
-// sc-529 will populate exit code, captured streams, artifacts manifest.
+// RunResponse mirrors docs/sandbox-executor.md §11.3. sc-529 populates exit
+// code, captured streams, and the truncation/timeout/cancel flags. The
+// artifacts manifest field is reserved for sc-531 — empty array for now.
 type RunResponse struct {
-	JobID      string    `json:"jobId"`
-	AcceptedAt time.Time `json:"acceptedAt"`
-	Echo       any       `json:"echo,omitempty"` // sc-528 only; removed in sc-529
+	JobID           string    `json:"jobId"`
+	ExitCode        int       `json:"exitCode"`
+	Stdout          string    `json:"stdout"`
+	Stderr          string    `json:"stderr"`
+	StdoutTruncated bool      `json:"stdoutTruncated"`
+	StderrTruncated bool      `json:"stderrTruncated"`
+	TimedOut        bool      `json:"timedOut"`
+	Cancelled       bool      `json:"cancelled"`
+	DurationMs      int64     `json:"durationMs"`
+	Artifacts       []any     `json:"artifacts"` // sc-531 will populate
 }
 
 // CancelRequest is the cancel-by-jobId payload.
@@ -97,20 +106,76 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// sc-528 scaffold validation: just enough to reject obviously broken requests.
-	// Real layer-2 validation (image whitelist, workspace path, limits caps,
-	// privileged-arg rejection) lands in sc-530 / sc-531.
+	// Layer-2 entry: scaffold-shape validation. sc-530 / sc-531 add the image
+	// whitelist and workspace-path checks. The strict-decode above already
+	// rejected unknown fields (defends against attempts to set privileged,
+	// host network, etc. — those keys are not on RunRequest so they 400).
 	if err := validateScaffoldShape(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "request_invalid", err.Error(), "scaffold_shape", req.JobID)
 		return
 	}
 
-	resp := RunResponse{
-		JobID:      req.JobID,
-		AcceptedAt: time.Now().UTC(),
-		Echo:       req,
+	if s.jobRunner == nil {
+		writeError(w, http.StatusServiceUnavailable, "controller_unavailable",
+			"job runner not configured", "runner.nil", req.JobID)
+		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+
+	spec := req.toJobSpec()
+	res, err := s.jobRunner.Run(r.Context(), spec)
+	if err != nil {
+		s.logger.Warn("job run failed",
+			"job_id", req.JobID,
+			"trace_id", req.TraceID,
+			"err", err.Error(),
+		)
+		// Surface the partial Result if the runner returned one (timeout, etc.).
+		jobID := req.JobID
+		if res != nil {
+			writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{
+				Code:    "daemon_error",
+				Message: err.Error(),
+				Rule:    "runner.error",
+				JobID:   jobID,
+			}})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "daemon_error", err.Error(), "runner.error", jobID)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, RunResponse{
+		JobID:           res.JobID,
+		ExitCode:        res.ExitCode,
+		Stdout:          res.Stdout,
+		Stderr:          res.Stderr,
+		StdoutTruncated: res.StdoutTruncated,
+		StderrTruncated: res.StderrTruncated,
+		TimedOut:        res.TimedOut,
+		Cancelled:       res.Cancelled,
+		DurationMs:      res.DurationMs,
+		Artifacts:       []any{}, // sc-531
+	})
+}
+
+// toJobSpec converts the wire-format RunRequest into the runner's internal
+// JobSpec. Fields that the wire format doesn't carry (workspace path, etc.)
+// are populated by later slices.
+func (req RunRequest) toJobSpec() runner.JobSpec {
+	return runner.JobSpec{
+		JobID:          req.JobID,
+		TraceID:        req.TraceID,
+		RepoSlug:       req.RepoSlug,
+		Image:          req.Image,
+		Cmd:            req.Cmd,
+		Env:            req.Env,
+		CPUs:           req.Limits.Cpus,
+		MemoryBytes:    req.Limits.MemoryBytes,
+		PidsLimit:      int64(req.Limits.Pids),
+		TimeoutSeconds: req.Limits.TimeoutSeconds,
+		StdoutMaxBytes: req.Limits.StdoutMaxBytes,
+		StderrMaxBytes: req.Limits.StderrMaxBytes,
+	}
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {

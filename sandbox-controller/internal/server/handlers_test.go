@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,7 +26,21 @@ import (
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/apilog"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/auth"
 	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/config"
+	"github.com/michaeltrefry/codeflow/sandbox-controller/internal/runner"
 )
+
+// stubRunner is the minimal JobRunner the handler tests inject. Each test
+// sets the result/err fields and the handler reflects them.
+type stubRunner struct {
+	gotSpec runner.JobSpec
+	result  *runner.Result
+	err     error
+}
+
+func (s *stubRunner) Run(ctx context.Context, spec runner.JobSpec) (*runner.Result, error) {
+	s.gotSpec = spec
+	return s.result, s.err
+}
 
 // testPKI is a self-contained mTLS PKI for tests: a CA, a server cert, and two
 // client certs (one allowed, one not).
@@ -132,9 +147,9 @@ func (p *testPKI) rootPoolFor() *x509.CertPool {
 }
 
 // setupServer builds a server.Server with an allowlist of {codeflow-api, trefry}
-// and starts an httptest TLS server in front of it. Returns the server URL and
-// a cleanup function.
-func setupServer(t *testing.T, pki *testPKI) (string, func()) {
+// and starts an httptest TLS server in front of it. Returns the server URL,
+// a cleanup function, and the stub runner the test can configure.
+func setupServer(t *testing.T, pki *testPKI) (string, *stubRunner, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		Server:  config.ServerConfig{Listen: ":0"},
@@ -147,7 +162,8 @@ func setupServer(t *testing.T, pki *testPKI) (string, func()) {
 		t.Fatal(err)
 	}
 	logger := apilog.New(slog.LevelError)
-	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger)
+	stub := &stubRunner{}
+	srv := New(cfg, verifier, BuildInfo{Commit: "test", BuildTime: "now"}, logger, stub)
 
 	httpSrv := httptest.NewUnstartedServer(srv.Handler())
 	httpSrv.TLS = &tls.Config{
@@ -157,7 +173,7 @@ func setupServer(t *testing.T, pki *testPKI) (string, func()) {
 		MinVersion:   tls.VersionTLS13,
 	}
 	httpSrv.StartTLS()
-	return httpSrv.URL, httpSrv.Close
+	return httpSrv.URL, stub, httpSrv.Close
 }
 
 func clientWith(t *testing.T, pki *testPKI, clientPair tls.Certificate) *http.Client {
@@ -176,7 +192,7 @@ func clientWith(t *testing.T, pki *testPKI, clientPair tls.Certificate) *http.Cl
 
 func TestHealthz_RequiresMTLS(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 
 	// Plaintext (no client cert) — handshake fails before any HTTP is exchanged.
@@ -193,7 +209,7 @@ func TestHealthz_RequiresMTLS(t *testing.T) {
 
 func TestHealthz_AllowedClient(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 
 	clientPair := pki.issueClient(t, "codeflow-api", []string{"trefry"})
@@ -215,7 +231,7 @@ func TestHealthz_AllowedClient(t *testing.T) {
 
 func TestHealthz_DisallowedSubject(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 
 	clientPair := pki.issueClient(t, "codeflow-ui", []string{"trefry"})
@@ -237,7 +253,7 @@ func TestHealthz_DisallowedSubject(t *testing.T) {
 
 func TestVersion_ReturnsBuildInfo(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
@@ -255,20 +271,35 @@ func TestVersion_ReturnsBuildInfo(t *testing.T) {
 	}
 }
 
-func TestRun_EchoesValidRequest(t *testing.T) {
+func TestRun_HappyPath(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, stub, cleanup := setupServer(t, pki)
 	defer cleanup()
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
 
 	jobID := uuid.NewString()
+	stub.result = &runner.Result{
+		JobID:      jobID,
+		ExitCode:   0,
+		Stdout:     "hi\n",
+		Stderr:     "",
+		DurationMs: 42,
+	}
+
 	req := RunRequest{
 		JobID:    jobID,
 		TraceID:  "abc123",
 		RepoSlug: "trefry-codeflow-deadbeef",
 		Image:    "ghcr.io/trefry/dotnet-tester:10.0",
 		Cmd:      []string{"echo", "hi"},
-		Limits:   Limits{TimeoutSeconds: 60},
+		Limits: Limits{
+			Cpus:           1.0,
+			MemoryBytes:    1 << 30,
+			Pids:           256,
+			TimeoutSeconds: 60,
+			StdoutMaxBytes: 1 << 20,
+			StderrMaxBytes: 1 << 20,
+		},
 	}
 	body, _ := json.Marshal(req)
 	resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
@@ -285,13 +316,63 @@ func TestRun_EchoesValidRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.JobID != jobID {
-		t.Fatalf("jobId: %q", got.JobID)
+		t.Errorf("jobId: %q", got.JobID)
+	}
+	if got.ExitCode != 0 || got.Stdout != "hi\n" {
+		t.Errorf("body: %#v", got)
+	}
+	if got.DurationMs != 42 {
+		t.Errorf("durationMs: %d", got.DurationMs)
+	}
+
+	// Verify the runner saw the spec we expected.
+	if stub.gotSpec.JobID != jobID {
+		t.Errorf("runner saw jobId %q", stub.gotSpec.JobID)
+	}
+	if stub.gotSpec.Image != req.Image {
+		t.Errorf("runner saw image %q", stub.gotSpec.Image)
+	}
+	if stub.gotSpec.CPUs != 1.0 || stub.gotSpec.MemoryBytes != 1<<30 || stub.gotSpec.PidsLimit != 256 {
+		t.Errorf("runner saw limits cpus=%v mem=%d pids=%d", stub.gotSpec.CPUs, stub.gotSpec.MemoryBytes, stub.gotSpec.PidsLimit)
+	}
+}
+
+func TestRun_RunnerError(t *testing.T) {
+	pki := newTestPKI(t)
+	url, stub, cleanup := setupServer(t, pki)
+	defer cleanup()
+	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
+
+	stub.err = fmt.Errorf("simulated daemon failure")
+	jobID := uuid.NewString()
+
+	req := RunRequest{
+		JobID:    jobID,
+		TraceID:  "abc",
+		RepoSlug: "r",
+		Image:    "alpine:3",
+		Cmd:      []string{"echo", "hi"},
+		Limits:   Limits{TimeoutSeconds: 60},
+	}
+	body, _ := json.Marshal(req)
+	resp, err := c.Post(url+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(raw, []byte("daemon_error")) {
+		t.Fatalf("expected daemon_error code, got %s", raw)
 	}
 }
 
 func TestRun_RejectsUnknownField(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
 
@@ -317,7 +398,7 @@ func TestRun_RejectsUnknownField(t *testing.T) {
 
 func TestRun_RejectsMissingFields(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
 
@@ -348,7 +429,7 @@ func TestRun_RejectsMissingFields(t *testing.T) {
 
 func TestCancel_AcceptsValidJobID(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
 
@@ -366,7 +447,7 @@ func TestCancel_AcceptsValidJobID(t *testing.T) {
 
 func TestCancel_RejectsBadJobID(t *testing.T) {
 	pki := newTestPKI(t)
-	url, cleanup := setupServer(t, pki)
+	url, _, cleanup := setupServer(t, pki)
 	defer cleanup()
 	c := clientWith(t, pki, pki.issueClient(t, "codeflow-api", []string{"trefry"}))
 
