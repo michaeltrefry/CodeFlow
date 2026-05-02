@@ -72,8 +72,12 @@ sandbox-controller/
 │       └── middleware.go             # subject-allowlist + structured-logging middleware
 ├── deploy/
 │   ├── Dockerfile                    # static Go build → distroless/static:nonroot
-│   ├── compose.yml                   # local-dev compose
-│   └── controller-config.example.toml
+│   ├── compose.yml                   # local-dev compose (hardened posture, dev carve-outs called out)
+│   ├── compose.prod.snippet.yml      # prod-shaped service definition for sc-535 to integrate
+│   ├── controller-config.example.toml
+│   ├── HARDENING.md                  # sc-538 — lever-to-threat mapping + verification checklist
+│   ├── apparmor/codeflow-sandbox-controller   # AppArmor profile (host-installed)
+│   └── seccomp/controller-seccomp.json        # seccomp profile (deny-by-default allowlist)
 ├── scripts/gen-dev-certs.sh          # openssl-based self-signed PKI for local dev
 ├── go.mod / go.sum
 └── Makefile

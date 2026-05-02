@@ -3,12 +3,12 @@
 # - Generates dev mTLS material via ./scripts/gen-dev-certs.sh before `compose up`.
 # - The compose stack here is for the controller in isolation; the production
 #   wiring (api/worker on the controller-internal network) lives in
-#   deploy/docker-compose.prod.yml under the main CodeFlow repo and is added in
-#   sc-535.
+#   deploy/compose.prod.snippet.yml. sc-535 integrates that snippet into the
+#   main repo's deploy/docker-compose.prod.yml.
 #
-# This file does NOT include sc-538 hardening (AppArmor/seccomp/cap_drop/
-# read_only) yet — those land in sc-538. Adding them here without the host-side
-# profiles in place would just confuse local dev.
+# Local dev applies the same hardening posture as prod where it makes sense
+# on a developer machine, with two intentional carve-outs marked DEV ONLY
+# below. See deploy/HARDENING.md for the full lever-to-threat mapping.
 
 services:
   sandbox-controller:
@@ -22,17 +22,42 @@ services:
     container_name: codeflow-sandbox-controller-dev
     networks:
       - controller-internal
+
+    # === RUNTIME HARDENING (sc-538) ==========================================
+
+    read_only: true
+    user: "65532:65532"          # distroless `nonroot`
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+      # AppArmor + seccomp are host-installed; uncomment when running on a Linux
+      # host with the profiles loaded (see deploy/HARDENING.md). On macOS / Lima
+      # / Colima the AppArmor module isn't available so we leave them off in dev.
+      # - "apparmor=codeflow-sandbox-controller"
+      # - "seccomp=./seccomp/controller-seccomp.json"
+
+    tmpfs:
+      - /tmp:size=16m,mode=1700,uid=65532,gid=65532
+
     volumes:
       - ./controller-config.dev.toml:/etc/cfsc/config.toml:ro
       - ./dev-tls:/etc/cfsc/tls:ro
-    # Local dev only: bind to 127.0.0.1:8443 so an mTLS curl from the host can
-    # reach it. Prod (sc-535) does NOT publish ports — the controller is reachable
-    # only over the controller-internal compose network.
+
+    # === DEV ONLY ============================================================
+    # Bind to 127.0.0.1:8443 so an mTLS curl from the host can reach it. Prod
+    # (sc-535) does NOT publish ports — the controller is reachable only over
+    # the controller-internal compose network.
     ports:
       - "127.0.0.1:8443:8443"
+
     restart: "no"
 
 networks:
   controller-internal:
-    # Prod sets `internal: true` here (sc-535). For local dev we leave the default
-    # bridge so docker can pull the build base image.
+    # === DEV ONLY ============================================================
+    # Prod sets `internal: true` here (see deploy/compose.prod.snippet.yml).
+    # For local dev we leave the default bridge so docker can pull the build
+    # base image (golang + distroless) on first `compose build`. After the
+    # build is cached, this can be flipped to `internal: true` for a closer
+    # prod-shaped local test.

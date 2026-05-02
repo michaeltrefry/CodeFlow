@@ -1,0 +1,124 @@
+#include <tunables/global>
+
+#
+# AppArmor profile for the codeflow-sandbox-controller container.
+#
+# Lands the deploy-time hardening from sc-538 / epic 526. Pairs with the
+# seccomp profile at deploy/seccomp/controller-seccomp.json and the compose
+# flags in deploy/compose.prod.snippet.yml. See deploy/HARDENING.md for
+# the full posture and the lever-to-threat mapping.
+#
+# The controller is a Go static binary that:
+#   - reads its config and TLS material from /etc/cfsc/...
+#   - listens on a TCP mTLS port
+#   - dials /var/run/docker.sock (the only privileged operation it needs)
+#   - emits structured logs to stderr
+#
+# Anything beyond that surface is denied. The deny rules at the end of the
+# profile catch a few common post-exploit primitives explicitly so they show
+# up in audit logs (DENIED) rather than failing silently with EPERM.
+#
+# Install:
+#   sudo cp deploy/apparmor/codeflow-sandbox-controller \
+#           /etc/apparmor.d/codeflow-sandbox-controller
+#   sudo apparmor_parser -r /etc/apparmor.d/codeflow-sandbox-controller
+#   sudo aa-status | grep codeflow-sandbox-controller   # confirm enforce mode
+#
+# Reference in compose.yml:
+#   security_opt:
+#     - apparmor=codeflow-sandbox-controller
+#
+
+profile codeflow-sandbox-controller flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # --- capabilities ----------------------------------------------------------
+  # The compose stack already does cap_drop ALL. AppArmor capability rules
+  # below are belt-and-suspenders — if a container is ever launched without
+  # cap_drop, AppArmor still denies these.
+  deny capability,
+
+  # --- network ---------------------------------------------------------------
+  # TCP listen for the mTLS API; UNIX dial to /var/run/docker.sock; nothing else.
+  network tcp,
+  network unix stream,
+  network unix dgram,
+  deny network raw,
+  deny network packet,
+  deny network netlink,
+
+  # --- filesystem: binary + read-only image content --------------------------
+  /usr/local/bin/sandbox-controller mr,
+  /etc/cfsc/                        r,
+  /etc/cfsc/**                      r,
+
+  # Distroless base puts CA certs here; we don't use them today (the controller
+  # makes no outbound HTTPS calls in v1) but Go's runtime probes them.
+  /etc/ssl/certs/                   r,
+  /etc/ssl/certs/**                 r,
+
+  # Minimal /etc plumbing the runtime touches.
+  /etc/hosts                        r,
+  /etc/host.conf                    r,
+  /etc/resolv.conf                  r,
+  /etc/nsswitch.conf                r,
+  /etc/services                     r,
+  /etc/protocols                    r,
+
+  # --- filesystem: process self-introspection -------------------------------
+  # Go runtime reads these for GOMAXPROCS, NUMA topology, sched stats, etc.
+  /proc/                            r,
+  /proc/self/                       r,
+  /proc/self/**                     r,
+  /proc/cpuinfo                     r,
+  /proc/meminfo                     r,
+  /proc/stat                        r,
+  /proc/sys/kernel/version          r,
+  /proc/sys/kernel/hostname         r,
+  /proc/sys/net/core/somaxconn      r,
+  /sys/kernel/mm/transparent_hugepage/enabled r,
+
+  # --- filesystem: writable scratch -----------------------------------------
+  # /tmp is a tmpfs (size capped via compose). Nothing else is writable.
+  /tmp/                             rw,
+  /tmp/**                           rwk,
+
+  # --- privileged operation: docker socket -----------------------------------
+  # The whole point of this container's existence.
+  /var/run/                         r,
+  /var/run/docker.sock              rw,
+
+  # --- workspace path read access (Phase 1) ---------------------------------
+  # Phase 1 mounts /opt/codeflow/workdirs into the controller read-only. The
+  # controller doesn't actually read workspace contents — it passes the path
+  # to dockerd — but lstat/readdir for path validation requires read access.
+  /opt/codeflow/workdirs/           r,
+  /opt/codeflow/workdirs/**         r,
+
+  # --- explicit denies (for audit-log clarity) ------------------------------
+  deny /var/run/docker.sock w,        # noop — already 'rw' above; placeholder for op review
+  deny /etc/shadow rwk,
+  deny /etc/passwd w,
+  deny /etc/sudoers rwklx,
+  deny /etc/cron.d/** rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /var/log/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/firmware/** rwklx,
+  deny /proc/sys/kernel/core_pattern w,
+  deny /proc/sys/kernel/modprobe   w,
+  deny /proc/kcore                  rwklx,
+  deny /proc/kallsyms               rwklx,
+  deny /dev/mem                     rwklx,
+  deny /dev/kmem                    rwklx,
+
+  # mount/umount/pivot_root via filesystem syscalls (seccomp blocks the syscall
+  # path; AppArmor blocks the mount-rule path). Defense in depth.
+  deny mount,
+  deny umount,
+  deny pivot_root,
+
+  # ptrace and module loading.
+  deny ptrace,
+}
