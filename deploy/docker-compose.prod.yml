@@ -207,8 +207,18 @@ services:
       - ALL
     security_opt:
       - "no-new-privileges:true"
-      - "apparmor=codeflow-sandbox-controller"
-      - "seccomp=/etc/docker/seccomp/cfsc.json"
+      # seccomp profile lives under /opt/codeflow so the deploy user can write
+      # it without sudo. The deploy workflow scps the file from the repo on
+      # every deploy.
+      - "seccomp=${CFSC_SECCOMP_PROFILE_PATH:-/opt/codeflow/cfsc/seccomp/cfsc.json}"
+      # AppArmor profile install requires sudo (apparmor_parser), which the
+      # deploy user doesn't have. After a one-time host-setup pass per
+      # deploy/sandbox-controller/host-setup.md §2, the operator sets
+      # CFSC_APPARMOR_PROFILE=codeflow-sandbox-controller in repo vars.
+      # Until then, "unconfined" runs the controller without AppArmor — the
+      # other six hardening levers (cap_drop ALL, no-new-privileges, seccomp,
+      # read_only, internal-network, nonroot uid) still hold.
+      - "apparmor=${CFSC_APPARMOR_PROFILE:-unconfined}"
 
     # group_add gives uid 65532 supplementary membership in the host's docker
     # group (variable gid). Required for socket access — sc-535 host-setup
