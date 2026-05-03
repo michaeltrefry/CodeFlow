@@ -53,6 +53,25 @@ export interface AuthorableHistoryMessage {
   content: string;
 }
 
+/**
+ * sc-571: enables a parent agent to spawn anonymous sub-agent workers via the runtime-provided
+ * `spawn_subagent` tool. Sub-agents are not pre-configured slots — the parent describes each
+ * task and the response shape it wants at spawn time. Sub-agents inherit the parent's resolved
+ * tool set (v1; no per-spawn role assignment).
+ */
+export interface SubAgentConfig {
+  /** Provider override; omit/null to inherit the parent's. */
+  provider?: 'openai' | 'anthropic' | 'lmstudio' | null;
+  /** Model override; omit/null to inherit. */
+  model?: string | null;
+  /** Safety cap on parallel spawns from a single tool call (1..32, default 4). */
+  maxConcurrent?: number;
+  /** Per-spawn max-tokens override; omit/null to inherit. */
+  maxTokens?: number | null;
+  /** Per-spawn temperature override (0..2); omit/null to inherit. */
+  temperature?: number | null;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -68,6 +87,7 @@ export interface AgentConfig {
   outputs?: AgentOutputDeclaration[];
   decisionOutputTemplates?: Record<string, string>;
   history?: AuthorableHistoryMessage[];
+  subAgents?: SubAgentConfig | null;
   [key: string]: unknown;
 }
 

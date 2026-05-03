@@ -31,6 +31,7 @@ import {
   PromptPartialPinDto,
   PromptTemplatePreviewAutoInjection,
   PromptTemplatePreviewMissingPartial,
+  SubAgentConfig,
 } from '../../core/models';
 import { FORM_PRESETS, FormPresetKey, getFormPreset } from './form-presets';
 import { ButtonComponent } from '../../ui/button.component';
@@ -203,6 +204,77 @@ export interface AgentFormHeaderState {
                     [templateCompletion]="true"
                     (valueChange)="promptTemplate.set($event)"></cf-monaco-script-editor>
                 </div>
+              </div>
+              <div class="form-section">
+                <div class="form-section-head">
+                  <h3>Sub-agents
+                    @if (subAgentsEnabled()) {
+                      <cf-chip mono>{{ subAgentsMaxConcurrent() }}× max</cf-chip>
+                    }
+                  </h3>
+                  <p>
+                    When enabled, the runtime exposes a <code>spawn_subagent</code> tool. The
+                    parent agent supplies a per-call system prompt and input for each spawned
+                    worker; sub-agents inherit the parent's resolved tool set and run with the
+                    settings below. Use this when one model needs to delegate sub-tasks to
+                    cheaper or more focused workers; use a Swarm node for explicit peer
+                    protocols, and a Subflow to compose another workflow inline.
+                  </p>
+                </div>
+                <label class="field" style="flex-direction: row; align-items: center; gap: 10px; margin-bottom: 8px">
+                  <input type="checkbox"
+                         [checked]="subAgentsEnabled()"
+                         (change)="toggleSubAgentsEnabled($any($event.target).checked)" />
+                  <span>Enable sub-agents</span>
+                </label>
+                @if (subAgentsEnabled()) {
+                  <div class="form-grid">
+                    <label class="field">
+                      <span class="field-label">Provider <span class="muted small">(blank = inherit "{{ subAgentsInheritedProvider() }}")</span></span>
+                      <select class="input mono"
+                              [ngModel]="subAgentsProvider()"
+                              (ngModelChange)="subAgentsProvider.set($event)"
+                              name="subAgentsProvider">
+                        <option value="">(inherit)</option>
+                        @for (key of LLM_PROVIDER_KEYS; track key) {
+                          <option [value]="key">{{ providerDisplayName(key) }}</option>
+                        }
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Model <span class="muted small">(blank = inherit "{{ subAgentsInheritedModel() }}")</span></span>
+                      <input class="input mono" type="text"
+                             [ngModel]="subAgentsModel()"
+                             (ngModelChange)="subAgentsModel.set($event)"
+                             name="subAgentsModel"
+                             placeholder="claude-haiku-4-5" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Max concurrent <span class="muted small">(1..{{ SUBAGENTS_MAX_CONCURRENT }})</span></span>
+                      <input class="input mono" type="number"
+                             [min]="SUBAGENTS_MIN_CONCURRENT" [max]="SUBAGENTS_MAX_CONCURRENT"
+                             [ngModel]="subAgentsMaxConcurrent()"
+                             (ngModelChange)="subAgentsMaxConcurrent.set(+$event)"
+                             name="subAgentsMaxConcurrent" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Max tokens <span class="muted small">(blank = inherit)</span></span>
+                      <input class="input mono" type="number" min="1"
+                             [ngModel]="subAgentsMaxTokens()"
+                             (ngModelChange)="subAgentsMaxTokens.set($event === null || $event === '' ? undefined : +$event)"
+                             name="subAgentsMaxTokens"
+                             placeholder="(inherit)" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Temperature <span class="muted small">(0..2, blank = inherit)</span></span>
+                      <input class="input mono" type="number" step="0.1" min="0" max="2"
+                             [ngModel]="subAgentsTemperature()"
+                             (ngModelChange)="subAgentsTemperature.set($event === null || $event === '' ? undefined : +$event)"
+                             name="subAgentsTemperature"
+                             placeholder="(inherit)" />
+                    </label>
+                  </div>
+                }
               </div>
             </cf-card>
           } @else {
@@ -793,6 +865,21 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     { value: 'assistant', label: 'Assistant' },
   ];
 
+  // sc-571: optional spec that lets the parent agent spawn anonymous sub-agent workers via
+  // the runtime-provided `spawn_subagent` tool. Sub-agents are not pre-configured slots —
+  // the parent passes systemPrompt + input at spawn time. Provider/model/maxTokens/
+  // temperature default to the parent's settings when omitted.
+  protected readonly subAgentsEnabled = signal(false);
+  protected readonly subAgentsProvider = signal<LlmProviderKey | ''>('');
+  protected readonly subAgentsModel = signal('');
+  protected readonly subAgentsMaxConcurrent = signal<number>(4);
+  protected readonly subAgentsMaxTokens = signal<number | undefined>(undefined);
+  protected readonly subAgentsTemperature = signal<number | undefined>(undefined);
+  protected readonly SUBAGENTS_MIN_CONCURRENT = 1;
+  protected readonly SUBAGENTS_MAX_CONCURRENT = 32;
+  protected readonly subAgentsInheritedProvider = computed<LlmProviderKey>(() => this.provider());
+  protected readonly subAgentsInheritedModel = computed(() => this.model());
+
   // S2: form-preset picker state. Visible only when type=hitl AND the form looks empty
   // (so editing an existing form doesn't get clobbered by an accidental Apply).
   protected readonly formPresets = FORM_PRESETS;
@@ -1095,6 +1182,7 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.budgetMaxConsecutiveNonMutatingCalls.set(budget.maxConsecutiveNonMutatingCalls);
     this.partialPins.set(readPromptPartialPins(config['partialPins']));
     this.history.set(readAuthorableHistory(config['history']));
+    this.applySubAgentsSpec(readSubAgentsSpec(config['subAgents']));
     const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
     const declaredKinds = new Set<string>();
@@ -1291,6 +1379,50 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.history.set(this.history().map((m, i) => (i === index ? { ...m, ...patch } : m)));
   }
 
+  protected toggleSubAgentsEnabled(value: boolean): void {
+    this.subAgentsEnabled.set(value);
+    if (!value) {
+      this.subAgentsProvider.set('');
+      this.subAgentsModel.set('');
+      this.subAgentsMaxConcurrent.set(4);
+      this.subAgentsMaxTokens.set(undefined);
+      this.subAgentsTemperature.set(undefined);
+    }
+  }
+
+  private applySubAgentsSpec(spec: SubAgentConfig | null): void {
+    if (!spec) {
+      this.subAgentsEnabled.set(false);
+      this.subAgentsProvider.set('');
+      this.subAgentsModel.set('');
+      this.subAgentsMaxConcurrent.set(4);
+      this.subAgentsMaxTokens.set(undefined);
+      this.subAgentsTemperature.set(undefined);
+      return;
+    }
+    this.subAgentsEnabled.set(true);
+    this.subAgentsProvider.set(spec.provider ?? '');
+    this.subAgentsModel.set(spec.model ?? '');
+    this.subAgentsMaxConcurrent.set(spec.maxConcurrent ?? 4);
+    this.subAgentsMaxTokens.set(spec.maxTokens ?? undefined);
+    this.subAgentsTemperature.set(spec.temperature ?? undefined);
+  }
+
+  private buildSubAgentsSpec(): SubAgentConfig | null {
+    if (!this.subAgentsEnabled()) return null;
+    const spec: SubAgentConfig = {};
+    const provider = this.subAgentsProvider();
+    if (provider) spec.provider = provider;
+    const model = this.subAgentsModel().trim();
+    if (model) spec.model = model;
+    spec.maxConcurrent = this.subAgentsMaxConcurrent();
+    const maxTokens = this.subAgentsMaxTokens();
+    if (maxTokens !== undefined) spec.maxTokens = maxTokens;
+    const temperature = this.subAgentsTemperature();
+    if (temperature !== undefined) spec.temperature = temperature;
+    return spec;
+  }
+
   protected payloadExampleText(output: OutputRow): string {
     if (output.payloadExample === null || output.payloadExample === undefined) return '';
     if (typeof output.payloadExample === 'string') return output.payloadExample;
@@ -1360,6 +1492,10 @@ export class AgentFormComponent implements OnInit, OnDestroy {
         .filter(m => m.content.trim().length > 0);
       if (cleanedHistory.length > 0) {
         config.history = cleanedHistory;
+      }
+      const subAgentsSpec = this.buildSubAgentsSpec();
+      if (subAgentsSpec) {
+        config.subAgents = subAgentsSpec;
       }
     }
 
@@ -1516,6 +1652,28 @@ function readAuthorableHistory(value: unknown): AuthorableHistoryMessage[] {
     if (candidate.role !== 'user' && candidate.role !== 'assistant') continue;
     if (typeof candidate.content !== 'string') continue;
     result.push({ role: candidate.role, content: candidate.content });
+  }
+  return result;
+}
+
+function readSubAgentsSpec(value: unknown): SubAgentConfig | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<SubAgentConfig> & Record<string, unknown>;
+  const result: SubAgentConfig = {};
+  if (candidate.provider === 'openai' || candidate.provider === 'anthropic' || candidate.provider === 'lmstudio') {
+    result.provider = candidate.provider;
+  }
+  if (typeof candidate.model === 'string' && candidate.model.length > 0) {
+    result.model = candidate.model;
+  }
+  if (typeof candidate.maxConcurrent === 'number' && Number.isFinite(candidate.maxConcurrent)) {
+    result.maxConcurrent = candidate.maxConcurrent;
+  }
+  if (typeof candidate.maxTokens === 'number' && Number.isFinite(candidate.maxTokens)) {
+    result.maxTokens = candidate.maxTokens;
+  }
+  if (typeof candidate.temperature === 'number' && Number.isFinite(candidate.temperature)) {
+    result.temperature = candidate.temperature;
   }
   return result;
 }

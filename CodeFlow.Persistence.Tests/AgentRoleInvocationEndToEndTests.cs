@@ -194,7 +194,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
                             {
                                 ["invocations"] = new JsonArray
                                 {
-                                    new JsonObject { ["agent"] = "child", ["input"] = "please-echo" },
+                                    new JsonObject { ["systemPrompt"] = "Echo helper.", ["input"] = "please-echo" },
                                 },
                             }),
                     ]),
@@ -235,10 +235,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
             new AgentInvocationConfiguration(
                 Provider: "parent",
                 Model: "m",
-                SubAgents: new Dictionary<string, AgentInvocationConfiguration>
-                {
-                    ["child"] = new AgentInvocationConfiguration(Provider: "child", Model: "m"),
-                }),
+                SubAgents: new SubAgentConfig(Provider: "child", Model: "m", MaxConcurrent: 1)),
             "go",
             tools);
 

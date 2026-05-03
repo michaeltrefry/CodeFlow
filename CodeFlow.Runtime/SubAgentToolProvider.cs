@@ -8,7 +8,11 @@ public sealed class SubAgentToolProvider : IToolProvider
 
     private static readonly ToolSchema SpawnSubAgentTool = new(
         SpawnToolName,
-        "Invoke one or more configured child agents in parallel and return their results.",
+        "Spawn one or more anonymous sub-agent workers in parallel. Each invocation provides "
+        + "a per-call system prompt (describing the task and the response shape you want) and "
+        + "an input. Sub-agents inherit the parent's resolved tool set; the spec on the parent "
+        + "agent controls provider/model and concurrency. Returns one result object per "
+        + "invocation, in the order requested.",
         new JsonObject
         {
             ["type"] = "object",
@@ -22,16 +26,19 @@ public sealed class SubAgentToolProvider : IToolProvider
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["agent"] = new JsonObject
+                            ["systemPrompt"] = new JsonObject
                             {
-                                ["type"] = "string"
+                                ["type"] = "string",
+                                ["description"] = "Instructions and response-shape guidance for "
+                                    + "this sub-agent invocation."
                             },
                             ["input"] = new JsonObject
                             {
-                                ["type"] = "string"
+                                ["type"] = "string",
+                                ["description"] = "The task input the sub-agent should act on."
                             }
                         },
-                        ["required"] = new JsonArray("agent", "input")
+                        ["required"] = new JsonArray("systemPrompt", "input")
                     }
                 }
             },
@@ -39,16 +46,22 @@ public sealed class SubAgentToolProvider : IToolProvider
         });
 
     private readonly Agent agent;
-    private readonly IReadOnlyDictionary<string, AgentInvocationConfiguration> subAgents;
+    private readonly AgentInvocationConfiguration parentConfiguration;
+    private readonly SubAgentConfig spec;
     private readonly ResolvedAgentTools inheritedTools;
 
     public SubAgentToolProvider(
         Agent agent,
-        IReadOnlyDictionary<string, AgentInvocationConfiguration> subAgents,
+        AgentInvocationConfiguration parentConfiguration,
         ResolvedAgentTools inheritedTools)
     {
         this.agent = agent ?? throw new ArgumentNullException(nameof(agent));
-        this.subAgents = subAgents ?? throw new ArgumentNullException(nameof(subAgents));
+        this.parentConfiguration = parentConfiguration
+            ?? throw new ArgumentNullException(nameof(parentConfiguration));
+        this.spec = parentConfiguration.SubAgents
+            ?? throw new ArgumentException(
+                "Parent configuration must define SubAgents to construct a SubAgentToolProvider.",
+                nameof(parentConfiguration));
         this.inheritedTools = inheritedTools ?? throw new ArgumentNullException(nameof(inheritedTools));
     }
 
@@ -59,7 +72,7 @@ public sealed class SubAgentToolProvider : IToolProvider
         ArgumentNullException.ThrowIfNull(policy);
 
         var limit = policy.GetCategoryLimit(Category);
-        if (limit <= 0 || subAgents.Count == 0)
+        if (limit <= 0)
         {
             return [];
         }
@@ -80,14 +93,34 @@ public sealed class SubAgentToolProvider : IToolProvider
         }
 
         var invocations = ParseInvocations(toolCall.Arguments);
+        var maxConcurrent = Math.Max(1, spec.MaxConcurrent);
+        using var throttle = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+
         var childTasks = invocations
-            .Select(invocation => InvokeSubAgentAsync(invocation, context, cancellationToken))
+            .Select(invocation => InvokeSubAgentThrottledAsync(invocation, throttle, context, cancellationToken))
             .ToArray();
 
         var results = await Task.WhenAll(childTasks);
-        var content = new JsonArray(results.Select(static result => result).ToArray()).ToJsonString();
+        var content = new JsonArray(results.Select(static result => (JsonNode?)result).ToArray()).ToJsonString();
 
         return new ToolResult(toolCall.Id, content);
+    }
+
+    private async Task<JsonObject> InvokeSubAgentThrottledAsync(
+        SubAgentInvocation invocation,
+        SemaphoreSlim throttle,
+        ToolExecutionContext? toolExecutionContext,
+        CancellationToken cancellationToken)
+    {
+        await throttle.WaitAsync(cancellationToken);
+        try
+        {
+            return await InvokeSubAgentAsync(invocation, toolExecutionContext, cancellationToken);
+        }
+        finally
+        {
+            throttle.Release();
+        }
     }
 
     private async Task<JsonObject> InvokeSubAgentAsync(
@@ -95,13 +128,21 @@ public sealed class SubAgentToolProvider : IToolProvider
         ToolExecutionContext? toolExecutionContext,
         CancellationToken cancellationToken)
     {
-        if (!subAgents.TryGetValue(invocation.Agent, out var configuration))
-        {
-            throw new InvalidOperationException($"Unknown sub-agent '{invocation.Agent}'.");
-        }
+        // Build an ad-hoc child configuration. Provider/model/maxTokens/temperature default to
+        // the parent's settings unless overridden on the spec; the per-call systemPrompt comes
+        // from the LLM's invocation arguments, since sub-agents are parameterised at spawn time
+        // rather than pre-configured per slot. SubAgents on the child is null so children
+        // cannot recursively spawn workers themselves.
+        var childConfiguration = new AgentInvocationConfiguration(
+            Provider: spec.Provider ?? parentConfiguration.Provider,
+            Model: spec.Model ?? parentConfiguration.Model,
+            SystemPrompt: invocation.SystemPrompt,
+            MaxTokens: spec.MaxTokens ?? parentConfiguration.MaxTokens,
+            Temperature: spec.Temperature ?? parentConfiguration.Temperature,
+            SubAgents: null);
 
         var result = await agent.InvokeAsync(
-            configuration,
+            childConfiguration,
             invocation.Input,
             inheritedTools,
             cancellationToken,
@@ -109,7 +150,6 @@ public sealed class SubAgentToolProvider : IToolProvider
 
         return new JsonObject
         {
-            ["agent"] = invocation.Agent,
             ["input"] = invocation.Input,
             ["output"] = result.Output,
             ["decision"] = AgentDecisionJson.ToJsonObject(result.Decision)
@@ -134,7 +174,7 @@ public sealed class SubAgentToolProvider : IToolProvider
         }
 
         return new SubAgentInvocation(
-            GetRequiredString(node, "agent"),
+            GetRequiredString(node, "systemPrompt"),
             GetRequiredString(node, "input"));
     }
 
@@ -151,6 +191,6 @@ public sealed class SubAgentToolProvider : IToolProvider
     }
 
     private sealed record SubAgentInvocation(
-        string Agent,
+        string SystemPrompt,
         string Input);
 }

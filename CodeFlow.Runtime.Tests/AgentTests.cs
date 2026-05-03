@@ -84,14 +84,17 @@ public sealed class AgentTests
     }
 
     [Fact]
-    public async Task InvokeAsync_ShouldFanOutSubAgentCallsInParallel()
+    public async Task InvokeAsync_ShouldFanOutAnonymousSubAgentCallsInParallel()
     {
+        // sc-571: sub-agents are anonymous workers parameterised at spawn time; the parent
+        // chooses each invocation's systemPrompt, and children inherit the parent's provider/
+        // model unless the spec overrides them.
         var parentClient = new ScriptedModelClient(
         [
             _ => new InvocationResponse(
                 new ChatMessage(
                     ChatMessageRole.Assistant,
-                    "Delegating to child agents.",
+                    "Delegating to anonymous workers.",
                     ToolCalls:
                     [
                         new ToolCall(
@@ -101,9 +104,9 @@ public sealed class AgentTests
                             {
                                 ["invocations"] = new JsonArray
                                 {
-                                    new JsonObject { ["agent"] = "alpha", ["input"] = "draft A" },
-                                    new JsonObject { ["agent"] = "beta", ["input"] = "draft B" },
-                                    new JsonObject { ["agent"] = "gamma", ["input"] = "draft C" }
+                                    new JsonObject { ["systemPrompt"] = "Reviewer A.", ["input"] = "draft A" },
+                                    new JsonObject { ["systemPrompt"] = "Reviewer B.", ["input"] = "draft B" },
+                                    new JsonObject { ["systemPrompt"] = "Reviewer C.", ["input"] = "draft C" }
                                 }
                             })
                     ]),
@@ -115,8 +118,8 @@ public sealed class AgentTests
 
                 var payload = JsonNode.Parse(toolMessage.Content)!.AsArray();
                 payload.Should().HaveCount(3);
-                payload.Select(item => item!["agent"]!.GetValue<string>())
-                    .Should().BeEquivalentTo(["alpha", "beta", "gamma"]);
+                payload.Select(item => item!["input"]!.GetValue<string>())
+                    .Should().BeEquivalentTo(["draft A", "draft B", "draft C"]);
 
                 return new InvocationResponse(
                     new ChatMessage(ChatMessageRole.Assistant, "Children finished."),
@@ -130,26 +133,98 @@ public sealed class AgentTests
             new ModelClientRegistration("child", childClient)
         ]));
 
-        var childConfig = new AgentInvocationConfiguration(
-            Provider: "child",
-            Model: "child-model");
-
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(
                 Provider: "parent",
                 Model: "parent-model",
-                SubAgents: new Dictionary<string, AgentInvocationConfiguration>
-                {
-                    ["alpha"] = childConfig,
-                    ["beta"] = childConfig,
-                    ["gamma"] = childConfig
-                }),
+                SubAgents: new SubAgentConfig(
+                    Provider: "child",
+                    Model: "child-model",
+                    MaxConcurrent: 3)),
             "Coordinate the reviewers.",
             ResolvedAgentTools.Empty);
 
         result.Output.Should().Be("Children finished.");
         result.Decision.PortName.Should().Be("Completed");
         childClient.MaxObservedConcurrency.Should().Be(3);
+        childClient.SystemPromptsObserved.Should().BeEquivalentTo(
+            ["Reviewer A.", "Reviewer B.", "Reviewer C."]);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldInheritParentProviderAndModelWhenSpecOmitsThem()
+    {
+        // SubAgents spec leaves provider/model null → children should run on the parent's
+        // ModelClient registration, not require a separate one.
+        var capturedChildModels = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var registry = new ModelClientRegistry(
+        [
+            new ModelClientRegistration("solo", new SoloRoutingClient(capturedChildModels))
+        ]);
+        var agent = new Agent(registry);
+
+        await agent.InvokeAsync(
+            new AgentInvocationConfiguration(
+                Provider: "solo",
+                Model: "shared-model",
+                SubAgents: new SubAgentConfig(MaxConcurrent: 1)),
+            "spawn one",
+            ResolvedAgentTools.Empty);
+
+        capturedChildModels.Should().Contain("shared-model");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldThrottleSubAgentSpawnsToMaxConcurrent()
+    {
+        // The parent attempts a 4-way spawn but the spec caps concurrency at 2.
+        var parentClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Delegating to four workers.",
+                    ToolCalls:
+                    [
+                        new ToolCall(
+                            "call_spawn",
+                            "spawn_subagent",
+                            new JsonObject
+                            {
+                                ["invocations"] = new JsonArray
+                                {
+                                    new JsonObject { ["systemPrompt"] = "p1", ["input"] = "1" },
+                                    new JsonObject { ["systemPrompt"] = "p2", ["input"] = "2" },
+                                    new JsonObject { ["systemPrompt"] = "p3", ["input"] = "3" },
+                                    new JsonObject { ["systemPrompt"] = "p4", ["input"] = "4" }
+                                }
+                            })
+                    ]),
+                InvocationStopReason.ToolCalls),
+            _ => new InvocationResponse(
+                new ChatMessage(ChatMessageRole.Assistant, "Done."),
+                InvocationStopReason.EndTurn)
+        ]);
+        var childClient = new ConcurrencyTrackingChildClient();
+        var agent = new Agent(new ModelClientRegistry(
+        [
+            new ModelClientRegistration("parent", parentClient),
+            new ModelClientRegistration("child", childClient)
+        ]));
+
+        await agent.InvokeAsync(
+            new AgentInvocationConfiguration(
+                Provider: "parent",
+                Model: "parent-model",
+                SubAgents: new SubAgentConfig(
+                    Provider: "child",
+                    Model: "child-model",
+                    MaxConcurrent: 2)),
+            "Spawn four with cap of two.",
+            ResolvedAgentTools.Empty);
+
+        childClient.TotalInvocations.Should().Be(4);
+        childClient.MaxObservedConcurrency.Should().BeLessThanOrEqualTo(2);
     }
 
     [Fact]
@@ -238,19 +313,124 @@ public sealed class AgentTests
         }
     }
 
-    private sealed class ConcurrentChildModelClient(int expectedConcurrency) : IModelClient
+    private sealed class SoloRoutingClient(System.Collections.Concurrent.ConcurrentBag<string> capturedModels)
+        : IModelClient
     {
-        private readonly TaskCompletionSource allStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<InvocationResponse> InvokeAsync(
+            InvocationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            // First call is the parent's invocation; subsequent calls are the child(ren).
+            // The child should use the parent's "shared-model" since the spec didn't override.
+            capturedModels.Add(request.Model);
+
+            if (capturedModels.Count == 1)
+            {
+                return Task.FromResult(new InvocationResponse(
+                    new ChatMessage(
+                        ChatMessageRole.Assistant,
+                        "Delegating.",
+                        ToolCalls:
+                        [
+                            new ToolCall(
+                                "call_spawn",
+                                "spawn_subagent",
+                                new JsonObject
+                                {
+                                    ["invocations"] = new JsonArray
+                                    {
+                                        new JsonObject
+                                        {
+                                            ["systemPrompt"] = "Worker.",
+                                            ["input"] = "do it"
+                                        }
+                                    }
+                                })
+                        ]),
+                    InvocationStopReason.ToolCalls));
+            }
+
+            // Child invocation — emit a Completed decision so the loop terminates promptly.
+            if (capturedModels.Count == 2)
+            {
+                return Task.FromResult(new InvocationResponse(
+                    new ChatMessage(ChatMessageRole.Assistant, "child done"),
+                    InvocationStopReason.EndTurn));
+            }
+
+            // Parent's terminal call after the tool result is back.
+            return Task.FromResult(new InvocationResponse(
+                new ChatMessage(ChatMessageRole.Assistant, "all done"),
+                InvocationStopReason.EndTurn));
+        }
+    }
+
+    private sealed class ConcurrencyTrackingChildClient : IModelClient
+    {
         private int currentConcurrency;
         private int maxObservedConcurrency;
-        private int startedCount;
+        private int totalInvocations;
 
-        public int MaxObservedConcurrency => maxObservedConcurrency;
+        public int MaxObservedConcurrency => Volatile.Read(ref maxObservedConcurrency);
+        public int TotalInvocations => Volatile.Read(ref totalInvocations);
 
         public async Task<InvocationResponse> InvokeAsync(
             InvocationRequest request,
             CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref totalInvocations);
+            var current = Interlocked.Increment(ref currentConcurrency);
+            UpdateMax(current);
+
+            try
+            {
+                // Hold long enough that overlapping callers under the cap would clearly stack.
+                await Task.Delay(40, cancellationToken);
+                return new InvocationResponse(
+                    new ChatMessage(ChatMessageRole.Assistant, "ok"),
+                    InvocationStopReason.EndTurn);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref currentConcurrency);
+            }
+        }
+
+        private void UpdateMax(int current)
+        {
+            while (true)
+            {
+                var observed = Volatile.Read(ref maxObservedConcurrency);
+                if (current <= observed) return;
+                if (Interlocked.CompareExchange(ref maxObservedConcurrency, current, observed) == observed)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private sealed class ConcurrentChildModelClient(int expectedConcurrency) : IModelClient
+    {
+        private readonly TaskCompletionSource allStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly System.Collections.Concurrent.ConcurrentBag<string> systemPrompts = new();
+        private int currentConcurrency;
+        private int maxObservedConcurrency;
+        private int startedCount;
+
+        public int MaxObservedConcurrency => maxObservedConcurrency;
+        public IReadOnlyCollection<string> SystemPromptsObserved => systemPrompts;
+
+        public async Task<InvocationResponse> InvokeAsync(
+            InvocationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var systemMessage = request.Messages.FirstOrDefault(m => m.Role == ChatMessageRole.System);
+            if (systemMessage is not null)
+            {
+                systemPrompts.Add(systemMessage.Content);
+            }
+
             var current = Interlocked.Increment(ref currentConcurrency);
             UpdateMaxConcurrency(current);
 

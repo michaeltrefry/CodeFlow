@@ -381,4 +381,138 @@ public sealed class AgentConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("total content length");
     }
+
+    [Fact]
+    public void ValidateConfig_AcceptsEmptySubAgentsSpec()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","subAgents":{}}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_AcceptsValidSubAgentsSpec()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "subAgents": {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "maxConcurrent": 4,
+            "maxTokens": 8000,
+            "temperature": 0.2
+          }
+        }
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_AcceptsNullSubAgents()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","subAgents":null}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonObjectSubAgents()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","subAgents":"nope"}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsUnknownSubAgentProvider()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"provider":"openai","model":"gpt-5","subAgents":{"provider":"banana"}}
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.provider");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsEmptySubAgentModel()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"provider":"openai","model":"gpt-5","subAgents":{"model":""}}
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.model");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(33)]
+    public void ValidateConfig_RejectsOutOfBoundsMaxConcurrent(int value)
+    {
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"subAgents\":{\"maxConcurrent\":" + value + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.maxConcurrent");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonIntegerMaxConcurrent()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"provider":"openai","model":"gpt-5","subAgents":{"maxConcurrent":"three"}}
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.maxConcurrent");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(200_001)]
+    public void ValidateConfig_RejectsOutOfBoundsMaxTokens(int value)
+    {
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"subAgents\":{\"maxTokens\":" + value + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.maxTokens");
+    }
+
+    [Theory]
+    [InlineData("-0.1")]
+    [InlineData("2.1")]
+    public void ValidateConfig_RejectsOutOfBoundsTemperature(string value)
+    {
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"subAgents\":{\"temperature\":" + value + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("subAgents.temperature");
+    }
 }
