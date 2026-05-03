@@ -367,6 +367,18 @@ public static class HostExtensions
             {
                 o.UseMySql();
                 o.UseBusOutbox();
+
+                // MassTransit's defaults (QueryDelay=30s, QueryMessageLimit=1) make idle-system
+                // submissions appear to hang: the API stages AgentInvokeRequested in the outbox
+                // table and then waits up to 30s for the next poll before the message reaches
+                // RabbitMQ and the saga row gets written. UseBusOutbox is supposed to fire an
+                // in-process Notify() to wake the delivery loop on commit, but the publish path
+                // in TracesEndpoints.CreateTraceAsync doesn't run inside an EF SaveChanges, so
+                // the notification can miss and we fall back to the poll. The trace-submit UI
+                // comments describe a "~1s poll" budget; this is what makes that true.
+                o.QueryDelay = TimeSpan.FromSeconds(1);
+                o.QueryMessageLimit = 100;
+                o.QueryTimeout = TimeSpan.FromSeconds(10);
             });
 
             x.AddConfigureEndpointsCallback((context, endpointName, cfg) =>
