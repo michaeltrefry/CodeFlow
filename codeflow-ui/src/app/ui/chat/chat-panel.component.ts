@@ -627,11 +627,17 @@ export class ChatPanelComponent implements OnDestroy {
    */
   protected readonly preflightError = signal<AssistantPreflightRefusal | null>(null);
 
-  /** sc-525 — the Retry button only renders when there's a captured key and prompt to replay. */
+  /**
+   * sc-525 — the Retry button only renders when there's a captured key and prompt to replay.
+   * Gated on {@link lastTurnContent} (not {@link optimisticUser}) because the optimistic copy
+   * is cleared as soon as the server fires `user-message-persisted` — which lands several
+   * frames before a mid-stream HTTP/2 drop, so depending on it would hide the button exactly
+   * when the user needs it most.
+   */
   protected readonly canRetryLastTurn = computed(() =>
     !this.streaming()
     && !!this.activeIdempotencyKey()
-    && !!this.optimisticUser());
+    && !!this.lastTurnContent());
 
   /** sc-274 phase 2 — convenience for the template: the lowest-scoring dimension with a reason. */
   protected readonly preflightWeakest = computed(() => {
@@ -665,6 +671,13 @@ export class ChatPanelComponent implements OnDestroy {
    * the LLM call. Cleared on successful completion and on cancel.
    */
   private readonly activeIdempotencyKey = signal<string | null>(null);
+  /**
+   * sc-525 follow-up — Captured prompt for the in-flight (or most recently failed) turn.
+   * Mirrors {@link activeIdempotencyKey}'s lifecycle so {@link retryLastTurn} can replay the
+   * exact same content even after the optimistic user bubble has been swapped out for the
+   * server-persisted row. Cleared on successful completion and on cancel.
+   */
+  private readonly lastTurnContent = signal<string | null>(null);
   /**
    * Tool-call cards for the in-flight turn, in insertion order. Reset at the start of each new
    * user message — only the FINAL assistant text is persisted to history, so tool cards from
@@ -964,8 +977,11 @@ export class ChatPanelComponent implements OnDestroy {
       return;
     }
     // sc-525 — fresh idempotency key per user-initiated turn. Reused by retryLastTurn so a
-    // user-driven retry of the SAME turn replays server-side instead of double-billing.
+    // user-driven retry of the SAME turn replays server-side instead of double-billing. The
+    // companion `lastTurnContent` signal locks in the prompt so a mid-stream drop (which
+    // clears `optimisticUser` on `user-message-persisted`) still has the text to replay.
     this.activeIdempotencyKey.set(generateIdempotencyKey());
+    this.lastTurnContent.set(content);
     this.runTurn(conversationId, content);
   }
 
@@ -976,7 +992,7 @@ export class ChatPanelComponent implements OnDestroy {
    */
   protected retryLastTurn(): void {
     const conversationId = this.conversationId();
-    const content = this.optimisticUser();
+    const content = this.lastTurnContent();
     if (!conversationId || !content || this.streaming() || !this.activeIdempotencyKey()) {
       return;
     }
@@ -1020,10 +1036,11 @@ export class ChatPanelComponent implements OnDestroy {
       complete: () => {
         this.streaming.set(false);
         this.streamSub = null;
-        // Successful completion — the turn is done. Drop the key so the next sendMessage
-        // call generates a fresh one and we don't accidentally tie an unrelated turn to a
-        // stale idempotency record.
+        // Successful completion — the turn is done. Drop the key + captured prompt so the
+        // next sendMessage call generates a fresh pair and we don't accidentally tie an
+        // unrelated turn to a stale idempotency record.
         this.activeIdempotencyKey.set(null);
+        this.lastTurnContent.set(null);
       },
     });
   }
@@ -1044,8 +1061,10 @@ export class ChatPanelComponent implements OnDestroy {
     // banner surfaced a needed clarification and they want to start over.
     this.preflightError.set(null);
     // sc-525 — abandoning the turn means the user is no longer interested in this attempt;
-    // drop the key so the next sendMessage starts a clean idempotency record.
+    // drop the key + captured prompt so the next sendMessage starts a clean idempotency
+    // record and the Retry button stops offering to replay an abandoned turn.
     this.activeIdempotencyKey.set(null);
+    this.lastTurnContent.set(null);
   }
 
   /**
