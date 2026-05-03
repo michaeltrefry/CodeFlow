@@ -424,6 +424,19 @@ public static class TracesEndpoints
         // dispatches and every other node.
         var effectiveInputRef = inputRef;
         var effectiveContextInputs = resolvedInputsResult.Values;
+        // sc-607: per-trace `repositories` is workflow-context state, not local-context. The
+        // workflow-input convention still works at the authoring layer (declare `repositories`
+        // as a Json input, validated for shape), but at launch we route the resolved value
+        // into seededWorkflowVars so the saga lifts it from `workflow.*` rather than `context.*`.
+        // Removing it from effectiveContextInputs avoids a confusing duplicate appearance under
+        // both `workflow.repositories` and `context.repositories` in templates and scripts.
+        if (effectiveContextInputs.TryGetValue(WorkflowValidator.RepositoriesInputKey, out var resolvedRepositories))
+        {
+            seededWorkflowVars[WorkflowValidator.RepositoriesInputKey] = resolvedRepositories;
+            var trimmed = new Dictionary<string, JsonElement>(effectiveContextInputs, StringComparer.Ordinal);
+            trimmed.Remove(WorkflowValidator.RepositoriesInputKey);
+            effectiveContextInputs = trimmed;
+        }
         if (!string.IsNullOrWhiteSpace(startNode.InputScript))
         {
             var artifactJson = await ReadArtifactAsJsonAsync(artifactStore, inputRef, cancellationToken);

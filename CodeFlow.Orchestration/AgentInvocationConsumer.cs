@@ -552,45 +552,43 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     /// <summary>
-    /// Saga-field-first lookup for the per-trace repository allowlist. <see cref="AgentInvokeRequested.Repositories"/>
-    /// is populated by the saga from <c>saga.RepositoriesJson</c> on every dispatch and inherited across
-    /// subflow boundaries, so it's the source of truth. The legacy <see cref="ExtractRepositoryContexts"/>
-    /// fallback covers in-flight messages that crossed the wire before the saga field shipped.
+    /// Saga-field lookup for the per-trace repository allowlist.
+    /// <see cref="AgentInvokeRequested.Repositories"/> is populated by the saga from
+    /// <c>saga.RepositoriesJson</c> on every dispatch and inherited across subflow boundaries,
+    /// so it's the source of truth. sc-607 dropped the legacy <c>context.repositories</c>
+    /// fallback alongside the bag-scope migration.
     /// </summary>
     private static IReadOnlyList<RuntimeToolRepositoryContext>? ResolveRepositoryContexts(AgentInvokeRequested message)
     {
-        if (message.Repositories is { Count: > 0 } sagaRepos)
+        if (message.Repositories is not { Count: > 0 } sagaRepos)
         {
-            var result = new List<RuntimeToolRepositoryContext>(sagaRepos.Count);
-            foreach (var entry in sagaRepos)
-            {
-                if (string.IsNullOrWhiteSpace(entry.Url))
-                {
-                    continue;
-                }
+            return null;
+        }
 
-                try
-                {
-                    var repo = RepoReference.Parse(entry.Url);
-                    result.Add(new RuntimeToolRepositoryContext(
-                        repo.Owner,
-                        repo.Name,
-                        entry.Url,
-                        repo.IdentityKey,
-                        repo.Slug));
-                }
-                catch (ArgumentException)
-                {
-                }
+        var result = new List<RuntimeToolRepositoryContext>(sagaRepos.Count);
+        foreach (var entry in sagaRepos)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Url))
+            {
+                continue;
             }
 
-            if (result.Count > 0)
+            try
             {
-                return result;
+                var repo = RepoReference.Parse(entry.Url);
+                result.Add(new RuntimeToolRepositoryContext(
+                    repo.Owner,
+                    repo.Name,
+                    entry.Url,
+                    repo.IdentityKey,
+                    repo.Slug));
+            }
+            catch (ArgumentException)
+            {
             }
         }
 
-        return ExtractRepositoryContexts(message.ContextInputs);
+        return result.Count > 0 ? result : null;
     }
 
     /// <summary>
@@ -670,50 +668,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 repo.RepoIdentityKey,
                 repo.RepoSlug))
             .ToArray();
-    }
-
-    private static IReadOnlyList<RuntimeToolRepositoryContext>? ExtractRepositoryContexts(
-        IReadOnlyDictionary<string, JsonElement>? contextInputs)
-    {
-        if (contextInputs is null
-            || !contextInputs.TryGetValue("repositories", out var repositories)
-            || repositories.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        var result = new List<RuntimeToolRepositoryContext>();
-        foreach (var entry in repositories.EnumerateArray())
-        {
-            if (entry.ValueKind != JsonValueKind.Object
-                || !entry.TryGetProperty("url", out var urlElement)
-                || urlElement.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var url = urlElement.GetString();
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                continue;
-            }
-
-            try
-            {
-                var repo = RepoReference.Parse(url);
-                result.Add(new RuntimeToolRepositoryContext(
-                    repo.Owner,
-                    repo.Name,
-                    url,
-                    repo.IdentityKey,
-                    repo.Slug));
-            }
-            catch (ArgumentException)
-            {
-            }
-        }
-
-        return result.Count == 0 ? null : result;
     }
 
     private static JsonObject? BuildFailureContext(
