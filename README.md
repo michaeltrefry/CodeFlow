@@ -173,7 +173,7 @@ See [docs/subflows.md](./docs/subflows.md) and [docs/review-loop.md](./docs/revi
 
 ### Code-aware workflows
 
-When a `GitHostSettings.WorkingDirectoryRoot` is configured, the API mints a per-trace working directory (`<root>/<traceId>`) and seeds it onto `workflow.workDir`. Agents with the seeded `code-worker` role get path-jailed `read_file` / `apply_patch` / `run_command` tools and `vcs.open_pr` / `vcs.get_repo` against the configured Git host. Repos[] input convention: pass `{ "repositories": [{ "url": "..." }] }` and the runtime clones into the workdir. A background sweep cleans up after `WorkingDirectoryMaxAgeDays` (default 14). See [docs/code-aware-workflows.md](./docs/code-aware-workflows.md).
+The API mints a per-trace working directory under `WorkspaceOptions.WorkingDirectoryRoot` (default `/workspace`, override via `Workspace__WorkingDirectoryRoot`) and exposes it as `workflow.traceWorkDir`. Agents with the seeded `code-worker` role get path-jailed `read_file` / `apply_patch` / `run_command` tools and `vcs.open_pr` / `vcs.get_repo` against the configured Git host. Repos[] input convention: pass `{ "repositories": [{ "url": "..." }] }` and the runtime clones into the workdir. A background sweep cleans up after `WorkingDirectoryMaxAgeDays` (default 14). See [docs/code-aware-workflows.md](./docs/code-aware-workflows.md).
 
 ### Prompt templates
 

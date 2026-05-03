@@ -563,7 +563,7 @@ public sealed class LogicNodeScriptHostTests
     {
         var host = BuildHost();
         const string script = """
-            setWorkflow('workDir', '/etc/evil');
+            setWorkflow('traceWorkDir', '/etc/evil');
             setNodePath('Out');
             """;
 
@@ -575,7 +575,7 @@ public sealed class LogicNodeScriptHostTests
 
         result.IsSuccess.Should().BeFalse();
         result.Failure.Should().Be(LogicNodeFailureKind.ReservedWorkflowKeyWrite);
-        result.FailureMessage.Should().Contain("workDir");
+        result.FailureMessage.Should().Contain("traceWorkDir");
         result.FailureMessage.Should().Contain("framework-managed workflow variable");
         result.WorkflowUpdates.Should().BeEmpty(
             "the failed evaluation must drop pending writes so the reserved key is not persisted");

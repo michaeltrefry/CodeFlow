@@ -82,13 +82,12 @@ The platform seeds read-only entries in the per-trace-tree variable bag at trace
 | Key | Value | Set by |
 |---|---|---|
 | `traceWorkDir` | `{WorkingDirectoryRoot}/{traceId.ToString("N")}` — the per-trace workspace path | `TracesEndpoints.CreateTraceAsync` |
-| `workDir` | Alias of `traceWorkDir`, kept for backward compatibility through epic sc-593 Phase 2; **deprecated** — use `traceWorkDir` in new workflows | `TracesEndpoints.CreateTraceAsync` |
 | `traceId` | `traceId.ToString("N")` — 32-char hex, no hyphens | `TracesEndpoints.CreateTraceAsync` |
 
-All three are listed in `ProtectedVariables.ReservedKeys`. Scripts and agents cannot overwrite them:
+Both are listed in `ProtectedVariables.ReservedKeys`. Scripts and agents cannot overwrite them:
 
-- `setWorkflow('traceWorkDir', ...)` (or the legacy `workDir`) from a Logic-node script fails
-  the evaluation with `LogicNodeFailureKind.ReservedWorkflowKeyWrite`.
+- `setWorkflow('traceWorkDir', ...)` from a Logic-node script fails the evaluation with
+  `LogicNodeFailureKind.ReservedWorkflowKeyWrite`.
 - The `setWorkflow` agent tool returns an error tool result; the bag is unchanged.
 
 The runtime source of truth is `WorkflowSagaStateEntity.TraceWorkDir` (a typed saga field

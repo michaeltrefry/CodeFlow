@@ -5,13 +5,6 @@ namespace CodeFlow.Runtime.Tests;
 public sealed class ProtectedVariablesTests
 {
     [Fact]
-    public void ReservedKeys_ContainsWorkDir()
-    {
-        ProtectedVariables.ReservedKeys.Should().Contain("workDir");
-        ProtectedVariables.IsReserved("workDir").Should().BeTrue();
-    }
-
-    [Fact]
     public void ReservedKeys_ContainsTraceId()
     {
         ProtectedVariables.ReservedKeys.Should().Contain("traceId");
@@ -21,11 +14,18 @@ public sealed class ProtectedVariablesTests
     [Fact]
     public void ReservedKeys_ContainsTraceWorkDir()
     {
-        // sc-603: new canonical name for the per-trace workspace path. Both `workDir` (legacy)
-        // and `traceWorkDir` (new) resolve to the same value through Phase 2 of epic sc-593;
-        // Phase 3 (sc-604) drops `workDir` and leaves only `traceWorkDir`.
         ProtectedVariables.ReservedKeys.Should().Contain("traceWorkDir");
         ProtectedVariables.IsReserved("traceWorkDir").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ReservedKeys_DoesNotContainLegacyWorkDir()
+    {
+        // sc-604 retired the legacy `workDir` alias. Authors who happen to declare their own
+        // workflow variable with that name now get no special handling — `traceWorkDir` is
+        // the only framework-managed key for the per-trace workspace path.
+        ProtectedVariables.ReservedKeys.Should().NotContain("workDir");
+        ProtectedVariables.IsReserved("workDir").Should().BeFalse();
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class ProtectedVariablesTests
     {
         // Sanity check the registry doesn't accidentally swallow author-defined variables.
         ProtectedVariables.IsReserved("requestKind").Should().BeFalse();
-        ProtectedVariables.IsReserved("workdir").Should().BeFalse(); // case-sensitive
+        ProtectedVariables.IsReserved("traceworkdir").Should().BeFalse(); // case-sensitive
     }
 
     [Fact]

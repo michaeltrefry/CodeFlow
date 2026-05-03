@@ -151,10 +151,10 @@ public sealed class WorkflowVarDeclarationRuleTests
     [Fact]
     public async Task ReservedFrameworkKeys_NeverFireFindings()
     {
-        // workDir / traceId / __loop.* are framework-managed. Authors don't declare them.
+        // traceWorkDir / traceId / __loop.* are framework-managed. Authors don't declare them.
         await using var fx = await TestFixture.CreateAsync();
         await fx.SeedAgentAsync("reviewer",
-            promptTemplate: "{{ workflow.workDir }} {{ workflow.traceId }} {{ workflow.__loop }}");
+            promptTemplate: "{{ workflow.traceWorkDir }} {{ workflow.traceId }} {{ workflow.__loop }}");
 
         var findings = await fx.RunRuleAsync(
             nodes: new[] { AgentNode("reviewer", version: 1) },

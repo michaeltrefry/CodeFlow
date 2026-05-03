@@ -510,10 +510,8 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     }
 
     // Tool plumbing for an agent invocation. Code-aware workflows expose a per-trace working
-    // directory; the saga field <c>TraceWorkDir</c> (sc-593) is the source of truth, with a
-    // fallback to the legacy <c>workflow.workDir</c> bag-key for in-flight messages produced
-    // before the saga field shipped (the fallback is dropped in Phase 3 / sc-604). When a
-    // workspace path is found, every host tool is path-jailed to it and the legacy per-repo
+    // directory through the typed saga field <see cref="AgentInvokeRequested.TraceWorkDir"/>
+    // (sc-593); when set, every host tool is path-jailed to it and the legacy per-repo
     // <c>ToolExecutionContext</c> carried on the message is superseded. Non-code workflows fall
     // through to the legacy plumbing unchanged. The resolved authority envelope (sc-269 PR3)
     // rides alongside both shapes so the tool layer can self-enforce its axes.
@@ -521,34 +519,15 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         AgentInvokeRequested message,
         WorkflowExecutionEnvelope? envelope)
     {
-        if (TryResolveTraceWorkDir(message, out var workDir))
+        if (!string.IsNullOrWhiteSpace(message.TraceWorkDir))
         {
             return new RuntimeToolExecutionContext(
-                new RuntimeToolWorkspaceContext(message.TraceId, workDir),
+                new RuntimeToolWorkspaceContext(message.TraceId, message.TraceWorkDir),
                 ResolveRepositoryContexts(message),
                 envelope);
         }
 
         return MapToolExecutionContext(message.ToolExecutionContext, envelope);
-    }
-
-    /// <summary>
-    /// sc-593 Phase 1: saga-field-first lookup for the per-trace working directory. Reads
-    /// <see cref="AgentInvokeRequested.TraceWorkDir"/> (populated by the saga from its
-    /// <c>TraceWorkDir</c> column on every dispatch and inherited across subflow boundaries);
-    /// falls back to the legacy <c>workflow.workDir</c> bag-key for messages produced before
-    /// the saga field shipped. The fallback is the transitional path retired in Phase 3
-    /// (sc-604) once in-flight messages have drained.
-    /// </summary>
-    private static bool TryResolveTraceWorkDir(AgentInvokeRequested message, out string workDir)
-    {
-        if (!string.IsNullOrWhiteSpace(message.TraceWorkDir))
-        {
-            workDir = message.TraceWorkDir;
-            return true;
-        }
-
-        return TryGetWorkflowWorkDir(message.WorkflowContext, out workDir);
     }
 
     /// <summary>
@@ -589,34 +568,6 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         }
 
         return result.Count > 0 ? result : null;
-    }
-
-    /// <summary>
-    /// Transitional helper for the legacy <c>workflow.workDir</c> bag-key (sc-593 Phase 1).
-    /// Used as a fallback by <see cref="TryResolveTraceWorkDir"/> when a message arrives with
-    /// no <see cref="AgentInvokeRequested.TraceWorkDir"/> set — i.e. in-flight messages produced
-    /// before the saga field shipped. Removed in Phase 3 (sc-604) once those messages have drained.
-    /// </summary>
-    private static bool TryGetWorkflowWorkDir(
-        IReadOnlyDictionary<string, JsonElement>? workflowContext,
-        out string workDir)
-    {
-        workDir = string.Empty;
-        if (workflowContext is null
-            || !workflowContext.TryGetValue("workDir", out var element)
-            || element.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        var value = element.GetString();
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        workDir = value;
-        return true;
     }
 
     private static RuntimeToolExecutionContext? MapToolExecutionContext(

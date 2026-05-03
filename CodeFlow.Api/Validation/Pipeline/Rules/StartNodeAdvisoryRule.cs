@@ -32,9 +32,9 @@ public sealed class StartNodeAdvisoryRule : IWorkflowValidationRule
             RuleId: RuleId,
             Severity: WorkflowValidationSeverity.Warning,
             Message: "Start node has no input script. Workflows that need to seed workflow "
-                + "variables at trace launch (e.g. workDir, repositories) typically do so from "
-                + "the Start node's input script. Skip this warning if your start agent reads the "
-                + "raw input artifact directly.",
+                + "variables at trace launch (e.g. repositories or a task-specific prdTitle) "
+                + "typically do so from the Start node's input script. Skip this warning if "
+                + "your start agent reads the raw input artifact directly.",
             Location: new WorkflowValidationLocation(NodeId: startNode.Id));
 
         return Task.FromResult<IReadOnlyList<WorkflowValidationFinding>>(new[] { finding });
