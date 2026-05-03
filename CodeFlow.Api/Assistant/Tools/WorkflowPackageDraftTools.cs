@@ -127,6 +127,23 @@ public static class WorkflowPackageDraftStore
     }
 
     /// <summary>
+    /// True if the workspace holds at least one pending Save snapshot — i.e., the user has a
+    /// confirmation chip awaiting their click that would import these exact bytes. The clear-draft
+    /// tool checks this so an LLM that mis-reads <c>preview_ok</c> as "save complete" can't wipe
+    /// the draft underneath the user's still-open chip.
+    /// </summary>
+    public static bool HasPendingSnapshots(ToolWorkspaceContext workspace)
+    {
+        if (!Directory.Exists(workspace.RootPath))
+        {
+            return false;
+        }
+        return Directory
+            .EnumerateFiles(workspace.RootPath, $"{SnapshotPrefix}*{SnapshotSuffix}", SearchOption.TopDirectoryOnly)
+            .Any();
+    }
+
+    /// <summary>
     /// Build a small JSON summary of the draft for tool results. Returns enough metadata
     /// (entry-point, workflow keys, node + edge counts) for the LLM to reason about what's
     /// in the draft without re-receiving the full payload.
@@ -440,8 +457,7 @@ public sealed class PatchWorkflowPackageDraftTool : IAssistantTool
 }
 
 /// <summary>
-/// Deletes the conversation's draft package. Useful housekeeping after a successful save or
-/// when the user pivots to a fresh design.
+/// Deletes the conversation's draft package. User-initiated only — see the tool description.
 /// </summary>
 public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
 {
@@ -456,9 +472,13 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
     public string Name => "clear_workflow_package_draft";
 
     public string Description =>
-        "Delete the conversation's draft package. Returns `status: \"cleared\"` if a draft was " +
-        "deleted or `status: \"not_found\"` if there was none. Useful after a successful save or " +
-        "when starting a fresh design.";
+        "Delete the conversation's draft package. USER-INITIATED ONLY: call this only when the " +
+        "user explicitly tells you they are done with the current draft and want to start a fresh " +
+        "design. Do NOT call it after `save_workflow_package` returns `preview_ok` — that result " +
+        "means the Save chip is awaiting the user's click, NOT that the save completed. The actual " +
+        "save lands when the user clicks the chip; iterating further (patch + save again) is " +
+        "expected and requires the draft to still be on disk. The tool refuses to clear while a " +
+        "Save chip is still pending and returns `status: \"cleared\"` / `\"not_found\"` otherwise.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
@@ -468,6 +488,27 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
 
     public Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
+        // Refuse to clear while a Save chip is still pending the user's click. Snapshots are
+        // written by save_workflow_package on preview_ok and deleted by the apply endpoint on a
+        // successful save, so a present snapshot proves the chip hasn't resolved yet. Without
+        // this guard an LLM that mis-reads preview_ok as "save complete" wipes the draft
+        // underneath the open chip and the user can't iterate further (patch → save → ...).
+        if (WorkflowPackageDraftStore.HasPendingSnapshots(workspace))
+        {
+            var refusal = new JsonObject
+            {
+                ["error"] =
+                    "A Save chip is still awaiting the user's click for this draft. "
+                    + "Do not clear the draft yet — `preview_ok` means \"validated, awaiting user confirmation\", "
+                    + "NOT \"saved\". Wait for the user to either click Save (after which the apply endpoint "
+                    + "consumes the snapshot) or to explicitly tell you they are done with this draft. "
+                    + "If they want to iterate further, call `patch_workflow_package_draft` instead.",
+            };
+            return Task.FromResult(new AssistantToolResult(
+                refusal.ToJsonString(AssistantToolJson.SerializerOptions),
+                IsError: true));
+        }
+
         var deleted = WorkflowPackageDraftStore.Delete(workspace);
         var payload = new JsonObject
         {
