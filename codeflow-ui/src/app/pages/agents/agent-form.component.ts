@@ -20,6 +20,8 @@ import { LlmProvidersApi } from '../../core/llm-providers.api';
 import {
   AgentConfig,
   AgentOutputDeclaration,
+  AuthorableHistoryMessage,
+  AuthorableHistoryRole,
   DecisionOutputTemplateMode,
   LLM_PROVIDER_DISPLAY_NAMES,
   LLM_PROVIDER_KEYS,
@@ -129,6 +131,58 @@ export interface AgentFormHeaderState {
                   <textarea class="textarea" rows="8"
                             [(ngModel)]="systemPrompt" name="systemPrompt"
                             style="border: 0; border-radius: 0; background: var(--bg)"></textarea>
+                </div>
+              </div>
+              <div class="form-section">
+                <div class="form-section-head">
+                  <h3>History
+                    @if (history().length > 0) {
+                      <cf-chip mono>{{ history().length }}</cf-chip>
+                    }
+                  </h3>
+                  <p>
+                    Optional pre-canned conversation prepended to every invocation between the system
+                    block and the latest user input. Use it for few-shot examples or stable conversational
+                    priming. Limited to {{ HISTORY_MAX_ENTRIES }} messages and {{ HISTORY_MAX_TOTAL_LENGTH / 1024 }} KiB combined.
+                  </p>
+                </div>
+                <div class="stack history-stack">
+                  @for (msg of history(); track $index; let i = $index) {
+                    <div class="history-row">
+                      <div class="history-row-head">
+                        <select class="input mono history-role"
+                                [ngModel]="msg.role"
+                                (ngModelChange)="updateHistoryMessage(i, { role: $event })"
+                                [name]="'history_role_' + i"
+                                [attr.aria-label]="'History message ' + (i + 1) + ' role'">
+                          @for (opt of HISTORY_ROLE_OPTIONS; track opt.value) {
+                            <option [value]="opt.value">{{ opt.label }}</option>
+                          }
+                        </select>
+                        <button type="button" cf-button variant="ghost" size="sm" icon="x" iconOnly
+                                (click)="removeHistoryMessage(i)"
+                                [attr.aria-label]="'Remove history message ' + (i + 1)"></button>
+                      </div>
+                      <textarea class="textarea history-content" rows="3"
+                                [ngModel]="msg.content"
+                                (ngModelChange)="updateHistoryMessage(i, { content: $event })"
+                                [name]="'history_content_' + i"
+                                [placeholder]="msg.role === 'user' ? 'What the user said earlier…' : 'How the assistant responded…'"></textarea>
+                    </div>
+                  }
+                  <div class="row history-footer">
+                    <button type="button" cf-button size="sm" icon="plus"
+                            [disabled]="history().length >= HISTORY_MAX_ENTRIES"
+                            (click)="addHistoryMessage()">Add message</button>
+                    @if (historyTotalLength() > 0) {
+                      <span class="muted small">
+                        {{ historyTotalLength() }} / {{ HISTORY_MAX_TOTAL_LENGTH }} chars
+                      </span>
+                    }
+                    @if (historyTotalLength() > HISTORY_MAX_TOTAL_LENGTH) {
+                      <cf-chip variant="err" dot>Too long — trim before saving</cf-chip>
+                    }
+                  </div>
                 </div>
               </div>
               <div class="form-section">
@@ -527,6 +581,25 @@ export interface AgentFormHeaderState {
       flex-direction: column;
       gap: 12px;
     }
+    .history-stack { gap: 10px; }
+    .history-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+    .history-row-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .history-role { width: auto; min-width: 120px; }
+    .history-content { width: 100%; }
+    .history-footer { gap: 12px; align-items: center; }
     .preview-output, .preview-error {
       padding: 10px 12px;
       border-radius: var(--radius);
@@ -641,6 +714,20 @@ export class AgentFormComponent implements OnInit, OnDestroy {
   protected readonly fallbackTemplates = signal<DecisionTemplateRow[]>([]);
 
   protected readonly partialPins = signal<PromptPartialPinDto[]>([]);
+
+  // sc-570: hand-authored chat history prepended to every invocation between the system block
+  // and the latest user input. Useful for few-shot examples or canned conversational priming.
+  // Roles are limited to user/assistant; system content belongs in `systemPrompt` and tool
+  // messages aren't a sensible authoring affordance.
+  protected readonly history = signal<AuthorableHistoryMessage[]>([]);
+  protected readonly historyTotalLength = computed(() =>
+    this.history().reduce((sum, m) => sum + (m.content?.length ?? 0), 0));
+  protected readonly HISTORY_MAX_ENTRIES = 32;
+  protected readonly HISTORY_MAX_TOTAL_LENGTH = 32 * 1024;
+  protected readonly HISTORY_ROLE_OPTIONS: ReadonlyArray<{ value: AuthorableHistoryRole; label: string }> = [
+    { value: 'user', label: 'User' },
+    { value: 'assistant', label: 'Assistant' },
+  ];
 
   // S2: form-preset picker state. Visible only when type=hitl AND the form looks empty
   // (so editing an existing form doesn't get clobbered by an accidental Apply).
@@ -939,6 +1026,7 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.maxTokens.set(config['maxTokens'] as number | undefined);
     this.temperature.set(config['temperature'] as number | undefined);
     this.partialPins.set(readPromptPartialPins(config['partialPins']));
+    this.history.set(readAuthorableHistory(config['history']));
     const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
     const declaredKinds = new Set<string>();
@@ -1120,6 +1208,21 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.updateOutput(index, { expanded: !row.expanded });
   }
 
+  protected addHistoryMessage(): void {
+    if (this.history().length >= this.HISTORY_MAX_ENTRIES) return;
+    const lastRole = this.history().at(-1)?.role;
+    const nextRole: AuthorableHistoryRole = lastRole === 'user' ? 'assistant' : 'user';
+    this.history.set([...this.history(), { role: nextRole, content: '' }]);
+  }
+
+  protected removeHistoryMessage(index: number): void {
+    this.history.set(this.history().filter((_, i) => i !== index));
+  }
+
+  protected updateHistoryMessage(index: number, patch: Partial<AuthorableHistoryMessage>): void {
+    this.history.set(this.history().map((m, i) => (i === index ? { ...m, ...patch } : m)));
+  }
+
   protected payloadExampleText(output: OutputRow): string {
     if (output.payloadExample === null || output.payloadExample === undefined) return '';
     if (typeof output.payloadExample === 'string') return output.payloadExample;
@@ -1177,6 +1280,12 @@ export class AgentFormComponent implements OnInit, OnDestroy {
       const pins = this.partialPins();
       if (pins.length > 0) {
         config['partialPins'] = pins;
+      }
+      const cleanedHistory = this.history()
+        .map(m => ({ role: m.role, content: m.content ?? '' }))
+        .filter(m => m.content.trim().length > 0);
+      if (cleanedHistory.length > 0) {
+        config.history = cleanedHistory;
       }
     }
 
@@ -1257,6 +1366,19 @@ function isPromptPartialPin(value: unknown): value is PromptPartialPinDto {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<PromptPartialPinDto>;
   return typeof candidate.key === 'string' && typeof candidate.version === 'number';
+}
+
+function readAuthorableHistory(value: unknown): AuthorableHistoryMessage[] {
+  if (!Array.isArray(value)) return [];
+  const result: AuthorableHistoryMessage[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const candidate = entry as Partial<AuthorableHistoryMessage>;
+    if (candidate.role !== 'user' && candidate.role !== 'assistant') continue;
+    if (typeof candidate.content !== 'string') continue;
+    result.push({ role: candidate.role, content: candidate.content });
+  }
+  return result;
 }
 
 function emptyOutputRow(kind: string): OutputRow {

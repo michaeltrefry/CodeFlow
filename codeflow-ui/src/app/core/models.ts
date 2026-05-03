@@ -39,6 +39,13 @@ export interface AgentOutputDeclaration {
   payloadExample?: unknown;
 }
 
+export type AuthorableHistoryRole = 'user' | 'assistant';
+
+export interface AuthorableHistoryMessage {
+  role: AuthorableHistoryRole;
+  content: string;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -52,6 +59,7 @@ export interface AgentConfig {
   temperature?: number;
   outputs?: AgentOutputDeclaration[];
   decisionOutputTemplates?: Record<string, string>;
+  history?: AuthorableHistoryMessage[];
   [key: string]: unknown;
 }
 
