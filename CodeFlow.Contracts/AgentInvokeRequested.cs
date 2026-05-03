@@ -35,11 +35,10 @@ public sealed record AgentInvokeRequested(
     // context.repositories fallback path that previously fed this field.
     IReadOnlyList<RepositoryDeclaration>? Repositories = null,
     // sc-593 epic: per-trace working-directory absolute path. Populated from saga.TraceWorkDir
-    // at every dispatch and inherited verbatim from parent on subflow init. Replaces the legacy
-    // `workflow.workDir` magic bag-key as the source of truth for the workspace root host tools
-    // jail to. Null only on legacy in-flight messages produced before the saga field existed;
-    // the consumer falls back to WorkflowContext["workDir"] in that case for backward compat
-    // through Phase 2 of the epic.
+    // at every dispatch and inherited verbatim from parent on subflow init. Source of truth for
+    // the workspace root host tools jail to. Null on dispatches that don't operate on a per-trace
+    // workspace; the consumer falls through to the legacy per-repo ToolExecutionContext in that
+    // case.
     string? TraceWorkDir = null);
 
 /// <summary>

@@ -10,7 +10,7 @@ namespace CodeFlow.Api.Tests.Validation;
 /// <summary>
 /// Tests for the P4/P5 follow-on <see cref="ProtectedVariableTargetRule"/>: surface workflow
 /// nodes whose mirror or per-port-replacement targets land in framework-managed reserved
-/// namespaces (today, <c>__loop.*</c>, <c>workDir</c>, <c>traceWorkDir</c>, <c>traceId</c>).
+/// namespaces (today, <c>__loop.*</c>, <c>traceWorkDir</c>, <c>traceId</c>).
 /// </summary>
 public sealed class ProtectedVariableTargetRuleTests
 {
@@ -32,13 +32,13 @@ public sealed class ProtectedVariableTargetRuleTests
     }
 
     [Fact]
-    public async Task MirrorTargetsWorkDirOrTraceId_FiresError()
+    public async Task MirrorTargetsTraceWorkDirOrTraceId_FiresError()
     {
         await using var fx = await TestFixture.CreateAsync();
-        var workDirNode = AgentNode("a1", mirrorOutputToWorkflowVar: "workDir");
+        var traceWorkDirNode = AgentNode("a1", mirrorOutputToWorkflowVar: "traceWorkDir");
         var traceIdNode = AgentNode("a2", mirrorOutputToWorkflowVar: "traceId");
 
-        var findings = await fx.RunRuleAsync(new[] { workDirNode, traceIdNode });
+        var findings = await fx.RunRuleAsync(new[] { traceWorkDirNode, traceIdNode });
 
         findings.Should().HaveCount(2);
         findings.Should().AllSatisfy(f => f.Severity.Should().Be(WorkflowValidationSeverity.Error));
@@ -82,7 +82,7 @@ public sealed class ProtectedVariableTargetRuleTests
         {
             ["Approved"] = "currentPlan",            // OK
             ["Rejected"] = "__loop.rejectionHistory", // bad
-            ["Failed"] = "workDir",                   // bad
+            ["Failed"] = "traceWorkDir",              // bad
         });
 
         var findings = await fx.RunRuleAsync(new[] { node });

@@ -411,17 +411,11 @@ public static class TracesEndpoints
                     + $"Ensure '{workspaceOptions.Value.WorkingDirectoryRoot}' is mounted as a writable shared volume on the api and worker containers.",
                 statusCode: StatusCodes.Status500InternalServerError);
         }
-        // sc-602: keep seeding the legacy `workflow.workDir` bag-key so author scripts that read
-        // it continue to work; the saga also accepts the new TraceWorkDir field below as the
-        // typed source of truth. Both surfaces stay populated through Phase 2; the bag entry
-        // and its ProtectedVariables guard are dropped in Phase 3 (sc-604).
-        var workDirElement = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
-        seededWorkflowVars["workDir"] = workDirElement;
-        // sc-603: parallel author-facing variable. The new canonical name is `traceWorkDir`,
-        // making the per-trace workspace path discoverable under a name that doesn't collide
-        // with any agent-side convention. Phase 3 retires `workDir` and leaves `traceWorkDir`
-        // as the only key.
-        seededWorkflowVars["traceWorkDir"] = workDirElement;
+        // sc-604 Phase 3: the legacy `workflow.workDir` alias is gone. The canonical
+        // author-facing variable is `workflow.traceWorkDir`; the runtime source of truth is
+        // the saga's typed TraceWorkDir field (set on the published AgentInvokeRequested
+        // below).
+        seededWorkflowVars["traceWorkDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
 
         // Mid-workflow dispatches run a node's InputScript via the saga's TryEvaluateInputScriptAsync
         // helper, but a top-level Start has no saga yet at this point, so we evaluate the script

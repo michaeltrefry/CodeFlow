@@ -256,18 +256,11 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenWorkflowWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
+    public async Task Consumer_WhenTraceWorkDirSet_ShouldUseItAsToolWorkspaceRoot()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
 
-        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-        {
-            ["workDir"] = JsonSerializer.SerializeToElement(workDir)
-        };
-
-        // sc-607: per-trace repositories are carried on the saga-field-backed
-        // AgentInvokeRequested.Repositories, not the legacy context.repositories bag entry.
         var repositories = new[]
         {
             new RepositoryDeclaration("https://github.com/example/codeflow.git"),
@@ -283,8 +276,8 @@ public sealed class AgentInvocationConsumerTests
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
-            WorkflowContext: workflowContext,
-            Repositories: repositories);
+            Repositories: repositories,
+            TraceWorkDir: workDir);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
@@ -302,7 +295,7 @@ public sealed class AgentInvocationConsumerTests
     }
 
     [Fact]
-    public async Task Consumer_WhenWorkflowWorkDirAndLegacyContextBothPresent_ShouldPreferWorkflowWorkDir()
+    public async Task Consumer_WhenTraceWorkDirAndLegacyContextBothPresent_ShouldPreferTraceWorkDir()
     {
         var traceId = Guid.NewGuid();
         var workDir = Path.Combine(Path.GetTempPath(), $"codeflow-workdir-{Guid.NewGuid():N}");
@@ -315,11 +308,6 @@ public sealed class AgentInvocationConsumerTests
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
 
-        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-        {
-            ["workDir"] = JsonSerializer.SerializeToElement(workDir)
-        };
-
         var request = new AgentInvokeRequested(
             TraceId: traceId,
             RoundId: Guid.NewGuid(),
@@ -331,17 +319,17 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            WorkflowContext: workflowContext);
+            TraceWorkDir: workDir);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
         observed!.Workspace!.RootPath.Should().Be(workDir);
         observed.Workspace.CorrelationId.Should().Be(traceId);
-        observed.Workspace.RepoUrl.Should().BeNull("workflow.workDir overrides the legacy per-repo workspace context");
+        observed.Workspace.RepoUrl.Should().BeNull("TraceWorkDir overrides the legacy per-repo workspace context");
     }
 
     [Fact]
-    public async Task Consumer_WhenWorkflowWorkDirBlank_ShouldFallBackToLegacyContext()
+    public async Task Consumer_WhenTraceWorkDirBlank_ShouldFallBackToLegacyContext()
     {
         var legacy = new CodeFlow.Contracts.ToolExecutionContext(
             new CodeFlow.Contracts.ToolWorkspaceContext(
@@ -350,11 +338,6 @@ public sealed class AgentInvocationConsumerTests
                 RepoUrl: "https://github.com/example/legacy.git",
                 RepoIdentityKey: "github.com/example/legacy",
                 RepoSlug: "example/legacy"));
-
-        var workflowContext = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-        {
-            ["workDir"] = JsonSerializer.SerializeToElement("   ")
-        };
 
         var request = new AgentInvokeRequested(
             TraceId: Guid.NewGuid(),
@@ -367,7 +350,7 @@ public sealed class AgentInvocationConsumerTests
             InputRef: new Uri("file:///tmp/input.bin"),
             ContextInputs: new Dictionary<string, JsonElement>(),
             ToolExecutionContext: legacy,
-            WorkflowContext: workflowContext);
+            TraceWorkDir: "   ");
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 

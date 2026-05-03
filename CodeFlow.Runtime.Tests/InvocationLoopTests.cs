@@ -427,11 +427,11 @@ public sealed class InvocationLoopTests
             _ => new InvocationResponse(
                 new ChatMessage(
                     ChatMessageRole.Assistant,
-                    "Trying to overwrite workDir.",
+                    "Trying to overwrite traceWorkDir.",
                     ToolCalls:
                     [
                         new ToolCall("call_reserved", "setWorkflow",
-                            new JsonObject { ["key"] = "workDir", ["value"] = "/etc/evil" }),
+                            new JsonObject { ["key"] = "traceWorkDir", ["value"] = "/etc/evil" }),
                         new ToolCall("call_submit", "submit",
                             new JsonObject { ["decision"] = "Continue" })
                     ]),
@@ -452,12 +452,12 @@ public sealed class InvocationLoopTests
             .FirstOrDefault(m => m.Role == ChatMessageRole.Tool
                 && m.ToolCallId == "call_reserved");
         setWorkflowToolMessage.Should().NotBeNull("the reserved-key write must surface a tool result");
-        setWorkflowToolMessage!.Content.Should().Contain("workDir");
+        setWorkflowToolMessage!.Content.Should().Contain("traceWorkDir");
         setWorkflowToolMessage.Content.Should().Contain("framework-managed workflow variable");
 
         if (result.WorkflowUpdates is { } workflowVars)
         {
-            workflowVars.ContainsKey("workDir").Should().BeFalse(
+            workflowVars.ContainsKey("traceWorkDir").Should().BeFalse(
                 "the rejected write must not be persisted into the workflow bag");
         }
     }
