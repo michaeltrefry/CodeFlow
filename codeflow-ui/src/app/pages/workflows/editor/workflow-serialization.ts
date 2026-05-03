@@ -92,6 +92,15 @@ export async function loadIntoEditor(
   const idToNode = new Map<string, WorkflowEditorNode>();
 
   for (const node of model.nodes) {
+    // ReviewLoop nodes always expose a synthesized `Exhausted` terminal port. Authoring flows
+    // (workflow-canvas refreshSubflowPorts + canvas-dialog-orchestrator) add it client-side
+    // before persisting, but workflows arriving from JSON imports / starter packages / older
+    // hand-edited DB rows can omit it — and rete will throw "source node doesn't have output
+    // with a key Exhausted" the moment we try to add the matching edge. Pad the declared
+    // ports here so loadIntoEditor stays robust to those upstream variations.
+    const declaredPorts = node.kind === 'ReviewLoop' && !node.outputPorts.includes('Exhausted')
+      ? [...node.outputPorts, 'Exhausted']
+      : node.outputPorts;
     const editorNode = new WorkflowEditorNode({
       nodeId: node.id,
       kind: node.kind,
@@ -100,7 +109,7 @@ export async function loadIntoEditor(
       agentVersion: node.agentVersion,
       outputScript: node.outputScript,
       inputScript: node.inputScript,
-      outputPorts: node.outputPorts,
+      outputPorts: declaredPorts,
       subflowKey: node.subflowKey,
       subflowVersion: node.subflowVersion,
       reviewMaxRounds: node.reviewMaxRounds,
