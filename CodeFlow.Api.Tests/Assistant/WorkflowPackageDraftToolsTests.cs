@@ -243,7 +243,7 @@ public sealed class WorkflowPackageDraftToolsTests : IDisposable
         // inline `package` arg even when no workspace is available); the four draft tools are
         // workspace-gated.
         var factory = new WorkflowDraftAssistantToolFactory(new StubImporter());
-        var tools = factory.Build(workspace: null);
+        var tools = factory.Build(conversationWorkspace: null);
 
         tools.Should().ContainSingle(t => t.Name == "save_workflow_package");
         tools.Should().NotContain(t => t.Name == "set_workflow_package_draft");

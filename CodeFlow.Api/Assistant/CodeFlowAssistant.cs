@@ -206,7 +206,15 @@ public sealed class CodeFlowAssistant(
         // SaveWorkflowPackageTool (overrides the DI-registered workspace-blind one) and, when
         // a workspace resolves, the four draft tools (set/get/patch/clear). Use the override
         // merge so the factory's save tool replaces the DI fallback in the LLM's view.
-        var draftTools = workflowDraftToolFactory.Build(resolvedWorkspace?.Context);
+        //
+        // Drafts and per-save snapshots are conversation-scoped — the chip and the apply
+        // endpoint look in the conversation workspace, not the active one. If the assistant
+        // has pivoted to a trace's workdir for host-tool reads, draft I/O still has to land
+        // in the conversation dir or Save fails with "Snapshot not found for this conversation"
+        // while the bytes sit in the trace dir. Resolve the conversation workspace
+        // independently of `resolvedWorkspace` so the trace pivot doesn't move them.
+        var conversationDraftWorkspace = TryResolveConversationWorkspace(conversationId);
+        var draftTools = workflowDraftToolFactory.Build(conversationDraftWorkspace);
         if (draftTools.Count > 0)
         {
             dispatcher = MergeDispatcherWithOverride(dispatcher, draftTools);
@@ -285,6 +293,37 @@ public sealed class CodeFlowAssistant(
                 "Could not create the per-conversation workspace for assistant conversation {ConversationId}. "
                 + "Set the Workspace__AssistantWorkspaceRoot environment variable to a writable directory (default '/app/codeflow/assistant' is a container path). "
                 + "Continuing without host tools for this turn.",
+                conversationId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the conversation's own workspace, ignoring any active trace pivot. Used by the
+    /// workflow-draft tool factory because drafts and per-save snapshots are conversation-
+    /// scoped: the apply endpoint at <c>POST /api/workflows/package/apply-from-draft</c>
+    /// always reads from <c>GetOrCreateConversationWorkspace</c>, so the snapshot has to be
+    /// written there too. Without this carve-out, a trace-workspace switch routes the snapshot
+    /// to the trace's workdir and the Save chip surfaces "Snapshot not found for this
+    /// conversation" while the bytes sit on disk where apply doesn't look.
+    /// </summary>
+    private ToolWorkspaceContext? TryResolveConversationWorkspace(Guid conversationId)
+    {
+        if (conversationId == Guid.Empty)
+        {
+            return null;
+        }
+
+        try
+        {
+            return workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            logger.LogWarning(ex,
+                "Could not create the per-conversation workspace for assistant conversation {ConversationId} (workflow draft tools). "
+                + "Set the Workspace__AssistantWorkspaceRoot environment variable to a writable directory. "
+                + "Draft tools (and zero-arg save_workflow_package) will be unavailable for this turn.",
                 conversationId);
             return null;
         }
