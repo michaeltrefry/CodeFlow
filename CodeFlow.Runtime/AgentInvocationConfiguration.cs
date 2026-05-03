@@ -16,7 +16,6 @@ public sealed record AgentInvocationConfiguration(
     string? PromptTemplate = null,
     IReadOnlyDictionary<string, string?>? Variables = null,
     IReadOnlyList<ChatMessage>? History = null,
-    ToolAccessPolicy? ToolAccessPolicy = null,
     InvocationLoopBudget? Budget = null,
     int? MaxTokens = null,
     double? Temperature = null,
