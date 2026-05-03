@@ -71,6 +71,61 @@ describe('AgentFormComponent', () => {
       { key: '@codeflow/last-round-reminder', version: 2 },
     ]);
   });
+
+  it('round-trips an invocation budget block', () => {
+    const fixture = TestBed.createComponent(AgentFormComponent);
+    const saves: AgentFormSaveRequest[] = [];
+    const initialConfig: AgentConfig = {
+      type: 'agent',
+      provider: 'openai',
+      model: 'gpt-5.4',
+      budget: {
+        maxToolCalls: 32,
+        maxLoopDuration: '00:10:00',
+        maxConsecutiveNonMutatingCalls: 16,
+      },
+    };
+
+    fixture.componentRef.setInput('key', 'budget-agent');
+    fixture.componentRef.setInput('initialType', 'agent');
+    fixture.componentRef.setInput('initialConfig', initialConfig);
+    fixture.componentInstance.saveRequested.subscribe(save => saves.push(save));
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/llm-providers/models').flush([]);
+
+    fixture.componentInstance.submit(preventableSubmitEvent());
+
+    expect(saves).toHaveLength(1);
+    expect(saves[0].config.budget).toEqual({
+      maxToolCalls: 32,
+      maxLoopDuration: '00:10:00',
+      maxConsecutiveNonMutatingCalls: 16,
+    });
+  });
+
+  it('omits the budget block when all fields are blank', () => {
+    const fixture = TestBed.createComponent(AgentFormComponent);
+    const saves: AgentFormSaveRequest[] = [];
+    const initialConfig: AgentConfig = {
+      type: 'agent',
+      provider: 'openai',
+      model: 'gpt-5.4',
+    };
+
+    fixture.componentRef.setInput('key', 'no-budget-agent');
+    fixture.componentRef.setInput('initialType', 'agent');
+    fixture.componentRef.setInput('initialConfig', initialConfig);
+    fixture.componentInstance.saveRequested.subscribe(save => saves.push(save));
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/llm-providers/models').flush([]);
+
+    fixture.componentInstance.submit(preventableSubmitEvent());
+
+    expect(saves).toHaveLength(1);
+    expect(saves[0].config.budget).toBeUndefined();
+  });
 });
 
 function preventableSubmitEvent(): Event {

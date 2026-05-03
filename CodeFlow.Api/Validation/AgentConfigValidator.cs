@@ -9,6 +9,13 @@ public static class AgentConfigValidator
     private static readonly Regex DecisionOutputPortPattern = new("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled);
     private const int MaxDecisionOutputTemplates = 32;
     private const int MaxDecisionOutputTemplateLength = 16 * 1024;
+    // Bounds on the optional `budget` block. Mirrors the runtime defaults documented on
+    // InvocationLoopBudget (Default: 16 / 5 min / 8). The ceilings are intentionally generous —
+    // anyone bumping past these is doing something exotic and should know it.
+    private const int MinBudgetCalls = 1;
+    private const int MaxBudgetCalls = 256;
+    private const int MinBudgetDurationSeconds = 1;
+    private const int MaxBudgetDurationSeconds = 3600;
     private static readonly HashSet<string> KnownProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
@@ -85,6 +92,93 @@ public static class AgentConfigValidator
         if (!decisionTemplatesResult.IsValid)
         {
             return decisionTemplatesResult;
+        }
+
+        var budgetResult = ValidateBudget(config.Value);
+        if (!budgetResult.IsValid)
+        {
+            return budgetResult;
+        }
+
+        return ValidationResult.Ok();
+    }
+
+    private static ValidationResult ValidateBudget(JsonElement config)
+    {
+        if (!config.TryGetProperty("budget", out var budget))
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (budget.ValueKind == JsonValueKind.Null)
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (budget.ValueKind != JsonValueKind.Object)
+        {
+            return ValidationResult.Fail("'budget' must be a JSON object.");
+        }
+
+        int? maxToolCalls = null;
+        if (budget.TryGetProperty("maxToolCalls", out var maxToolCallsElement)
+            && maxToolCallsElement.ValueKind != JsonValueKind.Null)
+        {
+            if (maxToolCallsElement.ValueKind != JsonValueKind.Number
+                || !maxToolCallsElement.TryGetInt32(out var calls))
+            {
+                return ValidationResult.Fail("'budget.maxToolCalls' must be an integer.");
+            }
+            if (calls < MinBudgetCalls || calls > MaxBudgetCalls)
+            {
+                return ValidationResult.Fail(
+                    $"'budget.maxToolCalls' must be between {MinBudgetCalls} and {MaxBudgetCalls}.");
+            }
+            maxToolCalls = calls;
+        }
+
+        if (budget.TryGetProperty("maxLoopDuration", out var maxDurationElement)
+            && maxDurationElement.ValueKind != JsonValueKind.Null)
+        {
+            if (maxDurationElement.ValueKind != JsonValueKind.String)
+            {
+                return ValidationResult.Fail(
+                    "'budget.maxLoopDuration' must be a TimeSpan string in 'HH:mm:ss' format.");
+            }
+            var raw = maxDurationElement.GetString();
+            if (string.IsNullOrWhiteSpace(raw)
+                || !TimeSpan.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture, out var span))
+            {
+                return ValidationResult.Fail(
+                    "'budget.maxLoopDuration' must parse as a TimeSpan (e.g. '00:10:00').");
+            }
+            var seconds = span.TotalSeconds;
+            if (seconds < MinBudgetDurationSeconds || seconds > MaxBudgetDurationSeconds)
+            {
+                return ValidationResult.Fail(
+                    $"'budget.maxLoopDuration' must be between {MinBudgetDurationSeconds}s and {MaxBudgetDurationSeconds}s.");
+            }
+        }
+
+        if (budget.TryGetProperty("maxConsecutiveNonMutatingCalls", out var maxNonMutatingElement)
+            && maxNonMutatingElement.ValueKind != JsonValueKind.Null)
+        {
+            if (maxNonMutatingElement.ValueKind != JsonValueKind.Number
+                || !maxNonMutatingElement.TryGetInt32(out var nonMutating))
+            {
+                return ValidationResult.Fail(
+                    "'budget.maxConsecutiveNonMutatingCalls' must be an integer.");
+            }
+            if (nonMutating < MinBudgetCalls || nonMutating > MaxBudgetCalls)
+            {
+                return ValidationResult.Fail(
+                    $"'budget.maxConsecutiveNonMutatingCalls' must be between {MinBudgetCalls} and {MaxBudgetCalls}.");
+            }
+            if (maxToolCalls is { } cap && nonMutating > cap)
+            {
+                return ValidationResult.Fail(
+                    "'budget.maxConsecutiveNonMutatingCalls' must not exceed 'budget.maxToolCalls'.");
+            }
         }
 
         return ValidationResult.Ok();

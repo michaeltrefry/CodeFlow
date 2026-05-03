@@ -63,6 +63,37 @@ For large content (PRDs, plans, codebases) DON'T use mid-turn `setWorkflow`
 or the declarative P4 mirror feature (see "Declarative authoring features"
 below).
 
+#### Invocation budget (optional `budget` block)
+Every agent invocation runs under three guardrails. The defaults
+(`16` tool calls / `5` minutes wall-clock / `8` consecutive non-mutating
+calls) cover almost every author/reviewer/synthesizer agent. Override only
+when an agent legitimately needs a higher ceiling — for example a
+synthesizer that walks many files via `read_file` before writing.
+
+Shape (all three fields are optional; omit the whole block to use defaults):
+
+```json
+"budget": {
+  "maxToolCalls": 32,
+  "maxLoopDuration": "00:10:00",
+  "maxConsecutiveNonMutatingCalls": 16
+}
+```
+
+- `maxToolCalls` — total tool invocations allowed in one turn.
+  Validator bounds: integer in `[1, 256]`. Exceeding fails the loop with
+  `ToolCallBudgetExceeded`.
+- `maxLoopDuration` — hard wall-clock cap. TimeSpan string in
+  `"HH:mm:ss"` (e.g. `"00:10:00"`). Validator bounds: 1 second to 1 hour.
+- `maxConsecutiveNonMutatingCalls` — how many read-only tool calls in a row
+  before the loop bails. Catches "I'll just read one more file" loops where
+  the agent never calls `submit`. Validator bounds: integer in `[1, 256]`,
+  and must not exceed `maxToolCalls` if both are set.
+
+The agent editor exposes these on the **Model** tab under "Invocation
+budget"; in a workflow package they live inside `agents[].config.budget`.
+Don't bump these to mask a buggy prompt — fix the prompt instead.
+
 ### Prompt templates and partials
 Agent prompts use Scriban 7.1 in a sandboxed renderer. Familiar syntax —
 `{{ name }}`, `{{ for item in items }}…{{ end }}`, `{{ if cond }}…{{ end }}`,
@@ -682,6 +713,10 @@ should pick fresh ones.
         ],
         "maxTokens": 4000,
         "temperature": 0.4,
+        "budget": {
+          "maxToolCalls": 32,
+          "maxLoopDuration": "00:10:00"
+        },
         "outputs": [
           { "kind": "Drafted", "description": "Draft (or revision) emitted." }
         ]
