@@ -44,6 +44,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<LlmProviderSettingsEntity> LlmProviders => Set<LlmProviderSettingsEntity>();
 
+    public DbSet<WebSearchProviderSettingsEntity> WebSearchProviders => Set<WebSearchProviderSettingsEntity>();
+
     public DbSet<PromptPartialEntity> PromptPartials => Set<PromptPartialEntity>();
 
     public DbSet<WorkflowFixtureEntity> WorkflowFixtures => Set<WorkflowFixtureEntity>();

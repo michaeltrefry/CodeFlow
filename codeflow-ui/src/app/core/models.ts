@@ -396,6 +396,38 @@ export interface AssistantSettingsWriteRequest {
   maxTurns: number | null;
 }
 
+// --- Web-search provider admin (singleton, follows the LLM-provider shape) ---------------
+
+export type WebSearchProviderKey = 'none' | 'brave';
+
+export const WEB_SEARCH_PROVIDER_KEYS: readonly WebSearchProviderKey[] = ['none', 'brave'] as const;
+
+export const WEB_SEARCH_PROVIDER_DISPLAY_NAMES: Record<WebSearchProviderKey, string> = {
+  none: 'None (refuse web_search)',
+  brave: 'Brave Web Search',
+};
+
+export type WebSearchProviderTokenAction = 'Preserve' | 'Replace' | 'Clear';
+
+export interface WebSearchProviderTokenUpdateRequest {
+  action: WebSearchProviderTokenAction;
+  value?: string | null;
+}
+
+export interface WebSearchProviderResponse {
+  provider: WebSearchProviderKey;
+  hasApiKey: boolean;
+  endpointUrl?: string | null;
+  updatedBy?: string | null;
+  updatedAtUtc?: string | null;
+}
+
+export interface WebSearchProviderWriteRequest {
+  provider: WebSearchProviderKey;
+  endpointUrl?: string | null;
+  token?: WebSearchProviderTokenUpdateRequest;
+}
+
 // --- Notification subsystem (epic 48) ----------------------------------------------------
 
 export type NotificationChannel = 'Email' | 'Sms' | 'Slack';

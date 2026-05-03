@@ -142,6 +142,11 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/settings/llm-providers/llm-providers.component').then(m => m.LlmProvidersComponent)
   },
   {
+    path: 'settings/web-search',
+    canActivate: [authenticatedGuard],
+    loadComponent: () => import('./pages/settings/web-search/web-search.component').then(m => m.WebSearchProviderSettingsComponent)
+  },
+  {
     path: 'settings/notifications',
     canActivate: [authenticatedGuard],
     loadComponent: () => import('./pages/settings/notifications/notifications.component').then(m => m.NotificationsAdminComponent)
