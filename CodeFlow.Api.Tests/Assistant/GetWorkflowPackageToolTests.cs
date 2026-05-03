@@ -136,6 +136,34 @@ public sealed class GetWorkflowPackageToolTests : IClassFixture<CodeFlowApiFacto
         agentConfig.GetString().Should().Contain("[truncated");
     }
 
+    [Fact]
+    public async Task Invoke_FullFlag_ReturnsUntruncatedAgentConfigForRoundTrip()
+    {
+        // The whole point of `full: true`: produce a package whose bodies are byte-identical to
+        // what's in storage, so the LLM can re-emit it through `save_workflow_package` without
+        // corrupting the agent prompt with a truncation marker.
+        const string agentKey = "gwp-full-prompt";
+        const string workflowKey = "gwp-full-flow";
+        var systemPrompt = new string('z', 7296);
+        await SeedAgentAsync(agentKey, systemPrompt: systemPrompt);
+        await SeedWorkflowAsync(workflowKey, agentKey: agentKey, agentVersion: 1);
+
+        var tool = ResolveTool();
+        var args = JsonSerializer.SerializeToElement(new { key = workflowKey, full = true });
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        var doc = JsonDocument.Parse(result.ResultJson);
+        var agentConfig = doc.RootElement.GetProperty("agents")[0].GetProperty("config");
+        // With full=true the config stays an object; the embedded systemPrompt must round-trip
+        // verbatim and carry no truncation marker.
+        agentConfig.ValueKind.Should().Be(JsonValueKind.Object);
+        var fullPrompt = agentConfig.GetProperty("systemPrompt").GetString()!;
+        fullPrompt.Should().NotContain("[truncated");
+        fullPrompt.Should().Be(systemPrompt);
+    }
+
     private IAssistantTool ResolveTool()
     {
         var scope = factory.Services.CreateScope();

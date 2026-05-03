@@ -152,6 +152,27 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
     }
 
     [Fact]
+    public async Task GetAgent_FullFlag_ReturnsUntruncatedSystemPrompt()
+    {
+        // The truncation marker is destructive when the LLM is bumping an agent via a workflow
+        // package — re-emitting a marker-tagged body would corrupt the saved entity. `full: true`
+        // is the explicit opt-in for that flow.
+        var longPrompt = new string('p', 7296); // matches the real-world case that surfaced the bug
+        await SeedAgentAsync("verbose-full", provider: "anthropic", model: "claude-sonnet-4", systemPrompt: longPrompt);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = ResolveTool<GetAgentTool>(scope);
+
+        var result = ParseObject(await tool.InvokeAsync(
+            Args(new { key = "verbose-full", full = true }),
+            CancellationToken.None));
+        var systemPrompt = result.GetProperty("systemPrompt").GetString()!;
+        systemPrompt.Should().NotContain("[truncated");
+        systemPrompt.Length.Should().Be(longPrompt.Length);
+        systemPrompt.Should().Be(longPrompt);
+    }
+
+    [Fact]
     public async Task FindWorkflowsUsingAgent_MatchesAgentSlot()
     {
         await SeedAgentAsync("hot-agent", provider: "anthropic", model: "claude-sonnet-4");
