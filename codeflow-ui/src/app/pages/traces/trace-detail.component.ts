@@ -1,7 +1,7 @@
 import { Component, DestroyRef, OnDestroy, OnInit, computed, effect, inject, input, signal, viewChild } from '@angular/core';
 import { CommonModule, DatePipe, JsonPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { Observable, interval, retry, timer } from 'rxjs';
+import { Observable, Subscription, interval, retry, timer } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { TracesApi } from '../../core/traces.api';
@@ -288,7 +288,41 @@ interface ReviewLoopGroup {
           <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ d.pinnedAgentVersions | json }}</pre>
         </cf-card>
 
+        @if (finalOutputRef(); as outputRef) {
+          <cf-card title="Final output">
+            <ng-template #cardRight>
+              <button type="button" cf-button size="sm" variant="ghost" icon="copy"
+                      (click)="copyFinalOutput()"
+                      [disabled]="!finalOutput().content">
+                {{ finalOutputCopied() ? 'Copied!' : 'Copy' }}
+              </button>
+              <button type="button" cf-button size="sm" variant="ghost" icon="download"
+                      (click)="downloadArtifact(outputRef)">
+                Download
+              </button>
+            </ng-template>
+            <p class="muted small" style="margin-bottom: 10px">Output artifact emitted by the last decision in this trace.</p>
+            @if (finalOutput().loading) {
+              <p class="muted small">Loading…</p>
+            } @else if (finalOutput().error; as err) {
+              <p class="muted small" style="color: var(--err)">{{ err }}</p>
+            } @else if (finalOutput().content; as content) {
+              <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ content }}</pre>
+            }
+          </cf-card>
+        }
+
         <cf-card title="Context inputs">
+          <ng-template #cardRight>
+            <button type="button" cf-button size="sm" variant="ghost" icon="copy"
+                    (click)="copyContextInputs(d.contextInputs)">
+              {{ contextInputsCopied() ? 'Copied!' : 'Copy' }}
+            </button>
+            <button type="button" cf-button size="sm" variant="ghost" icon="download"
+                    (click)="downloadContextInputs(d.traceId, d.contextInputs)">
+              Download
+            </button>
+          </ng-template>
           <p class="muted small" style="margin-bottom: 10px">Current saga context available to workflow scripts and agent templates.</p>
           <pre class="mono" style="white-space: pre-wrap; word-break: break-word">{{ d.contextInputs | json }}</pre>
         </cf-card>
@@ -461,6 +495,23 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     }
     return ordered;
   });
+
+  /** Last decision's outputRef on a non-running trace — what the user thinks of as
+   *  "the final output artifact from the run". Null while the saga is still executing
+   *  so the panel doesn't show a misleading "latest" output mid-flight. */
+  readonly finalOutputRef = computed<string | null>(() => {
+    const detail = this.detail();
+    if (!detail || detail.currentState === 'Running') return null;
+    for (let i = detail.decisions.length - 1; i >= 0; i -= 1) {
+      const ref = detail.decisions[i].outputRef;
+      if (ref) return ref;
+    }
+    return null;
+  });
+
+  readonly finalOutput = signal<{ loading: boolean; content?: string; error?: string }>({ loading: false });
+  readonly finalOutputCopied = signal(false);
+  readonly contextInputsCopied = signal(false);
 
   readonly failureHttpDiagnosticsRef = computed<string | null>(() => {
     const detail = this.detail();
@@ -678,6 +729,8 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     this.downloadArtifact(uri);
   }
 
+  private finalOutputSub?: Subscription;
+
   constructor() {
     // Re-register on every `id()` change. With `withComponentInputBinding()` the route param
     // updates the signal in place when the user navigates from /traces/A to /traces/B without a
@@ -685,6 +738,27 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
     // keeping the assistant sidebar's PageContext in sync with the current trace.
     effect(() => {
       this.pageContext.set({ kind: 'trace', traceId: this.id() });
+    });
+
+    // Lazy-load the final output artifact text whenever finalOutputRef changes.
+    // SSE updates can change which decision is "last" while the page is open, so any
+    // in-flight fetch for a stale ref is cancelled before kicking off the new one.
+    effect(() => {
+      const ref = this.finalOutputRef();
+      this.finalOutputSub?.unsubscribe();
+      this.finalOutputCopied.set(false);
+      if (!ref) {
+        this.finalOutput.set({ loading: false });
+        return;
+      }
+      this.finalOutput.set({ loading: true });
+      this.finalOutputSub = this.api.getArtifact(this.id(), ref).subscribe({
+        next: content => this.finalOutput.set({ loading: false, content }),
+        error: err => this.finalOutput.set({
+          loading: false,
+          error: err?.error?.error ?? err?.message ?? 'Failed to load output artifact',
+        }),
+      });
     });
   }
 
@@ -840,6 +914,42 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
 
   copyId(id: string): void {
     navigator.clipboard?.writeText(id).catch(() => undefined);
+  }
+
+  copyContextInputs(contextInputs: Record<string, unknown>): void {
+    const text = JSON.stringify(contextInputs, null, 2);
+    this.writeToClipboard(text, this.contextInputsCopied);
+  }
+
+  downloadContextInputs(traceId: string, contextInputs: Record<string, unknown>): void {
+    const text = JSON.stringify(contextInputs, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    this.triggerBlobDownload(blob, `context-inputs-${traceId.substring(0, 8)}.json`);
+  }
+
+  copyFinalOutput(): void {
+    const content = this.finalOutput().content;
+    if (!content) return;
+    this.writeToClipboard(content, this.finalOutputCopied);
+  }
+
+  private writeToClipboard(text: string, flag: { set(v: boolean): void }): void {
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        flag.set(true);
+        setTimeout(() => flag.set(false), 1500);
+      },
+      () => undefined,
+    );
+  }
+
+  private triggerBlobDownload(blob: Blob, fileName: string): void {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   toggleReplayPanel(): void {
