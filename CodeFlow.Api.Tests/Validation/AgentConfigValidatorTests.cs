@@ -262,4 +262,123 @@ public sealed class AgentConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("maxConsecutiveNonMutatingCalls");
     }
+
+    [Fact]
+    public void ValidateConfig_AcceptsValidHistory()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "provider": "openai",
+            "model": "gpt-5",
+            "history": [
+                {"role": "user", "content": "What's the format?"},
+                {"role": "assistant", "content": "Always reply with a JSON envelope."}
+            ]
+        }
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_AcceptsNullHistory()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","history":null}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonArrayHistory()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","history":"nope"}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("history");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsHistoryEntryWithoutObject()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","history":["nope"]}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("history[0]");
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("tool")]
+    [InlineData("banana")]
+    public void ValidateConfig_RejectsUnauthorableHistoryRole(string role)
+    {
+        var json = $$"""{"provider":"openai","model":"gpt-5","history":[{"role":"{{role}}","content":"x"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("history[0].role");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsHistoryWithEmptyContent()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"provider":"openai","model":"gpt-5","history":[{"role":"user","content":""}]}
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("content");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsHistoryWithMissingRole()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"provider":"openai","model":"gpt-5","history":[{"content":"x"}]}
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("role");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsTooManyHistoryEntries()
+    {
+        var entries = string.Join(",", Enumerable.Range(0, 33)
+            .Select(_ => """{"role":"user","content":"x"}"""));
+        var json = $$"""{"provider":"openai","model":"gpt-5","history":[{{entries}}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("at most");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsOversizeHistoryTotal()
+    {
+        var oversize = new string('x', 32 * 1024 + 1);
+        var json = $$"""{"provider":"openai","model":"gpt-5","history":[{"role":"user","content":"{{oversize}}"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("total content length");
+    }
 }

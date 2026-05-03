@@ -16,11 +16,18 @@ public static class AgentConfigValidator
     private const int MaxBudgetCalls = 256;
     private const int MinBudgetDurationSeconds = 1;
     private const int MaxBudgetDurationSeconds = 3600;
+    private const int MaxHistoryEntries = 32;
+    private const int MaxHistoryTotalLength = 32 * 1024;
     private static readonly HashSet<string> KnownProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
         "anthropic",
         "lmstudio"
+    };
+    private static readonly HashSet<string> AuthorableHistoryRoles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "user",
+        "assistant"
     };
     private static readonly string[] LegacyToolFields = new[] { "enableHostTools", "mcpTools" };
 
@@ -98,6 +105,79 @@ public static class AgentConfigValidator
         if (!budgetResult.IsValid)
         {
             return budgetResult;
+        }
+
+        var historyResult = ValidateHistory(config.Value);
+        if (!historyResult.IsValid)
+        {
+            return historyResult;
+        }
+
+        return ValidationResult.Ok();
+    }
+
+    private static ValidationResult ValidateHistory(JsonElement config)
+    {
+        if (!config.TryGetProperty("history", out var history))
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (history.ValueKind == JsonValueKind.Null)
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (history.ValueKind != JsonValueKind.Array)
+        {
+            return ValidationResult.Fail("'history' must be a JSON array of {role, content} entries.");
+        }
+
+        var index = 0;
+        var totalLength = 0;
+        foreach (var entry in history.EnumerateArray())
+        {
+            if (index >= MaxHistoryEntries)
+            {
+                return ValidationResult.Fail(
+                    $"'history' may contain at most {MaxHistoryEntries} entries.");
+            }
+
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                return ValidationResult.Fail(
+                    $"'history[{index}]' must be a JSON object with 'role' and 'content'.");
+            }
+
+            var role = ReadStringProperty(entry, "role");
+            if (string.IsNullOrWhiteSpace(role))
+            {
+                return ValidationResult.Fail(
+                    $"'history[{index}].role' is required and must be a string.");
+            }
+
+            if (!AuthorableHistoryRoles.Contains(role))
+            {
+                return ValidationResult.Fail(
+                    $"'history[{index}].role' must be 'user' or 'assistant'. "
+                    + "Use 'systemPrompt' for system content; tool messages are not authorable.");
+            }
+
+            var content = ReadStringProperty(entry, "content");
+            if (string.IsNullOrEmpty(content))
+            {
+                return ValidationResult.Fail(
+                    $"'history[{index}].content' is required and must be a non-empty string.");
+            }
+
+            totalLength += content.Length;
+            if (totalLength > MaxHistoryTotalLength)
+            {
+                return ValidationResult.Fail(
+                    $"'history' total content length exceeds the {MaxHistoryTotalLength}-character limit.");
+            }
+
+            index++;
         }
 
         return ValidationResult.Ok();
