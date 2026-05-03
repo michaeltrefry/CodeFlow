@@ -167,6 +167,19 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? RepositoriesJson { get; set; }
 
     /// <summary>
+    /// Per-trace working-directory absolute path (e.g. <c>/workspace/&lt;rootTraceId.N&gt;</c>).
+    /// Source of truth for the workspace root every host tool jails to during this saga's
+    /// dispatches. Seeded at top-level launch by <c>TracesEndpoints.CreateTraceAsync</c> (which
+    /// also creates the directory on disk) and inherited verbatim by child sagas at subflow init —
+    /// subflows deliberately share the parent's workspace, so the inherited value is the parent's
+    /// path, not a fresh one derived from the child trace id. Replaces the legacy
+    /// <c>workflow.workDir</c> magic bag-key (a CodeWeave-vintage convention) tracked under
+    /// epic sc-593; the legacy key remains seeded for backward compat through Phase 2 of that
+    /// epic and is dropped in Phase 3 once in-flight messages have drained.
+    /// </summary>
+    public string? TraceWorkDir { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

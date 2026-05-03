@@ -279,6 +279,256 @@ public sealed class WorkflowSagaSubflowEndToEndTests
     }
 
     [Fact]
+    public async Task TraceWorkDirOnTopLevelLaunch_ShouldSeedSagaAndRideOnStartDispatch()
+    {
+        // sc-593 Phase 1: launching a trace with the new TraceWorkDir field set must (a) land
+        // the value in saga.TraceWorkDir and (b) flow back out on the downstream dispatch's
+        // TraceWorkDir field. This is the saga-side half of the contract; AgentInvocationConsumer
+        // tests cover the consumer-side use of message.TraceWorkDir.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+        var nextNodeId = Guid.NewGuid();
+
+        var workflow = new Workflow(
+            Key: "workdir-top-level",
+            Version: 1,
+            Name: "workdir-top-level",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(startNodeId, WorkflowNodeKind.Start, "kickoff",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(nextNodeId, WorkflowNodeKind.Agent, "downstream",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 250, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startNodeId, "Completed", nextNodeId,
+                    WorkflowEdge.DefaultInputPort, false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        await using var scope = BuildHarness(new[] { workflow }, new Dictionary<string, int>
+        {
+            ["kickoff"] = 1,
+            ["downstream"] = 1,
+        });
+        var harness = scope.Harness;
+
+        await harness.Start();
+        try
+        {
+            const string expectedWorkDir = "/workspace/abc123";
+
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: startNodeId,
+                AgentKey: "kickoff",
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                TraceWorkDir: expectedWorkDir));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.TraceWorkDir.Should().Be(expectedWorkDir,
+                "ApplyInitialRequest must lift message.TraceWorkDir into saga.TraceWorkDir");
+
+            // Drive the kickoff to completion so the saga publishes a downstream dispatch.
+            await harness.Bus.Publish(BuildCompletion(traceId, roundId, startNodeId,
+                "kickoff", 1, "Completed", "file:///tmp/start-out.bin"));
+
+            var downstream = await WaitForAgentInvocationAsync(harness, traceId, nextNodeId);
+            downstream.TraceWorkDir.Should().Be(expectedWorkDir,
+                "PublishHandoffAsync must thread saga.TraceWorkDir onto AgentInvokeRequested");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task TraceWorkDirOnParent_ShouldPropagateVerbatimToSubflow()
+    {
+        // sc-593 Phase 1: subflows deliberately share the parent's workspace, so the inherited
+        // TraceWorkDir must be the parent's path verbatim — NOT a fresh path derived from the
+        // child trace id. If a future refactor accidentally re-derives the path from
+        // message.ChildTraceId, code-aware tools that operate on a single repo checkout break.
+        var parentTraceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var parentStartNodeId = Guid.NewGuid();
+        var parentSubflowNodeId = Guid.NewGuid();
+
+        var parent = new Workflow(
+            Key: "parent-workdir",
+            Version: 1,
+            Name: "parent-workdir",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(parentStartNodeId, WorkflowNodeKind.Start, "kickoff",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(parentSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
+                    AgentVersion: null, OutputScript: null,
+                    OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "child-workdir", SubflowVersion: 1),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(parentStartNodeId, "Completed", parentSubflowNodeId,
+                    WorkflowEdge.DefaultInputPort, false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var childStartNodeId = Guid.NewGuid();
+        var child = new Workflow(
+            Key: "child-workdir",
+            Version: 1,
+            Name: "child-workdir",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "child-agent",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        await using var scope = BuildHarness(new[] { parent, child }, new Dictionary<string, int>
+        {
+            ["kickoff"] = 1,
+            ["child-agent"] = 1,
+        });
+        var harness = scope.Harness;
+
+        await harness.Start();
+        try
+        {
+            const string parentWorkDir = "/workspace/parent-trace";
+
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: parentTraceId,
+                RoundId: parentRoundId,
+                WorkflowKey: parent.Key,
+                WorkflowVersion: parent.Version,
+                NodeId: parentStartNodeId,
+                AgentKey: "kickoff",
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/parent-in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                TraceWorkDir: parentWorkDir));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(parentTraceId, x => x.Running);
+
+            var parentSaga = sagaHarness.Sagas.Contains(parentTraceId)!;
+            parentSaga.TraceWorkDir.Should().Be(parentWorkDir);
+
+            await harness.Bus.Publish(BuildCompletion(parentTraceId, parentRoundId, parentStartNodeId,
+                "kickoff", 1, "Completed", "file:///tmp/parent-start-out.bin"));
+
+            var spawns = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, 1);
+            var spawn = spawns[0].Context.Message;
+            spawn.TraceWorkDir.Should().Be(parentWorkDir,
+                "PublishSubflowDispatchAsync must thread saga.TraceWorkDir onto SubflowInvokeRequested");
+
+            var childTraceId = spawn.ChildTraceId;
+            await sagaHarness.Exists(childTraceId, x => x.Running);
+
+            var childSaga = sagaHarness.Sagas.Contains(childTraceId)!;
+            childSaga.TraceWorkDir.Should().Be(parentWorkDir,
+                "child saga must inherit parent's TraceWorkDir verbatim — not derive from child trace id");
+            childSaga.TraceId.Should().NotBe(parentTraceId,
+                "sanity check: child has its own trace id; the equality assertion above proves the path was inherited, not recomputed");
+
+            var childDispatch = await WaitForAgentInvocationAsync(harness, childTraceId, childStartNodeId);
+            childDispatch.TraceWorkDir.Should().Be(parentWorkDir,
+                "child's first agent dispatch must carry the inherited workspace path");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task LegacyWorkflowWorkDirBag_ShouldFallBackAtSagaInit()
+    {
+        // sc-593 Phase 1 fallback: a launch message that has no TraceWorkDir but does carry the
+        // legacy `workflow.workDir` bag-key (an in-flight message produced before sc-602 lands)
+        // must still seed saga.TraceWorkDir, so vcs/host tools keep working until the queue
+        // drains. Phase 3 (sc-604) drops this path along with the bag entry.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startNodeId = Guid.NewGuid();
+
+        var workflow = new Workflow(
+            Key: "workdir-fallback",
+            Version: 1,
+            Name: "workdir-fallback",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(startNodeId, WorkflowNodeKind.Start, "kickoff",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        await using var scope = BuildHarness(new[] { workflow }, new Dictionary<string, int>
+        {
+            ["kickoff"] = 1,
+        });
+        var harness = scope.Harness;
+
+        await harness.Start();
+        try
+        {
+            const string legacyWorkDir = "/workspace/legacy-trace";
+            var workflowContext = new Dictionary<string, JsonElement>
+            {
+                ["workDir"] = JsonDocument.Parse($"\"{legacyWorkDir}\"").RootElement.Clone(),
+            };
+
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: traceId,
+                RoundId: roundId,
+                WorkflowKey: workflow.Key,
+                WorkflowVersion: workflow.Version,
+                NodeId: startNodeId,
+                AgentKey: "kickoff",
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: workflowContext));
+                // TraceWorkDir intentionally omitted — simulates a pre-sc-593 in-flight message.
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            var saga = sagaHarness.Sagas.Contains(traceId)!;
+            saga.TraceWorkDir.Should().Be(legacyWorkDir,
+                "ApplyInitialRequest must fall back to the legacy workflow.workDir bag-key when the new TraceWorkDir field is absent");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task FourLevelChain_ShouldFailDeepestWithDepthExceededAndBubbleFailedToRoot()
     {
         // Chain: root → A → B → C (C is at depth 3, the deepest legal child). C has a Subflow
