@@ -32,7 +32,14 @@ public sealed record AgentInvokeRequested(
     // so vcs_* tools see the same allowlist across nested workflows. Null only on legacy
     // in-flight messages produced before the saga field existed; the consumer falls back to
     // ContextInputs["repositories"] in that case for backward compat.
-    IReadOnlyList<RepositoryDeclaration>? Repositories = null);
+    IReadOnlyList<RepositoryDeclaration>? Repositories = null,
+    // sc-593 epic: per-trace working-directory absolute path. Populated from saga.TraceWorkDir
+    // at every dispatch and inherited verbatim from parent on subflow init. Replaces the legacy
+    // `workflow.workDir` magic bag-key as the source of truth for the workspace root host tools
+    // jail to. Null only on legacy in-flight messages produced before the saga field existed;
+    // the consumer falls back to WorkflowContext["workDir"] in that case for backward compat
+    // through Phase 2 of the epic.
+    string? TraceWorkDir = null);
 
 /// <summary>
 /// Per-invocation Swarm context piggybacked onto <see cref="AgentInvokeRequested"/> when the

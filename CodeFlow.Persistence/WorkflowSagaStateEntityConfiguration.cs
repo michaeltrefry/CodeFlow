@@ -156,6 +156,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("repositories_json")
             .HasColumnType("text");
 
+        builder.Property(saga => saga.TraceWorkDir)
+            .HasColumnName("trace_work_dir")
+            .HasColumnType("text");
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);

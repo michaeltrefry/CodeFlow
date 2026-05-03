@@ -34,6 +34,12 @@ namespace CodeFlow.Contracts;
 ///   the subflow see the same allowed repos as the parent without the child workflow having to
 ///   redeclare them. Null only on legacy in-flight messages produced before the contract added
 ///   the field.</param>
+/// <param name="TraceWorkDir">Snapshot of the parent saga's per-trace working-directory absolute
+///   path. The child saga seeds its own <c>TraceWorkDir</c> from this verbatim at init —
+///   subflows deliberately share the parent's workspace root, so the child does NOT compute a
+///   new path from its own trace id. Replaces the legacy <c>workflow.workDir</c> bag-key
+///   propagation under epic sc-593. Null only on legacy in-flight messages produced before the
+///   contract added the field.</param>
 public sealed record SubflowInvokeRequested(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -47,4 +53,5 @@ public sealed record SubflowInvokeRequested(
     int? ReviewRound = null,
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
-    IReadOnlyList<RepositoryDeclaration>? Repositories = null);
+    IReadOnlyList<RepositoryDeclaration>? Repositories = null,
+    string? TraceWorkDir = null);

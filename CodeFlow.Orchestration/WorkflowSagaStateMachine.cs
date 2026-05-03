@@ -276,11 +276,55 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         // carries the allowlist forward across subflow boundaries.
         saga.RepositoriesJson = LiftRepositoriesFromContext(message.ContextInputs)
             ?? saga.RepositoriesJson;
+        // sc-593 Phase 1: seed the per-trace working directory from the new contract field.
+        // TracesEndpoints.CreateTraceAsync populates message.TraceWorkDir starting in Phase 2
+        // (sc-602); until that lands we accept the legacy `workflow.workDir` bag-key as a
+        // fallback so sagas still get a workspace anchor on day-one. Phase 3 (sc-604) drops
+        // the fallback once in-flight messages have drained.
+        if (!string.IsNullOrWhiteSpace(message.TraceWorkDir))
+        {
+            saga.TraceWorkDir = message.TraceWorkDir;
+        }
+        else if (TryGetWorkflowWorkDirFromContext(message.WorkflowContext, out var legacyWorkDir))
+        {
+            saga.TraceWorkDir = legacyWorkDir;
+        }
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
         }
         saga.UpdatedAtUtc = nowUtc;
+    }
+
+    /// <summary>
+    /// sc-593 Phase 1 transitional helper: read the legacy <c>workflow.workDir</c> bag-key from
+    /// a workflow-context dictionary so <see cref="ApplyInitialRequest"/> can seed
+    /// <see cref="WorkflowSagaStateEntity.TraceWorkDir"/> from a launch message that hasn't been
+    /// upgraded yet (Phase 2's sc-602 wires <c>TracesEndpoints</c> to set the new field directly).
+    /// Mirrors the shape of <c>AgentInvocationConsumer.TryGetWorkflowWorkDir</c> but lives here
+    /// because the saga sees the bag at saga-init time, before the consumer ever runs. Removed
+    /// in Phase 3 (sc-604) once the bag entry is no longer seeded.
+    /// </summary>
+    private static bool TryGetWorkflowWorkDirFromContext(
+        IReadOnlyDictionary<string, JsonElement>? workflowContext,
+        out string workDir)
+    {
+        workDir = string.Empty;
+        if (workflowContext is null
+            || !workflowContext.TryGetValue("workDir", out var element)
+            || element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var value = element.GetString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        workDir = value;
+        return true;
     }
 
     private static void ClearPendingTransition(BehaviorContext<WorkflowSagaStateEntity> context)
@@ -347,6 +391,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         // empty (line above) and every vcs_* call would return repo_not_allowed even though the
         // parent declared the repos.
         saga.RepositoriesJson = SerializeRepositories(message.Repositories);
+        // sc-593: subflows deliberately share the parent's workspace, so we copy the path
+        // verbatim. NOT computed from message.ChildTraceId — that would give every subflow its
+        // own subdirectory and break code-aware tools that operate on a single repo checkout.
+        saga.TraceWorkDir = message.TraceWorkDir;
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
@@ -390,7 +438,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: message.ReviewRound,
             ReviewMaxRounds: message.ReviewMaxRounds,
-            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
+            TraceWorkDir: saga.TraceWorkDir));
     }
 
     /// <summary>
@@ -2292,7 +2341,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewRound: reviewRound,
             ReviewMaxRounds: reviewMaxRounds,
             LoopDecision: loopDecision,
-            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
+            TraceWorkDir: saga.TraceWorkDir));
     }
 
     private static async Task PublishHandoffAsync(
@@ -2356,7 +2406,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewRound: saga.ParentReviewRound,
             ReviewMaxRounds: saga.ParentReviewMaxRounds,
             OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder,
-            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
+            TraceWorkDir: saga.TraceWorkDir));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
