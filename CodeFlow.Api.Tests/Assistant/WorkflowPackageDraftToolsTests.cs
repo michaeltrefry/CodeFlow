@@ -208,6 +208,40 @@ public sealed class WorkflowPackageDraftToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task ClearDraft_RefusesWhenAPendingSnapshotExists()
+    {
+        // Set up: a draft on disk + a pending Save snapshot. This is the exact state save_workflow_package
+        // leaves behind after preview_ok — the user has an open Save chip and hasn't clicked it yet.
+        var setTool = new SetWorkflowPackageDraftTool(workspace);
+        await setTool.InvokeAsync(
+            JsonDocument.Parse("""{ "package": { "k": "v" } }""").RootElement,
+            CancellationToken.None);
+        var draftPath = Path.Combine(tempDir, WorkflowPackageDraftStore.DraftFileName);
+        File.Exists(draftPath).Should().BeTrue();
+
+        var snapshotPayload = System.Text.Json.Nodes.JsonNode.Parse("""{ "k": "v" }""")!;
+        var snapshotId = await WorkflowPackageDraftStore.WriteSnapshotAsync(
+            workspace, snapshotPayload, CancellationToken.None);
+        WorkflowPackageDraftStore.HasPendingSnapshots(workspace).Should().BeTrue();
+
+        var clearTool = new ClearWorkflowPackageDraftTool(workspace);
+        var result = await clearTool.InvokeAsync(JsonDocument.Parse("{}").RootElement, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("error").GetString().Should().Contain("Save chip");
+
+        // Draft AND snapshot are both still on disk — refusal is a no-op, not a partial wipe.
+        File.Exists(draftPath).Should().BeTrue();
+        File.Exists(WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId)).Should().BeTrue();
+
+        // Once the snapshot is consumed (apply succeeded), clear works again.
+        WorkflowPackageDraftStore.DeleteSnapshot(workspace, snapshotId);
+        var afterApply = await clearTool.InvokeAsync(JsonDocument.Parse("{}").RootElement, CancellationToken.None);
+        JsonDocument.Parse(afterApply.ResultJson).RootElement.GetProperty("status").GetString().Should().Be("cleared");
+    }
+
+    [Fact]
     public async Task SetDraft_RejectsRedactionPlaceholder()
     {
         // CE-3 follow-up: a model that copies its own redacted prior emission would otherwise

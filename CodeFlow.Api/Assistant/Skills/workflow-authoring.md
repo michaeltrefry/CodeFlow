@@ -516,13 +516,22 @@ The four draft tools:
   - Tweak a scalar: `{ "op": "replace", "path":
     "/workflows/0/maxRoundsPerRound", "value": 5 }`
   - Remove an element: `{ "op": "remove", "path": "/workflows/0/edges/3" }`
-- `clear_workflow_package_draft()` — delete the draft after a successful
-  save.
+- `clear_workflow_package_draft()` — delete the draft. **USER-INITIATED
+  ONLY.** Call this only when the user explicitly says they're done with
+  the current draft and want to start a fresh design. Do NOT call it
+  after `save_workflow_package` returns `preview_ok` — that means the
+  Save chip is awaiting the user's click, not that the save completed.
+  The tool refuses while any pending Save snapshot is on disk and will
+  return an error telling you to wait. If the user wants to iterate
+  further, call `patch_workflow_package_draft` instead.
 
 **Never overwrite a validating draft.** Once `save_workflow_package`
 returns `preview_ok` for the current draft, do NOT call
-`set_workflow_package_draft` to replace it. Use
-`patch_workflow_package_draft` exclusively from that point on.
+`set_workflow_package_draft` to replace it AND do NOT call
+`clear_workflow_package_draft` to wipe it. Use
+`patch_workflow_package_draft` exclusively from that point on, so the
+user can keep iterating after they click Save (or instead of clicking
+it, if they decide to refine the draft further).
 
 When the user asks to save / import / add / commit the drafted package:
 - **Preferred (draft path):** call `save_workflow_package` with NO
