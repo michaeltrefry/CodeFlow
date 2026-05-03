@@ -126,6 +126,52 @@ describe('TraceReplayPanelComponent — preflight banner', () => {
       .toBeNull();
   });
 
+  it('renders the drift banner + Force button when baseline replay is refused with hard drift (422)', () => {
+    const fixture = TestBed.createComponent(TraceReplayPanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-drift');
+    fixture.componentRef.setInput('workflow', null);
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-drift/replay').flush(
+      {
+        originalTraceId: 'trace-drift',
+        replayState: 'DriftRefused',
+        replayTerminalPort: null,
+        failureReason: 'Hard drift detected; pass force=true to opt into a best-effort replay.',
+        failureCode: 'drift_hard_refused',
+        exhaustedAgent: null,
+        decisions: [],
+        replayEvents: [],
+        hitlPayload: null,
+        drift: {
+          level: 'Hard',
+          warnings: [
+            "Agent 'intake-classifier' was pinned at version 1 but is no longer used in target workflow 'intake' v1.",
+          ],
+        },
+      },
+      { status: 422, statusText: 'Unprocessable Entity' },
+    );
+    fixture.detectChanges();
+
+    const host = fixture.nativeElement as HTMLElement;
+    expect(host.textContent ?? '').not.toContain("Couldn't load:");
+    expect(host.textContent ?? '').toContain('Hard drift');
+    expect(host.textContent ?? '').toContain("Agent 'intake-classifier'");
+
+    const forceButton = Array.from(host.querySelectorAll('button'))
+      .find(b => (b.textContent ?? '').includes('Force best-effort replay'));
+    expect(forceButton).toBeDefined();
+
+    forceButton!.click();
+    fixture.detectChanges();
+    const replayReq = httpMock.expectOne('/api/traces/trace-drift/replay');
+    expect(replayReq.request.body).toEqual({ edits: [], force: true });
+    replayReq.flush({
+      ...buildEmptyReplayResponse('trace-drift'),
+    });
+  });
+
   it('clears the preflight banner when the user resets edits', () => {
     const fixture = TestBed.createComponent(TraceReplayPanelComponent);
     fixture.componentRef.setInput('traceId', 'trace-y');

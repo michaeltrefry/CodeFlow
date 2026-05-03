@@ -449,21 +449,33 @@ export class TraceReplayPanelComponent implements OnChanges {
     this.replayResult.set(null);
     this.api.replay(this.traceId, {}).subscribe({
       next: res => {
-        this.baseline.set(res);
-        this.replayResult.set(res);
-        this.edits.set(res.decisions.map(d => ({
-          decision: d,
-          newDecision: '',
-          newOutput: '',
-          outputDirty: false,
-        })));
+        this.adoptBaseline(res);
         this.loading.set(false);
       },
       error: (err: unknown) => {
         this.loading.set(false);
+        const driftBody = this.tryExtractDriftRefusal(err);
+        if (driftBody) {
+          // Hard-drift refusal arrives as 422 but carries a structured ReplayResponse —
+          // adopt it as the baseline so the drift banner + Force button render instead
+          // of dumping the JSON into "Couldn't load:".
+          this.adoptBaseline(driftBody);
+          return;
+        }
         this.loadError.set(formatHttpError(err, 'Unknown error'));
       }
     });
+  }
+
+  private adoptBaseline(res: ReplayResponse): void {
+    this.baseline.set(res);
+    this.replayResult.set(res);
+    this.edits.set(res.decisions.map(d => ({
+      decision: d,
+      newDecision: '',
+      newOutput: '',
+      outputDirty: false,
+    })));
   }
 
   runReplay(force: boolean): void {
@@ -498,9 +510,30 @@ export class TraceReplayPanelComponent implements OnChanges {
           this.replayError.set(null);
           return;
         }
+        const driftBody = this.tryExtractDriftRefusal(err);
+        if (driftBody) {
+          this.replayResult.set(driftBody);
+          this.replayError.set(null);
+          return;
+        }
         this.replayError.set(formatHttpError(err, 'Unknown error'));
       }
     });
+  }
+
+  /** Hard-drift admission rejection arrives as HTTP 422 but the body is a fully-formed
+   *  ReplayResponse with `replayState === 'DriftRefused'`. Treat it as a result so the
+   *  drift banner + "Force best-effort replay" button render — without this, the body
+   *  falls into the generic HTTP-error path and the author sees a JSON dump. */
+  private tryExtractDriftRefusal(err: unknown): ReplayResponse | null {
+    if (!(err instanceof HttpErrorResponse)) return null;
+    if (err.status !== 422) return null;
+    const body = err.error;
+    if (!body || typeof body !== 'object') return null;
+    const record = body as Record<string, unknown>;
+    if (record['replayState'] !== 'DriftRefused') return null;
+    if (record['failureCode'] !== 'drift_hard_refused') return null;
+    return body as ReplayResponse;
   }
 
   /** Detects the sc-274 preflight 422 response and routes it into the dedicated
