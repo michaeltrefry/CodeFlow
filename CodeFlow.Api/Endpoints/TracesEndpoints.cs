@@ -399,22 +399,29 @@ public static class TracesEndpoints
         // means the operator hasn't mounted the volume on this side, and proceeding would let
         // code-aware agents fail later with the path-rejection symptoms the runtime can't fully
         // diagnose. Override via `Workspace__WorkingDirectoryRoot` for non-container dev.
+        var traceWorkDir = Path.Combine(workspaceOptions.Value.WorkingDirectoryRoot, traceId.ToString("N"));
+        try
         {
-            var workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
-            var traceWorkDir = Path.Combine(workingDirectoryRoot, traceId.ToString("N"));
-            try
-            {
-                Directory.CreateDirectory(traceWorkDir);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                return Results.Problem(
-                    detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}. "
-                        + $"Ensure '{workingDirectoryRoot}' is mounted as a writable shared volume on the api and worker containers.",
-                    statusCode: StatusCodes.Status500InternalServerError);
-            }
-            seededWorkflowVars["workDir"] = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
+            Directory.CreateDirectory(traceWorkDir);
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Results.Problem(
+                detail: $"Failed to create per-trace working directory '{traceWorkDir}': {ex.Message}. "
+                    + $"Ensure '{workspaceOptions.Value.WorkingDirectoryRoot}' is mounted as a writable shared volume on the api and worker containers.",
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
+        // sc-602: keep seeding the legacy `workflow.workDir` bag-key so author scripts that read
+        // it continue to work; the saga also accepts the new TraceWorkDir field below as the
+        // typed source of truth. Both surfaces stay populated through Phase 2; the bag entry
+        // and its ProtectedVariables guard are dropped in Phase 3 (sc-604).
+        var workDirElement = JsonDocument.Parse(JsonSerializer.Serialize(traceWorkDir)).RootElement.Clone();
+        seededWorkflowVars["workDir"] = workDirElement;
+        // sc-603: parallel author-facing variable. The new canonical name is `traceWorkDir`,
+        // making the per-trace workspace path discoverable under a name that doesn't collide
+        // with any agent-side convention. Phase 3 retires `workDir` and leaves `traceWorkDir`
+        // as the only key.
+        seededWorkflowVars["traceWorkDir"] = workDirElement;
 
         // Mid-workflow dispatches run a node's InputScript via the saga's TryEvaluateInputScriptAsync
         // helper, but a top-level Start has no saga yet at this point, so we evaluate the script
@@ -516,7 +523,11 @@ public static class TracesEndpoints
                 {
                     ["x-submitted-by"] = currentUser.Id ?? "unknown"
                 },
-                WorkflowContext: effectiveWorkflowContext),
+                WorkflowContext: effectiveWorkflowContext,
+                // sc-602: typed per-trace workspace anchor. The saga prefers this over the
+                // legacy `workflow.workDir` bag-key fallback in ApplyInitialRequest; once Phase 3
+                // drops the bag entry, this becomes the only source.
+                TraceWorkDir: traceWorkDir),
             cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);

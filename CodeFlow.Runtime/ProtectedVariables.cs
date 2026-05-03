@@ -16,7 +16,11 @@ public static class ProtectedVariables
     public static IReadOnlySet<string> ReservedKeys { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
+            // `workDir` is the legacy CodeWeave-vintage name; `traceWorkDir` is the new canonical
+            // surface introduced in sc-603. Both resolve to the same per-trace path through
+            // Phase 2 of epic sc-593; Phase 3 (sc-604) drops `workDir`.
             "workDir",
+            "traceWorkDir",
             "traceId",
         };
 

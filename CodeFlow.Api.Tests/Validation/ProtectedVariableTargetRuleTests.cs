@@ -10,7 +10,7 @@ namespace CodeFlow.Api.Tests.Validation;
 /// <summary>
 /// Tests for the P4/P5 follow-on <see cref="ProtectedVariableTargetRule"/>: surface workflow
 /// nodes whose mirror or per-port-replacement targets land in framework-managed reserved
-/// namespaces (today, <c>__loop.*</c>, <c>workDir</c>, <c>traceId</c>).
+/// namespaces (today, <c>__loop.*</c>, <c>workDir</c>, <c>traceWorkDir</c>, <c>traceId</c>).
 /// </summary>
 public sealed class ProtectedVariableTargetRuleTests
 {

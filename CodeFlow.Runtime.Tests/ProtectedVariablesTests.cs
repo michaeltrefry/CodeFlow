@@ -19,6 +19,16 @@ public sealed class ProtectedVariablesTests
     }
 
     [Fact]
+    public void ReservedKeys_ContainsTraceWorkDir()
+    {
+        // sc-603: new canonical name for the per-trace workspace path. Both `workDir` (legacy)
+        // and `traceWorkDir` (new) resolve to the same value through Phase 2 of epic sc-593;
+        // Phase 3 (sc-604) drops `workDir` and leaves only `traceWorkDir`.
+        ProtectedVariables.ReservedKeys.Should().Contain("traceWorkDir");
+        ProtectedVariables.IsReserved("traceWorkDir").Should().BeTrue();
+    }
+
+    [Fact]
     public void IsReserved_FalseForUserKey()
     {
         // Sanity check the registry doesn't accidentally swallow author-defined variables.

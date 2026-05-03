@@ -46,7 +46,7 @@ public sealed class ProtectedVariableTargetRule : IWorkflowValidationRule
                     Severity: WorkflowValidationSeverity.Error,
                     Message: $"Node mirrors output to '{mirrorTarget}', a framework-managed "
                         + "workflow variable. Pick a non-reserved key — the runtime refuses "
-                        + "to clobber values in the __loop.* / workDir / traceId namespaces.",
+                        + "to clobber values in the __loop.* / workDir / traceWorkDir / traceId namespaces.",
                     Location: new WorkflowValidationLocation(NodeId: node.Id)));
             }
 
