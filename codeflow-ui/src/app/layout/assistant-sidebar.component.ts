@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router } from '@angular/router';
 import { filter, map, startWith } from 'rxjs/operators';
@@ -6,6 +6,9 @@ import { ChatPanelComponent } from '../ui/chat';
 import { IconComponent } from '../ui/icon.component';
 import { PageContextService } from '../core/page-context.service';
 import { ThemeService } from '../core/theme.service';
+import { AssistantHistoryComponent } from './assistant-history.component';
+
+type SidebarTab = 'assistant' | 'history';
 
 /**
  * HAA-7: Right-rail assistant sidebar. Available across the app.
@@ -15,15 +18,15 @@ import { ThemeService } from '../core/theme.service';
  * the user into agents, workflows, traces, and other authoring surfaces. The page context is
  * still forwarded per turn so the assistant can reason about the current screen.
  *
- * The sidebar owns the assistant surface everywhere in the authenticated shell, including home.
- * The home page no longer mounts its own chat panel, so this keeps one durable assistant thread
- * without duplicate token-spending surfaces.
+ * Tabs split the docked sidebar into Assistant (the live chat panel) and History (the user's
+ * recent conversations). Selecting a row in History routes to the conversation's scope and
+ * flips back to the Assistant tab so the just-selected thread is in front of the user.
  */
 @Component({
   selector: 'cf-assistant-sidebar',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChatPanelComponent, IconComponent],
+  imports: [ChatPanelComponent, IconComponent, AssistantHistoryComponent],
   template: `
     @if (scope(); as resolvedScope) {
       <aside
@@ -45,35 +48,69 @@ import { ThemeService } from '../core/theme.service';
             <span class="sidebar-rail-label">Assistant</span>
           </button>
         } @else {
-          <div class="sidebar-actions" aria-label="Assistant display controls">
-            <button
-              type="button"
-              class="sidebar-action"
-              (click)="toggleExpanded()"
-              [title]="expanded() ? 'Dock assistant' : 'Expand assistant'"
-              [attr.aria-label]="expanded() ? 'Dock assistant' : 'Expand assistant'"
-              [attr.aria-pressed]="expanded() ? 'true' : 'false'"
-              data-testid="assistant-sidebar-mode-toggle"
-            >
-              <cf-icon [name]="expanded() ? 'minimize' : 'maximize'"></cf-icon>
-            </button>
-            <button
-              type="button"
-              class="sidebar-action"
-              (click)="theme.setAssistantSidebarCollapsed(true)"
-              [title]="'Collapse assistant — ' + scopeLabel()"
-              [attr.aria-label]="'Collapse assistant'"
-              data-testid="assistant-sidebar-collapse"
-            >
-              <cf-icon name="panelL"></cf-icon>
-            </button>
+          <div class="sidebar-header" role="tablist" aria-label="Assistant sidebar tabs">
+            <div class="sidebar-tabs tabs">
+              <button
+                type="button"
+                role="tab"
+                class="tab"
+                [attr.data-active]="tab() === 'assistant' ? 'true' : null"
+                [attr.aria-selected]="tab() === 'assistant' ? 'true' : 'false'"
+                (click)="setTab('assistant')"
+                data-testid="assistant-sidebar-tab-assistant"
+              >Assistant</button>
+              <button
+                type="button"
+                role="tab"
+                class="tab"
+                [attr.data-active]="tab() === 'history' ? 'true' : null"
+                [attr.aria-selected]="tab() === 'history' ? 'true' : 'false'"
+                (click)="setTab('history')"
+                data-testid="assistant-sidebar-tab-history"
+              >History</button>
+            </div>
+            <div class="sidebar-actions" aria-label="Assistant display controls">
+              <button
+                type="button"
+                class="sidebar-action"
+                (click)="toggleExpanded()"
+                [title]="expanded() ? 'Dock assistant' : 'Expand assistant'"
+                [attr.aria-label]="expanded() ? 'Dock assistant' : 'Expand assistant'"
+                [attr.aria-pressed]="expanded() ? 'true' : 'false'"
+                data-testid="assistant-sidebar-mode-toggle"
+              >
+                <cf-icon [name]="expanded() ? 'minimize' : 'maximize'"></cf-icon>
+              </button>
+              <button
+                type="button"
+                class="sidebar-action"
+                (click)="theme.setAssistantSidebarCollapsed(true)"
+                [title]="'Collapse assistant — ' + scopeLabel()"
+                [attr.aria-label]="'Collapse assistant'"
+                data-testid="assistant-sidebar-collapse"
+              >
+                <cf-icon name="panelL"></cf-icon>
+              </button>
+            </div>
           </div>
           <div class="sidebar-body">
-            <cf-chat-panel
-              [scope]="resolvedScope"
-              [pageContext]="pageContext.current()"
-              [conversationIdOverride]="selectedConversationId()"
-            />
+            <!--
+              The chat panel stays mounted across tab switches so an in-flight stream isn't
+              cancelled when the user peeks at History. CSS hides the inactive tab's body
+              instead of @if-tearing it down.
+            -->
+            <div class="tab-pane" [attr.data-active]="tab() === 'assistant' ? 'true' : null">
+              <cf-chat-panel
+                [scope]="resolvedScope"
+                [pageContext]="pageContext.current()"
+                [conversationIdOverride]="selectedConversationId()"
+              />
+            </div>
+            <div class="tab-pane" [attr.data-active]="tab() === 'history' ? 'true' : null">
+              @if (tab() === 'history') {
+                <cf-assistant-history (selected)="onHistorySelected()" />
+              }
+            </div>
           </div>
         }
       </aside>
@@ -130,16 +167,28 @@ import { ThemeService } from '../core/theme.service';
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
-    /* The chat panel renders its own header (title, conversation id). Sidebar controls sit
-       in the top-right as a compact overlay so the chat panel keeps full vertical real estate
-       without the sidebar duplicating its title. */
+    .sidebar-header {
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+      flex: 0 0 auto;
+    }
+    .sidebar-tabs {
+      flex: 1 1 auto;
+      min-width: 0;
+      border-bottom: 0;
+    }
+    .sidebar-tabs .tab {
+      padding: 10px 12px;
+    }
     .sidebar-actions {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      z-index: 1;
       display: inline-flex;
+      align-items: center;
       gap: 4px;
+      padding: 4px 0;
     }
     .sidebar-action {
       background: transparent;
@@ -154,18 +203,24 @@ import { ThemeService } from '../core/theme.service';
       color: var(--text, #E7E9EE);
       background: var(--surface-hover, rgba(255,255,255,0.04));
     }
-    .sidebar:not([data-collapsed='true']) {
-      position: relative;
-    }
     .sidebar-body {
+      position: relative;
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
       display: flex;
       flex-direction: column;
     }
+    .tab-pane {
+      display: none;
+      flex: 1 1 auto;
+      min-height: 0;
+      flex-direction: column;
+    }
+    .tab-pane[data-active='true'] {
+      display: flex;
+    }
     .sidebar-body cf-chat-panel {
-      --chat-panel-head-padding-right: 74px;
       flex: 1 1 auto;
       display: flex;
       flex-direction: column;
@@ -198,6 +253,9 @@ export class AssistantSidebarComponent {
     return typeof value === 'string' && value ? value : null;
   });
 
+  private readonly tabSignal = signal<SidebarTab>('assistant');
+  protected readonly tab = this.tabSignal.asReadonly();
+
   protected readonly scopeLabel = computed(() => {
     const ctx = this.pageContext.current();
     switch (ctx.kind) {
@@ -213,5 +271,13 @@ export class AssistantSidebarComponent {
 
   protected toggleExpanded(): void {
     this.theme.setAssistantSidebarMode(this.expanded() ? 'docked' : 'expanded');
+  }
+
+  protected setTab(next: SidebarTab): void {
+    this.tabSignal.set(next);
+  }
+
+  protected onHistorySelected(): void {
+    this.tabSignal.set('assistant');
   }
 }
