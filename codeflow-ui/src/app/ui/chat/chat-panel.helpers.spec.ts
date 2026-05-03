@@ -5,6 +5,7 @@ import {
   buildReplayConfirmationView,
   buildRunConfirmationView,
   buildSaveConfirmationView,
+  scopesEqual,
   toCreateTraceRequest,
   toReplayRequestCached,
 } from './chat-panel.component';
@@ -258,5 +259,18 @@ describe('chat panel confirmation helpers', () => {
     expect(toReplayRequestCached({ edits: [{ agentKey: 'reviewer', ordinal: 1 }] })).toBeNull();
     expect(toReplayRequestCached({ traceId: 'trace-123', edits: [] })).toBeNull();
     expect(toReplayRequestCached({ traceId: 'trace-123', edits: [{ agentKey: '', ordinal: 0 }] })).toBeNull();
+  });
+
+  it('treats scopes with the same kind/entity tuple as equal regardless of undefined fields', () => {
+    expect(scopesEqual({ kind: 'homepage' }, { kind: 'homepage' })).toBe(true);
+    expect(scopesEqual(
+      { kind: 'entity', entityType: 'workflow', entityId: 'w-1' },
+      { kind: 'entity', entityType: 'workflow', entityId: 'w-1' },
+    )).toBe(true);
+    expect(scopesEqual(
+      { kind: 'entity', entityType: 'workflow', entityId: 'w-1' },
+      { kind: 'entity', entityType: 'workflow', entityId: 'w-2' },
+    )).toBe(false);
+    expect(scopesEqual({ kind: 'homepage' }, { kind: 'entity', entityType: 'workflow', entityId: 'w-1' })).toBe(false);
   });
 });

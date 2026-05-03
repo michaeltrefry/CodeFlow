@@ -838,6 +838,17 @@ export class ChatPanelComponent implements OnDestroy {
         if (override && override === this.conversationId()) {
           return;
         }
+        // The chat-panel is mounted at the shell level so it survives router navigations,
+        // but its `conversationIdOverride` input is bound to the URL's `?assistantConversation`
+        // query param — and the top-nav `[routerLink]`s do NOT preserve query params. So every
+        // shell navigation flips override from <id> back to null. Treat that flip as "no
+        // change": keep the loaded conversation and its in-flight tool-call cards. Without
+        // this, the Save / Run / Replay confirmation chips silently disappear the moment the
+        // user clicks any nav item, which the user reads as "the chip never rendered".
+        const loaded = this.loadedScope();
+        if (!override && this.conversationId() && loaded && scopesEqual(loaded, scope)) {
+          return;
+        }
         this.resetForScope();
         if (override) {
           this.loadConversationById(override);
@@ -2005,6 +2016,18 @@ export function toReplayRequestCached(
   }
 
   return { originalTraceId: traceId, request };
+}
+
+/**
+ * Compares two {@link AssistantScope} values structurally. Used by the conversation-load effect
+ * to decide whether a `conversationIdOverride` flip from <id> to null is "the user navigated"
+ * (skip — keep the loaded conversation and its chips) or "the host swapped scopes" (reset).
+ * Exported so the helper spec can lock in the behavior the effect depends on.
+ */
+export function scopesEqual(a: AssistantScope, b: AssistantScope): boolean {
+  return a.kind === b.kind
+    && (a.entityType ?? null) === (b.entityType ?? null)
+    && (a.entityId ?? null) === (b.entityId ?? null);
 }
 
 function stringifyArgs(args: unknown): string {
