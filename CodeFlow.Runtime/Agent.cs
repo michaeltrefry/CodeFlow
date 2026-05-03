@@ -120,11 +120,13 @@ public sealed class Agent : IAgentInvoker
             yield return hostToolProvider;
         }
 
-        // Sub-agents inherit the parent's resolved tool set (v1 semantics — no independent
-        // role resolution per sub-agent).
-        if (configuration.SubAgents is { Count: > 0 })
+        // Sub-agents inherit the parent's resolved tool set (sc-571 v1 — no per-spawn role
+        // assignment). Sub-agents are anonymous workers parameterised at spawn time, not
+        // pre-configured slots: the parent describes each task and the response shape it
+        // wants via the per-call systemPrompt argument on spawn_subagent.
+        if (configuration.SubAgents is not null)
         {
-            yield return new SubAgentToolProvider(this, configuration.SubAgents, tools);
+            yield return new SubAgentToolProvider(this, configuration, tools);
         }
 
         if (tools.McpTools is { Count: > 0 })
@@ -171,7 +173,7 @@ public sealed class Agent : IAgentInvoker
             ? envelopeToolNames.Select(g => g.ToolName).ToList()
             : new List<string>(tools.AllowedToolNames);
 
-        if (configuration.SubAgents is { Count: > 0 })
+        if (configuration.SubAgents is not null)
         {
             allowed.Add(SubAgentToolProvider.SpawnToolName);
         }

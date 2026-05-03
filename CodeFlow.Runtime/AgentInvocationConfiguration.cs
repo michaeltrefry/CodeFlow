@@ -19,7 +19,7 @@ public sealed record AgentInvocationConfiguration(
     InvocationLoopBudget? Budget = null,
     int? MaxTokens = null,
     double? Temperature = null,
-    IReadOnlyDictionary<string, AgentInvocationConfiguration>? SubAgents = null,
+    SubAgentConfig? SubAgents = null,
     RetryContext? RetryContext = null,
     // Runtime-only: populated by AgentInvocationConsumer from AgentConfig.Outputs. Not persisted
     // to avoid duplicate storage with the top-level `outputs` field in the stored config JSON.

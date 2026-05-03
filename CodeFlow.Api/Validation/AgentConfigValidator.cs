@@ -18,6 +18,13 @@ public static class AgentConfigValidator
     private const int MaxBudgetDurationSeconds = 3600;
     private const int MaxHistoryEntries = 32;
     private const int MaxHistoryTotalLength = 32 * 1024;
+    // sc-571: bounds on the optional sub-agent spec on the parent agent.
+    private const int MinSubAgentMaxConcurrent = 1;
+    private const int MaxSubAgentMaxConcurrent = 32;
+    private const int MinSubAgentMaxTokens = 1;
+    private const int MaxSubAgentMaxTokens = 200_000;
+    private const double MinSubAgentTemperature = 0.0;
+    private const double MaxSubAgentTemperature = 2.0;
     private static readonly HashSet<string> KnownProviders = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
@@ -111,6 +118,109 @@ public static class AgentConfigValidator
         if (!historyResult.IsValid)
         {
             return historyResult;
+        }
+
+        var subAgentsResult = ValidateSubAgents(config.Value);
+        if (!subAgentsResult.IsValid)
+        {
+            return subAgentsResult;
+        }
+
+        return ValidationResult.Ok();
+    }
+
+    private static ValidationResult ValidateSubAgents(JsonElement config)
+    {
+        if (!config.TryGetProperty("subAgents", out var spec))
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (spec.ValueKind == JsonValueKind.Null)
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (spec.ValueKind != JsonValueKind.Object)
+        {
+            return ValidationResult.Fail("'subAgents' must be a JSON object describing the sub-agent spec.");
+        }
+
+        if (spec.TryGetProperty("provider", out var providerElement)
+            && providerElement.ValueKind != JsonValueKind.Null)
+        {
+            if (providerElement.ValueKind != JsonValueKind.String)
+            {
+                return ValidationResult.Fail("'subAgents.provider' must be a string when specified.");
+            }
+            var provider = providerElement.GetString();
+            if (string.IsNullOrWhiteSpace(provider))
+            {
+                return ValidationResult.Fail("'subAgents.provider' must be non-empty when specified.");
+            }
+            if (!KnownProviders.Contains(provider))
+            {
+                return ValidationResult.Fail(
+                    $"'subAgents.provider' is unknown ('{provider}'). Known: {string.Join(", ", KnownProviders)}.");
+            }
+        }
+
+        if (spec.TryGetProperty("model", out var modelElement)
+            && modelElement.ValueKind != JsonValueKind.Null)
+        {
+            if (modelElement.ValueKind != JsonValueKind.String)
+            {
+                return ValidationResult.Fail("'subAgents.model' must be a string when specified.");
+            }
+            if (string.IsNullOrWhiteSpace(modelElement.GetString()))
+            {
+                return ValidationResult.Fail("'subAgents.model' must be non-empty when specified.");
+            }
+        }
+
+        if (spec.TryGetProperty("maxConcurrent", out var maxConcurrentElement)
+            && maxConcurrentElement.ValueKind != JsonValueKind.Null)
+        {
+            if (maxConcurrentElement.ValueKind != JsonValueKind.Number
+                || !maxConcurrentElement.TryGetInt32(out var maxConcurrent))
+            {
+                return ValidationResult.Fail("'subAgents.maxConcurrent' must be an integer.");
+            }
+            if (maxConcurrent < MinSubAgentMaxConcurrent || maxConcurrent > MaxSubAgentMaxConcurrent)
+            {
+                return ValidationResult.Fail(
+                    $"'subAgents.maxConcurrent' must be between {MinSubAgentMaxConcurrent} and {MaxSubAgentMaxConcurrent}.");
+            }
+        }
+
+        if (spec.TryGetProperty("maxTokens", out var maxTokensElement)
+            && maxTokensElement.ValueKind != JsonValueKind.Null)
+        {
+            if (maxTokensElement.ValueKind != JsonValueKind.Number
+                || !maxTokensElement.TryGetInt32(out var maxTokens))
+            {
+                return ValidationResult.Fail("'subAgents.maxTokens' must be an integer.");
+            }
+            if (maxTokens < MinSubAgentMaxTokens || maxTokens > MaxSubAgentMaxTokens)
+            {
+                return ValidationResult.Fail(
+                    $"'subAgents.maxTokens' must be between {MinSubAgentMaxTokens} and {MaxSubAgentMaxTokens}.");
+            }
+        }
+
+        if (spec.TryGetProperty("temperature", out var temperatureElement)
+            && temperatureElement.ValueKind != JsonValueKind.Null)
+        {
+            if (temperatureElement.ValueKind != JsonValueKind.Number
+                || !temperatureElement.TryGetDouble(out var temperature))
+            {
+                return ValidationResult.Fail("'subAgents.temperature' must be a number.");
+            }
+            if (temperature < MinSubAgentTemperature || temperature > MaxSubAgentTemperature)
+            {
+                return ValidationResult.Fail(
+                    $"'subAgents.temperature' must be between {MinSubAgentTemperature} and {MaxSubAgentTemperature}.");
+            }
         }
 
         return ValidationResult.Ok();
