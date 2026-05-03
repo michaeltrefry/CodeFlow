@@ -6,7 +6,11 @@ namespace CodeFlow.Runtime.Workspace;
 /// Filesystem-only sweep helper for orphan trace workdirs. Pure side effects — no DB, no
 /// settings lookups; callers resolve <c>WorkingDirectoryRoot</c> + max-age upstream and pass them
 /// in. Used by Slice F's periodic background service. Walks the configured root and deletes
-/// entries whose mtime is older than <paramref name="maxAge"/>.
+/// entries whose mtime is older than <paramref name="maxAge"/> AND whose name matches the
+/// per-trace <c>{traceId:N}</c> shape (32 lowercase hex chars). Reserved siblings under the same
+/// root (e.g. the assistant per-conversation tree at <c>/workspace/assistant</c>, or the
+/// container exec workspaces at <c>/workspace/container-workspace</c>) are intentionally
+/// skipped — those have their own lifecycles.
 /// </summary>
 public static class WorkdirSweep
 {
@@ -45,11 +49,20 @@ public static class WorkdirSweep
 
         foreach (var entry in entries)
         {
+            var name = Path.GetFileName(entry);
+            if (!IsTraceWorkdirName(name))
+            {
+                // Reserved siblings (assistant/, container-workspace/, README, …) are not
+                // managed by this sweep. Skip silently — operators occasionally land files
+                // here by hand, and a noisy log per cycle is just noise.
+                continue;
+            }
+
             DateTime mtime;
             try
             {
-                // Walk both files and dirs; trace workdirs are dirs but operators sometimes drop
-                // files at the root by accident, so we sweep both with the same TTL.
+                // {traceId:N} entries are always dirs, but check both forms for the same TTL
+                // in case a hex-named regular file was dropped here by accident.
                 mtime = File.Exists(entry)
                     ? File.GetLastWriteTimeUtc(entry)
                     : Directory.GetLastWriteTimeUtc(entry);
@@ -91,5 +104,28 @@ public static class WorkdirSweep
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> matches the <c>Guid.ToString("N")</c> shape: exactly
+    /// 32 lowercase hexadecimal characters. The CLR formats Guid "N" as lowercase, so
+    /// uppercase hex is treated as out-of-spec and skipped.
+    /// </summary>
+    public static bool IsTraceWorkdirName(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length != 32)
+        {
+            return false;
+        }
+        for (int i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!isHex)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }

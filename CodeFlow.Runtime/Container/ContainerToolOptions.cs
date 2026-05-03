@@ -41,9 +41,12 @@ public sealed class ContainerToolOptions
     /// <summary>
     /// Absolute host path where per-workflow execution workspaces live (one
     /// <c>{traceId:N}/</c> subdirectory per active workflow). When empty, the host derives a
-    /// default from <c>WorkspaceOptions.WorkingDirectoryRoot</c> + <c>..</c> +
-    /// <see cref="ExecutionWorkspaceDirectoryName"/> so the canonical workdir-sweep doesn't see
-    /// the execution copies as stray children of its own root.
+    /// default by appending <see cref="ExecutionWorkspaceDirectoryName"/> as a sibling of
+    /// <c>WorkspaceOptions.WorkingDirectoryRoot</c> when the workdir has a writable parent;
+    /// when the workdir lives at the filesystem root (e.g. <c>/workspace</c> whose parent is
+    /// <c>/</c>), the exec root is placed inside the workdir itself. The canonical
+    /// workdir-sweep skips entries whose name doesn't match the 32-hex
+    /// <c>{traceId:N}</c> shape, so a reserved-name sibling (or child) doesn't get evicted.
     /// </summary>
     public string? ExecutionWorkspaceRootPath { get; set; }
 

@@ -643,10 +643,15 @@ public static class HostExtensions
         };
     }
 
-    // The canonical workdir-sweep enumerates direct children of WorkingDirectoryRoot looking
-    // for stale {traceId:N} dirs by mtime, so we deliberately place container execution
-    // workspaces OUTSIDE that root (default: sibling under the same parent). Operators with a
-    // non-standard layout can override via ContainerTools:ExecutionWorkspaceRootPath.
+    // Container execution workspaces (one {traceId:N}/ subdir per active workflow) need a
+    // writable home that the sweep doesn't touch. The canonical workdir-sweep enumerates
+    // direct children of WorkingDirectoryRoot but only deletes entries whose name matches the
+    // {traceId:N} 32-hex shape (see WorkdirSweep), so reserved-name siblings under the root
+    // are safe. We prefer placing the exec root as a sibling of the workdir (so build artifacts
+    // don't share inode-table contention with traces); only when the workdir is at the
+    // filesystem root (e.g. `/workspace` whose parent is `/`, which is unwritable as the app
+    // uid) do we fall under the workdir itself. Operators with a non-standard layout can
+    // override via ContainerTools:ExecutionWorkspaceRootPath.
     private static string ResolveExecutionWorkspaceRoot(
         ContainerToolOptions containerOptions,
         WorkspaceOptions workspaceOptions)
@@ -663,11 +668,25 @@ public static class HostExtensions
         }
 
         var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(workingRoot));
-        if (string.IsNullOrWhiteSpace(parent))
+        // Treat both an empty parent (workingRoot was a relative slug like "workspace") and
+        // the filesystem root ("/" — what `Path.GetDirectoryName("/workspace")` returns) as
+        // "no usable parent" and place the exec root inside the workdir itself. The sweep's
+        // 32-hex-only filter keeps the reserved subdirectory off the eviction list.
+        if (string.IsNullOrWhiteSpace(parent) || IsFilesystemRoot(parent))
         {
             return Path.Combine(workingRoot, containerOptions.ExecutionWorkspaceDirectoryName);
         }
 
         return Path.Combine(parent, containerOptions.ExecutionWorkspaceDirectoryName);
+    }
+
+    private static bool IsFilesystemRoot(string path)
+    {
+        // Cross-platform "is this just / or C:\?" check. Path.GetPathRoot returns the same
+        // string when the input IS the root, so equality with the canonicalised form is the
+        // most reliable test.
+        var trimmed = Path.TrimEndingDirectorySeparator(path);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetPathRoot(path) ?? string.Empty);
+        return string.Equals(trimmed, root, StringComparison.Ordinal);
     }
 }
