@@ -69,7 +69,6 @@ public sealed class Agent : IAgentInvoker
             configuration.ResolvedPartials));
 
         var toolAccessPolicy = MergeToolAccessPolicy(
-            configuration.ToolAccessPolicy,
             tools,
             configuration,
             toolExecutionContext?.Envelope);
@@ -140,7 +139,6 @@ public sealed class Agent : IAgentInvoker
     }
 
     private static ToolAccessPolicy MergeToolAccessPolicy(
-        ToolAccessPolicy? configured,
         ResolvedAgentTools tools,
         AgentInvocationConfiguration configuration,
         WorkflowExecutionEnvelope? envelope)
@@ -158,14 +156,12 @@ public sealed class Agent : IAgentInvoker
         // "no allowlist enforcement" (legacy back-compat that pre-dates this axis).
         if (envelopeToolNames is { Count: 0 })
         {
-            return new ToolAccessPolicy(
-                DenyAll: true,
-                CategoryToolLimits: configured?.CategoryToolLimits);
+            return new ToolAccessPolicy(DenyAll: true);
         }
 
         if (envelopeToolNames is null && tools.AllowedToolNames.Count == 0)
         {
-            return configured ?? ToolAccessPolicy.AllowAll;
+            return ToolAccessPolicy.AllowAll;
         }
 
         // Source the allowlist from the envelope when present; otherwise from ResolvedAgentTools.
@@ -180,8 +176,6 @@ public sealed class Agent : IAgentInvoker
             allowed.Add(SubAgentToolProvider.SpawnToolName);
         }
 
-        return new ToolAccessPolicy(
-            AllowedToolNames: allowed,
-            CategoryToolLimits: configured?.CategoryToolLimits);
+        return new ToolAccessPolicy(AllowedToolNames: allowed);
     }
 }
