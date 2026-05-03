@@ -51,6 +51,65 @@ describe('chat panel confirmation helpers', () => {
     expect(buildSaveConfirmationView(JSON.stringify({ status: 'preview_ok' }), undefined)).toBeUndefined();
   });
 
+  it('builds a save confirmation for the draft-path result shape (no inline package)', () => {
+    // The zero-arg `save_workflow_package` (workspace-aware) returns this shape: status =
+    // preview_ok, packageSource = "draft", and snapshotId minted from a per-save snapshot
+    // file in the conversation workspace. The chat-panel has no inline `package` for this
+    // call in `pendingSaves` — that's the whole point of the draft path. Lock in that the
+    // chip still renders so a regression in either the C# or the TS side surfaces here.
+    const confirmation = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_ok',
+        canApply: true,
+        packageSource: 'draft',
+        snapshotId: '8af2b1d9-9c3a-4b7e-8a01-1e1c1c2d3e4f',
+        entryPoint: { key: 'triage-flow', version: 7 },
+      }),
+      undefined,
+    );
+
+    expect(confirmation).toEqual({
+      kind: 'save_workflow_package',
+      prompt: 'Save triage-flow (triage-flow v7) to the library?',
+      confirmLabel: 'Save',
+      cancelLabel: 'Cancel',
+      state: 'idle',
+      packageSource: 'draft',
+      snapshotId: '8af2b1d9-9c3a-4b7e-8a01-1e1c1c2d3e4f',
+    });
+  });
+
+  it('refuses the draft path when the snapshot id is missing', () => {
+    // Defence in depth: a draft-path preview without a snapshot id is ambiguous (apply could
+    // bind to whatever the live draft happens to be, not the validated bytes). Refuse the
+    // chip rather than risk a misbound apply.
+    expect(
+      buildSaveConfirmationView(
+        JSON.stringify({
+          status: 'preview_ok',
+          canApply: true,
+          packageSource: 'draft',
+          snapshotId: null,
+          entryPoint: { key: 'triage-flow', version: 7 },
+        }),
+        undefined,
+      ),
+    ).toBeUndefined();
+
+    expect(
+      buildSaveConfirmationView(
+        JSON.stringify({
+          status: 'preview_ok',
+          canApply: true,
+          packageSource: 'draft',
+          snapshotId: '',
+          entryPoint: { key: 'triage-flow', version: 7 },
+        }),
+        undefined,
+      ),
+    ).toBeUndefined();
+  });
+
   it('builds a save confirmation directly from a drafted workflow package', () => {
     const confirmation = buildDraftSaveConfirmationView({
       schemaVersion: 'codeflow.workflow-package.v1',
