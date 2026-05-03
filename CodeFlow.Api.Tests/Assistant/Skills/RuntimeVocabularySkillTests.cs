@@ -80,7 +80,7 @@ public sealed class RuntimeVocabularySkillTests
         // are operator-facing facts the model will be asked about; pin them so the skill
         // can't drift from the platform's actual config keys.
         var body = LoadSkill().Body;
-        body.Should().Contain("/app/codeflow/workdir");
+        body.Should().Contain("/workspace");
         body.Should().Contain("Workspace__WorkingDirectoryRoot")
             .And.Subject.Should().Contain("WorkingDirectoryRoot");
     }

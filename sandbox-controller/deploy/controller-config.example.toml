@@ -54,8 +54,11 @@ container_teardown_timeout_seconds = 30
 [workspace]
 # Absolute path to the per-trace workspace root (sc-531). Phase 1 uses a
 # host bind-mount; Phase 2 uses a shared NFS mount on both VMs at the same
-# path. The controller's container mounts this read-only.
-workdir_root = "/opt/codeflow/workdirs"
+# path. The controller's container mounts this read-only. This MUST match
+# the api/worker's WorkspaceOptions.WorkingDirectoryRoot (default
+# `/workspace`) so the per-trace dir resolves to the same path on every
+# component.
+workdir_root = "/workspace"
 
 # Subdirectory name (single segment, no separators) where per-job results
 # live under each trace dir. Default ".results". The controller creates

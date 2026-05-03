@@ -32,8 +32,11 @@ WORKDIR /app
 # Run as a non-root uid so post-exploitation does not execute as root. We use the .NET image's
 # standard app uid rather than assuming user-management tools like adduser are installed.
 ARG APP_UID=1654
-RUN mkdir -p /app/artifacts && \
-    chown -R ${APP_UID}:${APP_UID} /app
+# Pre-create /workspace so a missing bind-mount doesn't leave it as root:root and break host tools
+# that operate against {WorkingDirectoryRoot}/{traceId}/. See CodeFlow.Api/Dockerfile for the
+# matching commentary.
+RUN mkdir -p /app/artifacts /workspace && \
+    chown -R ${APP_UID}:${APP_UID} /app /workspace
 
 COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
 USER ${APP_UID}

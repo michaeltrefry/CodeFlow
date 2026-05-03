@@ -14,15 +14,21 @@ public sealed class VcsHostToolService
 {
     private readonly IVcsProviderFactory factory;
     private readonly DeliveryRequestValidator deliveryValidator;
+    private readonly IGitCli? gitCli;
+    private readonly IRepoUrlHostGuard? hostGuard;
 
     public VcsHostToolService(
         IVcsProviderFactory factory,
         DeliveryRequestValidator? deliveryValidator = null,
-        Func<DateTimeOffset>? nowProvider = null)
+        Func<DateTimeOffset>? nowProvider = null,
+        IGitCli? gitCli = null,
+        IRepoUrlHostGuard? hostGuard = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         this.factory = factory;
         this.deliveryValidator = deliveryValidator ?? new DeliveryRequestValidator(nowProvider);
+        this.gitCli = gitCli;
+        this.hostGuard = hostGuard;
     }
 
     public async Task<ToolResult> OpenPullRequestAsync(
@@ -75,6 +81,223 @@ public sealed class VcsHostToolService
         {
             return BuildError(toolCall.Id, ex);
         }
+    }
+
+    public async Task<ToolResult> CloneAsync(
+        ToolCall toolCall,
+        ToolExecutionContext? context = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(toolCall);
+
+        if (gitCli is null)
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "vcs_error",
+                    ["message"] = "vcs.clone is not configured: VcsHostToolService was constructed without an IGitCli.",
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        var workspace = context?.Workspace;
+        if (workspace is null)
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "workspace_required",
+                    ["message"] = "vcs.clone requires an active workspace.",
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        var url = GetOptionalString(toolCall.Arguments, "url");
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "url_required",
+                    ["message"] = "vcs.clone requires a non-empty 'url' argument.",
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        RepoReference repo;
+        try
+        {
+            repo = RepoReference.Parse(url);
+        }
+        catch (ArgumentException ex)
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "url_invalid",
+                    ["message"] = ex.Message,
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        if (hostGuard is not null)
+        {
+            try
+            {
+                await hostGuard.AssertAllowedAsync(repo, cancellationToken);
+            }
+            catch (RepoUrlHostMismatchException ex)
+            {
+                return new ToolResult(
+                    toolCall.Id,
+                    new JsonObject
+                    {
+                        ["error"] = "host_mismatch",
+                        ["message"] = ex.Message,
+                    }.ToJsonString(),
+                    IsError: true);
+            }
+        }
+
+        var requestedPath = GetOptionalString(toolCall.Arguments, "path");
+        var relativePath = string.IsNullOrWhiteSpace(requestedPath) ? repo.Name : requestedPath!.Trim();
+        string destination;
+        try
+        {
+            destination = PathConfinement.Resolve(workspace.RootPath, relativePath);
+        }
+        catch (PathConfinementException ex)
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "path_confined",
+                    ["message"] = ex.Message,
+                    ["path"] = relativePath,
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        // Refuse if destination already exists. The check is intentionally strict: even an empty
+        // directory at the destination is a refusal (callers may have just created it for
+        // another purpose). If you actually want to update an existing checkout, use
+        // run_command("git", ["fetch","..."]) instead — vcs.clone is for fresh materialization.
+        if (File.Exists(destination) || Directory.Exists(destination))
+        {
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "destination_exists",
+                    ["message"] = $"Cannot clone to '{relativePath}': destination already exists. Use run_command for git fetch/pull on an existing checkout.",
+                    ["path"] = relativePath,
+                }.ToJsonString(),
+                IsError: true);
+        }
+
+        var branch = GetOptionalString(toolCall.Arguments, "branch");
+        var depth = GetOptionalPositiveInt(toolCall.Arguments, "depth");
+
+        try
+        {
+            var provider = await factory.CreateAsync(cancellationToken);
+            var cloneUrl = provider.BuildAuthenticatedCloneUrl(url);
+            var result = await gitCli.CloneAsync(
+                cloneUrl,
+                destination,
+                branch,
+                depth,
+                cancellationToken);
+
+            // Scrub the embedded auth out of .git/config so subsequent run_command git operations
+            // (fetch/pull/push) don't surface the token in the workspace tree's persistent state.
+            try
+            {
+                await gitCli.SetRemoteUrlAsync(destination, "origin", url, cancellationToken);
+            }
+            catch (GitCommandException)
+            {
+                // Best effort: if scrubbing fails the clone still succeeded, but we'd rather not
+                // leave the auth-bearing URL in .git/config. Surface as a non-fatal warning by
+                // attempting to remove the cloned tree and returning a vcs_error.
+                TryDeleteDirectory(destination);
+                return new ToolResult(
+                    toolCall.Id,
+                    new JsonObject
+                    {
+                        ["error"] = "vcs_error",
+                        ["message"] = "Clone succeeded but scrubbing the auth-bearing remote URL failed; rolled back the workspace clone.",
+                    }.ToJsonString(),
+                    IsError: true);
+            }
+
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["path"] = MakeWorkspaceRelativePath(workspace.RootPath, destination),
+                    ["branch"] = result.Branch,
+                    ["head"] = result.HeadCommit,
+                    ["defaultBranch"] = result.DefaultBranch,
+                }.ToJsonString());
+        }
+        catch (Exception ex) when (ex is GitCommandException)
+        {
+            // The clone command itself failed (e.g. bad credentials, branch doesn't exist, host
+            // unreachable). Clean up any partial directory git left behind so subsequent retries
+            // don't trip the destination-exists guard.
+            TryDeleteDirectory(destination);
+            return new ToolResult(
+                toolCall.Id,
+                new JsonObject
+                {
+                    ["error"] = "vcs_error",
+                    ["message"] = ex.Message,
+                }.ToJsonString(),
+                IsError: true);
+        }
+        catch (Exception ex) when (ex is GitHostNotConfiguredException)
+        {
+            return BuildError(toolCall.Id, ex);
+        }
+    }
+
+    private static string MakeWorkspaceRelativePath(string workspaceRoot, string absolutePath)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(workspaceRoot), absolutePath);
+        return relative.Replace(Path.DirectorySeparatorChar, '/');
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort cleanup; orphan sweep will retry.
+        }
+    }
+
+    private static int? GetOptionalPositiveInt(JsonNode? node, string propertyName)
+    {
+        if (node?[propertyName] is JsonValue value
+            && value.TryGetValue<int>(out var i)
+            && i > 0)
+        {
+            return i;
+        }
+        return null;
     }
 
     public async Task<ToolResult> GetRepoMetadataAsync(

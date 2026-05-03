@@ -70,6 +70,26 @@ func TestResolve_HappyPath(t *testing.T) {
 	}
 }
 
+func TestResolve_EmptyRepoSlug_TraceDirIsWorkspace(t *testing.T) {
+	// The unified `/workspace/{traceId}` layout drops the per-repo subdir: the trace dir is
+	// the workspace. Validator accepts an empty repoSlug and returns Workspace = trace dir.
+	v, root := mustValidator(t)
+	mustMkdir(t, root, "trace1")
+
+	res, err := v.Resolve("trace1", "", "job1")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	expectWS := filepath.Join(root, "trace1")
+	wsCanon, _ := filepath.EvalSymlinks(expectWS)
+	if res.Workspace != wsCanon {
+		t.Errorf("Workspace: got %q, want %q", res.Workspace, wsCanon)
+	}
+	if info, err := os.Stat(res.Results); err != nil || !info.IsDir() {
+		t.Errorf("results dir was not created: %v", err)
+	}
+}
+
 func TestResolve_TraversalRejected(t *testing.T) {
 	v, root := mustValidator(t)
 	mustMkdir(t, root, "trace1/repo1")
@@ -86,7 +106,8 @@ func TestResolve_TraversalRejected(t *testing.T) {
 		{"traceId is .", ".", "repo1"},
 		{"repoSlug is .", "trace1", "."},
 		{"traceId blank", "", "repo1"},
-		{"repoSlug blank", "trace1", ""},
+		// Empty repoSlug is now allowed (unified layout) — see
+		// TestResolve_EmptyRepoSlug_TraceDirIsWorkspace.
 		{"jobId blank", "trace1", "repo1"},
 	}
 	for _, tc := range cases {

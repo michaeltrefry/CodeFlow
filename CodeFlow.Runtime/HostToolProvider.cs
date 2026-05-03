@@ -58,6 +58,7 @@ public sealed class HostToolProvider : IToolProvider
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
+            "vcs.clone" => RequireVcs().CloneAsync(toolCall, context, cancellationToken),
             DockerHostToolService.ContainerRunToolName => RequireContainer().RunContainerAsync(toolCall, context, cancellationToken),
             WebHostToolService.WebFetchToolName => RequireWeb().FetchAsync(toolCall, context, cancellationToken),
             WebHostToolService.WebSearchToolName => RequireWeb().SearchAsync(toolCall, context, cancellationToken),
@@ -204,16 +205,64 @@ public sealed class HostToolProvider : IToolProvider
                     ["required"] = new JsonArray("owner", "name")
                 }),
             new ToolSchema(
+                "vcs.clone",
+                "Materializes a repository into the active workspace using the configured Git "
+                + "host's auth (token is platform-managed; the agent never sees it). Refuses if "
+                + "the destination path already exists. After the initial fetch the remote URL "
+                + "is scrubbed to a clean form so the auth token never persists in .git/config. "
+                + "Use this when you need to set up a workspace, including mid-flight when a "
+                + "workflow discovers a repo it did not declare in its `repos[]` input. For "
+                + "follow-up fetch / pull / checkout on an already-cloned repo, use run_command "
+                + "with git instead.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["url"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "HTTPS repository URL on the configured Git host. "
+                                + "Cross-host URLs are denied by the host guard."
+                        },
+                        ["path"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Workspace-relative destination directory. Defaults "
+                                + "to the repository's basename (e.g. `myrepo` for "
+                                + "`https://github.com/foo/myrepo`). Must stay confined to the "
+                                + "active workspace."
+                        },
+                        ["branch"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional branch or tag to check out. Defaults to "
+                                + "the repository's default branch."
+                        },
+                        ["depth"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Optional shallow-clone depth (--depth). Omit for a "
+                                + "full clone."
+                        }
+                    },
+                    ["required"] = new JsonArray("url")
+                },
+                IsMutating: true),
+            new ToolSchema(
                 DockerHostToolService.ContainerRunToolName,
                 "Runs a one-shot build/test command inside a constrained Docker container. "
-                + "v1 accepts only Docker Hub (docker.io) images; the canonical workspace is "
-                + "mirrored into a workflow-scoped writable copy at /workspace so build "
-                + "artifacts never pollute the source-of-truth tree. CPU/memory/pids/timeout/"
-                + "output limits and a per-workflow container cap are enforced. Repository "
-                + "Dockerfiles, docker build, docker compose, privileged mode, host networking, "
-                + "published ports, and Docker socket mounts are forbidden and surface a "
-                + "structured refusal. Prefer official images and the smallest tag that "
-                + "provides the toolchain you need.",
+                + "v1 accepts only Docker Hub (docker.io) images. The trace's per-trace "
+                + "workspace is bind-mounted at /workspace read-write, so edits the agent "
+                + "made via apply_patch / run_command / vcs.clone are visible inside the "
+                + "container, and build artifacts the container produces persist back into "
+                + "the workspace tree. /workspace/.scratch is an additional fast tmpfs (size-"
+                + "capped) for ephemeral build caches that don't need to survive the job. "
+                + "CPU/memory/pids/timeout/output limits and a per-workflow container cap are "
+                + "enforced. Repository Dockerfiles, docker build, docker compose, privileged "
+                + "mode, host networking, published ports, and Docker socket mounts are "
+                + "forbidden and surface a structured refusal. Prefer official images and the "
+                + "smallest tag that provides the toolchain you need.",
                 new JsonObject
                 {
                     ["type"] = "object",

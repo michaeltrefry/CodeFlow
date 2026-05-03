@@ -37,7 +37,7 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
         Guid.NewGuid().ToString("N"));
 
     // Per-fixture WorkspaceOptions.WorkingDirectoryRoot. The production default
-    // (`/app/codeflow/workdir`) isn't writable in CI / dev; tests get an isolated temp dir so
+    // (`/workspace`) isn't writable in CI / dev; tests get an isolated temp dir so
     // per-trace workdir creation + delete-cleanup hooks exercise real filesystem state.
     private readonly string workingDirectoryRoot = Path.Combine(
         Path.GetTempPath(),
@@ -45,7 +45,7 @@ public sealed class CodeFlowApiFactory : WebApplicationFactory<Program>, IAsyncL
         Guid.NewGuid().ToString("N"));
 
     // Per-fixture WorkspaceOptions.AssistantWorkspaceRoot. Same problem as workingDirectoryRoot:
-    // the production default (`/app/codeflow/assistant`) isn't writable in CI / dev. The
+    // the production default (`/workspace/assistant`) isn't writable in CI / dev. The
     // homepage assistant's per-conversation workspace + workflow-package draft tools need a
     // writable root, so tests get an isolated temp dir.
     private readonly string assistantWorkspaceRoot = Path.Combine(

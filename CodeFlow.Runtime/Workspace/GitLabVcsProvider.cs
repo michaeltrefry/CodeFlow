@@ -98,6 +98,9 @@ public sealed class GitLabVcsProvider : VcsProviderBase
         return new PullRequestInfo(mr.WebUrl ?? string.Empty, mr.Iid);
     }
 
+    public override string BuildAuthenticatedCloneUrl(string repoUrl) =>
+        EmbedBasicAuth(repoUrl, "oauth2", token);
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string relativePath)
     {
         var request = new HttpRequestMessage(method, new Uri(apiBase, relativePath));

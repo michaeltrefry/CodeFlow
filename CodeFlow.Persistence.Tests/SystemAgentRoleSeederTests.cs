@@ -52,7 +52,15 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Where(g => g.RoleId == codeWorker.Id)
             .ToListAsync();
         grants.Select(g => g.ToolIdentifier)
-            .Should().BeEquivalentTo("read_file", "apply_patch", "run_command", "echo", "now");
+            .Should().BeEquivalentTo(
+                "read_file",
+                "apply_patch",
+                "run_command",
+                "vcs.clone",
+                "vcs.get_repo",
+                "vcs.open_pr",
+                "echo",
+                "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
 
         var readOnlyShell = seeded.Single(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
@@ -92,6 +100,9 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "read_file",
                 "apply_patch",
                 "run_command",
+                "vcs.clone",
+                "vcs.get_repo",
+                "vcs.open_pr",
                 "container.run",
                 "web_fetch",
                 "web_search",
@@ -193,7 +204,14 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Select(g => g.ToolIdentifier)
             .ToListAsync();
         grantsAfter.Should().NotContain("echo");
-        grantsAfter.Should().BeEquivalentTo("read_file", "apply_patch", "run_command", "now");
+        grantsAfter.Should().BeEquivalentTo(
+            "read_file",
+            "apply_patch",
+            "run_command",
+            "vcs.clone",
+            "vcs.get_repo",
+            "vcs.open_pr",
+            "now");
     }
 
     [Fact]

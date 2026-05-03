@@ -34,7 +34,7 @@ type JobSpec struct {
 
 	// Workspace paths — populated by sc-531's workspace.Validator. Empty when
 	// the controller is configured without a workdir root (test-only path).
-	WorkspaceHostPath string // mounted ro at /workspace
+	WorkspaceHostPath string // mounted rw at /workspace
 	ResultsHostPath   string // mounted rw at /artifacts; runner walks this for the manifest
 }
 
@@ -72,9 +72,12 @@ const (
 
 // ToCreateRequest converts a JobSpec into the dockerd-level create request.
 // This is the single place where the controller's locked-down container
-// settings (runsc, no-network, read-only, no-new-privileges, cap_drop ALL,
-// nonroot) are bolted on. Any future change to the security defaults goes
-// here.
+// settings (runsc, no-network, read-only rootfs, no-new-privileges, cap_drop
+// ALL, nonroot) are bolted on. The per-trace workspace bind itself is
+// read-WRITE (agents need to clone repos, apply patches, run builds);
+// containment for that mount comes from the per-trace path scope and gVisor's
+// syscall filter, not a read-only flag. Any future change to the security
+// defaults goes here.
 func (s JobSpec) ToCreateRequest() dockerd.CreateContainerRequest {
 	env := make([]string, 0, len(s.Env))
 	for k, v := range s.Env {
@@ -87,13 +90,17 @@ func (s JobSpec) ToCreateRequest() dockerd.CreateContainerRequest {
 	}
 	var bindMounts []dockerd.BindMount
 	if s.WorkspaceHostPath != "" {
-		// sc-531: workspace bind, read-only, with a tmpfs writable scratch
-		// overlay at /workspace/.scratch so build outputs (bin/, obj/,
-		// node_modules/, etc.) have somewhere to land per-job.
+		// Per-trace workspace bind. Mounted read-WRITE: agents in the code-worker /
+		// code-builder roles need to mutate the workspace (vcs.clone, apply_patch,
+		// run_command edits, build artifacts). The bind source is the per-trace
+		// subdir, so cross-trace blast radius is contained at the host-path layer
+		// even though each individual trace's tree is writable. /workspace/.scratch
+		// stays as a fast tmpfs overlay for ephemeral build caches the agent does
+		// not want surviving the job.
 		bindMounts = append(bindMounts, dockerd.BindMount{
 			HostPath:      s.WorkspaceHostPath,
 			ContainerPath: WorkspaceContainerPath,
-			ReadOnly:      true,
+			ReadOnly:      false,
 		})
 		tmpfs[ScratchContainerPath] = "size=2g,exec"
 	}

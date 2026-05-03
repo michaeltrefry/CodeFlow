@@ -394,7 +394,7 @@ public static class TracesEndpoints
             JsonSerializer.Serialize(traceId.ToString("N"))).RootElement.Clone();
 
         // The per-trace working-directory root is locked to WorkspaceOptions.WorkingDirectoryRoot
-        // (default `/app/codeflow/workdir`) — a deployment-level constant matched by a shared host
+        // (default `/workspace`) — a deployment-level constant matched by a shared host
         // volume on both api and worker. Failure to create the per-trace directory is fatal: it
         // means the operator hasn't mounted the volume on this side, and proceeding would let
         // code-aware agents fail later with the path-rejection symptoms the runtime can't fully

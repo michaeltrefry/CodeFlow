@@ -153,7 +153,7 @@ Edit:
 - `[tls]` block → point at `/etc/cfsc-tls/server.{pem,key}` and `/etc/cfsc-tls/ca.pem` (the prod compose mounts the host TLS dir at `/etc/cfsc-tls`, un-nested from `/etc/cfsc`).
 - `[tls.allowed_client_subjects]` → confirm `codeflow-api` and `codeflow-worker` entries match what `bootstrap-ca.sh` issued.
 - `[runner] docker_socket_path` → `/var/run/docker.sock`.
-- `[workspace] workdir_root` → `/opt/codeflow/workdirs` (must match `CODEFLOW_WORKDIRS_DIR` in `.env.release`).
+- `[workspace] workdir_root` → `/workspace` (the in-container path the host workdir is bind-mounted at; the host directory itself is `${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}` per `.env.release`, mounted at `/workspace` inside the controller). Must match the api/worker `WorkspaceOptions.WorkingDirectoryRoot`.
 - `[images.allowed]` → at least the images your agent workflows are expected to use. Default is empty; empty allowlists every `/run` to fail with `image_not_allowed`. See [`image-whitelist-updates.md`](image-whitelist-updates.md) for the SIGHUP reload story.
 - `[telemetry] otlp_endpoint` → match the existing CodeFlow `Observability__OtlpEndpoint`.
 
@@ -177,7 +177,7 @@ docker logs codeflow-sandbox-controller --tail 50
 Expected log lines:
 
 ```
-{"level":"INFO","msg":"sandbox-controller starting","listen":"0.0.0.0:8443","commit":"sha-...","allowed_subjects":2,"allowed_images":N,"workdir_root":"/opt/codeflow/workdirs"}
+{"level":"INFO","msg":"sandbox-controller starting","listen":"0.0.0.0:8443","commit":"sha-...","allowed_subjects":2,"allowed_images":N,"workdir_root":"/workspace"}
 ```
 
 ## 8. Verify the hardening posture

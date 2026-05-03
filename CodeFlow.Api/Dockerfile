@@ -33,13 +33,13 @@ WORKDIR /app
 # execute as root. We use the .NET image's standard app uid rather than assuming user-management
 # tools like adduser are installed in the runtime image.
 ARG APP_UID=1654
-# Pre-create /app/codeflow with the app uid before the runtime bind-mount of
-# /app/codeflow/workdir. Docker creates that mount's parent (/app/codeflow) as root:root if it
-# doesn't already exist, which would otherwise prevent the assistant from creating its
-# per-conversation workspace under /app/codeflow/assistant. Pre-creating both subdirs in the
-# image baseline keeps the assistant workspace writable when no bind-mount is configured for it.
-RUN mkdir -p /app/artifacts /app/codeflow/workdir /app/codeflow/assistant && \
-    chown -R ${APP_UID}:${APP_UID} /app
+# Pre-create /workspace + /workspace/assistant with the app uid before the runtime bind-mounts.
+# Docker creates a mount's parent as root:root if it doesn't already exist, which would otherwise
+# prevent the assistant from creating its per-conversation workspace at /workspace/assistant.
+# Pre-creating both subdirs in the image baseline keeps the assistant workspace writable when no
+# bind-mount is configured for it.
+RUN mkdir -p /app/artifacts /workspace/assistant && \
+    chown -R ${APP_UID}:${APP_UID} /app /workspace
 
 COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
 USER ${APP_UID}

@@ -31,13 +31,19 @@ public static class SystemAgentRoles
         new SystemAgentRole(
             Key: CodeWorkerKey,
             DisplayName: "Code worker",
-            Description: "Full read/write filesystem and shell access. Use for developer agents "
-                + "that clone repos, edit files, run tests, and create commits.",
+            Description: "Full read/write filesystem and shell access plus authenticated repo "
+                + "materialization (vcs.clone) and PR opening (vcs.open_pr). Use for developer "
+                + "agents that clone repos, edit files, run tests, and create commits. The "
+                + "per-trace workspace is writable; the `repos[]` workflow input is a hint, not "
+                + "a precondition — agents may discover and clone repos mid-workflow.",
             Grants: new[]
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.clone"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.open_pr"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
             }),
@@ -47,17 +53,21 @@ public static class SystemAgentRoles
             Description: "Code-worker capabilities plus containerized build/test (container.run) "
                 + "and bounded public web lookup (web_fetch, web_search). Use for developer "
                 + "agents that need to build/test in language toolchains the host does not have "
-                + "installed. The agent picks an image from Docker Hub (docker.io only) and "
-                + "runs commands in a workflow-scoped writable copy of the workspace at "
-                + "/workspace; build artifacts never pollute the canonical workspace. "
-                + "ABSOLUTE BAN: no repo Dockerfiles, no `docker build`, no `docker compose`, "
-                + "no privileged mode, no host networking, no published ports, no Docker socket "
-                + "mounts. Web tools are read-only HTTP(S) and never send credentials/cookies.",
+                + "installed. The agent picks an image from Docker Hub (docker.io only); the "
+                + "trace's workspace is bind-mounted at /workspace read-write so the agent's "
+                + "edits are visible to the build and the build's outputs land back in the "
+                + "workspace tree. ABSOLUTE BAN: no repo Dockerfiles, no `docker build`, no "
+                + "`docker compose`, no privileged mode, no host networking, no published "
+                + "ports, no Docker socket mounts. Web tools are read-only HTTP(S) and never "
+                + "send credentials/cookies.",
             Grants: new[]
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.clone"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.open_pr"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "container.run"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_fetch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_search"),
