@@ -14,6 +14,13 @@ namespace CodeFlow.Api.Assistant.Tools;
 /// conversation's per-chat workspace dir. Save then becomes a zero-arg call to
 /// <c>save_workflow_package</c> that reads the draft from disk — the LLM never re-emits
 /// the full payload during refinement, which is the cost the user wanted eliminated.
+/// <para/>
+/// The workspace passed in MUST be the conversation workspace, not the active workspace.
+/// The trace-workspace switch (sc-269 / PR #125) lets the assistant pivot its host tools
+/// to read a trace's workdir, but drafts and per-save snapshots are conversation-scoped:
+/// the chat UI's Save chip and the apply endpoint both look here, so writing them under
+/// the trace workspace strands them — the chip surfaces "Snapshot not found for this
+/// conversation" while the bytes sit on disk where apply doesn't look.
 /// </summary>
 public static class WorkflowPackageDraftStore
 {
@@ -476,6 +483,11 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
 /// constructed here (rather than registered in DI) so it can be workspace-aware: when a
 /// workspace is available, it accepts a zero-arg form that reads the conversation's draft
 /// from disk instead of forcing the LLM to re-emit the full package payload.
+/// <para/>
+/// The workspace argument is the *conversation* workspace, not the active workspace. Drafts
+/// and snapshots stay pinned to the chat regardless of whether the assistant has pivoted to
+/// a trace's workdir for host-tool reads — see the rationale on
+/// <see cref="WorkflowPackageDraftStore"/>.
 /// </summary>
 public sealed class WorkflowDraftAssistantToolFactory
 {
@@ -487,19 +499,19 @@ public sealed class WorkflowDraftAssistantToolFactory
         this.importer = importer;
     }
 
-    public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext? workspace)
+    public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext? conversationWorkspace)
     {
         var tools = new List<IAssistantTool>
         {
-            new SaveWorkflowPackageTool(importer, workspace),
+            new SaveWorkflowPackageTool(importer, conversationWorkspace),
         };
 
-        if (workspace is not null)
+        if (conversationWorkspace is not null)
         {
-            tools.Add(new SetWorkflowPackageDraftTool(workspace));
-            tools.Add(new GetWorkflowPackageDraftTool(workspace));
-            tools.Add(new PatchWorkflowPackageDraftTool(workspace));
-            tools.Add(new ClearWorkflowPackageDraftTool(workspace));
+            tools.Add(new SetWorkflowPackageDraftTool(conversationWorkspace));
+            tools.Add(new GetWorkflowPackageDraftTool(conversationWorkspace));
+            tools.Add(new PatchWorkflowPackageDraftTool(conversationWorkspace));
+            tools.Add(new ClearWorkflowPackageDraftTool(conversationWorkspace));
         }
 
         return tools;

@@ -502,10 +502,17 @@ export class TraceSubmitComponent implements OnInit {
       input: startInput,
       inputs: Object.keys(inputs).length > 0 ? inputs : undefined
     }).pipe(
+      // POST stages an AgentInvokeRequested in the EF outbox; the saga row
+      // doesn't exist until the worker consumes it through RabbitMQ. With
+      // ConsumerConcurrencyLimit=1 in prod and outbox delivery on a ~1s
+      // poll, the first-write latency is variable enough that a tight
+      // budget here surfaces as a misleading "Submit failed: 404" while
+      // the saga is mid-creation. ~60s of retry covers worst-case load
+      // without making genuine permanent 404s feel slow.
       switchMap(response =>
         this.tracesApi.get(response.traceId).pipe(
           retry({
-            count: 10,
+            count: 30,
             delay: (err, attempt) =>
               err instanceof HttpErrorResponse && err.status === 404
                 ? timer(500 * Math.min(attempt, 4))
