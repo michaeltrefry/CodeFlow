@@ -247,9 +247,11 @@ public sealed class WorkflowVarDeclarationRule : IWorkflowValidationRule
     private static bool IsReserved(string key)
     {
         // Mirrors ProtectedVariables.ReservedNamespaces — these are framework-managed and
-        // never appear in author declarations.
+        // never appear in author declarations. sc-603 adds `traceWorkDir` alongside the
+        // legacy `workDir`; both are reserved through Phase 2 / 3 of epic sc-593.
         return key.StartsWith("__loop", StringComparison.Ordinal)
             || key.Equals("workDir", StringComparison.Ordinal)
+            || key.Equals("traceWorkDir", StringComparison.Ordinal)
             || key.Equals("traceId", StringComparison.Ordinal);
     }
 
