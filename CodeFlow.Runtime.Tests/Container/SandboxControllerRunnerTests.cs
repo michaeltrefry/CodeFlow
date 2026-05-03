@@ -41,7 +41,10 @@ public sealed class SandboxControllerRunnerTests
 
         capturedBody.Should().NotBeNull();
         capturedBody!["traceId"]!.GetValue<string>().Should().Be("trace-abc-1234567890abcdef");
-        capturedBody["repoSlug"]!.GetValue<string>().Should().Be("workspace");
+        // Unified `/workspace/{traceId}` layout: the trace dir IS the workspace, no per-repo
+        // subfolder. RepoSlug is sent empty so the controller's validator resolves the trace
+        // dir directly.
+        capturedBody["repoSlug"]!.GetValue<string>().Should().Be(string.Empty);
         capturedBody["image"]!.GetValue<string>().Should().Be("ghcr.io/trefry/dotnet-tester:10.0");
         var cmd = capturedBody["cmd"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
         cmd.Should().Equal("echo", "hi");

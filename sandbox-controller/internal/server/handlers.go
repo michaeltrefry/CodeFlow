@@ -333,9 +333,11 @@ func validateScaffoldShape(req *RunRequest) error {
 	if strings.TrimSpace(req.TraceID) == "" {
 		return errors.New("traceId must be set")
 	}
-	if strings.TrimSpace(req.RepoSlug) == "" {
-		return errors.New("repoSlug must be set")
-	}
+	// repoSlug is optional now: the unified `/workspace/{traceId}` layout uses
+	// the trace dir directly as the workspace, no per-repo subfolder. The
+	// validator still accepts a non-empty slug for the legacy
+	// `{root}/{traceId}/{repoSlug}/` layout — kept so older callers don't
+	// break during the rollout window.
 	if strings.TrimSpace(req.Image) == "" {
 		return errors.New("image must be set")
 	}

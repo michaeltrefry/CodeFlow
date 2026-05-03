@@ -10,44 +10,25 @@ start here.
 
 ### Configure the working directory root
 
-The platform writes per-trace workdirs under `GitHostSettings.WorkingDirectoryRoot`. Until that
-setting is configured, code-aware workflows degrade gracefully — the `vcs.*` tools return
-`error: not_configured` and the workdir-related workflow variables are simply not seeded.
+The platform writes per-trace workdirs under `WorkspaceOptions.WorkingDirectoryRoot` — a
+deployment-level constant, not an admin-UI setting. The default is `/workspace`, which both
+api and worker containers mount as a shared host volume (`codeflow-workdir` /
+`${CODEFLOW_WORKDIRS_DIR}`). Override via the `Workspace__WorkingDirectoryRoot` environment
+variable when running outside the standard container layout (e.g. integration tests pointing at
+a per-test temp dir).
 
-Set it via `PUT /api/admin/git-host`:
+The host path under that volume must be writable by the CodeFlow service account (UID 1654, the
+`APP_UID` baked into the api/worker images — see `deploy/.env.example`). The init container in
+the prod compose stack chowns it on every `up`.
 
-```json
-{
-  "mode": "GitHub",
-  "baseUrl": null,
-  "workingDirectoryRoot": "/app/workdirs",
-  "workingDirectoryMaxAgeDays": 14,
-  "token": { "action": "Replace", "value": "ghp_..." }
-}
-```
-
-Validation runs at save time:
-
-- The path must be **absolute** (`Path.IsPathFullyQualified`).
-- It is auto-created if missing — the API process calls `Directory.CreateDirectory` so operators
-  don't need shell access to mkdir before saving. The path must therefore be one the api/worker
-  process can write to: in the production stack that means a path under the host-bound
-  `/app/workdirs` volume (operator chowns the host directory to UID 1654, the APP_UID baked into
-  the api/worker images — see `deploy/.env.example`).
-- It must be **writable** by the CodeFlow service account; the endpoint probes by writing +
-  deleting a temp file.
-
-Any failure surfaces as a `400 Bad Request` with a field-level error on `workingDirectoryRoot`,
-not a runtime 500 at trace launch.
+The `vcs.*` tools (including `vcs.clone`) require a configured Git host (`GitHostSettings.Mode` +
+token). Until those are configured the tools return `error: not_configured`.
 
 ### Sweep TTL
 
-`workingDirectoryMaxAgeDays` controls the periodic-sweep TTL. Default is 14 days. The sweep
-service runs once per hour from any host running `AddCodeFlowHost` (typically the worker), reads
-settings on each tick (no restart needed for config changes), and deletes any entry under
-`WorkingDirectoryRoot` whose mtime is older than the cutoff.
-
-A value of `null`, `0`, or any non-positive number is treated as "use the default" of 14 days.
+The periodic per-trace workdir sweep runs once per hour from any host running `AddCodeFlowHost`
+(typically the worker). The TTL is driven by `GitHostSettings.WorkingDirectoryMaxAgeDays`
+(default 14 days); a value of `null`, `0`, or any non-positive number falls back to the default.
 
 ### What's on disk
 
@@ -178,23 +159,28 @@ The reference implementation is the `code-setup` agent in `workflows/dev-flow-v1
 Its job, in three steps:
 
 1. Read `context.repositories` and `workflow.workDir`.
-2. For each repo: `git clone <url>` into `{workDir}`, `git checkout <branch>` (or stay on
-   default), `git checkout -b <feature-branch>`. The feature-branch name is **pre-computed** in
-   the prompt template via `{{ branch_name workflow.prdTitle workflow.traceId }}` — the agent's
-   instructions explicitly say "do not invent or modify the slug."
+2. For each repo: call `vcs.clone({url, path: <repo-name>, branch: <base-branch>})` to
+   materialize it under `{workDir}/<repo-name>` (auth is platform-managed; the agent never sees
+   a token), then `git checkout -b <feature-branch>` via `run_command`. The feature-branch name
+   is **pre-computed** in the prompt template via
+   `{{ branch_name workflow.prdTitle workflow.traceId }}` — the agent's instructions explicitly
+   say "do not invent or modify the slug." Agents that discover repos mid-flight call `vcs.clone`
+   the same way; `repos[]` declared up-front is just a hint for context-engineering, not a
+   precondition.
 3. Mid-turn, `setContext('repositories', <merged-array-with-localPath-and-featureBranch>)` so
    downstream agents see:
    ```json
    [{
      "url": "...",
      "branch": "main",
-     "localPath": "/app/workdirs/{traceId-N}/<repo>",
+     "localPath": "/workspace/{traceId-N}/<repo>",
      "featureBranch": "add-todo-list-3b70fc02"
    }]
    ```
 
-The agent's role grants `read_file`, `apply_patch`, `run_command` (for `git`), and the optional
-`vcs.get_repo` if the agent needs to discover the upstream default branch.
+The agent's role grants `read_file`, `apply_patch`, `run_command` (for `git checkout`, `commit`,
+`push`), `vcs.clone` (for the materialization), and the optional `vcs.get_repo` if the agent
+needs to discover the upstream default branch before the clone call.
 
 ### The `vcs.*` host tools
 
@@ -234,10 +220,27 @@ Reads basic repo metadata: `defaultBranch`, `cloneUrl`, `visibility` (`Public` /
 `Internal` / `Unknown`). Useful before opening a PR to confirm the upstream default branch
 without needing `git ls-remote`.
 
+#### `vcs.clone`
+
+Materializes a repo into the active workspace using the configured Git host's auth. Inputs:
+
+- `url` (string) — repo URL on the configured host. Validated against the host guard so
+  cross-host cloning is denied.
+- `path` (string, optional) — workspace-relative destination. Must stay confined to the trace's
+  workdir. Defaults to the repo's basename (e.g. `myrepo` for `https://github.com/foo/myrepo`).
+- `branch` (string, optional) — branch or tag to check out. Defaults to the repo's default.
+- `depth` (integer, optional) — `--depth` for a shallow clone. Omit for a full clone.
+
+Returns on success: `{ path, branch, head, defaultBranch }` — `head` is the resolved commit SHA.
+
+Refuses if the destination already exists (with anything in it), so calling `vcs.clone` twice for
+the same destination is a tool error rather than a silent overwrite. Use `run_command` (`git
+fetch`/`git checkout`) for follow-up navigation on an already-cloned repo.
+
 #### Granting the tools
 
 The tools live in the `Host` category and are visible in the role editor. The reference
-`code-worker` role in `workflows/dev-flow-v1-package.json` grants both:
+`code-worker` role in `workflows/dev-flow-v1-package.json` grants the read+write set:
 
 ```json
 {
@@ -246,6 +249,7 @@ The tools live in the `Host` category and are visible in the role editor. The re
     {"category": "Host", "toolIdentifier": "read_file"},
     {"category": "Host", "toolIdentifier": "apply_patch"},
     {"category": "Host", "toolIdentifier": "run_command"},
+    {"category": "Host", "toolIdentifier": "vcs.clone"},
     {"category": "Host", "toolIdentifier": "vcs.open_pr"},
     {"category": "Host", "toolIdentifier": "vcs.get_repo"},
     {"category": "Host", "toolIdentifier": "echo"},

@@ -69,9 +69,10 @@ library" and warns when they diverge. The workflow itself is unaffected
 ## Code-aware workflows and the working directory
 
 Workflows that operate on source code use a per-trace working directory
-derived from `Workspace:WorkingDirectoryRoot` (default
-`/app/codeflow/workdir`). Workflows take a `repos[]` input convention;
-each repo is checked out into the per-trace workdir before agents run.
+derived from `Workspace:WorkingDirectoryRoot` (default `/workspace`).
+Workflows can take a `repos[]` input convention to declare repos
+up-front, but agents may also discover and clone repos mid-workflow via
+the `vcs.clone` host tool when the repo set isn't known at trace start.
 
 Operator overrides:
 - `Workspace__WorkingDirectoryRoot` — environment-variable override of

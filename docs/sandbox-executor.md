@@ -191,7 +191,7 @@ The controller pattern (Phase 1) preserves the same convenience — running on o
 │                          │  --runtime=runsc             │          │
 │                          │  --network=none              │          │
 │                          │  --read-only                 │          │
-│                          │  /workspace (ro from host)   │          │
+│                          │  /workspace (rw — per-trace) │          │
 │                          │  /workspace/.scratch (tmpfs) │          │
 │                          │  /artifacts (rw, per-job)    │          │
 │                          └──────────────────────────────┘          │
@@ -220,7 +220,7 @@ Specified in detail in sc-538. Summary:
 - `tmpfs: /tmp:size=16m,mode=1700`
 - Volumes:
   - `/var/run/docker.sock:/var/run/docker.sock` (the only privilege; mode 0660; docker GID supplied via `group_add`)
-  - `/opt/codeflow/workdirs:/opt/codeflow/workdirs:ro` (read-only — the controller does not write to the workspace; it passes the path to dockerd)
+  - `/opt/codeflow/workdirs:/workspace:ro` (read-only from the controller's perspective — the controller does not write to the workspace; it passes the path to dockerd, which re-mounts the per-trace subdir into the sandbox writable)
   - Cert material from secrets (read-only)
   - Config from secrets (read-only)
 - No published ports.
@@ -238,9 +238,9 @@ When the controller spawns a sibling container via dockerd, every container is c
 - `--security-opt=no-new-privileges:true`
 - `--pids-limit=N` (from request, capped by controller config)
 - `--memory=N`, `--cpus=N` (from request, capped)
-- Workspace: `-v /opt/codeflow/workdirs/{traceId}/{repoSlug}:/workspace:ro`
-- Workspace scratch: `--tmpfs=/workspace/.scratch:rw,exec,size=2g`
-- Artifacts: `-v /opt/codeflow/workdirs/{traceId}/.results/{jobId}:/artifacts:rw`
+- Workspace: `-v /workspace/{traceId}:/workspace:rw` (the host path resolves under the controller's `workdir_root`, default `/workspace`; the per-trace subdir is the agent's writable workspace, the same directory the worker's host tools mutate via `read_file`/`apply_patch`/`run_command`/`vcs.clone`)
+- Workspace scratch: `--tmpfs=/workspace/.scratch:rw,exec,size=2g` (ephemeral fast space for build artifacts the agent doesn't want surviving the job — workspace itself is also writable but is persisted for the duration of the trace)
+- Artifacts: `-v /workspace/{traceId}/.results/{jobId}:/artifacts:rw`
 - Label: `cf-managed=true`, `cf.traceId={traceId}`, `cf.jobId={jobId}` (for orphan sweep)
 
 The controller validates that no request can override any of these — see [§10 Validators](#10-validators-defense-in-depth).
@@ -383,17 +383,17 @@ The mechanism by which "the code that needs to be built and tested" reaches the 
 
 ### 9.1 Phase 1: host bind-mount
 
-- Worker continues writing per-trace repo checkouts to `/app/codeflow/workdir/{traceId:N}/{repoSlug}/...` inside its container, which already bind-mounts from `/opt/codeflow/workdirs/...` on the host (existing config in `deploy/docker-compose.prod.yml`).
-- Sandbox-controller container has `/opt/codeflow/workdirs:/opt/codeflow/workdirs:ro` mounted — read-only, because the controller doesn't write to workspaces; it just hands the path to dockerd.
-- When dockerd spawns a sibling container, the bind-mount path is the **host path** (`/opt/codeflow/workdirs/...`), because dockerd's mount semantics resolve relative to the host filesystem, not the controller container's view.
+- Worker writes per-trace repo checkouts to `/workspace/{traceId:N}/...` inside its container, which bind-mounts from `${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}` on the host (existing config in `deploy/docker-compose.prod.yml`). Repos can be pre-populated by the runtime or cloned by the agent via the `vcs.clone` host tool — both paths resolve to the same per-trace directory.
+- Sandbox-controller container has `${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace:ro` mounted — read-only **from the controller's perspective**, because the controller doesn't write to workspaces; it just hands the path to dockerd. The controller's `workdir_root` config matches that in-container path (`/workspace`).
+- When dockerd spawns a sibling container, the bind-mount source path is the **host path** (`${CODEFLOW_WORKDIRS_DIR}/{traceId}`), because dockerd's mount semantics resolve relative to the host filesystem, not the controller container's view. dockerd re-mounts that subdir into the sandbox writable so the agent can mutate its own trace's files.
 - Sandbox container sees:
-  - `/workspace` — read-only, the per-trace repo
-  - `/workspace/.scratch` — tmpfs, writable; size-capped (default 2 GB)
-  - `/artifacts` — writable bind to `/opt/codeflow/workdirs/{traceId}/.results/{jobId}/` for declared outputs
+  - `/workspace` — **read-write**, the per-trace workdir; agents in `code-worker`/`code-builder` roles use `vcs.clone` + `apply_patch` + `run_command` here, and `container.run` builds/tests pick up edits the agent already made
+  - `/workspace/.scratch` — tmpfs, writable; size-capped (default 2 GB). Useful for ephemeral build caches the agent doesn't need to persist
+  - `/artifacts` — writable bind to `${CODEFLOW_WORKDIRS_DIR}/{traceId}/.results/{jobId}/` for declared outputs
 
 ### 9.2 Phase 2: NFS mount
 
-- Both VMs mount the same NFS export at the same canonical path (recommended: align both at `/opt/codeflow/workdirs` so no config in api/worker/controller changes between phases).
+- Both VMs mount the same NFS export at the same canonical path (recommended: align both at `${CODEFLOW_WORKDIRS_DIR}` mounted at `/workspace` so no config in api/worker/controller changes between phases).
 - NFS export options: `rw,sync,no_subtree_check,root_squash` — explicitly NOT `no_root_squash`. Squash means root-on-client cannot escalate via NFS.
 - Worker writes from CodeFlow VM; controller reads-and-passes-as-bind-mount from Executor VM. Same code path on the controller side.
 

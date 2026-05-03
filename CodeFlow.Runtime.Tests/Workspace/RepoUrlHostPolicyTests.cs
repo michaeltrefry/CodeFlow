@@ -145,6 +145,7 @@ public sealed class RepoUrlHostPolicyTests
         private static Exception NotCalled() => new InvalidOperationException("GitCli should not be invoked when guard rejects URL.");
 
         public Task CloneMirrorAsync(string originUrl, string destinationMirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
+        public Task<GitCloneResult> CloneAsync(string originUrl, string destinationPath, string? branch = null, int? depth = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task FetchAsync(string mirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeAddAsync(string mirrorPath, string worktreePath, string branchName, string? startPoint = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeRemoveAsync(string mirrorPath, string worktreePath, bool force = false, CancellationToken cancellationToken = default) => throw NotCalled();
@@ -154,6 +155,7 @@ public sealed class RepoUrlHostPolicyTests
         public Task<bool> CommitAsync(string worktreePath, string message, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task PushAsync(string worktreePath, string? remote = null, string? branch = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default) => throw NotCalled();
+        public Task SetRemoteUrlAsync(string worktreePath, string remoteName, string url, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<string> GetSymbolicHeadAsync(string gitDirectory, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<IReadOnlyList<string>> LsFilesAsync(string worktreePath, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task<IReadOnlyList<GitStatusEntry>> StatusAsync(string worktreePath, CancellationToken cancellationToken = default) => throw NotCalled();

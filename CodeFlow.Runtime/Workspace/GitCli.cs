@@ -27,6 +27,67 @@ public sealed class GitCli : IGitCli
             cancellationToken: cancellationToken);
     }
 
+    public async Task<GitCloneResult> CloneAsync(
+        string originUrl,
+        string destinationPath,
+        string? branch = null,
+        int? depth = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(originUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+
+        var args = new List<string> { "clone" };
+        if (!string.IsNullOrWhiteSpace(branch))
+        {
+            args.Add("--branch");
+            args.Add(branch);
+        }
+        if (depth is int d && d > 0)
+        {
+            args.Add("--depth");
+            args.Add(d.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        args.Add("--");
+        args.Add(originUrl);
+        args.Add(destinationPath);
+
+        await RunAsync(workingDirectory: null, arguments: args, cancellationToken: cancellationToken);
+
+        var resolvedBranch = string.IsNullOrWhiteSpace(branch)
+            ? await GetSymbolicHeadAsync(destinationPath, cancellationToken)
+            : branch!;
+        var head = await RevParseAsync(destinationPath, "HEAD", cancellationToken);
+        // Default branch via remote origin's HEAD pointer; falls back to the resolved branch
+        // when the remote didn't advertise one (rare, but shallow clones of single branches
+        // sometimes leave origin/HEAD unset).
+        string defaultBranch;
+        try
+        {
+            var remoteHead = await RunRawAsync(
+                destinationPath,
+                ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                cancellationToken);
+            defaultBranch = remoteHead.ExitCode == 0
+                ? StripOriginPrefix(remoteHead.StandardOutput.Trim())
+                : resolvedBranch;
+        }
+        catch (GitCommandException)
+        {
+            defaultBranch = resolvedBranch;
+        }
+
+        return new GitCloneResult(resolvedBranch, head, defaultBranch);
+    }
+
+    private static string StripOriginPrefix(string symbolicRef)
+    {
+        const string prefix = "origin/";
+        return symbolicRef.StartsWith(prefix, StringComparison.Ordinal)
+            ? symbolicRef[prefix.Length..]
+            : symbolicRef;
+    }
+
     public async Task FetchAsync(string mirrorPath, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(mirrorPath);
@@ -179,6 +240,22 @@ public sealed class GitCli : IGitCli
         }
 
         await RunAsync(worktreePath, args, cancellationToken);
+    }
+
+    public async Task SetRemoteUrlAsync(
+        string worktreePath,
+        string remoteName,
+        string url,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(worktreePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(remoteName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(url);
+
+        await RunAsync(
+            workingDirectory: worktreePath,
+            arguments: ["remote", "set-url", remoteName, url],
+            cancellationToken: cancellationToken);
     }
 
     public async Task<string> RevParseAsync(

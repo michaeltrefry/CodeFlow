@@ -279,7 +279,7 @@ public sealed class CodeFlowAssistant(
         }
 
         // Wrap conversation-workspace creation so a non-writable root (typically a dev environment
-        // where the default `/app/codeflow/assistant` container path doesn't exist) doesn't crash
+        // where the default `/workspace/assistant` container path doesn't exist) doesn't crash
         // the turn. Log a clear warning pointing at the env-var override and degrade to no host
         // tools — the LLM still answers, just without per-conversation file access.
         try
@@ -291,7 +291,7 @@ public sealed class CodeFlowAssistant(
         {
             logger.LogWarning(ex,
                 "Could not create the per-conversation workspace for assistant conversation {ConversationId}. "
-                + "Set the Workspace__AssistantWorkspaceRoot environment variable to a writable directory (default '/app/codeflow/assistant' is a container path). "
+                + "Set the Workspace__AssistantWorkspaceRoot environment variable to a writable directory (default '/workspace/assistant' is a container path). "
                 + "Continuing without host tools for this turn.",
                 conversationId);
             return null;

@@ -16,7 +16,7 @@ public sealed class WorkspaceOptions
     /// Override via <c>Workspace__WorkingDirectoryRoot</c> only when running outside the standard
     /// container layout (e.g. integration tests pointing at a per-test temp dir).
     /// </summary>
-    public const string DefaultWorkingDirectoryRoot = "/app/codeflow/workdir";
+    public const string DefaultWorkingDirectoryRoot = "/workspace";
 
     /// <summary>
     /// Default container path for per-conversation working directories used by the homepage
@@ -25,7 +25,7 @@ public sealed class WorkspaceOptions
     /// <c>{root}/{conversationId:N}/</c> on first tool call. Override via
     /// <c>Workspace__AssistantWorkspaceRoot</c> for non-standard layouts.
     /// </summary>
-    public const string DefaultAssistantWorkspaceRoot = "/app/codeflow/assistant";
+    public const string DefaultAssistantWorkspaceRoot = "/workspace/assistant";
 
     public string Root { get; set; } = string.Empty;
 

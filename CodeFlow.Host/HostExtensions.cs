@@ -325,7 +325,9 @@ public static class HostExtensions
                 workspaceTools: new WorkspaceHostToolService(
                     sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
                 vcsTools: new VcsHostToolService(
-                    sp.GetRequiredService<IVcsProviderFactory>()),
+                    factory: sp.GetRequiredService<IVcsProviderFactory>(),
+                    gitCli: sp.GetRequiredService<IGitCli>(),
+                    hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>()),
                 containerTools: sp.GetRequiredService<DockerHostToolService>(),
                 webTools: sp.GetRequiredService<WebHostToolService>()));
         services.AddSingleton<Agent>();

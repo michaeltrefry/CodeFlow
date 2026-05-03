@@ -133,15 +133,17 @@ services:
       # Host-shared per-trace git workdirs for code-aware workflows. Both api and worker mount
       # the same host path so saga workdir cleanup (api side) and saga workdir provisioning
       # (worker side) see identical contents. The container path is locked to
-      # WorkspaceOptions.WorkingDirectoryRoot's default — overridable via
+      # WorkspaceOptions.WorkingDirectoryRoot's default (`/workspace`) — overridable via
       # Workspace__WorkingDirectoryRoot if a deployment needs a different mount target.
-      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/codeflow/workdir
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace
       # Per-conversation assistant workspace (HAA-19). API-only — the worker doesn't host the
       # assistant chat loop. Persists conversation file content across container recreations;
       # without this mount the dir is image-baked and contents are lost on `docker compose up`.
-      # Container path is locked to WorkspaceOptions.AssistantWorkspaceRoot's default — override
-      # via Workspace__AssistantWorkspaceRoot if a deployment needs a different mount target.
-      - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/app/codeflow/assistant
+      # Container path is locked to WorkspaceOptions.AssistantWorkspaceRoot's default
+      # (`/workspace/assistant`) — override via Workspace__AssistantWorkspaceRoot if a deployment
+      # needs a different mount target. Mounted as a nested bind under /workspace so agents see
+      # one unified writable tree.
+      - ${CODEFLOW_ASSISTANT_DIR:-/opt/codeflow/assistant}:/workspace/assistant
       # sc-535: client mTLS material for the sandbox-controller. Same dir on every host;
       # sc-535 host-setup runbook documents how to provision it.
       - ${CODEFLOW_CFSC_CLIENT_DIR:-/opt/codeflow/cfsc-client/api}:/etc/cfsc-client:ro
@@ -185,7 +187,7 @@ services:
       SandboxController__RequestTimeoutSeconds: ${CODEFLOW_CONTAINER_REQUEST_TIMEOUT_SECONDS:-1800}
     volumes:
       - ${CODEFLOW_ARTIFACTS_DIR:-/opt/codeflow/artifacts}:/app/artifacts
-      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/app/codeflow/workdir
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace
       # sc-535: separate client cert dir for the worker (different subject than api).
       - ${CODEFLOW_CFSC_CLIENT_WORKER_DIR:-/opt/codeflow/cfsc-client/worker}:/etc/cfsc-client:ro
     networks:
@@ -262,8 +264,11 @@ services:
       # filesystem doesn't apply to bind-mounted hosts; the daemon ACL is what
       # gates this.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Workspace root — read-only. Controller doesn't write to workspaces.
-      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/opt/codeflow/workdirs:ro
+      # Workspace root — read-only from the controller's perspective. Bind-mounted at the same
+      # in-container path the api/worker use (`/workspace`) so the controller's `workdir_root`
+      # config and the spec.WorkspaceHostPath the controller hands to dockerd both reference one
+      # canonical path. Dockerd then re-mounts the per-trace subdir into the sandbox RW.
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace:ro
       # Per-host config — config.toml mounts at /etc/cfsc/config.toml (the
       # controller's default `-config` flag).
       - ${CODEFLOW_CFSC_CONFIG_DIR:-/opt/codeflow/cfsc/config}:/etc/cfsc:ro

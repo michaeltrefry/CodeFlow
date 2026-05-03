@@ -90,10 +90,12 @@ public sealed class SandboxControllerRunner : IDockerCommandRunner
         {
             JobId = jobId,
             TraceId = traceId,
-            // Phase 1: CodeFlow's existing workspace model is per-trace, not per-repo. Until
-            // multi-repo arrives, every job under a trace shares the "workspace" repoSlug.
-            // The controller's workspace.Validator resolves {workdirRoot}/{traceId}/workspace/.
-            RepoSlug = "workspace",
+            // The unified `/workspace/{traceId}` layout treats the trace dir itself as the
+            // workspace. The controller's workspace.Validator accepts an empty repoSlug and
+            // resolves the trace dir directly — no `{traceId}/workspace/` subdirectory is
+            // created or expected. The wire-format field stays on the DTO so older controller
+            // builds keep parsing the request, but we always send empty.
+            RepoSlug = string.Empty,
             Image = parsed.Image,
             Cmd = parsed.Cmd.ToArray(),
             Limits = new ControllerRunLimits
