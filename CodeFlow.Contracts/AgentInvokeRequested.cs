@@ -27,11 +27,12 @@ public sealed record AgentInvokeRequested(
     // variables (`swarmPosition`, `swarmAssignment`, `swarmMaxN`, `swarmEarlyTerminated`) the
     // same way `ReviewRound` becomes `round`. Null on every non-Swarm dispatch.
     SwarmInvocationContext? SwarmContext = null,
-    // Per-trace repository allowlist (saga-level state, not context-bag). Populated from the
-    // saga's RepositoriesJson at every dispatch and inherited from parent on subflow init,
-    // so vcs_* tools see the same allowlist across nested workflows. Null only on legacy
-    // in-flight messages produced before the saga field existed; the consumer falls back to
-    // ContextInputs["repositories"] in that case for backward compat.
+    // Per-trace repository allowlist (saga-level state). Populated from the saga's
+    // RepositoriesJson at every dispatch and inherited from parent on subflow init, so vcs_*
+    // tools see the same allowlist across nested workflows. The saga's RepositoriesJson is
+    // seeded at trace launch from the workflow-context bag (workflow.repositories) and mutated
+    // at runtime via setWorkflow({"repositories":[...]}). sc-607 dropped the
+    // context.repositories fallback path that previously fed this field.
     IReadOnlyList<RepositoryDeclaration>? Repositories = null,
     // sc-593 epic: per-trace working-directory absolute path. Populated from saga.TraceWorkDir
     // at every dispatch and inherited verbatim from parent on subflow init. Replaces the legacy

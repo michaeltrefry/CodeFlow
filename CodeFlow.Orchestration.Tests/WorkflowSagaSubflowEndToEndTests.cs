@@ -213,8 +213,10 @@ public sealed class WorkflowSagaSubflowEndToEndTests
         await harness.Start();
         try
         {
-            // Parent launches with `repositories` in context — the existing input convention.
-            var contextInputs = new Dictionary<string, JsonElement>
+            // sc-607: `repositories` lives on the workflow-context bag (parallels workflow.workDir).
+            // TracesEndpoints routes the workflow-input convention's value into WorkflowContext at
+            // launch; this test publishes WorkflowContext directly to mirror that effect.
+            var workflowContext = new Dictionary<string, JsonElement>
             {
                 ["repositories"] = JsonDocument.Parse(
                     "[{\"url\":\"https://github.com/acme/widget.git\",\"branch\":\"main\"}]")
@@ -230,14 +232,15 @@ public sealed class WorkflowSagaSubflowEndToEndTests
                 AgentKey: "kickoff",
                 AgentVersion: 1,
                 InputRef: new Uri("file:///tmp/parent-in.bin"),
-                ContextInputs: contextInputs));
+                ContextInputs: new Dictionary<string, JsonElement>(),
+                WorkflowContext: workflowContext));
 
             var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
             await sagaHarness.Exists(parentTraceId, x => x.Running);
 
             var parentSaga = sagaHarness.Sagas.Contains(parentTraceId)!;
             parentSaga.RepositoriesJson.Should().NotBeNullOrWhiteSpace(
-                "ApplyInitialRequest must lift context.repositories into saga.RepositoriesJson");
+                "ApplyInitialRequest must lift workflow.repositories into saga.RepositoriesJson");
             parentSaga.RepositoriesJson!.Should().Contain("acme/widget");
 
             // Parent Start → Subflow dispatch. The SubflowInvokeRequested must carry the parent's

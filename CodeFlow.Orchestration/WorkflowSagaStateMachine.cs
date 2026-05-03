@@ -170,11 +170,13 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
 
     /// <summary>
     /// Happy-path workdir cleanup. Fires when a top-level saga reaches <see cref="Completed"/>
-    /// AND every entry in <c>context.repositories</c> has a non-empty <c>prUrl</c> (set by the
-    /// publish agent via <c>setContext</c>). If either condition fails — child saga, no
+    /// AND every entry in <c>workflow.repositories</c> has a non-empty <c>prUrl</c> (set by the
+    /// publish agent via <c>setWorkflow</c>). If either condition fails — child saga, no
     /// repositories array, or any repo missing a PR URL — the workdir is left in place so an
     /// operator can inspect what went wrong. Slice F's periodic sweep catches anything that's
-    /// genuinely orphaned past the configured TTL.
+    /// genuinely orphaned past the configured TTL. sc-607: this read used to come off
+    /// <c>saga.InputsJson</c> (context.*) but moved to <c>saga.WorkflowInputsJson</c> when the
+    /// repos convention shifted to the workflow-context bag.
     /// </summary>
     private static Task TryCleanupHappyPathWorkdirAsync(
         BehaviorContext<WorkflowSagaStateEntity> context)
@@ -187,7 +189,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             return Task.CompletedTask;
         }
 
-        if (!AllRepositoriesHavePrUrl(saga.InputsJson))
+        if (!AllRepositoriesHavePrUrl(saga.WorkflowInputsJson))
         {
             return Task.CompletedTask;
         }
@@ -270,11 +272,12 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
-        // Seed the per-trace repository allowlist from the workflow input convention. Authors
-        // declare repos via a `repositories` Json input whose default is `[{url, branch?}]`; the
-        // launch path lands that into ContextInputs, and we lift it here so the saga itself
-        // carries the allowlist forward across subflow boundaries.
-        saga.RepositoriesJson = LiftRepositoriesFromContext(message.ContextInputs)
+        // Seed the per-trace repository allowlist. sc-607: lifted from the workflow-context bag
+        // (workflow.repositories), not the local-context bag — repositories are trace-tree state
+        // and belong on the bag that propagates through subflows. TracesEndpoints routes the
+        // workflow-input convention's value into WorkflowContext at launch so authors can keep
+        // declaring `repositories` as a Json workflow input.
+        saga.RepositoriesJson = LiftRepositoriesFromWorkflowBag(message.WorkflowContext)
             ?? saga.RepositoriesJson;
         // sc-593 Phase 1: seed the per-trace working directory from the new contract field.
         // TracesEndpoints.CreateTraceAsync populates message.TraceWorkDir starting in Phase 2
@@ -1561,10 +1564,6 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedLocal[key] = value;
             }
             saga.InputsJson = SerializeContextInputs(mergedLocal);
-            // setContext({repositories: [...]}) keeps working as a runtime path to widen the
-            // allowlist. Lift the update to the saga field so it propagates to subflows.
-            saga.RepositoriesJson = LiftRepositoriesFromContext(mergedLocal)
-                ?? saga.RepositoriesJson;
         }
 
         if (message.WorkflowUpdates is { Count: > 0 } workflowUpdates)
@@ -1576,6 +1575,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedWorkflow[key] = value;
             }
             saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
+            // sc-607: setWorkflow({repositories: [...]}) is the runtime mutation surface for the
+            // per-trace allowlist. Lift the update to the saga field so it propagates to subflows.
+            saga.RepositoriesJson = LiftRepositoriesFromWorkflowBag(mergedWorkflow)
+                ?? saga.RepositoriesJson;
         }
     }
 
@@ -1593,10 +1596,6 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedLocal[key] = value;
             }
             saga.InputsJson = SerializeContextInputs(mergedLocal);
-            // Mirror the agent-decision path: a routing script that writes context.repositories
-            // also updates the saga-level allowlist so it reaches subflows.
-            saga.RepositoriesJson = LiftRepositoriesFromContext(mergedLocal)
-                ?? saga.RepositoriesJson;
         }
 
         if (eval.WorkflowUpdates.Count > 0)
@@ -1607,6 +1606,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedWorkflow[key] = value;
             }
             saga.WorkflowInputsJson = SerializeContextInputs(mergedWorkflow);
+            // sc-607: a routing script that writes workflow.repositories must also update the
+            // saga-level allowlist so it propagates to subflows. Parallels the agent-decision
+            // path in ApplyAgentBagWrites.
+            saga.RepositoriesJson = LiftRepositoriesFromWorkflowBag(mergedWorkflow)
+                ?? saga.RepositoriesJson;
         }
     }
 
@@ -2489,24 +2493,25 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
     /// <summary>
-    /// Per-trace repository allowlist key on the local-context bag (and the workflow input).
-    /// When this key appears in <c>context.*</c> at saga init or via a <c>setContext</c> mutation,
-    /// the value (a JSON array of <c>{url, branch?}</c>) is lifted to <c>saga.RepositoriesJson</c>
-    /// so it survives subflow boundaries.
+    /// Per-trace repository allowlist key on the workflow-context bag. When this key appears
+    /// in <c>workflow.*</c> at saga init or via a <c>setWorkflow</c> mutation, the value (a JSON
+    /// array of <c>{url, branch?}</c>) is lifted to <c>saga.RepositoriesJson</c> so it survives
+    /// subflow boundaries. sc-607: this used to read from <c>context.*</c>, but per-trace state
+    /// belongs on the trace-tree-shared bag, parallel to <c>workflow.workDir</c>.
     /// </summary>
-    private const string RepositoriesContextKey = "repositories";
+    private const string RepositoriesWorkflowKey = "repositories";
 
     /// <summary>
-    /// If <paramref name="contextInputs"/> contains a <c>repositories</c> array, return its
-    /// canonical JSON form for storage on <c>saga.RepositoriesJson</c>. Null when absent or when
-    /// the value is not a JSON array. Validates only structure — individual entries are filtered
-    /// at publish time by <see cref="ParseRepositoriesJson"/>.
+    /// If the workflow-context bag contains a <c>repositories</c> array, return its canonical
+    /// JSON form for storage on <c>saga.RepositoriesJson</c>. Null when absent or when the value
+    /// is not a JSON array. Validates only structure — individual entries are filtered at publish
+    /// time by <see cref="ParseRepositoriesJson"/>.
     /// </summary>
-    private static string? LiftRepositoriesFromContext(
-        IReadOnlyDictionary<string, JsonElement>? contextInputs)
+    private static string? LiftRepositoriesFromWorkflowBag(
+        IReadOnlyDictionary<string, JsonElement>? workflowContext)
     {
-        if (contextInputs is null
-            || !contextInputs.TryGetValue(RepositoriesContextKey, out var repos)
+        if (workflowContext is null
+            || !workflowContext.TryGetValue(RepositoriesWorkflowKey, out var repos)
             || repos.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -2519,8 +2524,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     /// Parse <c>saga.RepositoriesJson</c> into the contract shape published on
     /// <see cref="AgentInvokeRequested.Repositories"/> / <see cref="SubflowInvokeRequested.Repositories"/>.
     /// Returns null when the saga has no allowlist; returns an empty list only if the JSON parses
-    /// but contains no valid <c>{url}</c> entries (malformed entries are silently skipped to match
-    /// the legacy <c>ExtractRepositoryContexts</c> behaviour).
+    /// but contains no valid <c>{url}</c> entries (malformed entries are silently skipped).
     /// </summary>
     private static IReadOnlyList<RepositoryDeclaration>? ParseRepositoriesJson(string? repositoriesJson)
     {

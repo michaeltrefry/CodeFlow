@@ -265,12 +265,12 @@ public sealed class AgentInvocationConsumerTests
         {
             ["workDir"] = JsonSerializer.SerializeToElement(workDir)
         };
-        var contextInputs = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+
+        // sc-607: per-trace repositories are carried on the saga-field-backed
+        // AgentInvokeRequested.Repositories, not the legacy context.repositories bag entry.
+        var repositories = new[]
         {
-            ["repositories"] = JsonSerializer.SerializeToElement(new[]
-            {
-                new { url = "https://github.com/example/codeflow.git" }
-            })
+            new RepositoryDeclaration("https://github.com/example/codeflow.git"),
         };
 
         var request = new AgentInvokeRequested(
@@ -282,8 +282,9 @@ public sealed class AgentInvocationConsumerTests
             AgentKey: "code-setup",
             AgentVersion: 1,
             InputRef: new Uri("file:///tmp/input.bin"),
-            ContextInputs: contextInputs,
-            WorkflowContext: workflowContext);
+            ContextInputs: new Dictionary<string, JsonElement>(),
+            WorkflowContext: workflowContext,
+            Repositories: repositories);
 
         var observed = await RunConsumerAndCaptureToolExecutionContextAsync(request);
 
