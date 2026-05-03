@@ -9,7 +9,7 @@ import {
 import { WorkflowPayload } from '../../../core/workflows.api';
 import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
-import { IMPLICIT_FAILED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
+import { IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
 /**
  * Default declared ports when a node is first added to the canvas.
@@ -179,8 +179,13 @@ export function serializeEditor(
   const nodes: WorkflowNode[] = editor.getNodes().map(node => {
     const position = area.nodeViews.get(node.id)?.position ?? { x: 0, y: 0 };
     // The implicit Failed port is excluded from the serialized declaration — the API rejects
-    // declaring it. `outputPortNames` already filters it; this filter is defensive.
-    const declaredPorts = node.outputPortNames.filter(p => p !== IMPLICIT_FAILED_PORT);
+    // declaring it. `outputPortNames` already filters it; this filter is defensive. ReviewLoop
+    // additionally exposes a synthesized `Exhausted` handle the editor pads on load (so rete
+    // can render edges from it); strip it on serialize too, otherwise the API rejects the save
+    // for the same reason.
+    const declaredPorts = node.outputPortNames
+      .filter(p => p !== IMPLICIT_FAILED_PORT)
+      .filter(p => !(node.kind === 'ReviewLoop' && p === REVIEW_LOOP_EXHAUSTED_PORT));
     const isSwarm = node.kind === 'Swarm';
     // Validator rejects CoordinatorAgent* on Sequential, so suppress them unless the
     // configured protocol is Coordinator.

@@ -3,6 +3,7 @@ import type { AreaPlugin } from 'rete-area-plugin';
 import type { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 import {
   IMPLICIT_FAILED_PORT,
+  REVIEW_LOOP_EXHAUSTED_PORT,
 } from './workflow-node-schemes';
 import {
   defaultOutputPortsFor,
@@ -134,6 +135,40 @@ describe('serializeEditor', () => {
       coordinatorAgentKey: null,
       swarmTokenBudget: null,
     }));
+  });
+
+  it('strips the synthesized Exhausted port from a ReviewLoop save payload', () => {
+    // loadIntoEditor pads `Exhausted` onto a ReviewLoop's port list so rete can render the
+    // edge handle, and refreshSubflowPorts adds it on subflow pick. The API rejects declaring
+    // it for the same reason it rejects declaring `Failed` (both are runtime-synthesized).
+    // Without this strip every ReviewLoop save round-trip fails the
+    // `WorkflowValidator.CheckDeclaredPortReservations` rule with "declares the reserved
+    // 'Exhausted' port in outputPorts" — repro for the user-reported edit-blocked issue.
+    const reviewLoop = editorNode({
+      id: 'rete-review',
+      nodeId: 'review-1',
+      kind: 'ReviewLoop',
+      outputPortNames: ['Approved', REVIEW_LOOP_EXHAUSTED_PORT, IMPLICIT_FAILED_PORT],
+      subflowKey: 'inner-flow',
+      subflowVersion: 1,
+      reviewMaxRounds: 3,
+      loopDecision: 'Rejected',
+    });
+    const editor = fakeEditor([reviewLoop], []);
+    const area = fakeArea([['rete-review', { x: 250, y: 200 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'review-flow', name: 'Review Flow', maxRoundsPerRound: 3,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      id: 'review-1',
+      kind: 'ReviewLoop',
+      outputPorts: ['Approved'],
+    }));
+    expect(payload.nodes[0].outputPorts).not.toContain(REVIEW_LOOP_EXHAUSTED_PORT);
+    expect(payload.nodes[0].outputPorts).not.toContain(IMPLICIT_FAILED_PORT);
   });
 
   it('filters implicit failed ports and preserves canvas/connection metadata', () => {

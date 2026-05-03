@@ -38,6 +38,13 @@ export interface WorkflowNodeTokenOverlay {
  *  redesign). */
 export const IMPLICIT_FAILED_PORT = 'Failed';
 
+/** Synthesized terminal port emitted by ReviewLoop nodes when the round budget is exhausted.
+ *  loadIntoEditor pads it onto a ReviewLoop's declared ports so rete can render the matching
+ *  edge handle, and `refreshSubflowPorts` adds it whenever the user picks a child workflow.
+ *  Both paths must be paired with serialize-side stripping (the API rejects "Exhausted" in a
+ *  ReviewLoop's declared `outputPorts` for the same reason it rejects "Failed"). */
+export const REVIEW_LOOP_EXHAUSTED_PORT = 'Exhausted';
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
