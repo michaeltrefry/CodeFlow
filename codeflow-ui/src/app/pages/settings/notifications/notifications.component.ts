@@ -230,13 +230,13 @@ interface DeliveryAuditState {
                   </td>
                   <td><span class="muted small">{{ p.updatedAtUtc | date:'shortDate' }}</span></td>
                   <td class="actions">
-                    <cf-button kind="ghost" (click)="editProvider(p)">Edit</cf-button>
+                    <cf-button variant="ghost" (click)="editProvider(p)">Edit</cf-button>
                     @if (!p.isArchived) {
-                      <cf-button kind="ghost" (click)="validateProvider(p)" [disabled]="validatingProviderId() === p.id">
+                      <cf-button variant="ghost" (click)="validateProvider(p)" [disabled]="validatingProviderId() === p.id">
                         {{ validatingProviderId() === p.id ? 'Validating…' : 'Validate' }}
                       </cf-button>
-                      <cf-button kind="ghost" (click)="openTestSend(p)">Test send</cf-button>
-                      <cf-button kind="ghost" (click)="archiveProvider(p)">Archive</cf-button>
+                      <cf-button variant="ghost" (click)="openTestSend(p)">Test send</cf-button>
+                      <cf-button variant="ghost" (click)="archiveProvider(p)">Archive</cf-button>
                     }
                   </td>
                 </tr>
@@ -252,7 +252,7 @@ interface DeliveryAuditState {
                           <code class="code-inline">{{ outcome.result.errorCode }}</code>
                           <span class="muted small">{{ outcome.result.errorMessage }}</span>
                         }
-                        <cf-button kind="ghost" (click)="dismissValidation()">Dismiss</cf-button>
+                        <cf-button variant="ghost" (click)="dismissValidation()">Dismiss</cf-button>
                       </td>
                     </tr>
                   }
@@ -303,7 +303,7 @@ interface DeliveryAuditState {
                 <button type="submit" cf-button [disabled]="ts.sending">
                   {{ ts.sending ? 'Sending…' : 'Send test' }}
                 </button>
-                <cf-button kind="ghost" (click)="cancelTestSend()">Close</cf-button>
+                <cf-button variant="ghost" (click)="cancelTestSend()">Close</cf-button>
               </div>
             </form>
 
@@ -398,22 +398,22 @@ interface DeliveryAuditState {
                   @if (edit.credentialAction === 'Replace') {
                     <input type="password" [(ngModel)]="edit.credentialValue" name="credentialValue"
                       [placeholder]="credentialPlaceholder(edit.channel)" required>
-                    <cf-button kind="ghost" (click)="setCredentialAction(edit, 'Preserve')">Cancel replace</cf-button>
+                    <cf-button variant="ghost" (click)="setCredentialAction(edit, 'Preserve')">Cancel replace</cf-button>
                   } @else if (edit.credentialAction === 'Clear') {
                     <cf-chip tone="warn">Will clear on save</cf-chip>
-                    <cf-button kind="ghost" (click)="setCredentialAction(edit, 'Preserve')">Undo</cf-button>
+                    <cf-button variant="ghost" (click)="setCredentialAction(edit, 'Preserve')">Undo</cf-button>
                   } @else {
                     @if (edit.hasCredential) {
                       <cf-chip tone="ok">••••••••</cf-chip>
-                      <cf-button kind="ghost" (click)="setCredentialAction(edit, 'Replace')">Replace</cf-button>
-                      <cf-button kind="ghost" (click)="setCredentialAction(edit, 'Clear')">Clear</cf-button>
+                      <cf-button variant="ghost" (click)="setCredentialAction(edit, 'Replace')">Replace</cf-button>
+                      <cf-button variant="ghost" (click)="setCredentialAction(edit, 'Clear')">Clear</cf-button>
                     } @else if (edit.isNew) {
                       <input type="password" [(ngModel)]="edit.credentialValue" name="credentialValue"
                         [placeholder]="credentialPlaceholder(edit.channel)">
                       <span class="muted small">{{ credentialHelp(edit.channel) }}</span>
                     } @else {
                       <span class="muted">No credential set</span>
-                      <cf-button kind="ghost" (click)="setCredentialAction(edit, 'Replace')">Set</cf-button>
+                      <cf-button variant="ghost" (click)="setCredentialAction(edit, 'Replace')">Set</cf-button>
                     }
                   }
                 </div>
@@ -428,7 +428,7 @@ interface DeliveryAuditState {
                 <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save' }}
                 </button>
-                <cf-button kind="ghost" (click)="cancelProviderEdit()">Cancel</cf-button>
+                <cf-button variant="ghost" (click)="cancelProviderEdit()">Cancel</cf-button>
               </div>
             </form>
           </div>
@@ -474,8 +474,8 @@ interface DeliveryAuditState {
                     }
                   </td>
                   <td class="actions">
-                    <cf-button kind="ghost" (click)="editRoute(r)">Edit</cf-button>
-                    <cf-button kind="ghost" (click)="deleteRoute(r)">Delete</cf-button>
+                    <cf-button variant="ghost" (click)="editRoute(r)">Edit</cf-button>
+                    <cf-button variant="ghost" (click)="deleteRoute(r)">Delete</cf-button>
                   </td>
                 </tr>
               }
@@ -546,7 +546,7 @@ interface DeliveryAuditState {
                 <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save' }}
                 </button>
-                <cf-button kind="ghost" (click)="cancelRouteEdit()">Cancel</cf-button>
+                <cf-button variant="ghost" (click)="cancelRouteEdit()">Cancel</cf-button>
               </div>
             </form>
           </div>
@@ -587,7 +587,7 @@ interface DeliveryAuditState {
                   <td><span class="muted small">v{{ t.version }}</span></td>
                   <td><span class="muted small">{{ t.updatedAtUtc | date:'shortDate' }}</span></td>
                   <td class="actions">
-                    <cf-button kind="ghost" (click)="editTemplate(t)">Edit</cf-button>
+                    <cf-button variant="ghost" (click)="editTemplate(t)">Edit</cf-button>
                   </td>
                 </tr>
               }
@@ -644,10 +644,10 @@ interface DeliveryAuditState {
                 <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save (new version)' }}
                 </button>
-                <cf-button kind="ghost" (click)="previewTemplate()" [disabled]="edit.previewing">
+                <cf-button variant="ghost" (click)="previewTemplate()" [disabled]="edit.previewing">
                   {{ edit.previewing ? 'Rendering…' : 'Preview' }}
                 </cf-button>
-                <cf-button kind="ghost" (click)="cancelTemplateEdit()">Cancel</cf-button>
+                <cf-button variant="ghost" (click)="cancelTemplateEdit()">Cancel</cf-button>
               </div>
             </form>
 
@@ -729,10 +729,10 @@ interface DeliveryAuditState {
               placeholder="2026-04-30T00:00:00Z" (keyup.enter)="applyAuditFilters()">
           </label>
           <div class="filter-actions">
-            <cf-button kind="ghost" (click)="applyAuditFilters()" [disabled]="audit().loading">
+            <cf-button variant="ghost" (click)="applyAuditFilters()" [disabled]="audit().loading">
               {{ audit().loading ? 'Loading…' : 'Apply' }}
             </cf-button>
-            <cf-button kind="ghost" (click)="clearAuditFilters()">Clear</cf-button>
+            <cf-button variant="ghost" (click)="clearAuditFilters()">Clear</cf-button>
           </div>
         </div>
 
@@ -797,7 +797,7 @@ interface DeliveryAuditState {
 
           @if (audit().nextBeforeId !== null) {
             <div class="row" style="margin-top: 0.75rem; justify-content: center">
-              <cf-button kind="ghost" (click)="loadMoreAudit()" [disabled]="audit().loading">
+              <cf-button variant="ghost" (click)="loadMoreAudit()" [disabled]="audit().loading">
                 {{ audit().loading ? 'Loading…' : 'Load more' }}
               </cf-button>
             </div>
