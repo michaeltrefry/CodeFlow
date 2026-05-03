@@ -54,7 +54,9 @@ Every agent has three platform-managed tools wired into its turn:
   content-optional.
 - `setWorkflow(key, value)` — writes a small structured value into the
   trace's `workflow` bag. Limits: 16 KiB per call, 256 KiB cumulative per
-  turn. Reserved namespaces (`workDir`, `traceId`, `__loop.*`) are rejected.
+  turn. Reserved keys (`traceWorkDir`, `traceId`, `__loop.*`) are rejected.
+  **Use `setWorkflow` for `repositories`** — the per-trace VCS allowlist
+  lives on the `workflow` bag (saga-field-backed), not `context`.
 - `setContext(key, value)` — same shape, but writes into the per-saga
   `context` bag (does NOT cross the subflow boundary).
 
@@ -224,10 +226,15 @@ Two key/value stores propagate state across a trace:
   snapshot at spawn; at child completion the child's final bag merges
   back. Read in templates as `{{ workflow.X }}`, in scripts as `workflow.X`,
   written via `setWorkflow(...)`. **If you want data to survive across
-  the subflow boundary, put it in `workflow`.**
+  the subflow boundary, put it in `workflow`.** The framework-managed
+  per-trace state lives here too: `workflow.traceWorkDir` (workspace
+  path), `workflow.traceId` (32-char hex), and `workflow.repositories`
+  (per-trace VCS allowlist consulted by `vcs_*` host tools).
 - **`context` bag** — per-saga, local to one workflow. Read as
   `{{ context.X }}` / `context.X`, written via `setContext(...)`. Does
-  NOT cross the subflow boundary.
+  NOT cross the subflow boundary. Don't put per-trace state here —
+  notably, `setContext('repositories', ...)` does NOT widen the VCS
+  allowlist; use `setWorkflow` for that.
 
 ### Routing scripts
 Agent / HITL / Edge / Subflow nodes each have up to **two script slots**:
@@ -336,7 +343,7 @@ rule ids surface in telemetry — cite them when explaining a save rejection:
   `default to Rejected`, `you must always reject`, `the goal is N
   iterations`, `keep iterating until`. Switch to `@codeflow/reviewer-base`.
 - `protected-variable-target` — Error on mirror / port-replacement targets
-  in reserved namespaces (`__loop.*`, `workDir`, `traceId`).
+  in reserved namespaces (`__loop.*`, `traceWorkDir`, `traceId`).
 - `workflow-vars-declaration` (VZ2) — Warning (opt-in) when an agent
   reads / a script writes a workflow var not in the workflow's declared
   `workflowVarsReads` / `workflowVarsWrites` lists.
@@ -478,7 +485,12 @@ user clicks Save and gets a 400.
   workflow) and a non-empty `displayName`. If `defaultValueJson` is set
   it must be valid JSON. The input keyed `repositories` must be `Kind:
   Json` and its default must be an array of `{ "url": "<non-empty>",
-  "branch?": "..." }` objects.
+  "branch?": "..." }` objects. At trace launch the resolved
+  `repositories` value is routed into the `workflow` bag (i.e.
+  `workflow.repositories`, NOT `context.repositories`) so the per-trace
+  VCS allowlist propagates to subflows; the saga also lifts it onto a
+  typed `RepositoriesJson` field that backs the `vcs_*` host-tool
+  allowlist enforcement.
 
 **Node-level (every node):**
 - Each workflow has exactly one `Start` node.

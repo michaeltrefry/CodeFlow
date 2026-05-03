@@ -161,6 +161,32 @@ public sealed class WorkflowAuthoringSkillTests
     }
 
     [Fact]
+    public void Skill_DescribesRepositoriesBagRouting()
+    {
+        // sc-607: declaring `repositories` as a workflow input routes the resolved value into
+        // the workflow.* bag (not context.*), and the saga lifts it to a typed RepositoriesJson
+        // field that backs the vcs_* tool allowlist. The skill must affirmatively teach the
+        // workflow.* bag location and the canonical workspace path. Negative-pedagogy mentions
+        // of context.repositories or setContext('repositories', ...) are allowed; what we pin
+        // here is that the *positive* surface is named correctly.
+        var body = LoadSkill().Body;
+        body.Should().Contain("workflow.repositories",
+            "post sc-607 the per-trace VCS allowlist lives on workflow.*, not context.*");
+        body.Should().Contain("traceWorkDir",
+            "framework-managed workspace path is workflow.traceWorkDir");
+        body.Should().Contain("setWorkflow",
+            "the runtime mutation surface for the allowlist is setWorkflow");
+    }
+
+    [Fact]
+    public void Skill_DoesNotPromoteLegacyWorkDir()
+    {
+        // sc-604 retired `workflow.workDir`; the skill teaches `traceWorkDir` only.
+        LoadSkill().Body.Should().NotContain("workflow.workDir",
+            "workflow.workDir is gone post sc-604");
+    }
+
+    [Fact]
     public void Skill_DoesNotImplyImporterIgnoresDb()
     {
         // The earlier "the importer does not resolve from the DB" wording contradicted the

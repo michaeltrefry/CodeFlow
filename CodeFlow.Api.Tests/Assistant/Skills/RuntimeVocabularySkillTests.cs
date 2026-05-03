@@ -84,4 +84,34 @@ public sealed class RuntimeVocabularySkillTests
         body.Should().Contain("Workspace__WorkingDirectoryRoot")
             .And.Subject.Should().Contain("WorkingDirectoryRoot");
     }
+
+    [Fact]
+    public void Skill_DescribesSagaBackedPerTraceState()
+    {
+        // sc-593 / sc-607: per-trace workspace state lives on the workflow bag, backed by saga
+        // fields, NOT on the local-context bag. The skill must teach `traceWorkDir` (the
+        // canonical workspace-path variable, not the legacy `workflow.workDir`) and call out
+        // that `setWorkflow` (not `setContext`) is the way to widen the `repositories`
+        // allowlist. Negative-pedagogy mentions of `setContext('repositories'...)` are allowed
+        // (the skill explicitly tells the model that path doesn't widen the allowlist).
+        var body = LoadSkill().Body;
+        body.Should().Contain("traceWorkDir",
+            "the canonical per-trace workspace variable is workflow.traceWorkDir");
+        body.Should().Contain("repositories",
+            "the per-trace VCS allowlist (workflow.repositories) is teachable here");
+        body.Should().Contain("setWorkflow",
+            "agents widen the per-trace allowlist by calling setWorkflow, not setContext");
+        body.Should().Contain("repo_not_allowed",
+            "the failure mode for an undeclared repo is the literal string vcs_* tools return");
+    }
+
+    [Fact]
+    public void Skill_DoesNotPromoteLegacyWorkDirAlias()
+    {
+        // sc-604: the `workflow.workDir` alias was retired. The skill should teach the new
+        // canonical name without recommending the legacy variable.
+        var body = LoadSkill().Body;
+        body.Should().NotContain("workflow.workDir",
+            "workflow.workDir is gone post sc-604; use workflow.traceWorkDir");
+    }
 }

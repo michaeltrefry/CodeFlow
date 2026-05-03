@@ -66,23 +66,76 @@ this trace" against "the latest version of this agent's key in the
 library" and warns when they diverge. The workflow itself is unaffected
 — the trace's pinned versions don't change.
 
-## Code-aware workflows and the working directory
+## Code-aware workflows: workspace and repositories
 
-Workflows that operate on source code use a per-trace working directory
-derived from `Workspace:WorkingDirectoryRoot` (default `/workspace`).
-Workflows can take a `repos[]` input convention to declare repos
-up-front, but agents may also discover and clone repos mid-workflow via
-the `vcs.clone` host tool when the repo set isn't known at trace start.
+Code-aware workflows expose two framework-managed pieces of per-trace
+state on the `workflow` bag, both backed by typed saga fields so they
+survive subflow boundaries:
 
-Operator overrides:
-- `Workspace__WorkingDirectoryRoot` — environment-variable override of
-  the default root path. Locked at deploy; not editable from the admin
-  UI (sc-... 2026-04-27 hardening).
+### `workflow.traceWorkDir` — the per-trace workspace path
 
-When agents in a code-aware workflow invoke host tools (`read_file`,
-`apply_patch`, `run_command`), those tools resolve paths relative to the
-trace's workdir. The same `repos[]` input lets the runtime materialize
-the right checkout state per trace.
+Computed at trace launch as `<Workspace:WorkingDirectoryRoot>/<traceId.N>`
+(default root is `/workspace`; override via the
+`Workspace__WorkingDirectoryRoot` environment variable, locked at deploy).
+The directory is created on disk by `TracesEndpoints.CreateTraceAsync`
+before publish. Read in templates as `{{ workflow.traceWorkDir }}` and
+in scripts as `workflow.traceWorkDir`.
+
+`traceWorkDir` is in `ProtectedVariables.ReservedKeys` — `setWorkflow`
+from a script or agent rejects writes. Subflow children inherit the
+parent's path verbatim (children share the parent's workspace; the path
+is NOT recomputed from the child trace id).
+
+When agents in a code-aware workflow invoke path-jailed host tools
+(`read_file`, `apply_patch`, `run_command`), those tools are scoped to
+this directory.
+
+### `workflow.repositories` — the per-trace VCS allowlist
+
+A JSON array of `{ "url", "branch"? }` objects declaring the repos this
+trace operates on. The `vcs_*` host tools (`vcs.clone`, `vcs.get_repo`,
+`vcs.open_pr`) enforce the allowlist — calls against an undeclared
+`(owner, name)` return `repo_not_allowed`.
+
+Three ways `workflow.repositories` gets populated:
+
+1. **Workflow input convention.** Declare an input with key
+   `repositories` and `kind: Json`. The save-time validator enforces the
+   shape `[{url, branch?}]`. At launch, `TracesEndpoints` resolves the
+   input and routes the value into the `workflow` bag (NOT `context`).
+2. **Trace-launch override.** The launcher's `inputs.repositories`
+   payload supersedes the input default — same routing.
+3. **Mid-flight via `setWorkflow`.** An agent that discovers a new repo
+   (or that wants to widen the allowlist) calls
+   `setWorkflow('repositories', [...])`. **Note:** the change takes
+   effect on the *next* dispatch, not the current turn — the
+   `BuildToolExecutionContext` snapshot for the in-flight invocation
+   was already taken from the saga's prior state.
+
+`setContext('repositories', ...)` does NOT widen the allowlist. The
+saga's typed `RepositoriesJson` field is fed only from the workflow.*
+bag.
+
+Subflow children inherit the parent's allowlist verbatim through the
+saga field — child workflows do not need to redeclare `repositories`.
+
+### Mutation patterns for code-aware agents
+
+A `code-setup` agent typically mutates `workflow.repositories` mid-turn
+to attach `localPath` and `featureBranch` after cloning:
+
+```
+setWorkflow('repositories', [
+  { "url": "...", "branch": "main",
+    "localPath": "/workspace/<traceId-N>/<repo>",
+    "featureBranch": "<branch_name-output>" }
+])
+```
+
+A `publish` agent appends `prUrl` after `vcs.open_pr` succeeds. The
+saga's happy-path workdir cleanup hook deletes the workdir on
+`Completed` only when every entry in `workflow.repositories` has a
+non-empty `prUrl`; failed runs leave the workdir for forensics.
 
 ## Trace deep links the assistant cites
 
