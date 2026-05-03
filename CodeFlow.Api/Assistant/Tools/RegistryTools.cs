@@ -108,15 +108,18 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
     public string Name => "get_workflow";
     public string Description =>
         "Get a single workflow with its full node/edge/input graph. If `version` is omitted, returns the " +
-        "latest version. Each node includes kind, agent reference, ports, scripts (truncated to 4 KB), " +
-        "subflow reference, swarm config, and template. Use this when the user asks 'show me workflow X' " +
-        "or before reasoning about a workflow's structure.";
+        "latest version. Each node includes kind, agent reference, ports, scripts (truncated to 4 KB by " +
+        "default), subflow reference, swarm config, and template. Pass `full: true` to skip truncation " +
+        "when you need a node's complete script or template body to re-emit unchanged in a workflow " +
+        "package — the dispatcher's 96 KB result cap still applies. Use this when the user asks 'show " +
+        "me workflow X' or before reasoning about a workflow's structure.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
             ""key"": { ""type"": ""string"", ""description"": ""Workflow key (required)."" },
-            ""version"": { ""type"": ""integer"", ""description"": ""Specific version to fetch. Omit to get latest."" }
+            ""version"": { ""type"": ""integer"", ""description"": ""Specific version to fetch. Omit to get latest."" },
+            ""full"": { ""type"": ""boolean"", ""description"": ""If true, return node scripts and templates without the 4 KB truncation. Default false."" }
         },
         ""required"": [""key""],
         ""additionalProperties"": false
@@ -127,6 +130,8 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
         var key = AssistantToolJson.ReadOptionalString(arguments, "key")
             ?? throw new ArgumentException("`key` is required.");
         var version = AssistantToolJson.ReadOptionalInt(arguments, "version");
+        var full = AssistantToolJson.ReadOptionalBool(arguments, "full", defaultValue: false);
+        var bodyCap = full ? int.MaxValue : RegistryDefaults.LongStringCap;
 
         Workflow? workflow;
         try
@@ -185,9 +190,9 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
                     subflowVersion = n.SubflowVersion,
                     reviewMaxRounds = n.ReviewMaxRounds,
                     loopDecision = n.LoopDecision,
-                    inputScript = AssistantToolJson.TruncateText(n.InputScript, RegistryDefaults.LongStringCap),
-                    outputScript = AssistantToolJson.TruncateText(n.OutputScript, RegistryDefaults.LongStringCap),
-                    template = AssistantToolJson.TruncateText(n.Template, RegistryDefaults.LongStringCap),
+                    inputScript = AssistantToolJson.TruncateText(n.InputScript, bodyCap),
+                    outputScript = AssistantToolJson.TruncateText(n.OutputScript, bodyCap),
+                    template = AssistantToolJson.TruncateText(n.Template, bodyCap),
                     outputType = n.OutputType,
                     swarmProtocol = n.SwarmProtocol,
                     swarmN = n.SwarmN,
@@ -372,14 +377,17 @@ public sealed class GetAgentTool(IAgentConfigRepository repository) : IAssistant
     public string Description =>
         "Get a single agent's full configuration: provider, model, system prompt, prompt template, " +
         "declared outputs, partial pins, and tool access policy. Long string fields (system prompt, " +
-        "prompt template) are truncated to 4 KB with a marker. Use this when the user asks 'what's " +
-        "the prompt for agent X' or before reasoning about an agent's behavior.";
+        "prompt template) are truncated to 4 KB by default. Pass `full: true` to skip truncation when " +
+        "you need to re-emit the unchanged body in a workflow package or quote it back verbatim — the " +
+        "dispatcher's 96 KB result cap still applies. Use this when the user asks 'what's the prompt " +
+        "for agent X' or before reasoning about an agent's behavior.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
             ""key"": { ""type"": ""string"", ""description"": ""Agent key (required)."" },
-            ""version"": { ""type"": ""integer"", ""description"": ""Specific version. Omit to get latest."" }
+            ""version"": { ""type"": ""integer"", ""description"": ""Specific version. Omit to get latest."" },
+            ""full"": { ""type"": ""boolean"", ""description"": ""If true, return systemPrompt and promptTemplate without the 4 KB truncation. Default false."" }
         },
         ""required"": [""key""],
         ""additionalProperties"": false
@@ -390,6 +398,8 @@ public sealed class GetAgentTool(IAgentConfigRepository repository) : IAssistant
         var key = AssistantToolJson.ReadOptionalString(arguments, "key")
             ?? throw new ArgumentException("`key` is required.");
         var version = AssistantToolJson.ReadOptionalInt(arguments, "version");
+        var full = AssistantToolJson.ReadOptionalBool(arguments, "full", defaultValue: false);
+        var bodyCap = full ? int.MaxValue : RegistryDefaults.LongStringCap;
 
         AgentConfig? agent = null;
         try
@@ -411,8 +421,8 @@ public sealed class GetAgentTool(IAgentConfigRepository repository) : IAssistant
             kind = agent.Kind.ToString(),
             provider = agent.Configuration.Provider,
             model = agent.Configuration.Model,
-            systemPrompt = AssistantToolJson.TruncateText(agent.Configuration.SystemPrompt, RegistryDefaults.LongStringCap),
-            promptTemplate = AssistantToolJson.TruncateText(agent.Configuration.PromptTemplate, RegistryDefaults.LongStringCap),
+            systemPrompt = AssistantToolJson.TruncateText(agent.Configuration.SystemPrompt, bodyCap),
+            promptTemplate = AssistantToolJson.TruncateText(agent.Configuration.PromptTemplate, bodyCap),
             maxTokens = agent.Configuration.MaxTokens,
             temperature = agent.Configuration.Temperature,
             partialPins = agent.Configuration.PartialPins?

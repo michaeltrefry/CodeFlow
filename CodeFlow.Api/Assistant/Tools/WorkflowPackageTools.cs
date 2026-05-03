@@ -353,14 +353,17 @@ public sealed class GetWorkflowPackageTool(
         "Returns the same shape `save_workflow_package` accepts — call this first when drafting " +
         "a new package so you can mirror the field names, enum casing, and nesting exactly. " +
         "Long free-form fields (system prompts, prompt templates, node scripts, skill bodies) " +
-        "are truncated to 4 KB with a marker; fetch full bodies via `get_agent` or `get_workflow` " +
-        "if you need them. If `version` is omitted, returns the latest version.";
+        "are truncated to 4 KB with a marker by default. Pass `full: true` to return untruncated " +
+        "bodies when you need to bump an entity by re-emitting it unchanged (the package importer " +
+        "stores bodies verbatim, so a truncation marker would corrupt the saved entity); the " +
+        "dispatcher's 96 KB result cap still applies. If `version` is omitted, returns the latest.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
             ""key"": { ""type"": ""string"", ""description"": ""Workflow key (required)."" },
-            ""version"": { ""type"": ""integer"", ""description"": ""Specific version. Omit to get the latest."" }
+            ""version"": { ""type"": ""integer"", ""description"": ""Specific version. Omit to get the latest."" },
+            ""full"": { ""type"": ""boolean"", ""description"": ""If true, return agent configs, skill bodies, MCP tool params, and node scripts/templates without the 4 KB truncation. Default false."" }
         },
         ""required"": [""key""],
         ""additionalProperties"": false
@@ -375,6 +378,7 @@ public sealed class GetWorkflowPackageTool(
         }
 
         var requestedVersion = AssistantToolJson.ReadOptionalInt(arguments, "version");
+        var full = AssistantToolJson.ReadOptionalBool(arguments, "full", defaultValue: false);
 
         int resolvedVersion;
         if (requestedVersion is int explicitVersion)
@@ -424,8 +428,8 @@ public sealed class GetWorkflowPackageTool(
                 IsError: true);
         }
 
-        var trimmed = TrimForLlm(package);
-        var json = JsonSerializer.Serialize(trimmed, AssistantToolJson.SerializerOptions);
+        var emitted = full ? package : TrimForLlm(package);
+        var json = JsonSerializer.Serialize(emitted, AssistantToolJson.SerializerOptions);
         return new AssistantToolResult(json);
     }
 
