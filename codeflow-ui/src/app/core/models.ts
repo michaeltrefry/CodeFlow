@@ -39,6 +39,13 @@ export interface AgentOutputDeclaration {
   payloadExample?: unknown;
 }
 
+export interface AgentBudgetConfig {
+  maxToolCalls?: number;
+  /** Wall-clock cap as `"HH:mm:ss"` (TimeSpan format). */
+  maxLoopDuration?: string;
+  maxConsecutiveNonMutatingCalls?: number;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -50,6 +57,7 @@ export interface AgentConfig {
   outputTemplate?: string;
   maxTokens?: number;
   temperature?: number;
+  budget?: AgentBudgetConfig;
   outputs?: AgentOutputDeclaration[];
   decisionOutputTemplates?: Record<string, string>;
   [key: string]: unknown;

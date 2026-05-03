@@ -18,6 +18,7 @@ import { RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { LlmProvidersApi } from '../../core/llm-providers.api';
 import {
+  AgentBudgetConfig,
   AgentConfig,
   AgentOutputDeclaration,
   DecisionOutputTemplateMode,
@@ -348,6 +349,46 @@ export interface AgentFormHeaderState {
                 </label>
               </div>
             </div>
+            <div class="form-section">
+              <div class="form-section-head">
+                <h3>Invocation budget</h3>
+                <p>
+                  Per-invocation guardrails that bound a single agent turn. Leave blank to use the
+                  platform defaults ({{ DEFAULT_BUDGET_HINT }}). Override only when an agent
+                  legitimately needs a higher ceiling — e.g. a synthesizer that calls
+                  <code>read_file</code> across many files.
+                </p>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">Max tool calls</span>
+                  <input class="input mono" type="number" min="1" max="256"
+                         [ngModel]="budgetMaxToolCalls() ?? null"
+                         (ngModelChange)="budgetMaxToolCalls.set(coerceOptionalNumber($event))"
+                         name="budgetMaxToolCalls" autocomplete="off" />
+                  <span class="field-hint">Default 16. Total tool invocations across the whole turn.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Max wall-clock duration (seconds)</span>
+                  <input class="input mono" type="number" min="1" max="3600"
+                         [ngModel]="budgetMaxLoopSeconds() ?? null"
+                         (ngModelChange)="budgetMaxLoopSeconds.set(coerceOptionalNumber($event))"
+                         name="budgetMaxLoopSeconds" autocomplete="off" />
+                  <span class="field-hint">Default 300 (5 min). Hard ceiling for the entire invocation loop.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Max consecutive non-mutating tool calls</span>
+                  <input class="input mono" type="number" min="1" max="256"
+                         [ngModel]="budgetMaxConsecutiveNonMutatingCalls() ?? null"
+                         (ngModelChange)="budgetMaxConsecutiveNonMutatingCalls.set(coerceOptionalNumber($event))"
+                         name="budgetMaxConsecutiveNonMutatingCalls" autocomplete="off" />
+                  <span class="field-hint">Default 8. Catches read-loops where the agent never calls <code>submit</code>.</span>
+                </label>
+              </div>
+              @if (budgetWarning(); as warn) {
+                <cf-chip variant="err" dot>{{ warn }}</cf-chip>
+              }
+            </div>
           </cf-card>
         }
 
@@ -633,6 +674,29 @@ export class AgentFormComponent implements OnInit, OnDestroy {
   protected readonly outputTemplate = signal('');
   protected readonly maxTokens = signal<number | undefined>(undefined);
   protected readonly temperature = signal<number | undefined>(undefined);
+  protected readonly budgetMaxToolCalls = signal<number | undefined>(undefined);
+  protected readonly budgetMaxLoopSeconds = signal<number | undefined>(undefined);
+  protected readonly budgetMaxConsecutiveNonMutatingCalls = signal<number | undefined>(undefined);
+  protected readonly DEFAULT_BUDGET_HINT = '16 tool calls / 5 min / 8 consecutive non-mutating';
+
+  protected readonly budgetWarning = computed<string | null>(() => {
+    const calls = this.budgetMaxToolCalls();
+    const seconds = this.budgetMaxLoopSeconds();
+    const nonMut = this.budgetMaxConsecutiveNonMutatingCalls();
+    if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > 256)) {
+      return 'Max tool calls must be an integer in [1, 256].';
+    }
+    if (seconds !== undefined && (!Number.isFinite(seconds) || seconds < 1 || seconds > 3600)) {
+      return 'Max wall-clock duration must be in [1, 3600] seconds.';
+    }
+    if (nonMut !== undefined && (!Number.isInteger(nonMut) || nonMut < 1 || nonMut > 256)) {
+      return 'Max consecutive non-mutating calls must be an integer in [1, 256].';
+    }
+    if (calls !== undefined && nonMut !== undefined && nonMut > calls) {
+      return 'Max consecutive non-mutating calls cannot exceed max tool calls.';
+    }
+    return null;
+  });
   protected readonly outputs = signal<OutputRow[]>([
     emptyOutputRow('Completed'),
     emptyOutputRow('Failed'),
@@ -938,6 +1002,10 @@ export class AgentFormComponent implements OnInit, OnDestroy {
     this.outputTemplate.set((config['outputTemplate'] as string) ?? '');
     this.maxTokens.set(config['maxTokens'] as number | undefined);
     this.temperature.set(config['temperature'] as number | undefined);
+    const budget = readBudgetConfig(config['budget']);
+    this.budgetMaxToolCalls.set(budget.maxToolCalls);
+    this.budgetMaxLoopSeconds.set(budget.maxLoopSeconds);
+    this.budgetMaxConsecutiveNonMutatingCalls.set(budget.maxConsecutiveNonMutatingCalls);
     this.partialPins.set(readPromptPartialPins(config['partialPins']));
     const templates = (config['decisionOutputTemplates'] as Record<string, string> | undefined) ?? {};
     const declared = config['outputs'];
@@ -1174,6 +1242,12 @@ export class AgentFormComponent implements OnInit, OnDestroy {
       config.promptTemplate = this.promptTemplate() || undefined;
       if (this.maxTokens() !== undefined) config.maxTokens = this.maxTokens();
       if (this.temperature() !== undefined) config.temperature = this.temperature();
+      const budget = buildBudgetConfig(
+        this.budgetMaxToolCalls(),
+        this.budgetMaxLoopSeconds(),
+        this.budgetMaxConsecutiveNonMutatingCalls(),
+      );
+      if (budget) config.budget = budget;
       const pins = this.partialPins();
       if (pins.length > 0) {
         config['partialPins'] = pins;
@@ -1246,6 +1320,71 @@ function isEditorTab(value: string): value is EditorTab {
     || value === 'preview'
     || value === 'model'
     || value === 'outputs';
+}
+
+interface BudgetSignals {
+  maxToolCalls?: number;
+  maxLoopSeconds?: number;
+  maxConsecutiveNonMutatingCalls?: number;
+}
+
+function readBudgetConfig(value: unknown): BudgetSignals {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const obj = value as Record<string, unknown>;
+  const result: BudgetSignals = {};
+  if (typeof obj['maxToolCalls'] === 'number' && Number.isFinite(obj['maxToolCalls'])) {
+    result.maxToolCalls = obj['maxToolCalls'] as number;
+  }
+  if (typeof obj['maxConsecutiveNonMutatingCalls'] === 'number'
+      && Number.isFinite(obj['maxConsecutiveNonMutatingCalls'])) {
+    result.maxConsecutiveNonMutatingCalls = obj['maxConsecutiveNonMutatingCalls'] as number;
+  }
+  const seconds = parseTimeSpanSeconds(obj['maxLoopDuration']);
+  if (seconds !== undefined) result.maxLoopSeconds = seconds;
+  return result;
+}
+
+function buildBudgetConfig(
+  maxToolCalls: number | undefined,
+  maxLoopSeconds: number | undefined,
+  maxConsecutiveNonMutatingCalls: number | undefined,
+): AgentBudgetConfig | undefined {
+  const budget: AgentBudgetConfig = {};
+  if (maxToolCalls !== undefined && Number.isFinite(maxToolCalls)) {
+    budget.maxToolCalls = maxToolCalls;
+  }
+  if (maxLoopSeconds !== undefined && Number.isFinite(maxLoopSeconds) && maxLoopSeconds > 0) {
+    budget.maxLoopDuration = secondsToTimeSpan(maxLoopSeconds);
+  }
+  if (maxConsecutiveNonMutatingCalls !== undefined && Number.isFinite(maxConsecutiveNonMutatingCalls)) {
+    budget.maxConsecutiveNonMutatingCalls = maxConsecutiveNonMutatingCalls;
+  }
+  return Object.keys(budget).length === 0 ? undefined : budget;
+}
+
+function parseTimeSpanSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  // Support both `"HH:mm:ss"` (and `"HH:mm:ss.fff"`) and `"d.HH:mm:ss"` shapes
+  // emitted by .NET TimeSpan with Web defaults.
+  const m = trimmed.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+)(?:\.(\d+))?$/);
+  if (!m) return undefined;
+  const days = m[1] ? Number(m[1]) : 0;
+  const hours = Number(m[2]);
+  const minutes = Number(m[3]);
+  const secs = Number(m[4]);
+  return days * 86400 + hours * 3600 + minutes * 60 + secs;
+}
+
+function secondsToTimeSpan(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(h)}:${pad(m)}:${pad(sec)}`;
 }
 
 function readPromptPartialPins(value: unknown): PromptPartialPinDto[] {

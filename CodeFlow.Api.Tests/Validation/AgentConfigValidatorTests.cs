@@ -161,4 +161,105 @@ public sealed class AgentConfigValidatorTests
 
         result.IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public void ValidateConfig_AcceptsValidBudget()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "provider": "openai",
+            "model": "gpt-5",
+            "budget": {
+                "maxToolCalls": 32,
+                "maxLoopDuration": "00:10:00",
+                "maxConsecutiveNonMutatingCalls": 16
+            }
+        }
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_AcceptsNullBudget()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","budget":null}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_AcceptsPartialBudget()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","budget":{"maxToolCalls":48}}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsNonObjectBudget()
+    {
+        using var doc = JsonDocument.Parse("""{"provider":"openai","model":"gpt-5","budget":"nope"}""");
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("budget");
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("257")]
+    [InlineData("\"twelve\"")]
+    [InlineData("3.5")]
+    public void ValidateConfig_RejectsInvalidMaxToolCalls(string raw)
+    {
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"budget\":{\"maxToolCalls\":" + raw + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("maxToolCalls");
+    }
+
+    [Theory]
+    [InlineData("\"00:00:00\"")]
+    [InlineData("\"01:00:01\"")]
+    [InlineData("\"not-a-timespan\"")]
+    [InlineData("60")]
+    public void ValidateConfig_RejectsInvalidMaxLoopDuration(string raw)
+    {
+        var json = "{\"provider\":\"openai\",\"model\":\"gpt-5\",\"budget\":{\"maxLoopDuration\":" + raw + "}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("maxLoopDuration");
+    }
+
+    [Fact]
+    public void ValidateConfig_RejectsConsecutiveExceedingTotalBudget()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "provider": "openai",
+            "model": "gpt-5",
+            "budget": { "maxToolCalls": 8, "maxConsecutiveNonMutatingCalls": 16 }
+        }
+        """);
+
+        var result = AgentConfigValidator.ValidateConfig(doc.RootElement);
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("maxConsecutiveNonMutatingCalls");
+    }
 }
