@@ -189,6 +189,12 @@ public static class AuthServiceCollectionExtensions
             .AddPolicy(CodeFlowApiDefaults.Policies.LlmProvidersWrite, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.LlmProvidersWrite)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.WebSearchProviderRead, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.WebSearchProviderRead)))
+            .AddPolicy(CodeFlowApiDefaults.Policies.WebSearchProviderWrite, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.WebSearchProviderWrite)))
             .AddPolicy(CodeFlowApiDefaults.Policies.NotificationsRead, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new PermissionRequirement(CodeFlowApiDefaults.Permissions.NotificationsRead)))

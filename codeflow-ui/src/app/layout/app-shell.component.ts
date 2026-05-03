@@ -42,6 +42,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'skills', label: 'Skills',        icon: 'skills', route: '/settings/skills' },
       { id: 'git',    label: 'Git host',      icon: 'git',    route: '/settings/git-host' },
       { id: 'llm',    label: 'LLM providers', icon: 'bot',    route: '/settings/llm-providers' },
+      { id: 'web',    label: 'Web search',    icon: 'search', route: '/settings/web-search' },
       { id: 'notify', label: 'Notifications', icon: 'bot',    route: '/settings/notifications' },
     ],
   },
@@ -67,6 +68,7 @@ const TITLE_FOR_ROUTE: Array<{ match: (url: string) => boolean; title: string }>
   { match: (u) => u.startsWith('/settings/skills'),title: 'Skills' },
   { match: (u) => u.startsWith('/settings/git'),   title: 'Git host' },
   { match: (u) => u.startsWith('/settings/llm-providers'), title: 'LLM providers' },
+  { match: (u) => u.startsWith('/settings/web-search'), title: 'Web search' },
 ];
 
 @Component({

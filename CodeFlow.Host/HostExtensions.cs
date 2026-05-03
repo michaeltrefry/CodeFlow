@@ -1,6 +1,7 @@
 using CodeFlow.Host.Container;
 using CodeFlow.Host.Cleanup;
 using CodeFlow.Host.Mcp;
+using CodeFlow.Host.Web;
 using CodeFlow.Host.Workspace;
 using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
@@ -123,6 +124,7 @@ public static class HostExtensions
         services.AddScoped<IRoleResolutionService, RoleResolutionService>();
         services.AddScoped<IGitHostSettingsRepository, GitHostSettingsRepository>();
         services.AddScoped<ILlmProviderSettingsRepository, LlmProviderSettingsRepository>();
+        services.AddScoped<IWebSearchProviderSettingsRepository, WebSearchProviderSettingsRepository>();
         services.AddScoped<IAssistantSettingsRepository, AssistantSettingsRepository>();
         services.AddScoped<ITokenUsageRecordRepository, TokenUsageRecordRepository>();
         services.AddScoped<IRefusalEventRepository, RefusalEventRepository>();
@@ -306,7 +308,14 @@ public static class HostExtensions
         {
             services.AddHostedService<ContainerResourceSweepService>();
         }
-        services.TryAddSingleton<IWebSearchProvider, NullWebSearchProvider>();
+        // sc-???: web-search adapter is admin-configurable in the DB (Web Search settings page).
+        // The DB-backed dispatcher reads the active provider on each call (30s cache) and falls
+        // back to NullWebSearchProvider's "search-not-configured" refusal when no provider is
+        // selected — same surface as before, but operators can now wire Brave (and future
+        // providers) without a code change.
+        services.AddSingleton<DbBackedWebSearchProvider>();
+        services.AddSingleton<IWebSearchProvider>(sp => sp.GetRequiredService<DbBackedWebSearchProvider>());
+        services.AddSingleton<IWebSearchProviderInvalidator>(sp => sp.GetRequiredService<DbBackedWebSearchProvider>());
         services.AddSingleton<WebHostToolService>(sp =>
             new WebHostToolService(
                 sp.GetRequiredService<IOptions<WebToolOptions>>().Value,

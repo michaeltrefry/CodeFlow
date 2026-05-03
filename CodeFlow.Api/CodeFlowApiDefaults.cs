@@ -27,6 +27,8 @@ public static class CodeFlowApiDefaults
         public const string GitHostWrite = "GitHostWrite";
         public const string LlmProvidersRead = "LlmProvidersRead";
         public const string LlmProvidersWrite = "LlmProvidersWrite";
+        public const string WebSearchProviderRead = "WebSearchProviderRead";
+        public const string WebSearchProviderWrite = "WebSearchProviderWrite";
         public const string NotificationsRead = "NotificationsRead";
         public const string NotificationsWrite = "NotificationsWrite";
     }
@@ -74,6 +76,8 @@ public static class CodeFlowApiDefaults
         public const string GitHostWrite = "git_host:write";
         public const string LlmProvidersRead = "llm_providers:read";
         public const string LlmProvidersWrite = "llm_providers:write";
+        public const string WebSearchProviderRead = "web_search_provider:read";
+        public const string WebSearchProviderWrite = "web_search_provider:write";
         public const string NotificationsRead = "notifications:read";
         public const string NotificationsWrite = "notifications:write";
     }
@@ -113,6 +117,8 @@ public static class CodeFlowApiDefaults
             [Permissions.GitHostWrite] = new[] { Roles.Admin },
             [Permissions.LlmProvidersRead] = new[] { Roles.Admin },
             [Permissions.LlmProvidersWrite] = new[] { Roles.Admin },
+            [Permissions.WebSearchProviderRead] = new[] { Roles.Admin },
+            [Permissions.WebSearchProviderWrite] = new[] { Roles.Admin },
             [Permissions.NotificationsRead] = new[] { Roles.Admin },
             [Permissions.NotificationsWrite] = new[] { Roles.Admin },
         };
