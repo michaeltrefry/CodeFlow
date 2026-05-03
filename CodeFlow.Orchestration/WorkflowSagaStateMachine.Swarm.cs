@@ -375,7 +375,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Position: position,
                 MaxN: n,
                 Assignment: null,
-                EarlyTerminated: null)));
+                EarlyTerminated: null),
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     /// <summary>
@@ -438,7 +439,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Position: null,
                 MaxN: null,
                 Assignment: null,
-                EarlyTerminated: earlyTerminated)));
+                EarlyTerminated: earlyTerminated),
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     /// <summary>
@@ -649,7 +651,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Position: null,
                 MaxN: n,
                 Assignment: null,
-                EarlyTerminated: null)));
+                EarlyTerminated: null),
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     /// <summary>
@@ -786,7 +789,8 @@ public sealed partial class WorkflowSagaStateMachine
                     Position: entry.Position,
                     MaxN: n,
                     Assignment: assignment,
-                    EarlyTerminated: null)));
+                    EarlyTerminated: null),
+                Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
         }
 
         return null;

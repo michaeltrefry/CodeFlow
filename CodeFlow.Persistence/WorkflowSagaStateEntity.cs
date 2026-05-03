@@ -156,6 +156,17 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? PendingParallelRoundIdsJson { get; set; }
 
     /// <summary>
+    /// Per-trace repository allowlist serialised as a JSON array of <c>{url, branch?}</c> objects,
+    /// matching the workflow-input convention. Source of truth for which repos this saga's vcs_*
+    /// host tools may operate on. Seeded at top-level launch from <c>context.repositories</c> (the
+    /// existing input convention) and inherited verbatim by child sagas at subflow init, so a repo
+    /// declared once on the parent flows through every nested workflow without redeclaration.
+    /// Null when no repos are declared — the saga still runs, but vcs_* calls return
+    /// <c>repo_not_allowed</c>.
+    /// </summary>
+    public string? RepositoriesJson { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

@@ -104,9 +104,14 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .IsRequired()
             .IsConcurrencyToken();
 
+        // Stored as TEXT (no length cap on the property): agent-supplied failure reasons can run
+        // long (multi-sentence diagnostics, prompts, raw exception messages), and truncating them
+        // at the storage layer used to fault the saga with a "Data too long" MySqlException —
+        // killing the trace before the operator could read the cause. TEXT in MySQL holds up to
+        // ~64 KB which is more than enough; no row-length constraint applies.
         builder.Property(saga => saga.FailureReason)
             .HasColumnName("failure_reason")
-            .HasMaxLength(512);
+            .HasColumnType("text");
 
         builder.Property(saga => saga.ParentTraceId)
             .HasColumnName("parent_trace_id");
@@ -146,6 +151,10 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
         builder.Property(saga => saga.PendingParallelRoundIdsJson)
             .HasColumnName("pending_parallel_round_ids_json")
             .HasColumnType("longtext");
+
+        builder.Property(saga => saga.RepositoriesJson)
+            .HasColumnName("repositories_json")
+            .HasColumnType("text");
 
         builder.HasIndex(saga => saga.ParentTraceId);
 

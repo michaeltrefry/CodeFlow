@@ -26,7 +26,13 @@ public sealed record AgentInvokeRequested(
     // synthesizer inside a Swarm node. Renderer maps these to top-level prompt-template
     // variables (`swarmPosition`, `swarmAssignment`, `swarmMaxN`, `swarmEarlyTerminated`) the
     // same way `ReviewRound` becomes `round`. Null on every non-Swarm dispatch.
-    SwarmInvocationContext? SwarmContext = null);
+    SwarmInvocationContext? SwarmContext = null,
+    // Per-trace repository allowlist (saga-level state, not context-bag). Populated from the
+    // saga's RepositoriesJson at every dispatch and inherited from parent on subflow init,
+    // so vcs_* tools see the same allowlist across nested workflows. Null only on legacy
+    // in-flight messages produced before the saga field existed; the consumer falls back to
+    // ContextInputs["repositories"] in that case for backward compat.
+    IReadOnlyList<RepositoryDeclaration>? Repositories = null);
 
 /// <summary>
 /// Per-invocation Swarm context piggybacked onto <see cref="AgentInvokeRequested"/> when the

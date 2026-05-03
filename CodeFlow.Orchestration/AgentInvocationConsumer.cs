@@ -523,11 +523,53 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         {
             return new RuntimeToolExecutionContext(
                 new RuntimeToolWorkspaceContext(message.TraceId, workDir),
-                ExtractRepositoryContexts(message.ContextInputs),
+                ResolveRepositoryContexts(message),
                 envelope);
         }
 
         return MapToolExecutionContext(message.ToolExecutionContext, envelope);
+    }
+
+    /// <summary>
+    /// Saga-field-first lookup for the per-trace repository allowlist. <see cref="AgentInvokeRequested.Repositories"/>
+    /// is populated by the saga from <c>saga.RepositoriesJson</c> on every dispatch and inherited across
+    /// subflow boundaries, so it's the source of truth. The legacy <see cref="ExtractRepositoryContexts"/>
+    /// fallback covers in-flight messages that crossed the wire before the saga field shipped.
+    /// </summary>
+    private static IReadOnlyList<RuntimeToolRepositoryContext>? ResolveRepositoryContexts(AgentInvokeRequested message)
+    {
+        if (message.Repositories is { Count: > 0 } sagaRepos)
+        {
+            var result = new List<RuntimeToolRepositoryContext>(sagaRepos.Count);
+            foreach (var entry in sagaRepos)
+            {
+                if (string.IsNullOrWhiteSpace(entry.Url))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var repo = RepoReference.Parse(entry.Url);
+                    result.Add(new RuntimeToolRepositoryContext(
+                        repo.Owner,
+                        repo.Name,
+                        entry.Url,
+                        repo.IdentityKey,
+                        repo.Slug));
+                }
+                catch (ArgumentException)
+                {
+                }
+            }
+
+            if (result.Count > 0)
+            {
+                return result;
+            }
+        }
+
+        return ExtractRepositoryContexts(message.ContextInputs);
     }
 
     private static bool TryGetWorkflowWorkDir(
