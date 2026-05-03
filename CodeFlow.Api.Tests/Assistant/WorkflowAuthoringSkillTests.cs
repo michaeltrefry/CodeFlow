@@ -99,6 +99,13 @@ public sealed class WorkflowAuthoringSkillTests
     [InlineData("Hitl")]
     [InlineData("workflow` bag")]
     [InlineData("context` bag")]
+    // Sub-agents primitive (sc-571): the skill must disambiguate it from Swarm so the model
+    // doesn't suggest a node when the user asks for "a developer agent that delegates to
+    // helpers" — that's runtime fan-out from one agent's reasoning, not a workflow-design-time
+    // protocol.
+    [InlineData("subAgents")]
+    [InlineData("spawn_subagent")]
+    [InlineData("anonymous worker")]
     public void Skill_TeachesAuthoringVocabulary(string token)
     {
         LoadSkill().Body.Should().Contain(token);

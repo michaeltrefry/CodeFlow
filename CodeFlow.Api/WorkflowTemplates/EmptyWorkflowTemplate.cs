@@ -68,7 +68,7 @@ internal static class EmptyWorkflowTemplate
                     AgentKey: agentKey,
                     AgentVersion: agentVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Completed", "Failed" },
+                    OutputPorts: new[] { "Completed" },
                     LayoutX: 0,
                     LayoutY: 0),
             },
