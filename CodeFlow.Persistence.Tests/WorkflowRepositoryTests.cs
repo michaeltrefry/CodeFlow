@@ -257,7 +257,10 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         pinned.SubflowKey.Should().Be("child-flow");
         pinned.SubflowVersion.Should().Be(7);
         pinned.AgentKey.Should().BeNull();
-        pinned.OutputPorts.Should().Equal("Completed", "Failed", "Escalated");
+        // `Failed` is implicit on every node; WorkflowJson.DeserializePorts strips it from
+        // the persisted list so legacy data heals on read. The remaining user-defined ports
+        // round-trip intact.
+        pinned.OutputPorts.Should().Equal("Completed", "Escalated");
 
         var latest = reloaded.Nodes.Single(n => n.Id == latestSubflowNodeId);
         latest.Kind.Should().Be(WorkflowNodeKind.Subflow);
@@ -320,7 +323,10 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         reviewLoop.SubflowKey.Should().Be("draft-critique-revise");
         reviewLoop.SubflowVersion.Should().Be(2);
         reviewLoop.ReviewMaxRounds.Should().Be(3);
-        reviewLoop.OutputPorts.Should().Equal("Approved", "Exhausted", "Failed");
+        // `Exhausted` is synthesized at runtime for ReviewLoop and `Failed` is implicit on
+        // every node. WorkflowJson.DeserializePorts strips both from the persisted list so
+        // legacy data heals on read; only the loopDecision-derived port survives.
+        reviewLoop.OutputPorts.Should().Equal("Approved");
 
         var plainSubflow = reloaded.Nodes.Single(n => n.Id == plainSubflowNodeId);
         plainSubflow.Kind.Should().Be(WorkflowNodeKind.Subflow);

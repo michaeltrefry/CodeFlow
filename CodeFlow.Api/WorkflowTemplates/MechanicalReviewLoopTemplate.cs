@@ -217,7 +217,7 @@ internal static class MechanicalReviewLoopTemplate
                     AgentKey: developerKey,
                     AgentVersion: developerVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Continue", "Failed" },
+                    OutputPorts: new[] { "Continue" },
                     LayoutX: 0, LayoutY: 0),
                 new WorkflowNodeDraft(
                     Id: mechanicalGateNodeId,
@@ -229,7 +229,7 @@ internal static class MechanicalReviewLoopTemplate
                     // subflow terminates on this port and the parent ReviewLoop sees a
                     // "Rejected" decision (loopDecision = "Rejected" → loop). This is the
                     // mechanical-then-model short-circuit.
-                    OutputPorts: new[] { "Approved", "Rejected", "Failed" },
+                    OutputPorts: new[] { "Approved", "Rejected" },
                     LayoutX: 250, LayoutY: 0),
                 new WorkflowNodeDraft(
                     Id: reviewerNodeId,
@@ -237,7 +237,7 @@ internal static class MechanicalReviewLoopTemplate
                     AgentKey: reviewerKey,
                     AgentVersion: reviewerVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Approved", "Rejected", "Failed" },
+                    OutputPorts: new[] { "Approved", "Rejected" },
                     LayoutX: 500, LayoutY: 0),
             },
             Edges: new[]
@@ -282,7 +282,9 @@ internal static class MechanicalReviewLoopTemplate
                     AgentKey: triggerKey,
                     AgentVersion: triggerVersion,
                     OutputScript: null,
-                    OutputPorts: new[] { "Continue", "Failed" },
+                    // `Failed` is implicit on every node; declaring it trips
+                    // WorkflowValidator's reserved-port rule on edit.
+                    OutputPorts: new[] { "Continue" },
                     LayoutX: 0, LayoutY: 0),
                 new WorkflowNodeDraft(
                     Id: loopNodeId,
@@ -290,7 +292,9 @@ internal static class MechanicalReviewLoopTemplate
                     AgentKey: null,
                     AgentVersion: null,
                     OutputScript: null,
-                    OutputPorts: new[] { "Approved", "Exhausted", "Failed" },
+                    // ReviewLoop synthesizes `Exhausted` at runtime and `Failed` is implicit on
+                    // every node. Only the loopDecision-derived port (`Approved` here) goes here.
+                    OutputPorts: new[] { "Approved" },
                     LayoutX: 250, LayoutY: 0,
                     SubflowKey: innerKey,
                     SubflowVersion: innerVersion,

@@ -94,6 +94,53 @@ The agent editor exposes these on the **Model** tab under "Invocation
 budget"; in a workflow package they live inside `agents[].config.budget`.
 Don't bump these to mask a buggy prompt — fix the prompt instead.
 
+#### Sub-agents (`spawn_subagent`) — agent config, NOT a node kind
+An agent can delegate sub-tasks to anonymous worker LLMs it parameterises
+at runtime. This is **per-agent configuration**, not a workflow node, and
+the parent agent decides at its own turn-time how many workers to spawn
+and what each one does. When a developer-style agent needs to fan helper
+work out (read these N files, score these M proposals, draft these K
+variants), THIS is the right primitive — not a Swarm node.
+
+Enable it by adding a `subAgents` block to the agent's config:
+
+```jsonc
+"subAgents": {
+  "provider": "anthropic",         // null/omit → inherit parent's provider
+  "model": "claude-haiku-4-5",     // null/omit → inherit
+  "maxConcurrent": 4,              // 1..32, default 4
+  "maxTokens": 8000,               // null/omit → inherit
+  "temperature": 0.2               // 0..2, null/omit → inherit
+}
+```
+
+Validator bounds: `maxConcurrent ∈ [1, 32]`, `maxTokens ∈ [1, 200_000]`,
+`temperature ∈ [0, 2]`.
+
+When `subAgents` is set, the runtime adds a built-in `spawn_subagent` tool
+to the parent's turn. The parent calls it with one or more invocations,
+each carrying a per-call `systemPrompt` + `input`:
+
+```jsonc
+spawn_subagent({
+  "invocations": [
+    { "systemPrompt": "You are a focused worker. Reply as JSON {findings: string[]}.", "input": "Read the README and list anything that contradicts the docs." },
+    { "systemPrompt": "You are a critic. Score 1–5 and explain.", "input": "Score the proposed approach in <input/>" }
+  ]
+})
+```
+
+Returns `[{ input, output, decision }, ...]` in request order. Workers
+inherit the parent's resolved tool set (host + MCP + role grants) — there
+is no per-spawn role override in v1. Workers cannot recursively spawn
+(child config has `subAgents: null` always); depth is capped at 1 by
+construction.
+
+Use sub-agents when the orchestration is *internal to a single agent's
+reasoning*. Use a Swarm node when the protocol (Sequential / Coordinator)
+is fixed at workflow-design time. Use a ReviewLoop when the iteration is
+between drafter and reviewer. See "When to fan out" below.
+
 ### Prompt templates and partials
 Agent prompts use Scriban 7.1 in a sandboxed renderer. Familiar syntax —
 `{{ name }}`, `{{ for item in items }}…{{ end }}`, `{{ if cond }}…{{ end }}`,
@@ -229,6 +276,18 @@ of wiring into 30 seconds. Available templates:
   workflow bag) → ReviewLoop → on Exhausted, HITL escalation.
 - **Lifecycle wrapper** — three placeholder phase workflows chained by
   two HITL approval gates.
+
+### When to fan out: sub-agents vs Swarm vs ReviewLoop vs Subflow
+Pick the smallest primitive that fits — these are NOT interchangeable:
+
+| Primitive | Picks at | Fan-out shape | Use when |
+| --- | --- | --- | --- |
+| **Sub-agents** (parent agent config + `spawn_subagent` tool) | Runtime, per parent turn | One reasoning agent → N anonymous workers it parameterises on the fly | A developer-style agent wants helper LLM calls (read N files, score M proposals, draft K variants) under its own reasoning. NOT a workflow node. |
+| **Swarm node** | Workflow-design time | Author-fixed protocol: `Sequential` or `Coordinator`; N contributor agents + 1 synthesizer | The protocol is part of the workflow's design contract and the author wants the orchestration auditable from the canvas. Non-replayable. |
+| **ReviewLoop node** | Workflow-design time | One drafter + one reviewer agent in a bounded iteration | Author/reviewer iteration with rejection feedback. The only loop primitive. |
+| **Subflow node** | Workflow-design time | Inline composition of another workflow | Reuse an existing workflow's full graph as a single step inside a parent. |
+
+Heuristic: **the user said "developer loop" / "delegate" / "have it spawn helpers"** → that's *sub-agents on the developer's agent config* feeding into a ReviewLoop, not a Swarm. Swarm = "I want N peers with a defined protocol picking at design time"; sub-agents = "the developer agent picks workers as it reasons".
 
 ### Swarm node
 Source: `docs/swarm-node.md` is the canonical contract.

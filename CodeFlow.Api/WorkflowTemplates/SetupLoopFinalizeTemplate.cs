@@ -242,7 +242,10 @@ internal static class SetupLoopFinalizeTemplate
                     AgentKey: null,
                     AgentVersion: null,
                     OutputScript: null,
-                    OutputPorts: new[] { "Approved", "Exhausted" },
+                    // ReviewLoop synthesizes its `Exhausted` port at runtime; declaring it
+                    // alongside the loopDecision-derived port (`Approved` here) trips
+                    // WorkflowValidator's reserved-port rule on every subsequent edit.
+                    OutputPorts: new[] { "Approved" },
                     LayoutX: 250, LayoutY: 0,
                     SubflowKey: innerKey,
                     SubflowVersion: innerVersion,

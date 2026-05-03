@@ -603,6 +603,200 @@ public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFact
         await repo.CreateNewVersionAsync(draft);
     }
 
+    [Fact]
+    public async Task Invoke_PackageWithReservedExhaustedPortDeclared_ReturnsInvalid()
+    {
+        // The bug: a user reported that the assistant successfully saved a workflow whose
+        // ReviewLoop node declared the synthesized "Exhausted" port in outputPorts (forbidden).
+        // The editor then refused subsequent saves because WorkflowValidator catches the same
+        // rule. The assistant tool also runs WorkflowValidator (via importer.ValidateAsync), so
+        // it should have rejected the save up-front and never returned preview_ok / minted a
+        // chip. This test pins that contract.
+        const string agentKey = "exhausted-port-bug-writer";
+        await SeedAgentAsync(agentKey);
+
+        var package = BuildPackageWithReviewLoopExhaustedPort(agentKey);
+        var args = JsonSerializer.SerializeToElement(new { package = JsonSerializer.SerializeToElement(package) });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        var status = parsed.GetProperty("status").GetString();
+        status.Should().Be("invalid",
+            because: "the save tool must run WorkflowValidator and refuse a package whose "
+                + "ReviewLoop node declares the reserved 'Exhausted' port in outputPorts; "
+                + "otherwise the workflow lands in the DB and the editor can't save edits to it.");
+    }
+
+    [Fact]
+    public async Task Invoke_PackageWithMaxRoundsPerRoundOutOfRange_ReturnsInvalid()
+    {
+        // Companion to the Exhausted-port test: the same WorkflowValidator rule that the import
+        // endpoint enforces ("maxRoundsPerRound must be between 1 and 50") must fire from the
+        // assistant's save path too. Otherwise the LLM's accidental high value sneaks past
+        // preview_ok and the user discovers it only at edit time or via JSON-import retry.
+        const string agentKey = "rounds-out-of-range-writer";
+        await SeedAgentAsync(agentKey);
+
+        var package = BuildPackage(
+            entryKey: "rounds-out-of-range-flow",
+            entryVersion: 1,
+            agentKeyForFirstNode: agentKey,
+            agentVersion: 1,
+            includeAgentInPackage: true) with
+        {
+            Workflows = new[]
+            {
+                new WorkflowPackageWorkflow(
+                    Key: "rounds-out-of-range-flow",
+                    Version: 1,
+                    Name: "Rounds Out Of Range",
+                    MaxRoundsPerRound: 99,
+                    Category: WorkflowCategory.Workflow,
+                    Tags: Array.Empty<string>(),
+                    CreatedAtUtc: DateTime.UtcNow,
+                    Nodes: new[]
+                    {
+                        new WorkflowPackageWorkflowNode(
+                            Id: Guid.NewGuid(),
+                            Kind: WorkflowNodeKind.Start,
+                            AgentKey: agentKey,
+                            AgentVersion: 1,
+                            OutputScript: null,
+                            OutputPorts: new[] { "Completed" },
+                            LayoutX: 0,
+                            LayoutY: 0),
+                    },
+                    Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+                    Inputs: Array.Empty<WorkflowPackageWorkflowInput>()),
+            },
+        };
+        var args = JsonSerializer.SerializeToElement(new { package = JsonSerializer.SerializeToElement(package) });
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = scope.ServiceProvider
+            .GetRequiredService<IEnumerable<IAssistantTool>>()
+            .OfType<SaveWorkflowPackageTool>()
+            .Single();
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("status").GetString().Should().Be("invalid");
+    }
+
+    private static WorkflowPackage BuildPackageWithReviewLoopExhaustedPort(string agentKey)
+    {
+        // Minimal layout: Start → ReviewLoop. Subflow points at a placeholder key — the
+        // unresolvable subflow ref would normally surface as a Conflict in preview, but we want
+        // the validator to catch the Exhausted-port rule FIRST. To isolate that rule, we
+        // include a stub subflow workflow in the package so the preview can resolve.
+        var startId = Guid.NewGuid();
+        var reviewLoopId = Guid.NewGuid();
+        var childKey = "exhausted-port-bug-child";
+
+        var entry = new WorkflowPackageWorkflow(
+            Key: "exhausted-port-bug-flow",
+            Version: 1,
+            Name: "Exhausted Port Bug Flow",
+            MaxRoundsPerRound: 3,
+            Category: WorkflowCategory.Workflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowPackageWorkflowNode(
+                    Id: startId,
+                    Kind: WorkflowNodeKind.Start,
+                    AgentKey: agentKey,
+                    AgentVersion: 1,
+                    OutputScript: null,
+                    OutputPorts: new[] { "Completed" },
+                    LayoutX: 0,
+                    LayoutY: 0),
+                new WorkflowPackageWorkflowNode(
+                    Id: reviewLoopId,
+                    Kind: WorkflowNodeKind.ReviewLoop,
+                    AgentKey: null,
+                    AgentVersion: null,
+                    OutputScript: null,
+                    OutputPorts: new[] { "Approved", "Exhausted" }, // ← forbidden
+                    LayoutX: 200,
+                    LayoutY: 0,
+                    SubflowKey: childKey,
+                    SubflowVersion: 1,
+                    ReviewMaxRounds: 3,
+                    LoopDecision: "Approved"),
+            },
+            Edges: new[]
+            {
+                new WorkflowPackageWorkflowEdge(
+                    FromNodeId: startId,
+                    FromPort: "Completed",
+                    ToNodeId: reviewLoopId,
+                    ToPort: WorkflowEdge.DefaultInputPort,
+                    RotatesRound: false,
+                    SortOrder: 0),
+            },
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var child = new WorkflowPackageWorkflow(
+            Key: childKey,
+            Version: 1,
+            Name: "Bug Repro Child",
+            MaxRoundsPerRound: 3,
+            Category: WorkflowCategory.Subflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowPackageWorkflowNode(
+                    Id: Guid.NewGuid(),
+                    Kind: WorkflowNodeKind.Start,
+                    AgentKey: agentKey,
+                    AgentVersion: 1,
+                    OutputScript: null,
+                    OutputPorts: new[] { "Approved" },
+                    LayoutX: 0,
+                    LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agents = new[]
+        {
+            new WorkflowPackageAgent(
+                Key: agentKey,
+                Version: 1,
+                Kind: AgentKind.Agent,
+                Config: JsonNode.Parse("""{"provider":"anthropic","model":"claude-sonnet-4-6","systemPrompt":"You write things.","outputs":[{"kind":"Approved"},{"kind":"Completed"}]}"""),
+                CreatedAtUtc: DateTime.UtcNow,
+                CreatedBy: "exhausted-port-bug",
+                Outputs: new[]
+                {
+                    new WorkflowPackageAgentOutput("Approved", null, null),
+                    new WorkflowPackageAgentOutput("Completed", null, null),
+                }),
+        };
+
+        return new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("exhausted-port-bug", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference("exhausted-port-bug-flow", 1),
+            Workflows: new[] { entry, child },
+            Agents: agents,
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+    }
+
     /// <summary>
     /// Build a minimal package by hand — used for the unresolvable case where we want to feed in
     /// a workflow that references an agent we deliberately omit from the package's agents[]
