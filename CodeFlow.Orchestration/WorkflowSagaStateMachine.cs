@@ -270,6 +270,12 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         }
         saga.CurrentInputRef = message.InputRef?.ToString();
         saga.PinAgentVersion(message.AgentKey, message.AgentVersion);
+        // Seed the per-trace repository allowlist from the workflow input convention. Authors
+        // declare repos via a `repositories` Json input whose default is `[{url, branch?}]`; the
+        // launch path lands that into ContextInputs, and we lift it here so the saga itself
+        // carries the allowlist forward across subflow boundaries.
+        saga.RepositoriesJson = LiftRepositoriesFromContext(message.ContextInputs)
+            ?? saga.RepositoriesJson;
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
@@ -336,6 +342,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         saga.ParentReviewRound = message.ReviewRound;
         saga.ParentReviewMaxRounds = message.ReviewMaxRounds;
         saga.ParentLoopDecision = message.LoopDecision;
+        // Inherit the parent's per-trace repository allowlist so vcs_* tools inside this subflow
+        // see the same allowed repos. Without this hand-off the child's local context starts
+        // empty (line above) and every vcs_* call would return repo_not_allowed even though the
+        // parent declared the repos.
+        saga.RepositoriesJson = SerializeRepositories(message.Repositories);
         if (saga.CreatedAtUtc == default)
         {
             saga.CreatedAtUtc = nowUtc;
@@ -378,7 +389,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ToolExecutionContext: null,
             WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: message.ReviewRound,
-            ReviewMaxRounds: message.ReviewMaxRounds));
+            ReviewMaxRounds: message.ReviewMaxRounds,
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     /// <summary>
@@ -1500,6 +1512,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedLocal[key] = value;
             }
             saga.InputsJson = SerializeContextInputs(mergedLocal);
+            // setContext({repositories: [...]}) keeps working as a runtime path to widen the
+            // allowlist. Lift the update to the saga field so it propagates to subflows.
+            saga.RepositoriesJson = LiftRepositoriesFromContext(mergedLocal)
+                ?? saga.RepositoriesJson;
         }
 
         if (message.WorkflowUpdates is { Count: > 0 } workflowUpdates)
@@ -1528,6 +1544,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 mergedLocal[key] = value;
             }
             saga.InputsJson = SerializeContextInputs(mergedLocal);
+            // Mirror the agent-decision path: a routing script that writes context.repositories
+            // also updates the saga-level allowlist so it reaches subflows.
+            saga.RepositoriesJson = LiftRepositoriesFromContext(mergedLocal)
+                ?? saga.RepositoriesJson;
         }
 
         if (eval.WorkflowUpdates.Count > 0)
@@ -2271,7 +2291,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             Depth: saga.SubflowDepth + 1,
             ReviewRound: reviewRound,
             ReviewMaxRounds: reviewMaxRounds,
-            LoopDecision: loopDecision));
+            LoopDecision: loopDecision,
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     private static async Task PublishHandoffAsync(
@@ -2334,7 +2355,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             WorkflowContext: DeserializeContextInputs(saga.WorkflowInputsJson),
             ReviewRound: saga.ParentReviewRound,
             ReviewMaxRounds: saga.ParentReviewMaxRounds,
-            OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder));
+            OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder,
+            Repositories: ParseRepositoriesJson(saga.RepositoriesJson)));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(
@@ -2414,4 +2436,128 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
 
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyInputs =
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per-trace repository allowlist key on the local-context bag (and the workflow input).
+    /// When this key appears in <c>context.*</c> at saga init or via a <c>setContext</c> mutation,
+    /// the value (a JSON array of <c>{url, branch?}</c>) is lifted to <c>saga.RepositoriesJson</c>
+    /// so it survives subflow boundaries.
+    /// </summary>
+    private const string RepositoriesContextKey = "repositories";
+
+    /// <summary>
+    /// If <paramref name="contextInputs"/> contains a <c>repositories</c> array, return its
+    /// canonical JSON form for storage on <c>saga.RepositoriesJson</c>. Null when absent or when
+    /// the value is not a JSON array. Validates only structure — individual entries are filtered
+    /// at publish time by <see cref="ParseRepositoriesJson"/>.
+    /// </summary>
+    private static string? LiftRepositoriesFromContext(
+        IReadOnlyDictionary<string, JsonElement>? contextInputs)
+    {
+        if (contextInputs is null
+            || !contextInputs.TryGetValue(RepositoriesContextKey, out var repos)
+            || repos.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        return repos.GetRawText();
+    }
+
+    /// <summary>
+    /// Parse <c>saga.RepositoriesJson</c> into the contract shape published on
+    /// <see cref="AgentInvokeRequested.Repositories"/> / <see cref="SubflowInvokeRequested.Repositories"/>.
+    /// Returns null when the saga has no allowlist; returns an empty list only if the JSON parses
+    /// but contains no valid <c>{url}</c> entries (malformed entries are silently skipped to match
+    /// the legacy <c>ExtractRepositoryContexts</c> behaviour).
+    /// </summary>
+    private static IReadOnlyList<RepositoryDeclaration>? ParseRepositoriesJson(string? repositoriesJson)
+    {
+        if (string.IsNullOrWhiteSpace(repositoriesJson))
+        {
+            return null;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(repositoriesJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var result = new List<RepositoryDeclaration>();
+            foreach (var entry in document.RootElement.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object
+                    || !entry.TryGetProperty("url", out var urlElement)
+                    || urlElement.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var url = urlElement.GetString();
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    continue;
+                }
+
+                string? branch = null;
+                if (entry.TryGetProperty("branch", out var branchElement)
+                    && branchElement.ValueKind == JsonValueKind.String)
+                {
+                    var b = branchElement.GetString();
+                    if (!string.IsNullOrWhiteSpace(b))
+                    {
+                        branch = b;
+                    }
+                }
+
+                result.Add(new RepositoryDeclaration(url, branch));
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Serialize a parent saga's published <see cref="SubflowInvokeRequested.Repositories"/>
+    /// snapshot back into the canonical JSON form for storage on the child saga's
+    /// <c>RepositoriesJson</c>. Inverse of <see cref="ParseRepositoriesJson"/>.
+    /// </summary>
+    private static string? SerializeRepositories(IReadOnlyList<RepositoryDeclaration>? repositories)
+    {
+        if (repositories is null || repositories.Count == 0)
+        {
+            return null;
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartArray();
+            foreach (var repo in repositories)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("url", repo.Url);
+                if (!string.IsNullOrWhiteSpace(repo.Branch))
+                {
+                    writer.WriteString("branch", repo.Branch);
+                }
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 }

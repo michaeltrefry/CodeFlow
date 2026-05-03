@@ -29,6 +29,11 @@ namespace CodeFlow.Contracts;
 ///   terminal port matches. Also lets the child saga recognize this custom port name as a legal
 ///   clean exit alongside the standard Completed/Approved/Rejected allowlist. Null for plain
 ///   Subflow invocations.</param>
+/// <param name="Repositories">Snapshot of the parent saga's per-trace repository allowlist. The
+///   child saga seeds its own <c>RepositoriesJson</c> from this at init, so vcs_* tools inside
+///   the subflow see the same allowed repos as the parent without the child workflow having to
+///   redeclare them. Null only on legacy in-flight messages produced before the contract added
+///   the field.</param>
 public sealed record SubflowInvokeRequested(
     Guid ParentTraceId,
     Guid ParentNodeId,
@@ -41,4 +46,5 @@ public sealed record SubflowInvokeRequested(
     int Depth,
     int? ReviewRound = null,
     int? ReviewMaxRounds = null,
-    string? LoopDecision = null);
+    string? LoopDecision = null,
+    IReadOnlyList<RepositoryDeclaration>? Repositories = null);

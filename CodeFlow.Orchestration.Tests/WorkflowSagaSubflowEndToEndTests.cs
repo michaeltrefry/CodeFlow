@@ -152,6 +152,133 @@ public sealed class WorkflowSagaSubflowEndToEndTests
     }
 
     [Fact]
+    public async Task RepositoriesDeclaredOnParent_ShouldPropagateToChildSagaAndChildAgentDispatch()
+    {
+        // Cross-saga propagation contract: a `repositories` allowlist set on the parent's
+        // ContextInputs at launch must reach a subflow's vcs_* tools without each child
+        // workflow having to redeclare it. The saga lifts the entry to RepositoriesJson, the
+        // dispatcher passes it through SubflowInvokeRequested.Repositories, and the child saga
+        // seeds its own RepositoriesJson on init — so the child's first AgentInvokeRequested
+        // carries the inherited allowlist.
+        var parentTraceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var parentStartNodeId = Guid.NewGuid();
+        var parentSubflowNodeId = Guid.NewGuid();
+
+        var parent = new Workflow(
+            Key: "parent-repos",
+            Version: 1,
+            Name: "parent-repos",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(parentStartNodeId, WorkflowNodeKind.Start, "kickoff",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(parentSubflowNodeId, WorkflowNodeKind.Subflow, AgentKey: null,
+                    AgentVersion: null, OutputScript: null,
+                    OutputPorts: new[] { "Completed", "Failed", "Escalated" },
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "child-repos", SubflowVersion: 1),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(parentStartNodeId, "Completed", parentSubflowNodeId,
+                    WorkflowEdge.DefaultInputPort, false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var childStartNodeId = Guid.NewGuid();
+        var child = new Workflow(
+            Key: "child-repos",
+            Version: 1,
+            Name: "child-repos",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartNodeId, WorkflowNodeKind.Start, "child-agent",
+                    AgentVersion: null, OutputScript: null, OutputPorts: AllDecisionPorts, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        await using var scope = BuildHarness(new[] { parent, child }, new Dictionary<string, int>
+        {
+            ["kickoff"] = 1,
+            ["child-agent"] = 1,
+        });
+        var harness = scope.Harness;
+
+        await harness.Start();
+        try
+        {
+            // Parent launches with `repositories` in context — the existing input convention.
+            var contextInputs = new Dictionary<string, JsonElement>
+            {
+                ["repositories"] = JsonDocument.Parse(
+                    "[{\"url\":\"https://github.com/acme/widget.git\",\"branch\":\"main\"}]")
+                    .RootElement.Clone(),
+            };
+
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: parentTraceId,
+                RoundId: parentRoundId,
+                WorkflowKey: parent.Key,
+                WorkflowVersion: parent.Version,
+                NodeId: parentStartNodeId,
+                AgentKey: "kickoff",
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/parent-in.bin"),
+                ContextInputs: contextInputs));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(parentTraceId, x => x.Running);
+
+            var parentSaga = sagaHarness.Sagas.Contains(parentTraceId)!;
+            parentSaga.RepositoriesJson.Should().NotBeNullOrWhiteSpace(
+                "ApplyInitialRequest must lift context.repositories into saga.RepositoriesJson");
+            parentSaga.RepositoriesJson!.Should().Contain("acme/widget");
+
+            // Parent Start → Subflow dispatch. The SubflowInvokeRequested must carry the parent's
+            // allowlist on its Repositories field.
+            await harness.Bus.Publish(BuildCompletion(parentTraceId, parentRoundId, parentStartNodeId,
+                "kickoff", 1, "Completed", "file:///tmp/parent-start-out.bin"));
+
+            var spawns = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, 1);
+            spawns.Should().ContainSingle();
+            var spawn = spawns[0].Context.Message;
+            spawn.Repositories.Should().NotBeNull(
+                "PublishSubflowDispatchAsync must thread the parent's allowlist onto SubflowInvokeRequested.Repositories");
+            spawn.Repositories!.Should().ContainSingle()
+                .Which.Url.Should().Be("https://github.com/acme/widget.git");
+            spawn.Repositories[0].Branch.Should().Be("main");
+
+            var childTraceId = spawn.ChildTraceId;
+            await sagaHarness.Exists(childTraceId, x => x.Running);
+
+            // Child saga inherits the parent's allowlist verbatim on init.
+            var childSaga = sagaHarness.Sagas.Contains(childTraceId)!;
+            childSaga.RepositoriesJson.Should().NotBeNullOrWhiteSpace(
+                "ApplyInitialSubflowAsync must seed child.RepositoriesJson from message.Repositories");
+            childSaga.RepositoriesJson!.Should().Contain("acme/widget");
+
+            // The first dispatch to the child's Start agent carries the inherited Repositories
+            // — which is what the runtime BuildToolExecutionContext consults when checking the
+            // vcs_* allowlist.
+            var childDispatch = await WaitForAgentInvocationAsync(harness, childTraceId, childStartNodeId);
+            childDispatch.Repositories.Should().NotBeNull(
+                "child Start dispatch must carry the inherited per-trace allowlist on Repositories");
+            childDispatch.Repositories!.Should().ContainSingle()
+                .Which.Url.Should().Be("https://github.com/acme/widget.git");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task FourLevelChain_ShouldFailDeepestWithDepthExceededAndBubbleFailedToRoot()
     {
         // Chain: root → A → B → C (C is at depth 3, the deepest legal child). C has a Subflow

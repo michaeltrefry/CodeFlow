@@ -4,6 +4,7 @@ using CodeFlow.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CodeFlow.Persistence.Migrations
 {
     [DbContext(typeof(CodeFlowDbContext))]
-    partial class CodeFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260503175050_WidenSagaFailureReason")]
+    partial class WidenSagaFailureReason
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2047,10 +2050,6 @@ namespace CodeFlow.Persistence.Migrations
                     b.Property<string>("PendingParallelRoundIdsJson")
                         .HasColumnType("longtext")
                         .HasColumnName("pending_parallel_round_ids_json");
-
-                    b.Property<string>("RepositoriesJson")
-                        .HasColumnType("text")
-                        .HasColumnName("repositories_json");
 
                     b.Property<int>("RoundCount")
                         .HasColumnType("int")
