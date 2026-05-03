@@ -300,9 +300,9 @@ interface DeliveryAuditState {
                 </div>
               }
               <div class="actions">
-                <cf-button type="submit" [disabled]="ts.sending">
+                <button type="submit" cf-button [disabled]="ts.sending">
                   {{ ts.sending ? 'Sending…' : 'Send test' }}
-                </cf-button>
+                </button>
                 <cf-button kind="ghost" (click)="cancelTestSend()">Close</cf-button>
               </div>
             </form>
@@ -425,9 +425,9 @@ interface DeliveryAuditState {
               </div>
 
               <div class="actions">
-                <cf-button type="submit" [disabled]="edit.saving">
+                <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save' }}
-                </cf-button>
+                </button>
                 <cf-button kind="ghost" (click)="cancelProviderEdit()">Cancel</cf-button>
               </div>
             </form>
@@ -543,9 +543,9 @@ interface DeliveryAuditState {
               </div>
 
               <div class="actions">
-                <cf-button type="submit" [disabled]="edit.saving">
+                <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save' }}
-                </cf-button>
+                </button>
                 <cf-button kind="ghost" (click)="cancelRouteEdit()">Cancel</cf-button>
               </div>
             </form>
@@ -641,9 +641,9 @@ interface DeliveryAuditState {
               </div>
 
               <div class="actions">
-                <cf-button type="submit" [disabled]="edit.saving">
+                <button type="submit" cf-button [disabled]="edit.saving">
                   {{ edit.saving ? 'Saving…' : 'Save (new version)' }}
-                </cf-button>
+                </button>
                 <cf-button kind="ghost" (click)="previewTemplate()" [disabled]="edit.previewing">
                   {{ edit.previewing ? 'Rendering…' : 'Preview' }}
                 </cf-button>
