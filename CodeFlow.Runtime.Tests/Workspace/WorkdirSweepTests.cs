@@ -19,30 +19,41 @@ public sealed class WorkdirSweepTests : IDisposable
     }
 
     [Fact]
-    public void Sweep_OldEntries_AreDeleted_NewEntriesKept()
+    public void Sweep_OldTraceDirs_AreDeleted_NewTraceDirsKept_ReservedSiblingsLeftAlone()
     {
         var now = DateTimeOffset.UtcNow;
         var maxAge = TimeSpan.FromDays(14);
 
-        var oldDir = Path.Combine(root, Guid.NewGuid().ToString("N"));
-        var oldFile = Path.Combine(root, "stray.txt");
-        var freshDir = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        var oldTraceDir = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        var freshTraceDir = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        // Reserved siblings under the unified /workspace tree: assistant per-conversation
+        // root, container exec root, README. The sweep should never touch any of these
+        // regardless of mtime.
+        var assistantDir = Path.Combine(root, "assistant");
+        var containerExecDir = Path.Combine(root, "container-workspace");
+        var readme = Path.Combine(root, "README.md");
 
-        Directory.CreateDirectory(oldDir);
-        File.WriteAllText(Path.Combine(oldDir, "marker.txt"), "x");
-        File.WriteAllText(oldFile, "y");
-        Directory.CreateDirectory(freshDir);
+        Directory.CreateDirectory(oldTraceDir);
+        File.WriteAllText(Path.Combine(oldTraceDir, "marker.txt"), "x");
+        Directory.CreateDirectory(freshTraceDir);
+        Directory.CreateDirectory(assistantDir);
+        Directory.CreateDirectory(containerExecDir);
+        File.WriteAllText(readme, "y");
 
-        Directory.SetLastWriteTimeUtc(oldDir, now.UtcDateTime.AddDays(-30));
-        File.SetLastWriteTimeUtc(oldFile, now.UtcDateTime.AddDays(-30));
-        Directory.SetLastWriteTimeUtc(freshDir, now.UtcDateTime.AddHours(-1));
+        Directory.SetLastWriteTimeUtc(oldTraceDir, now.UtcDateTime.AddDays(-30));
+        Directory.SetLastWriteTimeUtc(freshTraceDir, now.UtcDateTime.AddHours(-1));
+        Directory.SetLastWriteTimeUtc(assistantDir, now.UtcDateTime.AddDays(-30));
+        Directory.SetLastWriteTimeUtc(containerExecDir, now.UtcDateTime.AddDays(-30));
+        File.SetLastWriteTimeUtc(readme, now.UtcDateTime.AddDays(-30));
 
         var deleted = WorkdirSweep.Sweep(root, maxAge, now);
 
-        deleted.Should().Be(2);
-        Directory.Exists(oldDir).Should().BeFalse();
-        File.Exists(oldFile).Should().BeFalse();
-        Directory.Exists(freshDir).Should().BeTrue();
+        deleted.Should().Be(1);
+        Directory.Exists(oldTraceDir).Should().BeFalse();
+        Directory.Exists(freshTraceDir).Should().BeTrue();
+        Directory.Exists(assistantDir).Should().BeTrue();
+        Directory.Exists(containerExecDir).Should().BeTrue();
+        File.Exists(readme).Should().BeTrue();
     }
 
     [Fact]
@@ -69,8 +80,8 @@ public sealed class WorkdirSweepTests : IDisposable
     public void Sweep_AllFresh_KeepsAll()
     {
         var now = DateTimeOffset.UtcNow;
-        var fresh1 = Path.Combine(root, "a");
-        var fresh2 = Path.Combine(root, "b");
+        var fresh1 = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        var fresh2 = Path.Combine(root, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fresh1);
         Directory.CreateDirectory(fresh2);
 
@@ -82,11 +93,12 @@ public sealed class WorkdirSweepTests : IDisposable
     }
 
     [Fact]
-    public void Sweep_TtlOfOneSecond_DeletesAnythingOlderThanOneSecond()
+    public void Sweep_TtlOfOneSecond_DeletesAnyTraceWorkdirOlderThanOneSecond()
     {
-        // Tight TTL acts as a "delete everything older than now-Δ" smoke test.
+        // Tight TTL acts as a "delete everything older than now-Δ" smoke test, scoped to
+        // entries whose name matches the {traceId:N} shape.
         var now = DateTimeOffset.UtcNow;
-        var dir = Path.Combine(root, "old");
+        var dir = Path.Combine(root, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         Directory.SetLastWriteTimeUtc(dir, now.UtcDateTime.AddSeconds(-30));
 
@@ -94,5 +106,22 @@ public sealed class WorkdirSweepTests : IDisposable
 
         deleted.Should().Be(1);
         Directory.Exists(dir).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsTraceWorkdirName_AcceptsLowercase32Hex_RejectsEverythingElse()
+    {
+        WorkdirSweep.IsTraceWorkdirName(Guid.NewGuid().ToString("N")).Should().BeTrue();
+        WorkdirSweep.IsTraceWorkdirName("0123456789abcdef0123456789abcdef").Should().BeTrue();
+
+        // Uppercase hex: ToString("N") emits lowercase, so an uppercase entry isn't ours.
+        WorkdirSweep.IsTraceWorkdirName("0123456789ABCDEF0123456789ABCDEF").Should().BeFalse();
+        // Wrong length, hyphenated, mixed-case, reserved names.
+        WorkdirSweep.IsTraceWorkdirName(Guid.NewGuid().ToString("D")).Should().BeFalse();
+        WorkdirSweep.IsTraceWorkdirName("assistant").Should().BeFalse();
+        WorkdirSweep.IsTraceWorkdirName("container-workspace").Should().BeFalse();
+        WorkdirSweep.IsTraceWorkdirName(string.Empty).Should().BeFalse();
+        WorkdirSweep.IsTraceWorkdirName("0123456789abcdef0123456789abcde").Should().BeFalse(); // 31 chars
+        WorkdirSweep.IsTraceWorkdirName("0123456789abcdef0123456789abcdefa").Should().BeFalse(); // 33 chars
     }
 }
