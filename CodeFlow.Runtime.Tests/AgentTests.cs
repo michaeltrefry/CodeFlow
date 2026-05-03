@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace CodeFlow.Runtime.Tests;
@@ -290,6 +291,64 @@ public sealed class AgentTests
                 }
             }
         }
+    }
+
+    [Fact]
+    public async Task InvokeAsync_PrependsConfiguredHistoryFromJsonRoundTrip()
+    {
+        // Stored agent configs round-trip through JsonSerializerDefaults.Web; the test confirms
+        // (a) string-form ChatMessageRole values deserialize via the JsonStringEnumConverter
+        // annotation on the enum, and (b) the history is prepended between the system block and
+        // the latest user input on the way through ContextAssembler.
+        const string configJson = """
+        {
+          "provider": "test",
+          "model": "m",
+          "systemPrompt": "You are concise.",
+          "history": [
+            {"role": "user", "content": "Earlier user turn."},
+            {"role": "assistant", "content": "Earlier assistant turn."}
+          ]
+        }
+        """;
+
+        var configuration = JsonSerializer.Deserialize<AgentInvocationConfiguration>(
+            configJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        configuration.History.Should().NotBeNull();
+        configuration.History!.Should().HaveCount(2);
+        configuration.History[0].Role.Should().Be(ChatMessageRole.User);
+        configuration.History[1].Role.Should().Be(ChatMessageRole.Assistant);
+
+        IReadOnlyList<ChatMessage>? firstCallMessages = null;
+        var modelClient = new DelegatingModelClient(request =>
+        {
+            firstCallMessages ??= request.Messages.ToList();
+            return Task.FromResult(new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    """{"kind":"Completed","content":"done"}"""),
+                InvocationStopReason.EndTurn,
+                new TokenUsage(1, 1, 2)));
+        });
+        var agent = new Agent(new ModelClientRegistry(
+        [
+            new ModelClientRegistration("test", modelClient)
+        ]));
+
+        await agent.InvokeAsync(configuration, "Latest user turn.", ResolvedAgentTools.Empty);
+
+        firstCallMessages.Should().NotBeNull();
+        firstCallMessages!.Select(m => (m.Role, m.Content)).Should().BeEquivalentTo(
+            new[]
+            {
+                (ChatMessageRole.System, "You are concise."),
+                (ChatMessageRole.User, "Earlier user turn."),
+                (ChatMessageRole.Assistant, "Earlier assistant turn."),
+                (ChatMessageRole.User, "Latest user turn."),
+            },
+            opts => opts.WithStrictOrdering());
     }
 
     private sealed class FakeMcpClient : IMcpClient

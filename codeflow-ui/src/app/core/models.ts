@@ -46,6 +46,13 @@ export interface AgentBudgetConfig {
   maxConsecutiveNonMutatingCalls?: number;
 }
 
+export type AuthorableHistoryRole = 'user' | 'assistant';
+
+export interface AuthorableHistoryMessage {
+  role: AuthorableHistoryRole;
+  content: string;
+}
+
 export interface AgentConfig {
   type?: 'agent' | 'hitl';
   name?: string;
@@ -60,6 +67,7 @@ export interface AgentConfig {
   budget?: AgentBudgetConfig;
   outputs?: AgentOutputDeclaration[];
   decisionOutputTemplates?: Record<string, string>;
+  history?: AuthorableHistoryMessage[];
   [key: string]: unknown;
 }
 
