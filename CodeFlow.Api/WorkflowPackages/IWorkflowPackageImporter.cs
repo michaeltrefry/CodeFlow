@@ -6,8 +6,32 @@ public interface IWorkflowPackageImporter
         WorkflowPackage package,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// sc-394: preview the import after applying user-chosen per-conflict resolutions
+    /// (UseExisting / Bump / Copy). The resolutions transform the package (drop entities,
+    /// rewrite versions, rename keys) and rewrite every transitive workflow-node ref before
+    /// the planner runs — so the returned preview reflects the post-resolution shape.
+    /// </summary>
+    Task<WorkflowPackageImportPreview> PreviewAsync(
+        WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
+        CancellationToken cancellationToken = default);
+
     Task<WorkflowPackageImportApplyResult> ApplyAsync(
         WorkflowPackage package,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// sc-394: apply the import after user-chosen resolutions. <c>Bump</c> and <c>Copy</c>
+    /// outcomes write <see cref="AgentConfigEntity.ForkedFromKey"/> /
+    /// <see cref="AgentConfigEntity.ForkedFromVersion"/> lineage on the new agent rows so the
+    /// (originalKey, originalVersion) → (resolvedKey, resolvedVersion) provenance stays
+    /// queryable. Workflows have no lineage columns yet; their resolution outcomes still
+    /// rewrite refs but don't carry lineage forward.
+    /// </summary>
+    Task<WorkflowPackageImportApplyResult> ApplyAsync(
+        WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -24,6 +48,51 @@ public interface IWorkflowPackageImporter
     Task<WorkflowPackageValidationResult> ValidateAsync(
         WorkflowPackage package,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Identity of a single Conflict row the user is resolving, keyed by resource kind, identity
+/// (entity Key — Name for Skill, AgentKey for AgentRoleAssignment, Key for the rest), and the
+/// package's source version. <see cref="SourceVersion"/> is non-null for versioned kinds
+/// (Workflow, Agent) and null for unversioned kinds (Role, Skill, McpServer, AgentRoleAssignment).
+/// Mirrors <see cref="WorkflowPackageImportItem.SourceVersion"/> on the preview side.
+/// </summary>
+public sealed record WorkflowPackageImportResolutionKey(
+    WorkflowPackageImportResourceKind Kind,
+    string Key,
+    int? SourceVersion);
+
+/// <summary>
+/// Per-Conflict resolution chosen by the user. The importer applies it before planning so the
+/// resulting preview / apply describe the post-resolution shape.
+/// <list type="bullet">
+///   <item><description><see cref="WorkflowPackageImportResolutionMode.UseExisting"/> — drop the
+///     package's lower version; rewrite every workflow node that pinned this entity to point at
+///     the library's higher version. Valid for any kind.</description></item>
+///   <item><description><see cref="WorkflowPackageImportResolutionMode.Bump"/> — set the entity's
+///     version to <c>existingMaxVersion + 1</c>; rewrite transitive node refs to the bumped
+///     version. Valid only for versioned kinds (Agent, Workflow). New agent row carries
+///     ForkedFromKey/Version lineage to the original (key, sourceVersion).</description></item>
+///   <item><description><see cref="WorkflowPackageImportResolutionMode.Copy"/> — rename the entity
+///     to <see cref="NewKey"/> at version 1; rewrite transitive node refs and (for agents) role
+///     assignments to the new key. Valid only for versioned kinds. Sets agent lineage to the
+///     original (key, sourceVersion).</description></item>
+/// </list>
+/// </summary>
+/// <param name="Target">The Conflict row this resolution targets.</param>
+/// <param name="Mode">Which of the three deterministic resolutions to apply.</param>
+/// <param name="NewKey">Required when <paramref name="Mode"/> is
+/// <see cref="WorkflowPackageImportResolutionMode.Copy"/>; null otherwise.</param>
+public sealed record WorkflowPackageImportResolution(
+    WorkflowPackageImportResolutionKey Target,
+    WorkflowPackageImportResolutionMode Mode,
+    string? NewKey = null);
+
+public enum WorkflowPackageImportResolutionMode
+{
+    UseExisting,
+    Bump,
+    Copy,
 }
 
 public sealed record WorkflowPackageValidationResult(

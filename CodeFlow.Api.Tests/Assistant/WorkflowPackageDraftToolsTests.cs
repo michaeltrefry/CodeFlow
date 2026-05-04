@@ -306,8 +306,22 @@ public sealed class WorkflowPackageDraftToolsTests : IDisposable
             CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+        public Task<CodeFlow.Api.WorkflowPackages.WorkflowPackageImportPreview> PreviewAsync(
+            CodeFlow.Api.WorkflowPackages.WorkflowPackage package,
+            IReadOnlyDictionary<CodeFlow.Api.WorkflowPackages.WorkflowPackageImportResolutionKey,
+                CodeFlow.Api.WorkflowPackages.WorkflowPackageImportResolution>? resolutions,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
         public Task<CodeFlow.Api.WorkflowPackages.WorkflowPackageImportApplyResult> ApplyAsync(
             CodeFlow.Api.WorkflowPackages.WorkflowPackage package,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<CodeFlow.Api.WorkflowPackages.WorkflowPackageImportApplyResult> ApplyAsync(
+            CodeFlow.Api.WorkflowPackages.WorkflowPackage package,
+            IReadOnlyDictionary<CodeFlow.Api.WorkflowPackages.WorkflowPackageImportResolutionKey,
+                CodeFlow.Api.WorkflowPackages.WorkflowPackageImportResolution>? resolutions,
             CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
