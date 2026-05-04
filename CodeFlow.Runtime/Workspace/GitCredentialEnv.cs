@@ -34,13 +34,22 @@ public static class GitCredentialEnv
         // `Workspace__GitCredentialRoot` to a path with whitespace.
         var helperValue = $"store --file=\"{credentialFile}\"";
 
+        // First credential.helper="" entry resets the helper list — clears anything inherited
+        // from the system gitconfig (osxkeychain on macOS, libsecret on some Linux installs,
+        // wincred on Windows). Without the reset, the inherited helper runs first; if it
+        // returns nothing for the requested host git falls through to our store helper, but
+        // some inherited helpers (notably osxkeychain in interactive contexts) interact poorly
+        // and we'd rather have a deterministic single-helper chain. See git-config(1) under
+        // "Specifying an empty helper string will reset the helper list to empty."
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["GIT_CONFIG_COUNT"] = "2",
+            ["GIT_CONFIG_COUNT"] = "3",
             ["GIT_CONFIG_KEY_0"] = "credential.helper",
-            ["GIT_CONFIG_VALUE_0"] = helperValue,
-            ["GIT_CONFIG_KEY_1"] = "credential.useHttpPath",
-            ["GIT_CONFIG_VALUE_1"] = "true",
+            ["GIT_CONFIG_VALUE_0"] = string.Empty,
+            ["GIT_CONFIG_KEY_1"] = "credential.helper",
+            ["GIT_CONFIG_VALUE_1"] = helperValue,
+            ["GIT_CONFIG_KEY_2"] = "credential.useHttpPath",
+            ["GIT_CONFIG_VALUE_2"] = "true",
         };
     }
 
