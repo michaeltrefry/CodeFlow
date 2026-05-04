@@ -1357,20 +1357,11 @@ public sealed class DryRunExecutor
         DryRunState state,
         CancellationToken cancellationToken)
     {
-        // Augment author-declared ports with the implicit Failed (and synthesized Exhausted for
-        // ReviewLoop) so the boundary script can route to those exit ports via setNodePath. The
-        // validator forbids declaring these names on a node's outputPorts, so they are added at
-        // script call time only.
-        var declaredPorts = new HashSet<string>(
-            boundaryNode.OutputPorts ?? (IReadOnlyList<string>)Array.Empty<string>(),
-            StringComparer.Ordinal)
-        {
-            "Failed"
-        };
-        if (boundaryNode.Kind == WorkflowNodeKind.ReviewLoop)
-        {
-            declaredPorts.Add("Exhausted");
-        }
+        // Centralized boundary-script port set: author-declared OutputPorts + implicit Failed
+        // (+ synthesized Exhausted and resolved LoopDecision for ReviewLoop). Saga, DryRun, and
+        // the editor's /validate-script all share BoundaryScriptPorts.GetDeclaredPorts so the
+        // wirable set never drifts between dev-time validation and runtime enforcement.
+        var declaredPorts = BoundaryScriptPorts.GetDeclaredPorts(boundaryNode);
 
         var artifactJson = ParseArtifactAsJsonElement(output);
         var scriptInput = ComposeAgentScriptInput(artifactJson, effectivePort, decisionPayload: null);

@@ -1487,20 +1487,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             return BoundaryOutputScriptOutcome.Pass(effectivePortName, outputRef);
         }
 
-        // Augment author-declared ports with the implicit Failed (and synthesized Exhausted for
-        // ReviewLoop) so a boundary script may route to those exit ports via setNodePath. Authors
-        // can never declare these in OutputPorts (validator rejects), so we add them at script
-        // call time.
-        var declaredPorts = new HashSet<string>(
-            boundaryNode.OutputPorts ?? (IReadOnlyList<string>)Array.Empty<string>(),
-            StringComparer.Ordinal)
-        {
-            ImplicitFailedPort
-        };
-        if (boundaryNode.Kind == WorkflowNodeKind.ReviewLoop)
-        {
-            declaredPorts.Add("Exhausted");
-        }
+        // Centralized boundary-script port set: author-declared OutputPorts + implicit Failed
+        // (+ synthesized Exhausted and resolved LoopDecision for ReviewLoop). Saga, DryRun, and
+        // the editor's /validate-script all share BoundaryScriptPorts.GetDeclaredPorts so the
+        // wirable set never drifts between dev-time validation and runtime enforcement.
+        var declaredPorts = BoundaryScriptPorts.GetDeclaredPorts(boundaryNode);
 
         var artifactJson = await ReadArtifactAsJsonAsync(
             artifactStore,
