@@ -27,21 +27,33 @@ public sealed class WorkflowPackageImporter(
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly WorkflowPackageImportValidator admissionValidator = admissionValidator ?? new WorkflowPackageImportValidator();
 
+    public Task<WorkflowPackageImportPreview> PreviewAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken = default) =>
+        PreviewAsync(package, resolutions: null, cancellationToken);
+
     public async Task<WorkflowPackageImportPreview> PreviewAsync(
         WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);
-        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), resolutions, cancellationToken);
         return plan.Preview;
     }
 
+    public Task<WorkflowPackageImportApplyResult> ApplyAsync(
+        WorkflowPackage package,
+        CancellationToken cancellationToken = default) =>
+        ApplyAsync(package, resolutions: null, cancellationToken);
+
     public async Task<WorkflowPackageImportApplyResult> ApplyAsync(
         WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);
-        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), resolutions, cancellationToken);
         var preview = plan.Preview;
         if (!preview.CanApply)
         {
@@ -50,13 +62,14 @@ public sealed class WorkflowPackageImporter(
         }
 
         var importPackage = plan.Package;
+        var lineage = plan.AgentLineage;
         var validationErrors = new List<WorkflowPackageValidationError>();
 
         var strategy = dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
             validationErrors.Clear();
-            await RunImportInTransactionAsync(importPackage, commit: true, validationErrors, cancellationToken);
+            await RunImportInTransactionAsync(importPackage, lineage, commit: true, validationErrors, cancellationToken);
         });
 
         if (validationErrors.Count > 0)
@@ -74,7 +87,11 @@ public sealed class WorkflowPackageImporter(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);
-        var plan = await BuildImportPlanAsync(NormalizeNulls(package), cancellationToken);
+        // ValidateAsync intentionally ignores resolutions: the homepage assistant's
+        // save_workflow_package tool runs validation BEFORE the user chooses any resolution
+        // (the chip can only be offered once preview comes back valid). If a future caller
+        // needs validation under a chosen resolution, add an overload mirroring PreviewAsync.
+        var plan = await BuildImportPlanAsync(NormalizeNulls(package), resolutions: null, cancellationToken);
         if (!plan.Preview.CanApply)
         {
             // Conflict-only packages: caller (PreviewAsync) already reports the conflicts;
@@ -83,13 +100,14 @@ public sealed class WorkflowPackageImporter(
         }
 
         var importPackage = plan.Package;
+        var lineage = plan.AgentLineage;
         var errors = new List<WorkflowPackageValidationError>();
 
         var strategy = dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
             errors.Clear();
-            await RunImportInTransactionAsync(importPackage, commit: false, errors, cancellationToken);
+            await RunImportInTransactionAsync(importPackage, lineage, commit: false, errors, cancellationToken);
         });
 
         return errors.Count == 0
@@ -99,6 +117,7 @@ public sealed class WorkflowPackageImporter(
 
     private async Task RunImportInTransactionAsync(
         WorkflowPackage importPackage,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> agentLineage,
         bool commit,
         List<WorkflowPackageValidationError> validationErrors,
         CancellationToken cancellationToken)
@@ -114,7 +133,7 @@ public sealed class WorkflowPackageImporter(
         await ImportSkillsAsync(importPackage, now, cancellationToken);
         await ImportMcpServersAsync(importPackage, now, cancellationToken);
         await ImportRolesAsync(importPackage, now, cancellationToken);
-        await ImportAgentsAsync(importPackage, now, cancellationToken);
+        await ImportAgentsAsync(importPackage, agentLineage, now, cancellationToken);
         await ImportRoleAssignmentsAsync(importPackage, now, cancellationToken);
         await ImportWorkflowsAsync(importPackage, now, cancellationToken);
 
@@ -266,6 +285,7 @@ public sealed class WorkflowPackageImporter(
 
     private async Task<WorkflowPackageImportPlan> BuildImportPlanAsync(
         WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
         CancellationToken cancellationToken)
     {
         // sc-272 PR2: package import is the canonical "self-contained dependency closure"
@@ -277,6 +297,14 @@ public sealed class WorkflowPackageImporter(
         {
             throw new WorkflowPackageResolutionException(rejected.Reason.Reason);
         }
+
+        // sc-394: apply user-chosen resolutions BEFORE planning. The pre-process drops
+        // UseExisting entities, rewrites Bump versions and Copy keys+versions, and rewrites
+        // every transitive workflow-node ref (incl. Swarm slots) so the planner sees a
+        // self-consistent post-resolution package. AgentLineage carries the (newKey,newVer) →
+        // (origKey,origVer) provenance through to ImportAgentsAsync's ForkedFromKey/Version writes.
+        var resolved = await ApplyResolutionsAsync(package, resolutions, cancellationToken);
+        package = resolved.Package;
 
         // Future: thread `_ = ((Accepted<AdmittedPackageImport>)admission).Value` through the
         // plan so the apply loop's contract is "consume admitted package only". For PR2 the
@@ -298,6 +326,13 @@ public sealed class WorkflowPackageImporter(
         items.AddRange(workflowPlan.Items);
 
         var remappedPackage = RemapPackage(package, agentPlan.VersionMap, workflowPlan.VersionMap);
+
+        // Project the resolution lineage through the planner's auto-bump output so
+        // ImportAgentsAsync can match by the FINAL (key,version) the agent row will land at.
+        // Auto-bump-on-content-differs is rare for resolved entities (Bump targets a fresh
+        // version, Copy lands at v1 of a probably-unique key), but the projection is cheap
+        // and keeps lineage robust in the corner where it does fire.
+        var finalAgentLineage = ProjectLineage(resolved.AgentLineage, agentPlan.VersionMap);
 
         foreach (var assignment in remappedPackage.AgentRoleAssignments)
         {
@@ -328,8 +363,518 @@ public sealed class WorkflowPackageImporter(
                 .ToArray(),
             warnings.ToArray());
 
-        return new WorkflowPackageImportPlan(remappedPackage, preview);
+        return new WorkflowPackageImportPlan(remappedPackage, preview, finalAgentLineage);
     }
+
+    /// <summary>
+    /// Walks the lineage map (keyed by post-resolution agent identity) and rewrites the keys
+    /// through the planner's auto-bump <paramref name="agentVersionMap"/>. After this, lineage
+    /// is keyed by the (key,version) the row will actually land at in the DB — which is what
+    /// ImportAgentsAsync iterates.
+    /// </summary>
+    private static IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> ProjectLineage(
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> postResolutionLineage,
+        IReadOnlyDictionary<PackageVersionKey, int> agentVersionMap)
+    {
+        if (postResolutionLineage.Count == 0)
+        {
+            return postResolutionLineage;
+        }
+
+        var projected = new Dictionary<PackageVersionKey, PackageVersionKey>(postResolutionLineage.Count);
+        foreach (var (postRes, origin) in postResolutionLineage)
+        {
+            var finalVersion = agentVersionMap.TryGetValue(postRes, out var v) ? v : postRes.Version;
+            projected[new PackageVersionKey(postRes.Key, finalVersion)] = origin;
+        }
+        return projected;
+    }
+
+    /// <summary>
+    /// sc-394: pre-process the package against user-chosen resolutions before the planner runs.
+    /// Drops <c>UseExisting</c> entities and rewrites <c>Bump</c>/<c>Copy</c> entities in place
+    /// (key + version), then rewrites every transitive workflow-node ref (the four agent slots
+    /// plus the subflow slot), the entry-point reference, agent-role assignments, and the
+    /// manifest so the package handed to the planner is self-consistent post-resolution.
+    /// <para/>
+    /// Returns the rewritten package plus an agent-lineage map keyed by the resolved
+    /// (newKey, newVersion) → original (origKey, origVersion) for <c>Bump</c> and <c>Copy</c>.
+    /// <c>UseExisting</c> writes no row, so it leaves no lineage entry.
+    /// </summary>
+    private async Task<ResolvedPackage> ApplyResolutionsAsync(
+        WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
+        CancellationToken cancellationToken)
+    {
+        if (resolutions is null || resolutions.Count == 0)
+        {
+            return new ResolvedPackage(
+                package,
+                new Dictionary<PackageVersionKey, PackageVersionKey>(0));
+        }
+
+        ValidateResolutionInput(package, resolutions);
+
+        // Per-resource drop sets + rewrite maps. Build them by walking resolutions; apply to
+        // the package collections afterward in a single pass so the order resolutions arrived
+        // in doesn't affect the result.
+        var droppedAgents = new HashSet<PackageVersionKey>();
+        var droppedWorkflows = new HashSet<PackageVersionKey>();
+        var droppedRoles = new HashSet<string>(StringComparer.Ordinal);
+        var droppedSkills = new HashSet<string>(StringComparer.Ordinal);
+        var droppedMcpServers = new HashSet<string>(StringComparer.Ordinal);
+        var droppedAssignments = new HashSet<string>(StringComparer.Ordinal);
+
+        // Ref rewrites: ORIGINAL identity (origKey, origVersion) → resolved identity
+        // (newKey, newVersion). Used to rewrite both the package's own entity collections AND
+        // every transitive ref that pointed at the original identity.
+        var agentRewrites = new Dictionary<PackageVersionKey, PackageVersionKey>();
+        var workflowRewrites = new Dictionary<PackageVersionKey, PackageVersionKey>();
+
+        // Lineage keyed by RESOLVED identity (newKey, newVersion) → original (origKey,
+        // origVersion). ImportAgentsAsync looks up by the agent row's own identity.
+        var agentLineage = new Dictionary<PackageVersionKey, PackageVersionKey>();
+
+        foreach (var resolution in resolutions.Values)
+        {
+            var target = resolution.Target;
+
+            switch (resolution.Mode)
+            {
+                case WorkflowPackageImportResolutionMode.UseExisting:
+                    switch (target.Kind)
+                    {
+                        case WorkflowPackageImportResourceKind.Agent:
+                        {
+                            var origin = new PackageVersionKey(target.Key, target.SourceVersion!.Value);
+                            droppedAgents.Add(origin);
+                            var existingMax = await MaxAgentVersionAsync(target.Key, cancellationToken)
+                                ?? throw NewResolutionException(target,
+                                    "UseExisting requires the library to already contain an agent with this key.");
+                            agentRewrites[origin] = new PackageVersionKey(target.Key, existingMax);
+                            // The library's existing role assignment for this agent stays —
+                            // drop the package's assignment so PreviewAgentRoleAssignmentAsync
+                            // doesn't compare it against unrelated existing rows.
+                            droppedAssignments.Add(target.Key);
+                            break;
+                        }
+                        case WorkflowPackageImportResourceKind.Workflow:
+                        {
+                            var origin = new PackageVersionKey(target.Key, target.SourceVersion!.Value);
+                            droppedWorkflows.Add(origin);
+                            var existingMax = await MaxWorkflowVersionAsync(target.Key, cancellationToken)
+                                ?? throw NewResolutionException(target,
+                                    "UseExisting requires the library to already contain a workflow with this key.");
+                            workflowRewrites[origin] = new PackageVersionKey(target.Key, existingMax);
+                            break;
+                        }
+                        case WorkflowPackageImportResourceKind.Role:
+                            droppedRoles.Add(target.Key);
+                            break;
+                        case WorkflowPackageImportResourceKind.Skill:
+                            // Skills are name-keyed; WorkflowPackageImportResolutionKey.Key
+                            // carries the Name for this kind (mirrors WorkflowPackageImportItem).
+                            droppedSkills.Add(target.Key);
+                            break;
+                        case WorkflowPackageImportResourceKind.McpServer:
+                            droppedMcpServers.Add(target.Key);
+                            break;
+                        case WorkflowPackageImportResourceKind.AgentRoleAssignment:
+                            droppedAssignments.Add(target.Key);
+                            break;
+                    }
+                    break;
+
+                case WorkflowPackageImportResolutionMode.Bump:
+                {
+                    var origin = new PackageVersionKey(target.Key, target.SourceVersion!.Value);
+                    if (target.Kind == WorkflowPackageImportResourceKind.Agent)
+                    {
+                        var existingMax = await MaxAgentVersionAsync(target.Key, cancellationToken) ?? 0;
+                        var bumped = new PackageVersionKey(target.Key, existingMax + 1);
+                        agentRewrites[origin] = bumped;
+                        agentLineage[bumped] = origin;
+                    }
+                    else
+                    {
+                        // Workflow
+                        var existingMax = await MaxWorkflowVersionAsync(target.Key, cancellationToken) ?? 0;
+                        var bumped = new PackageVersionKey(target.Key, existingMax + 1);
+                        workflowRewrites[origin] = bumped;
+                    }
+                    break;
+                }
+
+                case WorkflowPackageImportResolutionMode.Copy:
+                {
+                    var origin = new PackageVersionKey(target.Key, target.SourceVersion!.Value);
+                    var newKey = resolution.NewKey!;
+                    var copy = new PackageVersionKey(newKey, 1);
+                    if (target.Kind == WorkflowPackageImportResourceKind.Agent)
+                    {
+                        agentRewrites[origin] = copy;
+                        agentLineage[copy] = origin;
+                    }
+                    else
+                    {
+                        // Workflow
+                        workflowRewrites[origin] = copy;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Rewrite agents collection.
+        var transformedAgents = new List<WorkflowPackageAgent>(package.Agents.Count);
+        foreach (var agent in package.Agents)
+        {
+            var pvk = new PackageVersionKey(agent.Key, agent.Version);
+            if (droppedAgents.Contains(pvk)) continue;
+            if (agentRewrites.TryGetValue(pvk, out var resolved))
+            {
+                transformedAgents.Add(agent with { Key = resolved.Key, Version = resolved.Version });
+            }
+            else
+            {
+                transformedAgents.Add(agent);
+            }
+        }
+
+        // Build a map from origAgentKey → newAgentKey for any Copy that renamed agents. Used
+        // when rewriting role assignments so the new copy inherits the package's role grants.
+        var copyAgentKeyRenames = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (origin, resolved) in agentRewrites)
+        {
+            if (!string.Equals(origin.Key, resolved.Key, StringComparison.Ordinal))
+            {
+                copyAgentKeyRenames[origin.Key] = resolved.Key;
+            }
+        }
+
+        // Rewrite workflows: filter dropped, rename Copy/Bump targets, rewrite every node ref.
+        var transformedWorkflows = new List<WorkflowPackageWorkflow>(package.Workflows.Count);
+        foreach (var workflow in package.Workflows)
+        {
+            var pvk = new PackageVersionKey(workflow.Key, workflow.Version);
+            if (droppedWorkflows.Contains(pvk)) continue;
+            var renamed = workflowRewrites.TryGetValue(pvk, out var resolved)
+                ? workflow with { Key = resolved.Key, Version = resolved.Version }
+                : workflow;
+            transformedWorkflows.Add(renamed with
+            {
+                Nodes = renamed.Nodes
+                    .Select(node => RewriteNodeRefs(node, agentRewrites, workflowRewrites))
+                    .ToArray(),
+            });
+        }
+
+        // Rewrite EntryPoint. UseExisting on the entry point is invalid (admission would
+        // reject the dropped state); ValidateResolutionInput catches this, but a defensive
+        // re-check here keeps the code symmetric.
+        var entryPvk = new PackageVersionKey(package.EntryPoint.Key, package.EntryPoint.Version);
+        if (droppedWorkflows.Contains(entryPvk))
+        {
+            throw new WorkflowPackageResolutionException(
+                $"Resolution would drop the entry-point workflow '{package.EntryPoint.Key}' v{package.EntryPoint.Version}. "
+                + "UseExisting is not valid for the entry point because the package's entry-point reference would no longer resolve.");
+        }
+        var newEntryPoint = workflowRewrites.TryGetValue(entryPvk, out var entryResolved)
+            ? new WorkflowPackageReference(entryResolved.Key, entryResolved.Version)
+            : package.EntryPoint;
+
+        // Rewrite role assignments. UseExisting on an agent dropped its assignment up-front.
+        // Copy renames the AgentKey on any matching assignment so the new copy inherits the
+        // package's role grants.
+        var transformedAssignments = new List<WorkflowPackageAgentRoleAssignment>(package.AgentRoleAssignments.Count);
+        foreach (var assignment in package.AgentRoleAssignments)
+        {
+            if (droppedAssignments.Contains(assignment.AgentKey)) continue;
+            var rewritten = copyAgentKeyRenames.TryGetValue(assignment.AgentKey, out var newAgentKey)
+                ? assignment with { AgentKey = newAgentKey }
+                : assignment;
+            transformedAssignments.Add(rewritten);
+        }
+
+        var transformedRoles = droppedRoles.Count == 0
+            ? package.Roles
+            : package.Roles.Where(role => !droppedRoles.Contains(role.Key)).ToArray();
+        var transformedSkills = droppedSkills.Count == 0
+            ? package.Skills
+            : package.Skills.Where(skill => !droppedSkills.Contains(skill.Name)).ToArray();
+        var transformedMcpServers = droppedMcpServers.Count == 0
+            ? package.McpServers
+            : package.McpServers.Where(server => !droppedMcpServers.Contains(server.Key)).ToArray();
+
+        var newManifest = package.Manifest is null
+            ? null
+            : RewriteManifest(
+                package.Manifest,
+                agentRewrites,
+                workflowRewrites,
+                droppedAgents,
+                droppedWorkflows,
+                droppedRoles,
+                droppedSkills,
+                droppedMcpServers);
+
+        var resolvedPackage = package with
+        {
+            EntryPoint = newEntryPoint,
+            Workflows = transformedWorkflows.ToArray(),
+            Agents = transformedAgents.ToArray(),
+            AgentRoleAssignments = transformedAssignments.ToArray(),
+            Roles = transformedRoles,
+            Skills = transformedSkills,
+            McpServers = transformedMcpServers,
+            Manifest = newManifest,
+        };
+
+        return new ResolvedPackage(resolvedPackage, agentLineage);
+    }
+
+    private static void ValidateResolutionInput(
+        WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution> resolutions)
+    {
+        // Indexes for "does this target exist in the package?" checks.
+        var packageAgentIds = package.Agents
+            .Select(agent => new PackageVersionKey(agent.Key, agent.Version))
+            .ToHashSet();
+        var packageWorkflowIds = package.Workflows
+            .Select(workflow => new PackageVersionKey(workflow.Key, workflow.Version))
+            .ToHashSet();
+        var packageRoleKeys = package.Roles.Select(role => role.Key).ToHashSet(StringComparer.Ordinal);
+        var packageSkillNames = package.Skills.Select(skill => skill.Name).ToHashSet(StringComparer.Ordinal);
+        var packageMcpServerKeys = package.McpServers.Select(server => server.Key).ToHashSet(StringComparer.Ordinal);
+        var packageAssignmentAgentKeys = package.AgentRoleAssignments
+            .Select(assignment => assignment.AgentKey)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var newKeySeen = new Dictionary<WorkflowPackageImportResourceKind, HashSet<string>>();
+
+        foreach (var (key, resolution) in resolutions)
+        {
+            if (!ReferenceEquals(key, resolution.Target) && !key.Equals(resolution.Target))
+            {
+                throw NewResolutionException(key,
+                    "Dictionary key does not match resolution.Target. The dictionary should be keyed by the resolution's Target.");
+            }
+
+            var target = resolution.Target;
+            if (string.IsNullOrWhiteSpace(target.Key))
+            {
+                throw NewResolutionException(target, "Target.Key is required.");
+            }
+
+            // Versioned-kind invariants.
+            var isVersionedKind =
+                target.Kind == WorkflowPackageImportResourceKind.Agent ||
+                target.Kind == WorkflowPackageImportResourceKind.Workflow;
+            if (isVersionedKind && target.SourceVersion is null)
+            {
+                throw NewResolutionException(target,
+                    $"SourceVersion is required for {target.Kind} resolutions.");
+            }
+            if (!isVersionedKind && target.SourceVersion is not null)
+            {
+                throw NewResolutionException(target,
+                    $"SourceVersion must be null for {target.Kind} resolutions.");
+            }
+
+            // Mode-kind compatibility.
+            switch (resolution.Mode)
+            {
+                case WorkflowPackageImportResolutionMode.UseExisting:
+                    if (!string.IsNullOrEmpty(resolution.NewKey))
+                    {
+                        throw NewResolutionException(target,
+                            "NewKey must be null for UseExisting resolutions.");
+                    }
+                    break;
+                case WorkflowPackageImportResolutionMode.Bump:
+                    if (!isVersionedKind)
+                    {
+                        throw NewResolutionException(target,
+                            $"Bump is only valid for Agent or Workflow; not for {target.Kind}.");
+                    }
+                    if (!string.IsNullOrEmpty(resolution.NewKey))
+                    {
+                        throw NewResolutionException(target,
+                            "NewKey must be null for Bump resolutions.");
+                    }
+                    break;
+                case WorkflowPackageImportResolutionMode.Copy:
+                    if (!isVersionedKind)
+                    {
+                        throw NewResolutionException(target,
+                            $"Copy is only valid for Agent or Workflow; not for {target.Kind}.");
+                    }
+                    if (string.IsNullOrWhiteSpace(resolution.NewKey))
+                    {
+                        throw NewResolutionException(target,
+                            "NewKey is required for Copy resolutions.");
+                    }
+                    if (string.Equals(resolution.NewKey, target.Key, StringComparison.Ordinal))
+                    {
+                        throw NewResolutionException(target,
+                            "Copy.NewKey must differ from the original Key.");
+                    }
+                    var seen = newKeySeen.GetOrCreate(target.Kind);
+                    if (!seen.Add(resolution.NewKey!))
+                    {
+                        throw NewResolutionException(target,
+                            $"Copy.NewKey '{resolution.NewKey}' is used by more than one resolution; each Copy must produce a distinct new key per kind.");
+                    }
+                    break;
+            }
+
+            // Target-existence checks against the un-resolved package.
+            switch (target.Kind)
+            {
+                case WorkflowPackageImportResourceKind.Agent:
+                    if (!packageAgentIds.Contains(new PackageVersionKey(target.Key, target.SourceVersion!.Value)))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's Agents collection.");
+                    }
+                    break;
+                case WorkflowPackageImportResourceKind.Workflow:
+                    if (!packageWorkflowIds.Contains(new PackageVersionKey(target.Key, target.SourceVersion!.Value)))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's Workflows collection.");
+                    }
+                    if (resolution.Mode == WorkflowPackageImportResolutionMode.UseExisting
+                        && string.Equals(target.Key, package.EntryPoint.Key, StringComparison.Ordinal)
+                        && target.SourceVersion!.Value == package.EntryPoint.Version)
+                    {
+                        throw NewResolutionException(target,
+                            "UseExisting is not valid for the entry-point workflow.");
+                    }
+                    break;
+                case WorkflowPackageImportResourceKind.Role:
+                    if (!packageRoleKeys.Contains(target.Key))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's Roles collection.");
+                    }
+                    break;
+                case WorkflowPackageImportResourceKind.Skill:
+                    if (!packageSkillNames.Contains(target.Key))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's Skills collection.");
+                    }
+                    break;
+                case WorkflowPackageImportResourceKind.McpServer:
+                    if (!packageMcpServerKeys.Contains(target.Key))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's McpServers collection.");
+                    }
+                    break;
+                case WorkflowPackageImportResourceKind.AgentRoleAssignment:
+                    if (!packageAssignmentAgentKeys.Contains(target.Key))
+                    {
+                        throw NewResolutionException(target,
+                            "Resolution target does not exist in the package's AgentRoleAssignments collection.");
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static WorkflowPackageResolutionException NewResolutionException(
+        WorkflowPackageImportResolutionKey target,
+        string detail)
+    {
+        var versionPart = target.SourceVersion is int v ? $" v{v}" : string.Empty;
+        return new WorkflowPackageResolutionException(
+            $"Invalid resolution for {target.Kind} '{target.Key}'{versionPart}: {detail}");
+    }
+
+    private static WorkflowPackageWorkflowNode RewriteNodeRefs(
+        WorkflowPackageWorkflowNode node,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> agentRewrites,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> workflowRewrites)
+    {
+        // Apply resolution rewrites to all four agent slots (the generic AgentKey plus the
+        // three Swarm slots — Contributor, Synthesizer, Coordinator) plus the SubflowKey slot.
+        // Pre-existing limitation worth noting: the planner's auto-bump pass only walks the
+        // generic AgentKey + SubflowKey via RemapWorkflow, so a Swarm-slot agent that auto-
+        // bumps because content differs would still be left with a stale ref. That's a wider
+        // fix; resolution-driven rewrites at least handle the Bump/Copy paths correctly here.
+        var (agentKey, agentVersion) = ResolveAgentSlot(node.AgentKey, node.AgentVersion, agentRewrites);
+        var (contributorKey, contributorVersion) = ResolveAgentSlot(node.ContributorAgentKey, node.ContributorAgentVersion, agentRewrites);
+        var (synthesizerKey, synthesizerVersion) = ResolveAgentSlot(node.SynthesizerAgentKey, node.SynthesizerAgentVersion, agentRewrites);
+        var (coordinatorKey, coordinatorVersion) = ResolveAgentSlot(node.CoordinatorAgentKey, node.CoordinatorAgentVersion, agentRewrites);
+        var (subflowKey, subflowVersion) = ResolveAgentSlot(node.SubflowKey, node.SubflowVersion, workflowRewrites);
+
+        return node with
+        {
+            AgentKey = agentKey,
+            AgentVersion = agentVersion,
+            ContributorAgentKey = contributorKey,
+            ContributorAgentVersion = contributorVersion,
+            SynthesizerAgentKey = synthesizerKey,
+            SynthesizerAgentVersion = synthesizerVersion,
+            CoordinatorAgentKey = coordinatorKey,
+            CoordinatorAgentVersion = coordinatorVersion,
+            SubflowKey = subflowKey,
+            SubflowVersion = subflowVersion,
+        };
+    }
+
+    private static (string? Key, int? Version) ResolveAgentSlot(
+        string? key,
+        int? version,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> rewrites)
+    {
+        if (string.IsNullOrWhiteSpace(key) || version is null)
+        {
+            return (key, version);
+        }
+        return rewrites.TryGetValue(new PackageVersionKey(key, version.Value), out var resolved)
+            ? (resolved.Key, resolved.Version)
+            : (key, version);
+    }
+
+    private static WorkflowPackageManifest RewriteManifest(
+        WorkflowPackageManifest manifest,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> agentRewrites,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> workflowRewrites,
+        IReadOnlySet<PackageVersionKey> droppedAgents,
+        IReadOnlySet<PackageVersionKey> droppedWorkflows,
+        IReadOnlySet<string> droppedRoles,
+        IReadOnlySet<string> droppedSkills,
+        IReadOnlySet<string> droppedMcpServers) =>
+        manifest with
+        {
+            Workflows = manifest.Workflows
+                .Where(reference => !droppedWorkflows.Contains(new PackageVersionKey(reference.Key, reference.Version)))
+                .Select(reference =>
+                {
+                    var pvk = new PackageVersionKey(reference.Key, reference.Version);
+                    return workflowRewrites.TryGetValue(pvk, out var resolved)
+                        ? new WorkflowPackageReference(resolved.Key, resolved.Version)
+                        : reference;
+                })
+                .ToArray(),
+            Agents = manifest.Agents
+                .Where(reference => !droppedAgents.Contains(new PackageVersionKey(reference.Key, reference.Version)))
+                .Select(reference =>
+                {
+                    var pvk = new PackageVersionKey(reference.Key, reference.Version);
+                    return agentRewrites.TryGetValue(pvk, out var resolved)
+                        ? new WorkflowPackageReference(resolved.Key, resolved.Version)
+                        : reference;
+                })
+                .ToArray(),
+            Roles = manifest.Roles.Where(roleKey => !droppedRoles.Contains(roleKey)).ToArray(),
+            Skills = manifest.Skills.Where(skillName => !droppedSkills.Contains(skillName)).ToArray(),
+            McpServers = manifest.McpServers.Where(serverKey => !droppedMcpServers.Contains(serverKey)).ToArray(),
+        };
 
     private async Task<VersionedImportPlan> PlanAgentImportsAsync(
         WorkflowPackage package,
@@ -999,6 +1544,7 @@ public sealed class WorkflowPackageImporter(
 
     private async Task ImportAgentsAsync(
         WorkflowPackage package,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> agentLineage,
         DateTime now,
         CancellationToken cancellationToken)
     {
@@ -1027,6 +1573,18 @@ public sealed class WorkflowPackageImporter(
                     continue;
                 }
 
+                // sc-394: Bump and Copy resolutions stamp ForkedFromKey/Version on the new
+                // row so (origKey, origVersion) → (resolvedKey, resolvedVersion) provenance is
+                // queryable forever — same lineage shape that `__fork_*` agents already use
+                // via AgentConfigRepository.CreateForkAsync / CreatePublishedVersionAsync.
+                // UseExisting writes no row (the agent is dropped from the package) so it
+                // never reaches this branch; agentLineage carries no entry for it.
+                var lineage = agentLineage.TryGetValue(
+                    new PackageVersionKey(agent.Key, agent.Version),
+                    out var origin)
+                    ? origin
+                    : (PackageVersionKey?)null;
+
                 dbContext.Agents.Add(new AgentConfigEntity
                 {
                     Key = agent.Key.Trim(),
@@ -1037,6 +1595,8 @@ public sealed class WorkflowPackageImporter(
                     IsActive = agent.Version == finalMaxVersion,
                     IsRetired = false,
                     TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(agent.Tags)),
+                    ForkedFromKey = lineage?.Key,
+                    ForkedFromVersion = lineage?.Version,
                 });
             }
         }
@@ -1465,5 +2025,26 @@ public sealed class WorkflowPackageImporter(
 
     private sealed record WorkflowPackageImportPlan(
         WorkflowPackage Package,
-        WorkflowPackageImportPreview Preview);
+        WorkflowPackageImportPreview Preview,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> AgentLineage);
+
+    private sealed record ResolvedPackage(
+        WorkflowPackage Package,
+        IReadOnlyDictionary<PackageVersionKey, PackageVersionKey> AgentLineage);
+}
+
+internal static class WorkflowPackageImporterCollectionExtensions
+{
+    public static HashSet<string> GetOrCreate<TKey>(
+        this Dictionary<TKey, HashSet<string>> dictionary,
+        TKey key)
+        where TKey : notnull
+    {
+        if (!dictionary.TryGetValue(key, out var set))
+        {
+            set = new HashSet<string>(StringComparer.Ordinal);
+            dictionary[key] = set;
+        }
+        return set;
+    }
 }
