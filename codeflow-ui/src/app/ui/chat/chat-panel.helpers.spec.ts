@@ -196,6 +196,7 @@ describe('chat panel confirmation helpers', () => {
       createCount: 0,
       reuseCount: 0,
       conflictCount: 2,
+      refusedCount: 0,
       warningCount: 0,
       warnings: [],
       items: [
