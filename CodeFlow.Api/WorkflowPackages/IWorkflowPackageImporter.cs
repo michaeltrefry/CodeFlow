@@ -119,9 +119,14 @@ public sealed record WorkflowPackageImportPreview(
 
     public int ConflictCount => Items.Count(item => item.Action == WorkflowPackageImportAction.Conflict);
 
+    /// <summary>sc-395: rows that can't be applied due to a structural refusal (e.g., a
+    /// UseExisting resolution whose target library version doesn't declare every output port
+    /// the package's nodes route to). Treated as a hard apply-blocker just like Conflict.</summary>
+    public int RefusedCount => Items.Count(item => item.Action == WorkflowPackageImportAction.Refused);
+
     public int WarningCount => Warnings.Count;
 
-    public bool CanApply => ConflictCount == 0;
+    public bool CanApply => ConflictCount == 0 && RefusedCount == 0;
 }
 
 /// <summary>
@@ -166,6 +171,8 @@ public sealed record WorkflowPackageImportApplyResult(
 
     public int ConflictCount => Items.Count(item => item.Action == WorkflowPackageImportAction.Conflict);
 
+    public int RefusedCount => Items.Count(item => item.Action == WorkflowPackageImportAction.Refused);
+
     public int WarningCount => Warnings.Count;
 }
 
@@ -184,4 +191,11 @@ public enum WorkflowPackageImportAction
     Create,
     Reuse,
     Conflict,
+
+    /// <summary>sc-395: a user-supplied resolution can't be applied for a structural reason —
+    /// today only "UseExisting on an agent whose library max-version doesn't declare every
+    /// output port the package's nodes route to." Behaves like Conflict for apply-gating
+    /// purposes but is distinct so the imports-page UI can render it differently and the
+    /// chat-side chip can suggest re-resolving.</summary>
+    Refused,
 }

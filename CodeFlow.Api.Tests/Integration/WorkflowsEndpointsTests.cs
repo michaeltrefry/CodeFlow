@@ -21,6 +21,13 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         this.factory = factory;
     }
 
+    /// <summary>sc-395: the preview/apply endpoints now accept `{ package, resolutions?,
+    /// acknowledgeDrift? }` instead of a bare package. This helper wraps the legacy
+    /// "raw package JSON" inputs that existing tests still produce so the call sites stay
+    /// compact.</summary>
+    private static StringContent WrapPackage(string packageJson) =>
+        new($"{{\"package\":{packageJson}}}", Encoding.UTF8, "application/json");
+
     [Fact]
     public async Task Post_Rejects_WhenReferencedAgentsMissing()
     {
@@ -264,9 +271,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         create.StatusCode.Should().Be(HttpStatusCode.Created);
 
         var packageJson = await client.GetStringAsync("/api/workflows/preview-flow/1/package");
-        var response = await client.PostAsync(
-            "/api/workflows/package/preview",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+        var response = await client.PostAsync("/api/workflows/package/preview", WrapPackage(packageJson));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -319,9 +324,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             fromAgentKey: "wf-apply-source-writer",
             toAgentKey: "wf-apply-target-writer");
 
-        var apply = await client.PostAsync(
-            "/api/workflows/package/apply",
-            new StringContent(rewritten, Encoding.UTF8, "application/json"));
+        var apply = await client.PostAsync("/api/workflows/package/apply", WrapPackage(rewritten));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
         using var resultDocument = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
@@ -363,7 +366,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             },
             edges: Array.Empty<WorkflowPackageWorkflowEdge>());
 
-        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", new { package });
 
         apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await apply.Content.ReadAsStringAsync();
@@ -389,7 +392,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             },
             edges: Array.Empty<WorkflowPackageWorkflowEdge>());
 
-        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", new { package });
 
         apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await apply.Content.ReadAsStringAsync();
@@ -408,7 +411,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
             agentKey: "import-bad-rounds-agent",
             maxRoundsPerRound: 0);
 
-        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", new { package });
 
         apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await apply.Content.ReadAsStringAsync();
@@ -434,7 +437,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
                     mirrorOutputToWorkflowVar: "__loop.hijack"),
             });
 
-        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", package);
+        var apply = await client.PostAsJsonAsync("/api/workflows/package/apply", new { package });
 
         apply.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await apply.Content.ReadAsStringAsync();
@@ -730,7 +733,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
+            WrapPackage(conflictingPackage));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -747,7 +750,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(conflictingPackage, Encoding.UTF8, "application/json"));
+            WrapPackage(conflictingPackage));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -794,7 +797,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+            WrapPackage(changedPackage));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -814,7 +817,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(changedPackage, Encoding.UTF8, "application/json"));
+            WrapPackage(changedPackage));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -883,7 +886,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -938,7 +941,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(package.ToJsonString(), Encoding.UTF8, "application/json"));
+            WrapPackage(package.ToJsonString()));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -995,7 +998,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(package.ToJsonString(), Encoding.UTF8, "application/json"));
+            WrapPackage(package.ToJsonString()));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -1019,7 +1022,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
         using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
@@ -1088,7 +1091,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
         using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
@@ -1161,7 +1164,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
         using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
@@ -1209,7 +1212,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var apply = await client.PostAsync(
             "/api/workflows/package/apply",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         apply.StatusCode.Should().Be(HttpStatusCode.OK);
         using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
@@ -1334,7 +1337,7 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         var preview = await client.PostAsync(
             "/api/workflows/package/preview",
-            new StringContent(packageJson, Encoding.UTF8, "application/json"));
+            WrapPackage(packageJson));
 
         preview.StatusCode.Should().Be(HttpStatusCode.OK);
         using var previewDocument = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
@@ -2677,4 +2680,288 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
     private sealed record TransformPreviewResponseShape(string Rendered, JsonElement? Parsed, string? JsonParseError);
     private sealed record TransformPreviewErrorResponseShape(string Error);
+
+    // ----------------------------------------------------------------------------------------
+    // sc-395: per-conflict resolutions over the HTTP API. CR-2 wired the importer; these tests
+    // exercise the wire-format transformation, drift-ack 409, and the new request DTOs.
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task PreviewPackageImport_AcceptsBumpResolution_AndPlansAtBumpedVersion()
+    {
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "sc395-bump-writer");
+
+        // Stage v1 in the library, then preview a Bump resolution targeting v1 of the same key.
+        var stage = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "sc395-bump-flow",
+            name = "sc395 bump",
+            maxRoundsPerRound = 3,
+            nodes = new object[] { new
+            {
+                id = Guid.NewGuid(),
+                kind = "Start",
+                agentKey = "sc395-bump-writer",
+                agentVersion = (int?)null,
+                outputScript = (string?)null,
+                outputPorts = new[] { "Completed" },
+                layoutX = 0,
+                layoutY = 0,
+            } },
+            edges = Array.Empty<object>(),
+        });
+        stage.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Fetch the package, then re-import with a Bump resolution targeting writer v1 → v2.
+        var packageJson = await client.GetStringAsync("/api/workflows/sc395-bump-flow/1/package");
+        var previewResponse = await client.PostAsJsonAsync(
+            "/api/workflows/package/preview",
+            new
+            {
+                package = JsonNode.Parse(packageJson),
+                resolutions = new[]
+                {
+                    new
+                    {
+                        kind = "Agent",
+                        key = "sc395-bump-writer",
+                        sourceVersion = 1,
+                        mode = "Bump",
+                        expectedExistingMaxVersion = 1,
+                    },
+                },
+            });
+
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDoc = JsonDocument.Parse(await previewResponse.Content.ReadAsStringAsync());
+        previewDoc.RootElement.GetProperty("canApply").GetBoolean().Should().BeTrue();
+        previewDoc.RootElement.GetProperty("items").EnumerateArray()
+            .Should().Contain(item =>
+                item.GetProperty("kind").GetString() == "Agent" &&
+                item.GetProperty("key").GetString() == "sc395-bump-writer" &&
+                item.GetProperty("version").GetInt32() == 2 &&
+                item.GetProperty("action").GetString() == "Create");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_ReturnsConflict_WhenResolutionDriftsBetweenPreviewAndApply()
+    {
+        // Stage scenario: client previewed a Bump on (writer, 1) when the library was at v1.
+        // Between preview and apply, a third party bumped the library to v2. The endpoint must
+        // surface a 409 with the moved entry rather than silently re-targeting.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "sc395-drift-writer");
+
+        // Fabricate a tiny package referencing v1.
+        var packageJson = JsonSerializer.Serialize(BuildSingleAgentPackage(
+            workflowKey: "sc395-drift-flow",
+            agentKey: "sc395-drift-writer"));
+        var packageNode = JsonNode.Parse(packageJson)!;
+
+        // Drift: bump the library between "preview" and "apply" by adding a v2 row directly.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = "sc395-drift-writer",
+                Version = 2,
+                ConfigJson = """{ "outputs": [{ "kind": "Completed" }] }""",
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = "drift-injector",
+                IsActive = true,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Apply with the stale expectedExistingMaxVersion = 1 (matches the original v1 stage).
+        // No acknowledgeDrift flag → expect 409.
+        var applyResponse = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply",
+            new
+            {
+                package = packageNode,
+                resolutions = new[]
+                {
+                    new
+                    {
+                        kind = "Agent",
+                        key = "sc395-drift-writer",
+                        sourceVersion = 1,
+                        mode = "Bump",
+                        expectedExistingMaxVersion = 1,
+                    },
+                },
+            });
+
+        applyResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        using var conflictDoc = JsonDocument.Parse(await applyResponse.Content.ReadAsStringAsync());
+        conflictDoc.RootElement.GetProperty("error").GetString()
+            .Should().Contain("acknowledgeDrift");
+        var moved = conflictDoc.RootElement.GetProperty("movedEntities").EnumerateArray().ToList();
+        moved.Should().ContainSingle();
+        moved[0].GetProperty("kind").GetString().Should().Be("Agent");
+        moved[0].GetProperty("key").GetString().Should().Be("sc395-drift-writer");
+        moved[0].GetProperty("expectedExistingMaxVersion").GetInt32().Should().Be(1);
+        moved[0].GetProperty("currentExistingMaxVersion").GetInt32().Should().Be(2);
+
+        // Retry with acknowledgeDrift: true succeeds; the importer applies against the live max.
+        var retry = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply",
+            new
+            {
+                package = packageNode,
+                resolutions = new[]
+                {
+                    new
+                    {
+                        kind = "Agent",
+                        key = "sc395-drift-writer",
+                        sourceVersion = 1,
+                        mode = "Bump",
+                        expectedExistingMaxVersion = 1,
+                    },
+                },
+                acknowledgeDrift = true,
+            });
+        retry.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_EmitsRefusedRow_WhenUseExistingTargetMissesRoutedPort()
+    {
+        using var client = factory.CreateClient();
+
+        // Library has writer v1 declaring only "Completed". Package tries to UseExisting on
+        // its v1 (the package version equals the library version, so it's a Reuse — but the
+        // package's nodes route a port the library agent never declared, which would fail
+        // the legacy validator at apply time).
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.Agents.Add(new AgentConfigEntity
+            {
+                Key = "sc395-portshape-writer",
+                Version = 3,
+                ConfigJson = """{ "outputs": [{ "kind": "Completed" }] }""",
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = "sc-395-test",
+                IsActive = true,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Construct a package whose Start node routes a port the library agent doesn't declare.
+        var startId = Guid.NewGuid();
+        var package = new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference("sc395-portshape-flow", 1),
+            Workflows: new[]
+            {
+                new WorkflowPackageWorkflow(
+                    Key: "sc395-portshape-flow",
+                    Version: 1,
+                    Name: "sc395 port-shape",
+                    MaxRoundsPerRound: 1,
+                    Category: WorkflowCategory.Workflow,
+                    Tags: Array.Empty<string>(),
+                    CreatedAtUtc: DateTime.UtcNow,
+                    Nodes: new[]
+                    {
+                        new WorkflowPackageWorkflowNode(
+                            Id: startId,
+                            Kind: WorkflowNodeKind.Start,
+                            AgentKey: "sc395-portshape-writer",
+                            AgentVersion: 2,
+                            OutputScript: null,
+                            OutputPorts: new[] { "Completed", "Approved" },
+                            LayoutX: 0,
+                            LayoutY: 0),
+                    },
+                    Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+                    Inputs: Array.Empty<WorkflowPackageWorkflowInput>()),
+            },
+            Agents: new[]
+            {
+                new WorkflowPackageAgent(
+                    Key: "sc395-portshape-writer",
+                    Version: 2,
+                    Kind: AgentKind.Agent,
+                    Config: JsonNode.Parse("""
+                        { "outputs": [{ "kind": "Completed" }, { "kind": "Approved" }] }
+                        """),
+                    CreatedAtUtc: DateTime.UtcNow,
+                    CreatedBy: "test",
+                    Outputs: new[]
+                    {
+                        new WorkflowPackageAgentOutput("Completed", null, null),
+                        new WorkflowPackageAgentOutput("Approved", null, null),
+                    }),
+            },
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+
+        var previewResponse = await client.PostAsJsonAsync(
+            "/api/workflows/package/preview",
+            new
+            {
+                package,
+                resolutions = new[]
+                {
+                    new
+                    {
+                        kind = "Agent",
+                        key = "sc395-portshape-writer",
+                        sourceVersion = 2,
+                        mode = "UseExisting",
+                    },
+                },
+            });
+
+        previewResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var previewDoc = JsonDocument.Parse(await previewResponse.Content.ReadAsStringAsync());
+        previewDoc.RootElement.GetProperty("canApply").GetBoolean().Should().BeFalse();
+        previewDoc.RootElement.GetProperty("refusedCount").GetInt32().Should().Be(1);
+        var refusal = previewDoc.RootElement.GetProperty("items").EnumerateArray()
+            .Single(item => item.GetProperty("action").GetString() == "Refused");
+        refusal.GetProperty("kind").GetString().Should().Be("Agent");
+        refusal.GetProperty("message").GetString().Should().Contain("Approved");
+
+        // Apply must reject — preview's CanApply was false.
+        var applyResponse = await client.PostAsJsonAsync(
+            "/api/workflows/package/apply",
+            new
+            {
+                package,
+                resolutions = new[]
+                {
+                    new
+                    {
+                        kind = "Agent",
+                        key = "sc395-portshape-writer",
+                        sourceVersion = 2,
+                        mode = "UseExisting",
+                    },
+                },
+            });
+        applyResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_RejectsMissingPackageField()
+    {
+        // Defensive test: the new request DTO requires a `package` field. Without it, the
+        // endpoint must 400 with a clean message (not 500, not silently null-deserialized).
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows/package/preview",
+            new { resolutions = Array.Empty<object>() });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
 }

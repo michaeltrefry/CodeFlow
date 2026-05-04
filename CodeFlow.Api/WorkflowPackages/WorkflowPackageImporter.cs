@@ -298,6 +298,13 @@ public sealed class WorkflowPackageImporter(
             throw new WorkflowPackageResolutionException(rejected.Reason.Reason);
         }
 
+        // sc-395: port-shape compatibility refusal for UseExisting must run on the ORIGINAL
+        // package — once ApplyResolutionsAsync rewrites the node refs from (key, sourceVersion)
+        // to (key, libraryMax), we lose the ability to enumerate the package's "what ports does
+        // it route through this agent?" set. Refusal items still go in the Items[] list and
+        // CanApply blocks on RefusedCount, so the apply path will reject them.
+        var portShapeRefusals = await CheckUseExistingPortShapeAsync(package, resolutions, cancellationToken);
+
         // sc-394: apply user-chosen resolutions BEFORE planning. The pre-process drops
         // UseExisting entities, rewrites Bump versions and Copy keys+versions, and rewrites
         // every transitive workflow-node ref (incl. Swarm slots) so the planner sees a
@@ -311,6 +318,7 @@ public sealed class WorkflowPackageImporter(
         // executor still operates on `package` because the admitted value is structurally
         // equivalent and the change is invisible at this level.
         var items = new List<WorkflowPackageImportItem>();
+        items.AddRange(portShapeRefusals);
         var warnings = new List<string>();
 
         var agentPlan = await PlanAgentImportsAsync(package, cancellationToken);
@@ -389,6 +397,86 @@ public sealed class WorkflowPackageImporter(
         }
         return projected;
     }
+
+    /// <summary>
+    /// sc-395: for each <c>UseExisting</c> agent resolution, verify that the library's
+    /// existing-max version of that agent declares every output port the package's workflow
+    /// nodes route through it. If a port is missing the library's declared outputs, emit a
+    /// <see cref="WorkflowPackageImportAction.Refused"/> item — apply will refuse to commit.
+    /// <para/>
+    /// Runs against the ORIGINAL (pre-resolution) package because <see cref="ApplyResolutionsAsync"/>
+    /// rewrites the node refs from <c>(key, sourceVersion)</c> to <c>(key, libraryMax)</c>,
+    /// after which we can no longer enumerate "which nodes were routed through the source
+    /// version we're being asked to drop?".
+    /// </summary>
+    private async Task<IReadOnlyList<WorkflowPackageImportItem>> CheckUseExistingPortShapeAsync(
+        WorkflowPackage package,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions,
+        CancellationToken cancellationToken)
+    {
+        if (resolutions is null || resolutions.Count == 0)
+        {
+            return Array.Empty<WorkflowPackageImportItem>();
+        }
+
+        var refusals = new List<WorkflowPackageImportItem>();
+        foreach (var resolution in resolutions.Values)
+        {
+            if (resolution.Mode != WorkflowPackageImportResolutionMode.UseExisting) continue;
+            if (resolution.Target.Kind != WorkflowPackageImportResourceKind.Agent) continue;
+
+            var target = resolution.Target;
+            var sourceVersion = target.SourceVersion!.Value;
+            var libraryMax = await MaxAgentVersionAsync(target.Key, cancellationToken);
+            if (libraryMax is null) continue; // ValidateResolutionInput rejects this case earlier; safety guard.
+
+            var libraryAgent = await agentConfigRepository.TryGetAsync(target.Key, libraryMax.Value, cancellationToken);
+            if (libraryAgent is null) continue;
+
+            var declaredOutputs = libraryAgent.DeclaredOutputs
+                .Select(output => output.Kind)
+                .ToHashSet(StringComparer.Ordinal);
+
+            // Every output port any node routes through (target.Key, sourceVersion) must exist
+            // in the library agent's DeclaredOutputs. Walk all four agent slots — we want the
+            // refusal to fire even if a Swarm-slot ref is what triggers the missing port.
+            var routedPorts = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var workflow in package.Workflows)
+            {
+                foreach (var node in workflow.Nodes)
+                {
+                    if (NodeReferencesAgentSlot(node, target.Key, sourceVersion))
+                    {
+                        foreach (var port in node.OutputPorts ?? Array.Empty<string>())
+                        {
+                            routedPorts.Add(port);
+                        }
+                    }
+                }
+            }
+
+            var missingPorts = routedPorts.Where(port => !declaredOutputs.Contains(port)).OrderBy(p => p, StringComparer.Ordinal).ToArray();
+            if (missingPorts.Length > 0)
+            {
+                refusals.Add(Refused(
+                    target.Kind,
+                    target.Key,
+                    sourceVersion,
+                    libraryMax.Value,
+                    $"UseExisting cannot rewrite refs to agent '{target.Key}' v{libraryMax.Value}: " +
+                    $"library agent does not declare port(s) [{string.Join(", ", missingPorts)}] " +
+                    $"that the package's workflow nodes route through v{sourceVersion}. " +
+                    "Pick Bump or Copy instead, or update the library agent's declared outputs."));
+            }
+        }
+        return refusals;
+    }
+
+    private static bool NodeReferencesAgentSlot(WorkflowPackageWorkflowNode node, string key, int version) =>
+        (string.Equals(node.AgentKey, key, StringComparison.Ordinal) && node.AgentVersion == version) ||
+        (string.Equals(node.ContributorAgentKey, key, StringComparison.Ordinal) && node.ContributorAgentVersion == version) ||
+        (string.Equals(node.SynthesizerAgentKey, key, StringComparison.Ordinal) && node.SynthesizerAgentVersion == version) ||
+        (string.Equals(node.CoordinatorAgentKey, key, StringComparison.Ordinal) && node.CoordinatorAgentVersion == version);
 
     /// <summary>
     /// sc-394: pre-process the package against user-chosen resolutions before the planner runs.
@@ -1803,6 +1891,21 @@ public sealed class WorkflowPackageImporter(
             WorkflowPackageImportAction.Conflict,
             message,
             SourceVersion: sourceVersion ?? version,
+            ExistingMaxVersion: existingMaxVersion);
+
+    private static WorkflowPackageImportItem Refused(
+        WorkflowPackageImportResourceKind kind,
+        string key,
+        int? sourceVersion,
+        int? existingMaxVersion,
+        string message) =>
+        new(
+            kind,
+            key,
+            existingMaxVersion,
+            WorkflowPackageImportAction.Refused,
+            message,
+            SourceVersion: sourceVersion,
             ExistingMaxVersion: existingMaxVersion);
 
     private static bool Equivalent(WorkflowPackageWorkflow packageWorkflow, Workflow existing) =>

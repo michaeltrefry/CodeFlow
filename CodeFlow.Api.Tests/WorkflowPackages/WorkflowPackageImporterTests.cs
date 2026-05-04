@@ -427,6 +427,90 @@ public sealed class WorkflowPackageImporterTests
             .WithMessage("*used by more than one resolution*");
     }
 
+    /// <summary>
+    /// sc-395: when a UseExisting resolution would rewrite a workflow node's agent ref to a
+    /// library version that doesn't declare every output port the package's nodes route, the
+    /// importer emits a Refused row (not Conflict). CanApply flips false so ApplyAsync refuses.
+    /// </summary>
+    [Fact]
+    public async Task PreviewAsync_EmitsRefusedItem_WhenUseExistingTargetsAgentMissingOutputPort()
+    {
+        await using var dbContext = CreateDbContext();
+        // Library agent v3 declares only "Completed". Package's workflow nodes route an
+        // additional "Approved" port, so UseExisting cannot safely rewrite the refs.
+        dbContext.Agents.Add(new AgentConfigEntity
+        {
+            Key = "writer",
+            Version = 3,
+            ConfigJson = """
+                { "outputs": [ { "kind": "Completed", "description": "Done" } ] }
+                """,
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedBy = "sc-395-test",
+            IsActive = true,
+        });
+        await dbContext.SaveChangesAsync();
+
+        var importer = NewImporter(dbContext);
+        var package = CreatePackageWithAgentNodeRoutingPorts(
+            agentKey: "writer",
+            agentVersion: 2,
+            outputPorts: new[] { "Completed", "Approved" });
+        var resolutions = new Dictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>
+        {
+            [new WorkflowPackageImportResolutionKey(WorkflowPackageImportResourceKind.Agent, "writer", 2)]
+                = new WorkflowPackageImportResolution(
+                    new WorkflowPackageImportResolutionKey(WorkflowPackageImportResourceKind.Agent, "writer", 2),
+                    WorkflowPackageImportResolutionMode.UseExisting),
+        };
+
+        var preview = await importer.PreviewAsync(package, resolutions, CancellationToken.None);
+
+        preview.CanApply.Should().BeFalse();
+        preview.RefusedCount.Should().Be(1);
+        var refusal = preview.Items.Single(item => item.Action == WorkflowPackageImportAction.Refused);
+        refusal.Kind.Should().Be(WorkflowPackageImportResourceKind.Agent);
+        refusal.Key.Should().Be("writer");
+        refusal.SourceVersion.Should().Be(2);
+        refusal.ExistingMaxVersion.Should().Be(3);
+        refusal.Message.Should().Contain("Approved");
+
+        // Apply must refuse to commit.
+        var applyAttempt = async () => await importer.ApplyAsync(package, resolutions, CancellationToken.None);
+        await applyAttempt.Should().ThrowAsync<WorkflowPackageResolutionException>();
+    }
+
+    /// <summary>
+    /// sc-395: when the library version declares every routed port, UseExisting proceeds
+    /// without a Refused item and CanApply is true.
+    /// </summary>
+    [Fact]
+    public async Task PreviewAsync_EmitsNoRefusal_WhenUseExistingTargetDeclaresAllRoutedPorts()
+    {
+        await using var dbContext = CreateDbContext();
+        SeedAgent(dbContext, "writer", version: 3, isActive: true);
+        await dbContext.SaveChangesAsync();
+
+        var importer = NewImporter(dbContext);
+        var package = CreatePackageWithAgentNodeRoutingPorts(
+            agentKey: "writer",
+            agentVersion: 2,
+            outputPorts: new[] { "Completed" });
+        var resolutions = new Dictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>
+        {
+            [new WorkflowPackageImportResolutionKey(WorkflowPackageImportResourceKind.Agent, "writer", 2)]
+                = new WorkflowPackageImportResolution(
+                    new WorkflowPackageImportResolutionKey(WorkflowPackageImportResourceKind.Agent, "writer", 2),
+                    WorkflowPackageImportResolutionMode.UseExisting),
+        };
+
+        var preview = await importer.PreviewAsync(package, resolutions, CancellationToken.None);
+
+        preview.CanApply.Should().BeTrue();
+        preview.RefusedCount.Should().Be(0);
+        preview.Items.Should().NotContain(item => item.Action == WorkflowPackageImportAction.Refused);
+    }
+
     [Fact]
     public async Task ApplyAsync_PersistsAgentAndRoleTagsFromPackage()
     {
@@ -707,6 +791,61 @@ public sealed class WorkflowPackageImporterTests
             OutputPorts: new[] { "Completed" },
             LayoutX: 0,
             LayoutY: 0);
+
+    /// <summary>
+    /// Single Start node pinned to (agentKey, agentVersion) routing the supplied output ports.
+    /// Used for the sc-395 port-shape compatibility tests so we can route ports the library
+    /// agent's DeclaredOutputs may or may not cover.
+    /// </summary>
+    private static WorkflowPackage CreatePackageWithAgentNodeRoutingPorts(
+        string agentKey,
+        int agentVersion,
+        IReadOnlyList<string> outputPorts)
+    {
+        var startNode = new WorkflowPackageWorkflowNode(
+            Id: Guid.NewGuid(),
+            Kind: WorkflowNodeKind.Start,
+            AgentKey: agentKey,
+            AgentVersion: agentVersion,
+            OutputScript: null,
+            OutputPorts: outputPorts,
+            LayoutX: 0,
+            LayoutY: 0);
+
+        var workflow = new WorkflowPackageWorkflow(
+            Key: "root",
+            Version: 1,
+            Name: "Root",
+            MaxRoundsPerRound: 1,
+            Category: WorkflowCategory.Workflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[] { startNode },
+            Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agent = new WorkflowPackageAgent(
+            Key: agentKey,
+            Version: agentVersion,
+            Kind: AgentKind.Agent,
+            Config: SimpleAgentConfig(),
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "sc-395-test",
+            Outputs: outputPorts
+                .Select(port => new WorkflowPackageAgentOutput(port, port, null))
+                .ToArray());
+
+        return new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference(workflow.Key, workflow.Version),
+            Workflows: new[] { workflow },
+            Agents: new[] { agent },
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+    }
 
     private static JsonNode SimpleAgentConfig() =>
         JsonNode.Parse("""

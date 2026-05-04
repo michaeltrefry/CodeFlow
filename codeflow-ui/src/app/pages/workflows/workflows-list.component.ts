@@ -902,6 +902,10 @@ export class WorkflowsListComponent {
       case 'Create': return 'ok';
       case 'Reuse': return 'default';
       case 'Conflict': return 'err';
+      // sc-395: Refused is a structural-check failure (port-shape mismatch on UseExisting).
+      // Hard apply-blocker, but visually distinct from a bare Conflict so the resolver UI
+      // (CR-4) can suggest "pick Bump or Copy instead" rather than "re-emit the package."
+      case 'Refused': return 'err';
     }
   }
 
