@@ -4,7 +4,17 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { useAsyncList } from '../../core/async-state';
 import { formatHttpError } from '../../core/format-error';
-import { WorkflowPackageDocument, WorkflowPackageImportAction, WorkflowPackageImportPreview, WorkflowPackageReference, WorkflowsApi } from '../../core/workflows.api';
+import {
+  WorkflowPackageDocument,
+  WorkflowPackageImportAction,
+  WorkflowPackageImportDriftConflict,
+  WorkflowPackageImportItem,
+  WorkflowPackageImportPreview,
+  WorkflowPackageImportResolution,
+  WorkflowPackageImportResolutionMode,
+  WorkflowPackageReference,
+  WorkflowsApi,
+} from '../../core/workflows.api';
 import { WORKFLOW_CATEGORIES, WorkflowCategory, WorkflowSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
@@ -52,6 +62,18 @@ interface MissingExportReference {
   key: string;
   version: number | null;
   referencedBy: string | null;
+}
+
+/** sc-396: per-row resolution choice the user has made on the imports page. The signal is
+ *  keyed by `${kind}:${key}:${sourceVersion ?? ''}` so a single Map covers Agent, Workflow,
+ *  Skill, Role, McpServer, and AgentRoleAssignment rows; the Bump/Copy modes only ever apply
+ *  to the versioned kinds. `expectedExistingMaxVersion` is captured from the row's
+ *  `existingMaxVersion` at the time the user picked the resolution and rides through to the
+ *  apply request so the server's drift gate can fire on a stale choice. */
+interface RowResolutionChoice {
+  mode: WorkflowPackageImportResolutionMode;
+  newKey?: string;
+  expectedExistingMaxVersion?: number | null;
 }
 
 function byteLengthOfJson(value: unknown): number {
@@ -278,10 +300,23 @@ function byteLengthOfJson(value: unknown): number {
                   <cf-chip variant="ok">{{ preview.createCount }} create</cf-chip>
                   <cf-chip>{{ preview.reuseCount }} reuse</cf-chip>
                   <cf-chip [variant]="preview.conflictCount > 0 ? 'err' : 'default'">{{ preview.conflictCount }} conflict</cf-chip>
+                  @if (preview.refusedCount > 0) {
+                    <cf-chip variant="err">{{ preview.refusedCount }} refused</cf-chip>
+                  }
                   @if (preview.warningCount > 0) {
                     <cf-chip variant="warn">{{ preview.warningCount }} warning</cf-chip>
                   }
                 </div>
+                @if (resolutions().size > 0) {
+                  <button
+                    type="button"
+                    cf-button
+                    size="sm"
+                    variant="ghost"
+                    (click)="clearResolutions()">
+                    Reset resolutions
+                  </button>
+                }
                 <button
                   type="button"
                   cf-button
@@ -310,6 +345,33 @@ function byteLengthOfJson(value: unknown): number {
               </div>
             }
 
+            @if (driftConflict(); as drift) {
+              <div class="drift-banner">
+                <div class="drift-banner-head">
+                  <strong>Library moved between preview and apply</strong>
+                  <button
+                    type="button"
+                    cf-button
+                    size="sm"
+                    variant="primary"
+                    [disabled]="importApplyLoading()"
+                    (click)="applyAcknowledgingDrift()">
+                    Apply anyway
+                  </button>
+                </div>
+                <ul>
+                  @for (entry of drift.movedEntities; track entry.kind + ':' + entry.key + ':' + (entry.sourceVersion ?? '')) {
+                    <li class="small">
+                      {{ entry.kind }} <span class="mono">{{ entry.key }}</span>
+                      moved from v{{ entry.expectedExistingMaxVersion ?? '—' }}
+                      to v{{ entry.currentExistingMaxVersion ?? 'gone' }}
+                    </li>
+                  }
+                </ul>
+                <div class="muted small">{{ drift.error }}</div>
+              </div>
+            }
+
             @if (!preview.canApply) {
               <div class="warning-list">
                 Resolve conflicts before applying this import.
@@ -326,7 +388,14 @@ function byteLengthOfJson(value: unknown): number {
 
             <table class="table import-table">
               <thead>
-                <tr><th>Action</th><th>Kind</th><th>Key</th><th>Version</th><th>Message</th></tr>
+                <tr>
+                  <th>Action</th>
+                  <th>Kind</th>
+                  <th>Key</th>
+                  <th>Version</th>
+                  <th>Message</th>
+                  <th>Resolution</th>
+                </tr>
               </thead>
               <tbody>
                 @for (item of preview.items; track item.kind + ':' + item.key + ':' + (item.version ?? '')) {
@@ -336,10 +405,44 @@ function byteLengthOfJson(value: unknown): number {
                     <td class="mono">{{ item.key }}</td>
                     <td class="mono muted">{{ item.version ?? '—' }}</td>
                     <td class="small muted">{{ item.message }}</td>
+                    <td>
+                      @if (rowIsResolvable(item)) {
+                        <select
+                          class="resolution-select"
+                          [value]="resolutionFor(item)?.mode ?? ''"
+                          (change)="onResolutionChange(item, $any($event.target).value)">
+                          <option value="">No resolution</option>
+                          @for (opt of resolutionOptions(item); track opt.id) {
+                            <option [value]="opt.id" [disabled]="opt.disabled">{{ opt.label }}</option>
+                          }
+                        </select>
+                      } @else {
+                        @if (resolutionFor(item); as resolved) {
+                          <span class="resolved-pill small muted">Resolved: {{ resolved.mode }}</span>
+                        }
+                      }
+                    </td>
                   </tr>
                 }
               </tbody>
             </table>
+          </div>
+        </div>
+      }
+
+      @if (useExistingPrompt(); as prompt) {
+        <div class="modal-backdrop" (click)="cancelUseExistingPrompt()">
+          <div class="modal" (click)="$event.stopPropagation()">
+            <h3>Use existing library version?</h3>
+            <p class="small">
+              Switching to library v{{ prompt.libraryVersion }} rewrites every workflow node
+              that pinned this entity. The library version may behave differently than the
+              version the workflow was authored against. Continue?
+            </p>
+            <div class="modal-actions">
+              <button type="button" cf-button size="sm" variant="ghost" (click)="cancelUseExistingPrompt()">Cancel</button>
+              <button type="button" cf-button size="sm" variant="primary" (click)="confirmUseExistingPrompt()">Use existing</button>
+            </div>
           </div>
         </div>
       }
@@ -544,6 +647,65 @@ function byteLengthOfJson(value: unknown): number {
       font-size: 0.8rem;
     }
     .import-table { margin-top: 0.25rem; }
+    .resolution-select {
+      font-size: 0.75rem;
+      padding: 0.15rem 0.35rem;
+      max-width: 220px;
+    }
+    .resolved-pill {
+      font-style: italic;
+    }
+    /* sc-396: drift-409 banner — rendered above the items table when /package/apply returned
+       409 because the library moved past the resolution's expectedExistingMaxVersion. */
+    .drift-banner {
+      border: 1px solid color-mix(in oklab, var(--sem-amber) 50%, var(--border));
+      background: var(--warn-bg);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .drift-banner-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .drift-banner ul {
+      list-style: disc;
+      padding-left: 1.25rem;
+      margin: 0;
+    }
+    /* sc-396: UseExisting confirmation modal. The first time the user picks UseExisting in a
+       session we surface this prompt; once acknowledged, subsequent picks skip the modal. */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: color-mix(in oklab, black 50%, transparent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      max-width: 460px;
+      width: 100%;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    }
+    .modal h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    .modal p { margin: 0 0 0.75rem 0; }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
     .export-preview-card { margin-bottom: 1rem; }
     .export-preview-head {
       display: flex;
@@ -613,6 +775,28 @@ export class WorkflowsListComponent {
   readonly importSuccess = signal<string | null>(null);
   readonly importPreview = signal<WorkflowPackageImportPreview | null>(null);
   private pendingImportPackage: unknown = null;
+
+  /** sc-396: per-row resolution state. Keyed by `rowKey(item)`. Persists across re-previews
+   *  so the user's choice survives even after the underlying Conflict row collapses to a
+   *  Create / Reuse row in the next preview cycle. Cleared by `clearResolutions()`. */
+  readonly resolutions = signal<Map<string, RowResolutionChoice>>(new Map());
+
+  /** sc-396: shortHash suffix per Conflict/Refused row, precomputed when the preview lands
+   *  so the Copy dropdown option can show `{key}-{6-hex-shortHash}` without a click-time
+   *  round-trip to crypto.subtle. */
+  readonly precomputedCopySuffixes = signal<Map<string, string>>(new Map());
+
+  /** sc-396: pending UseExisting choice awaiting confirmation; null when no modal showing.
+   *  Once the user OKs the modal once, `useExistingWarned` flips and subsequent UseExisting
+   *  picks skip the prompt — the warning is informational, not a per-row safety gate. */
+  readonly useExistingPrompt = signal<{ rowKey: string; choice: RowResolutionChoice; libraryVersion: number } | null>(null);
+  readonly useExistingWarned = signal(false);
+
+  /** sc-396: 409 from /package/apply when the live library moved beyond the expectedExistingMaxVersion
+   *  we sent. Banner renders the moved entries; `applyAcknowledgingDrift()` retries with the flag set. */
+  readonly driftConflict = signal<WorkflowPackageImportDriftConflict | null>(null);
+
+  private rePreviewTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** E5 / R5.5: parsed package + size estimates for the export-preview card.
    *  Computed once when the author hits Export; the cached package + bytes feed both
@@ -836,6 +1020,12 @@ export class WorkflowsListComponent {
     this.importSuccess.set(null);
     this.importPreview.set(null);
     this.pendingImportPackage = null;
+    // sc-396: a fresh upload invalidates any in-flight resolution state from a previous file.
+    this.resolutions.set(new Map());
+    this.precomputedCopySuffixes.set(new Map());
+    this.driftConflict.set(null);
+    this.useExistingPrompt.set(null);
+    this.useExistingWarned.set(false);
     this.importLoading.set(true);
 
     file.text()
@@ -854,6 +1044,9 @@ export class WorkflowsListComponent {
             this.importPreview.set(preview);
             this.pendingImportPackage = parsed;
             this.importLoading.set(false);
+            // sc-396: precompute Copy suffixes off the main thread so the dropdown's
+            // "Copy as `{key}-abc123`" label is stable by the time the user opens it.
+            void this.precomputeCopySuffixesAsync(preview, parsed);
           },
           error: err => {
             this.importError.set(this.errorMessage(err, 'Failed to preview workflow package.'));
@@ -867,6 +1060,221 @@ export class WorkflowsListComponent {
       });
   }
 
+  // ----------------------------------------------------------------------------------------
+  // sc-396: per-conflict resolution UI — dropdown wiring, debounced re-preview, UseExisting
+  // confirmation, and drift-409 retry. CR-2/CR-3 (sc-394, sc-395) own the importer + endpoint
+  // semantics; this code is purely the imports-page surface.
+  // ----------------------------------------------------------------------------------------
+
+  /** Stable identity for a preview row: `kind:key:sourceVersion`. SourceVersion is null on
+   *  unversioned kinds (Skill / Role / McpServer / AgentRoleAssignment) so the empty trail
+   *  still makes a unique key for them. */
+  rowKey(item: WorkflowPackageImportItem): string {
+    return `${item.kind}:${item.key}:${item.sourceVersion ?? ''}`;
+  }
+
+  /** True when the row is a Conflict or Refused (the only rows that get a resolution control).
+   *  Refused rows still get the dropdown so the user can swap to Bump or Copy after a port-
+   *  shape refusal — UseExisting is the only mode the structural check rules out. */
+  rowIsResolvable(item: WorkflowPackageImportItem): boolean {
+    return item.action === 'Conflict' || item.action === 'Refused';
+  }
+
+  resolutionFor(item: WorkflowPackageImportItem): RowResolutionChoice | undefined {
+    return this.resolutions().get(this.rowKey(item));
+  }
+
+  /** Choices for a row's dropdown. Three modes are wired today; UseExisting requires a
+   *  library version, Bump/Copy require both a sourceVersion and a versioned kind. */
+  resolutionOptions(item: WorkflowPackageImportItem): Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> {
+    const versionedKind = item.kind === 'Agent' || item.kind === 'Workflow';
+    const out: Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> = [];
+
+    if (item.existingMaxVersion != null) {
+      out.push({
+        id: 'UseExisting',
+        label: `Use existing v${item.existingMaxVersion}`,
+        // Refused-on-UseExisting can't be re-resolved by picking UseExisting again — same
+        // structural mismatch fires.
+        disabled: item.action === 'Refused',
+      });
+    }
+
+    if (versionedKind && item.sourceVersion != null) {
+      const bumpTarget = (item.existingMaxVersion ?? item.sourceVersion) + 1;
+      out.push({ id: 'Bump', label: `Bump to v${bumpTarget}` });
+
+      const suffix = this.precomputedCopySuffixes().get(this.rowKey(item));
+      out.push({
+        id: 'Copy',
+        label: suffix ? `Copy as ${item.key}-${suffix}` : 'Copy as new key (computing…)',
+        disabled: !suffix,
+      });
+    }
+
+    return out;
+  }
+
+  /** Dropdown change handler. UseExisting on the first pick prompts a confirmation modal
+   *  to flag "the library version may behave differently than the version this workflow was
+   *  authored against"; once the user OKs once, subsequent picks skip the prompt. */
+  onResolutionChange(item: WorkflowPackageImportItem, modeId: string): void {
+    const key = this.rowKey(item);
+    if (modeId === '' || modeId === 'none') {
+      this.removeResolution(key);
+      return;
+    }
+    const mode = modeId as WorkflowPackageImportResolutionMode;
+    const choice: RowResolutionChoice = {
+      mode,
+      expectedExistingMaxVersion: item.existingMaxVersion ?? null,
+    };
+    if (mode === 'Copy') {
+      const suffix = this.precomputedCopySuffixes().get(key);
+      if (!suffix) return;
+      choice.newKey = `${item.key}-${suffix}`;
+    }
+
+    if (mode === 'UseExisting' && !this.useExistingWarned()) {
+      this.useExistingPrompt.set({
+        rowKey: key,
+        choice,
+        libraryVersion: item.existingMaxVersion ?? 0,
+      });
+      return;
+    }
+
+    this.commitResolution(key, choice);
+  }
+
+  confirmUseExistingPrompt(): void {
+    const prompt = this.useExistingPrompt();
+    if (!prompt) return;
+    this.useExistingWarned.set(true);
+    this.useExistingPrompt.set(null);
+    this.commitResolution(prompt.rowKey, prompt.choice);
+  }
+
+  cancelUseExistingPrompt(): void {
+    this.useExistingPrompt.set(null);
+  }
+
+  private commitResolution(key: string, choice: RowResolutionChoice): void {
+    const next = new Map(this.resolutions());
+    next.set(key, choice);
+    this.resolutions.set(next);
+    this.scheduleRePreview();
+  }
+
+  private removeResolution(key: string): void {
+    if (!this.resolutions().has(key)) return;
+    const next = new Map(this.resolutions());
+    next.delete(key);
+    this.resolutions.set(next);
+    this.scheduleRePreview();
+  }
+
+  /** sc-396: clear every resolution and re-fetch the preview against the original package.
+   *  Used when the user wants to start fresh — typical workflow is "I picked the wrong mode
+   *  on a few rows, just reset and let me re-pick." */
+  clearResolutions(): void {
+    if (this.resolutions().size === 0) return;
+    this.resolutions.set(new Map());
+    this.scheduleRePreview();
+  }
+
+  /** Debounced re-preview. 300ms is plenty for a human dropdown change; faster than the
+   *  preview round-trip (the server runs validators) so the UI doesn't fire mid-typing. */
+  private scheduleRePreview(): void {
+    if (this.rePreviewTimer !== null) clearTimeout(this.rePreviewTimer);
+    this.rePreviewTimer = setTimeout(() => {
+      this.rePreviewTimer = null;
+      this.runRePreview();
+    }, 300);
+  }
+
+  private runRePreview(): void {
+    const pkg = this.pendingImportPackage;
+    if (!pkg) return;
+
+    const resolutions = this.buildResolutionList();
+    this.importError.set(null);
+    this.driftConflict.set(null);
+    // Re-preview never blocks the apply button — we just refresh the rendered state.
+    this.api.previewPackageImport(pkg, resolutions.length > 0 ? resolutions : undefined).subscribe({
+      next: preview => this.importPreview.set(preview),
+      error: err => this.importError.set(this.errorMessage(err, 'Failed to re-preview workflow package.')),
+    });
+  }
+
+  /** Convert the per-row resolution Map into the wire-format list the API expects. The Map's
+   *  key already encodes (kind, key, sourceVersion); we tear it back apart here. */
+  private buildResolutionList(): WorkflowPackageImportResolution[] {
+    const out: WorkflowPackageImportResolution[] = [];
+    for (const [key, choice] of this.resolutions()) {
+      const idx = key.indexOf(':');
+      const kind = key.slice(0, idx);
+      const rest = key.slice(idx + 1);
+      const versionIdx = rest.lastIndexOf(':');
+      const itemKey = rest.slice(0, versionIdx);
+      const sourceVersionRaw = rest.slice(versionIdx + 1);
+      const sourceVersion = sourceVersionRaw === '' ? null : Number(sourceVersionRaw);
+      out.push({
+        kind: kind as WorkflowPackageImportResolution['kind'],
+        key: itemKey,
+        sourceVersion,
+        mode: choice.mode,
+        newKey: choice.newKey ?? null,
+        expectedExistingMaxVersion: choice.expectedExistingMaxVersion ?? null,
+      });
+    }
+    return out;
+  }
+
+  /** Walk the just-loaded preview's resolvable rows (Conflict + Refused) and precompute a
+   *  6-hex-char SHA-256 suffix from the resolved entity's body in the package. The suffix is
+   *  what the Copy dropdown option labels show ("Copy as `{key}-abc123`") and what we send
+   *  as NewKey on apply. Async; the dropdown options re-render once the Map is populated. */
+  private async precomputeCopySuffixesAsync(preview: WorkflowPackageImportPreview, pkg: unknown): Promise<void> {
+    const next = new Map<string, string>();
+    const versioned = preview.items.filter(item =>
+      this.rowIsResolvable(item) &&
+      (item.kind === 'Agent' || item.kind === 'Workflow') &&
+      item.sourceVersion != null);
+
+    for (const item of versioned) {
+      const body = this.findEntityBody(pkg, item.kind, item.key, item.sourceVersion!);
+      if (!body) continue;
+      try {
+        const json = JSON.stringify(body);
+        const bytes = new TextEncoder().encode(json);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const hex = Array.from(new Uint8Array(digest, 0, 3))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        next.set(this.rowKey(item), hex);
+      } catch {
+        // crypto.subtle unavailable (older browsers) or digest failed — skip silently;
+        // the Copy option remains disabled with the "computing…" label, which is harmless
+        // on the modern-browser-only target this app already runs on.
+      }
+    }
+    this.precomputedCopySuffixes.set(next);
+  }
+
+  private findEntityBody(pkg: unknown, kind: string, key: string, version: number): unknown {
+    if (!pkg || typeof pkg !== 'object') return null;
+    const root = pkg as Record<string, unknown>;
+    const collectionName = kind === 'Agent' ? 'agents' : kind === 'Workflow' ? 'workflows' : null;
+    if (!collectionName) return null;
+    const collection = root[collectionName];
+    if (!Array.isArray(collection)) return null;
+    return collection.find(entry =>
+      entry && typeof entry === 'object' &&
+      (entry as Record<string, unknown>)['key'] === key &&
+      (entry as Record<string, unknown>)['version'] === version) ?? null;
+  }
+
   applyPackageImport(): void {
     if (!this.pendingImportPackage || !this.importPreview()?.canApply) {
       return;
@@ -876,25 +1284,61 @@ export class WorkflowsListComponent {
       return;
     }
 
+    this.runApply(/* acknowledgeDrift */ false);
+  }
+
+  /** sc-396: invoked from the drift-conflict banner. Re-submits the apply with
+   *  `acknowledgeDrift: true` so the importer accepts the live max versions. */
+  applyAcknowledgingDrift(): void {
+    if (!this.pendingImportPackage) return;
+    this.runApply(/* acknowledgeDrift */ true);
+  }
+
+  private runApply(acknowledgeDrift: boolean): void {
     this.importError.set(null);
     this.importSuccess.set(null);
+    this.driftConflict.set(null);
     this.importApplyLoading.set(true);
 
-    this.api.applyPackageImport(this.pendingImportPackage).subscribe({
+    const resolutions = this.buildResolutionList();
+    this.api.applyPackageImport(
+      this.pendingImportPackage,
+      resolutions.length > 0 ? resolutions : undefined,
+      acknowledgeDrift || undefined,
+    ).subscribe({
       next: result => {
         this.importSuccess.set(
           `Import applied: ${result.createCount} created, ${result.reuseCount} reused.`
         );
+        this.resolutions.set(new Map());
+        this.precomputedCopySuffixes.set(new Map());
+        this.useExistingWarned.set(false);
         this.categoryFilter.set('All');
         this.tagFilter.set([]);
         this.importApplyLoading.set(false);
         this.reload();
       },
       error: err => {
-        this.importError.set(this.errorMessage(err, 'Failed to apply workflow package.'));
+        const drift = this.extractDriftConflict(err);
+        if (drift) {
+          // Don't set importError — the banner is enough and surfaces "Apply anyway" inline.
+          this.driftConflict.set(drift);
+        } else {
+          this.importError.set(this.errorMessage(err, 'Failed to apply workflow package.'));
+        }
         this.importApplyLoading.set(false);
       }
     });
+  }
+
+  private extractDriftConflict(err: unknown): WorkflowPackageImportDriftConflict | null {
+    const httpErr = err as { status?: number; error?: unknown };
+    if (httpErr?.status !== 409) return null;
+    const body = httpErr.error;
+    if (!body || typeof body !== 'object') return null;
+    const candidate = body as { error?: unknown; movedEntities?: unknown };
+    if (typeof candidate.error !== 'string' || !Array.isArray(candidate.movedEntities)) return null;
+    return body as WorkflowPackageImportDriftConflict;
   }
 
   importActionVariant(action: WorkflowPackageImportAction): ChipVariant {

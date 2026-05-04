@@ -62,8 +62,11 @@ describe('WorkflowsApi', () => {
     api.previewPackageImport(workflowPackage).subscribe();
     req = httpMock.expectOne('/api/workflows/package/preview');
     expect(req.request.method).toBe('POST');
-    expect(req.request.body).toBe(workflowPackage);
-    req.flush({ items: [], warnings: [], createCount: 0, reuseCount: 0, conflictCount: 0, warningCount: 0, canApply: true });
+    // sc-395: the wire body is now `{ package, resolutions? }` so the API service can also
+    // surface user-chosen resolutions; bare-package callers continue to work because the
+    // service wraps internally and `resolutions` defaults to undefined.
+    expect(req.request.body).toEqual({ package: workflowPackage, resolutions: undefined });
+    req.flush({ items: [], warnings: [], createCount: 0, reuseCount: 0, conflictCount: 0, refusedCount: 0, warningCount: 0, canApply: true });
 
     const dryRun = { fixtureId: 5, workflowVersion: 2 };
     api.dryRun('triage/flow', dryRun).subscribe();
