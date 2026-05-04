@@ -8,7 +8,7 @@ The current tree includes:
 - a visual workflow editor with Agent, Logic, HITL, Subflow, ReviewLoop, Transform, and Swarm nodes
 - user-defined output ports plus an implicit `Failed` port on every node
 - per-trace-tree workflow variables (`workflow.*`) and per-trace context (`context.*`)
-- input and output routing scripts on every Agent/HITL/Start node
+- input and output routing scripts on every Agent/HITL/Start node, and at the saga boundary of every Subflow/ReviewLoop node
 - Scriban prompt templates with reusable `@codeflow/*` partial pins
 - pluggable save-time validation, dataflow analysis, and dry-run / fixture-based testing
 - code-aware workflows with per-trace working directories, repo cloning, and `vcs.*` host tools
@@ -156,10 +156,12 @@ The `__loop` namespace under `workflow.*` is reserved (e.g. `__loop.rejectionHis
 
 ### Input and output scripts
 
-Every Agent / HITL / Start node carries up to two optional scripts:
+Every Agent / HITL / Start node — and, at the boundary of the child saga, every Subflow / ReviewLoop node — carries up to two optional scripts:
 
-- **Input script** runs **before** the node sees its input. Sees `input`. Optionally calls `setInput(text)` to rewrite the inbound artifact. Up to 1 MiB.
-- **Output script** runs **after** the agent completes. Sees `output`. Calls `setNodePath('PortName')` (required) and optionally `setOutput(text)` to rewrite the outbound artifact. Up to 1 MiB.
+- **Input script** runs **before** the node (or, on a boundary, the child saga) sees its input. Sees `input`. Optionally calls `setInput(text)` to rewrite the inbound artifact. Up to 1 MiB.
+- **Output script** runs **after** the agent completes (or, on a boundary, after the child saga terminates). Sees `output` with `output.decision` carrying the agent's port name (or, on a boundary, the child's terminal port — synthesized `Exhausted` for a budget-exhausted ReviewLoop). Calls `setNodePath('PortName')` to override the routing port and optionally `setOutput(text)` to rewrite the outbound artifact. Up to 1 MiB.
+
+For ReviewLoop boundary scripts, both fire **exactly once** per loop activation — input before round 1, output after the loop has fully terminated. Per-iteration logic belongs on inner nodes of the child workflow.
 
 Logic nodes use a single script that must call `setNodePath` and may not call `setInput`/`setOutput`. See [docs/workflows.md](./docs/workflows.md).
 
@@ -167,6 +169,7 @@ Logic nodes use a single script that must call `setNodePath` and may not call `s
 
 - Workflows compose: a Subflow node calls a child workflow and resumes routing from the matching terminal port name on the parent. Recursion cap is depth 3.
 - ReviewLoops add bounded iteration: `MaxRounds` (1–10), `LoopDecision`, optional built-in rejection-history accumulation, automatic `@codeflow/last-round-reminder` injection, and template variables `round` / `maxRounds` / `isLastRound`.
+- Both kinds carry boundary input/output scripts (above) for parent-side input rewriting, port collapsing, and outcome tagging without modifying the reusable child workflow.
 - HITL inside a child surfaces on every ancestor trace's `pendingHitl` list.
 
 See [docs/subflows.md](./docs/subflows.md) and [docs/review-loop.md](./docs/review-loop.md).

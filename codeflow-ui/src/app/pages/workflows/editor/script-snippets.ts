@@ -14,7 +14,7 @@
  * Versioned. Bump the SCRIPT_SNIPPET_LIBRARY_VERSION when changing any
  * snippet body so consumers can detect upgrades.
  */
-export const SCRIPT_SNIPPET_LIBRARY_VERSION = 1;
+export const SCRIPT_SNIPPET_LIBRARY_VERSION = 2;
 
 export type SnippetKind = 'input-script' | 'output-script' | 'logic-script';
 
@@ -165,6 +165,61 @@ export const SCRIPT_SNIPPETS: readonly ScriptSnippet[] = [
       "setInput('${1:replacement text}');"
     ].join('\n'),
     kinds: ['input-script'],
+  },
+  {
+    id: 'boundary-input-from-workflow-var',
+    label: 'cf:boundary-input-from-workflow-var',
+    detail: 'Subflow / ReviewLoop',
+    documentation:
+      'Boundary input script: build the child saga\'s seed artifact from a workflow variable. ' +
+      'Runs once before the child workflow is dispatched (for ReviewLoop, only before round 1). ' +
+      'Use this when a Subflow needs to operate on something accumulated upstream rather than ' +
+      'whatever artifact happens to be on the incoming edge.',
+    insertText: [
+      "// Boundary input — runs once before the child saga starts.",
+      "const seed = workflow.${1:variableName};",
+      "if (typeof seed === 'string' && seed.length > 0) {",
+      "  setInput(seed);",
+      "}"
+    ].join('\n'),
+    kinds: ['input-script'],
+  },
+  {
+    id: 'boundary-output-route-on-terminal',
+    label: 'cf:boundary-output-route-on-terminal',
+    detail: 'Subflow / ReviewLoop',
+    documentation:
+      'Boundary output script: choose the parent\'s outgoing port based on the child\'s ' +
+      'terminal port. `output.decision` is the child\'s terminal port name (or, for ReviewLoop, ' +
+      'whichever port closed the loop — including the synthesized `Exhausted`). The chosen ' +
+      'port must match one of the boundary node\'s wired ports plus the implicit `Failed`.',
+    insertText: [
+      "// Boundary output — runs once after the child terminates.",
+      "// output.decision = child's terminal port (or 'Exhausted' on a budget-exhausted ReviewLoop).",
+      "if (output.decision === '${1:Approved}') {",
+      "  setNodePath('${2:Continue}');",
+      "} else if (output.decision === 'Exhausted') {",
+      "  setNodePath('${3:Escalate}');",
+      "} else {",
+      "  setNodePath('Failed');",
+      "}"
+    ].join('\n'),
+    kinds: ['output-script'],
+  },
+  {
+    id: 'boundary-output-summarize-loop-exit',
+    label: 'cf:boundary-output-summarize-loop-exit',
+    detail: 'ReviewLoop',
+    documentation:
+      'ReviewLoop boundary output: stash a summary of how the loop ended into the workflow ' +
+      'bag so downstream nodes can render or branch on it. Fires once per loop activation, ' +
+      'never per iteration.',
+    insertText: [
+      "// Boundary output on ReviewLoop — fires once after the loop exits.",
+      "const exited = output.decision === 'Exhausted' ? 'budget-exhausted' : 'approved';",
+      "setWorkflow('${1:loopOutcome}', exited);"
+    ].join('\n'),
+    kinds: ['output-script'],
   },
 ];
 

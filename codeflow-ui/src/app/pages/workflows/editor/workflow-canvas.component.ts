@@ -477,6 +477,56 @@ function defaultStartInput(): WorkflowInput {
                   }
                 </div>
               </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> in this saga's scope <em>before</em> the child workflow is dispatched. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what the child saga receives, or <code>setContext('key', value)</code> / <code>setWorkflow('key', value)</code> to seed bag values the child sees. Leave blank to pass the upstream artifact through unchanged.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
+                  } @else if (inputScriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> in this saga's scope <em>after</em> the child workflow terminates. Sees <code>output</code> (the artifact the child returned) with <code>output.decision</code> set to the child's terminal port name. Call <code>setNodePath('…')</code> to override the outgoing port (limited to the child's terminal ports plus <code>Failed</code>), <code>setOutput('…')</code> to rewrite the artifact propagated downstream, or <code>setContext</code>/<code>setWorkflow</code> to accumulate context. Leave blank to route by the child's terminal port verbatim.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
+                  @if (scriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
+                  } @else if (scriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
             }
 
             @if (sel.editor.kind === 'ReviewLoop') {
@@ -567,6 +617,56 @@ function defaultStartInput(): WorkflowInput {
                 <p class="muted xsmall">
                   The child workflow can read <code>{{ '{{round}}' }}</code>, <code>{{ '{{maxRounds}}' }}</code>, <code>{{ '{{isLastRound}}' }}</code> from prompts and scripts.
                 </p>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> before round 1 — never per iteration. The artifact <code>setInput('…')</code> writes is the seed for every iteration. <code>setContext</code>/<code>setWorkflow</code> writes are visible to the child throughout the loop. To mutate per-round behavior, put scripts on nodes <em>inside</em> the child workflow instead.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
+                  } @else if (inputScriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> after the loop terminates — never per iteration. <code>output.decision</code> is the port that closed the loop: either the child's exit port (the one that wasn't <code>loopDecision</code>) or <code>Exhausted</code> (round budget spent). <code>setNodePath('…')</code> may route to any of the boundary's wirable ports plus <code>Failed</code>.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
+                  @if (scriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
+                  } @else if (scriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
               </div>
             }
 

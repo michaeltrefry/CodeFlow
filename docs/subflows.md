@@ -152,6 +152,57 @@ Each slice is sized to be one Kanban card. Where a slice could plausibly be spli
 - Slice 9 (editor) gates user-facing usability but doesn't block backend rollout.
 - Slice 12 only after 3+4+5+6 are merged.
 
+## 5b. Boundary input/output scripts (sc-626)
+
+A Subflow node carries its own input/output script slots — the same JS sandbox Agent and HITL
+nodes use, evaluated at the boundary of the child saga rather than around an agent invocation.
+The slots are optional; when blank, the parent saga publishes `SubflowInvokeRequested` with the
+upstream artifact verbatim and routes the child's terminal port back to the parent without
+modification (today's default behavior).
+
+### Input script — runs before the child saga is dispatched
+
+Sees `input` (the upstream artifact) plus the parent's `context` and `workflow` bags. May call:
+
+- `setInput('…')` — rewrites the artifact passed to the child saga as `SubflowInvokeRequested.InputRef`.
+- `setContext('key', value)` — writes to the parent's local `context`. The child does **not** see these (its `context` starts empty).
+- `setWorkflow('key', value)` — writes to the parent's `workflow` bag. The child sees these because the child snapshots `workflow` at dispatch.
+
+Useful for: building a child seed artifact from accumulated workflow state, seeding the
+child's `workflow` with parent-only values the child needs to read, or normalizing the input
+shape before handing it to a reusable child workflow.
+
+### Output script — runs once after the child saga terminates
+
+Sees `output` (the artifact the child returned) with `output.decision` set to the child's
+terminal port name. May call:
+
+- `setNodePath('…')` — overrides the parent's outgoing port. Limited to the child's terminal ports plus the implicit `Failed`. See [port-model.md § Boundary scripts](port-model.md#boundary-scripts-on-subflow--reviewloop).
+- `setOutput('…')` — rewrites the artifact propagated to whatever the parent routes to next.
+- `setContext('key', value)` / `setWorkflow('key', value)` — accumulate context the parent's downstream nodes can read.
+
+Useful for: collapsing several child terminal ports into one parent decision, summarizing the
+child's outcome into a workflow variable, or rewriting the child's artifact into a shape the
+downstream parent node expects.
+
+### Worked example
+
+A parent workflow embeds a `validate-prd` child as a Subflow. The child terminates on
+`{Approved, NeedsRevision, Rejected}`. The parent only cares about pass/fail downstream:
+
+```js
+// Boundary output script on the Subflow node
+setWorkflow('lastValidation', output.decision);  // remember the granular verdict
+if (output.decision === 'Approved') {
+  setNodePath('Continue');
+} else {
+  setNodePath('Failed');  // collapse NeedsRevision + Rejected into the error path
+}
+```
+
+The child workflow stays reusable across parents that need different decision granularity;
+each parent's boundary script handles its own port collapsing.
+
 ## 6. Open follow-ups (post-v1)
 
 - Allow subflows to declare custom named output ports (would need an "Exit" node kind and per-port semantics).

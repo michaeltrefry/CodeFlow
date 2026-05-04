@@ -118,6 +118,43 @@ A HITL reviewer for the whole loop goes **outside** the loop in the parent workf
 - The ReviewLoop node row in the parent trace shows `Round N of M` progress and the current round's child trace link.
 - After the loop exits, the trace detail UI renders the ReviewLoop node with expandable per-round child traces underneath.
 
+### 2.9b Boundary input/output scripts (sc-626)
+
+A ReviewLoop node carries its own input/output script slots — same JS sandbox as Subflow, with
+ReviewLoop-specific firing semantics:
+
+- **Boundary input script** runs **once** in the parent saga's scope, before round 1 spawns.
+  Never per iteration. Whatever artifact it writes via `setInput('…')` becomes the seed for
+  every round (including any rounds that re-feed prior output through `setInput` would *not*
+  re-fire — it's a one-shot at loop entry).
+- **Boundary output script** runs **once** in the parent saga's scope, after the loop has
+  fully terminated. Never per iteration. `output.decision` carries whichever port closed the
+  loop: the child's exit port (the one that wasn't `loopDecision`) **or** the synthesized
+  `Exhausted`. `setNodePath('…')` may target child terminal ports, the configured
+  `loopDecision`, the synthesized `Exhausted`, or the implicit `Failed`. See
+  [port-model.md § Boundary scripts](port-model.md#boundary-scripts-on-subflow--reviewloop).
+
+Per-iteration logic — for example, summarizing each round's reviewer feedback into
+`workflow.lastFeedback` — belongs on **inner** nodes of the child workflow, where scripts fire
+on every iteration. Boundary scripts are deliberately scoped to "once at loop entry" / "once at
+loop exit" so per-loop-activation semantics are unambiguous.
+
+#### Worked example — collapsing exit ports + tagging the outcome
+
+```js
+// ReviewLoop boundary output script
+const exited = output.decision === 'Exhausted' ? 'budget-exhausted' : 'approved';
+setWorkflow('reviewOutcome', exited);
+if (output.decision === 'Exhausted') {
+  setNodePath('Escalate');  // human looks at it
+} else {
+  setNodePath('Continue');
+}
+```
+
+Downstream parent nodes can then read `workflow.reviewOutcome` to render the loop's verdict
+without each consumer re-deriving it from terminal port names.
+
 ### 2.10 Historical note: enum removals
 
 This section is historical. `ApprovedWithActions` was removed from `AgentDecisionKind` in
