@@ -29,6 +29,14 @@ RUN dotnet publish CodeFlow.Worker/CodeFlow.Worker.csproj \
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
+# Install git so vcs.clone (via IGitCli) and agent-issued `run_command git ...` both work.
+# openssh-client covers SSH remotes; ca-certificates is usually pulled by base but is cheap to
+# pin explicitly. See sc-659 / epic 658 for the per-trace credential-helper plan that complements
+# this — agents never see a token; auth flows through git-credential-codeflow at runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
 # Run as a non-root uid so post-exploitation does not execute as root. We use the .NET image's
 # standard app uid rather than assuming user-management tools like adduser are installed.
 ARG APP_UID=1654
