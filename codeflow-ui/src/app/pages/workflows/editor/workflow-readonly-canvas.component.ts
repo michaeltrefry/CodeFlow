@@ -71,6 +71,15 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
    */
   readonly highlightedEdgeKeys = input<string[] | null>(null);
   /**
+   * When non-null, marks the listed node ids as currently running (mid-flight) so the node
+   * template renders a spinner + pulsing border. Null = no running indicators (editor / static
+   * display, or a non-Running trace). Trace-detail computes this from the workflow graph: any
+   * node that's the target of an executed edge but hasn't itself recorded a decision yet is
+   * mid-flight, plus any direct child trace whose own state is Running (Subflow / ReviewLoop
+   * parents whose synthetic completion decision hasn't landed).
+   */
+  readonly runningNodeIds = input<string[] | null>(null);
+  /**
    * Token Usage Tracking [Slice 7]: per-node token-usage overlays. The trace
    * detail page builds this map by combining slice 5's per-node rollups with the
    * descendant-saga rollups that belong to Subflow / ReviewLoop / Swarm nodes
@@ -105,9 +114,9 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       this.applyHighlight();
       this.applyEdgeHighlight();
     } else {
-      if (changes['highlightedNodeIds'] || changes['tokenUsageByNodeId']) {
-        // Highlight + token-usage overlays both ride the same per-node update path,
-        // so a change to either re-applies both in one pass.
+      if (changes['highlightedNodeIds'] || changes['runningNodeIds'] || changes['tokenUsageByNodeId']) {
+        // Highlight + running flag + token-usage overlays all ride the same per-node update
+        // path, so a change to any of them re-applies the full per-node decoration in one pass.
         this.applyHighlight();
       }
       if (changes['highlightedEdgeKeys']) {
@@ -236,11 +245,17 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     if (!this.editor || !this.area) return;
     const ids = this.highlightedNodeIds();
     const highlighted = ids ? new Set(ids) : null;
+    const runningIds = this.runningNodeIds();
+    const running = runningIds ? new Set(runningIds) : null;
     const tokenOverlay = this.tokenUsageByNodeId();
 
     for (const node of this.editor.getNodes()) {
       const editorNode = node as WorkflowEditorNode;
-      if (highlighted === null) {
+      if (running?.has(editorNode.nodeId)) {
+        // 'running' wins over 'active' so the spinner + pulse on the in-flight frontier
+        // reads as distinct from the rest of the executed path.
+        editorNode.traceState = 'running';
+      } else if (highlighted === null) {
         editorNode.traceState = null;
       } else if (highlighted.has(editorNode.nodeId)) {
         editorNode.traceState = 'active';
