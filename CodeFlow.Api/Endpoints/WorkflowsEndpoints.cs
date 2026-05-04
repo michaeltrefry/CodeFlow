@@ -65,6 +65,14 @@ public static class WorkflowsEndpoints
         group.MapPost("/package/apply-from-draft", ApplyPackageImportFromDraftAsync)
             .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
 
+        // sc-397: read the live draft from a conversation's workspace. The chat chip's
+        // "Resolve in imports page" handoff calls this so the imports page can hydrate from
+        // the same bytes the assistant just previewed without round-tripping the package
+        // through the browser. Same auth pattern as apply-from-draft (re-resolve user against
+        // conversation owner). Read-only — does NOT mutate the draft or the snapshot files.
+        group.MapGet("/package-draft", GetPackageDraftAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
+
         group.MapGet("/{key}", GetLatestAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.WorkflowsRead);
 
@@ -535,6 +543,68 @@ public static class WorkflowsEndpoints
             Error: "Library has moved between preview and apply: " + summary + more
                 + ". Re-run the preview to see the current state, or set `acknowledgeDrift: true` to apply against the new max versions.",
             MovedEntities: moved);
+    }
+
+    /// <summary>
+    /// sc-397: read the live draft package from a conversation's workspace and return the
+    /// raw JSON. The chat chip's "Resolve in imports page" redirect calls this when it lands
+    /// the user on /workflows so the imports page can hydrate from the same bytes the
+    /// assistant just previewed. Owner-checked (mirrors apply-from-draft); 404 on unknown
+    /// conversation, missing draft, or non-owner access.
+    /// </summary>
+    private static async Task<IResult> GetPackageDraftAsync(
+        Guid conversationId,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantWorkspaceProvider workspaceProvider,
+        CancellationToken cancellationToken)
+    {
+        if (conversationId == Guid.Empty)
+        {
+            return ApiResults.BadRequest("conversationId is required.");
+        }
+
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            // Same shape as apply-from-draft: don't leak existence to a non-owner.
+            return Results.NotFound();
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var draftPath = WorkflowPackageDraftStore.ResolveDraftPath(workspace);
+        if (!File.Exists(draftPath))
+        {
+            // No draft set yet (or already cleared). The chip should never reach this path —
+            // the assistant's `save_workflow_package` had to find a draft to produce the
+            // `preview_conflicts` result that triggered the redirect — but a tab the user
+            // left open across a `clear_workflow_package_draft` call could land here.
+            return Results.NotFound();
+        }
+
+        // Stream the file as application/json. The imports page parses it with `JSON.parse`
+        // before seeding pendingImportPackage, so we don't need typed deserialization here.
+        var stream = File.OpenRead(draftPath);
+        return Results.File(stream, contentType: "application/json");
     }
 
     /// <summary>

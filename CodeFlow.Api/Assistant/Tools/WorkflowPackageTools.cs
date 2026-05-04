@@ -283,6 +283,10 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             createCount = preview.CreateCount,
             reuseCount = preview.ReuseCount,
             conflictCount = preview.ConflictCount,
+            // sc-395 / sc-397: refusedCount is a hard apply-blocker just like Conflict (port-shape
+            // mismatch on a UseExisting resolution). The chat chip uses this + conflictCount to
+            // label the "Resolve in imports page" prompt with the correct row count.
+            refusedCount = preview.RefusedCount,
             warningCount = preview.WarningCount,
             warnings = preview.Warnings.ToArray(),
             items = preview.Items
@@ -311,9 +315,13 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             // 400 with an empty body that the chip's error formatter can't surface.
             snapshotId = draftSnapshotId?.ToString(),
             note,
+            // sc-397: when CanApply is false, the chat-panel renders a "Resolve in imports
+            // page" chip that hands the package off to the imports page. The user picks
+            // resolutions there (Bump / UseExisting / Copy) — the LLM must NOT spin trying
+            // to fix the conflicts itself by re-emitting the package.
             message = preview.CanApply
                 ? "Preview validated. The user must click the 'Save' chip in chat to confirm — do not call this tool again or take further action until the user responds."
-                : "Preview produced conflicts. The package cannot be applied as-is. Tell the user which conflicts to resolve and re-emit the package.",
+                : "Preview produced conflicts. A 'Resolve in imports page' chip will appear in chat that lets the user pick a resolution per row (Bump / UseExisting / Copy). Do NOT re-emit the package or call this tool again — wait for the user to navigate through the chip and apply the resolved import.",
         };
 
         return new AssistantToolResult(JsonSerializer.Serialize(summary, AssistantToolJson.SerializerOptions));

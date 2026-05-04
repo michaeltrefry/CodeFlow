@@ -27,6 +27,19 @@ export interface ChatToolCallConfirmation {
    */
   packageSource?: 'inline' | 'draft';
   /**
+   * sc-397: for `save_workflow_package` only. `'apply'` (the default) is the legacy chip — the
+   * tool returned `preview_ok` and clicking confirm POSTs the package to /apply or
+   * /apply-from-draft. `'resolve'` indicates the tool returned `preview_conflicts`; the chip
+   * label says "Resolve in imports page" and clicking confirm stashes the package handoff in
+   * sessionStorage and navigates to /workflows where the user picks a resolution per row.
+   */
+  mode?: 'apply' | 'resolve';
+  /**
+   * sc-397: for `save_workflow_package` resolve-mode chip only. Conflict + Refused row count
+   * the chip displays in its prompt label. Read from the tool's `preview_conflicts` summary.
+   */
+  conflictCount?: number;
+  /**
    * For `save_workflow_package` draft path only. The immutable id of the snapshot file the
    * server wrote at preview time. The chat-panel posts this id with the conversation id when
    * the user confirms; the apply endpoint loads the snapshot (NOT the live draft) so a

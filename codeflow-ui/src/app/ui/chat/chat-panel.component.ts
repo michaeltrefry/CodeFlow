@@ -13,6 +13,7 @@ import {
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
 import { AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
 import { formatHttpError } from '../../core/format-error';
+import { IMPORT_HANDOFF_STORAGE_KEY, ImportHandoff } from '../../core/import-handoff';
 import { PageContext, pageContextToDto } from '../../core/page-context';
 import { suggestionChipsFor } from '../../core/suggestion-chips';
 import { WorkflowPackageImportPreview, WorkflowsApi } from '../../core/workflows.api';
@@ -1197,6 +1198,13 @@ export class ChatPanelComponent implements OnDestroy {
     const conf = card?.confirmation;
     const isDraftSource = conf?.packageSource === 'draft';
 
+    // sc-397: resolve-mode chip routes the user to the imports page where they pick per-row
+    // resolutions; the apply-mode chips below run their respective POST flows.
+    if (conf?.mode === 'resolve') {
+      this.handleResolveSaveConfirmation(toolCallId, isDraftSource);
+      return;
+    }
+
     if (isDraftSource) {
       this.applyDraftSaveConfirmation(toolCallId);
       return;
@@ -1299,6 +1307,67 @@ export class ChatPanelComponent implements OnDestroy {
         }));
       },
     });
+  }
+
+  /**
+   * sc-397: handle the resolve-mode chip — the assistant's `save_workflow_package` returned
+   * `preview_conflicts` so we can't apply directly. Stash the package handoff in
+   * sessionStorage and navigate to /workflows where the imports page hydrates from the stash
+   * and surfaces the per-row resolution dropdown (CR-4).
+   *
+   * Inline source: the package bytes ride along in the stash so the imports page seeds them
+   * directly into pendingImportPackage. Draft source: only the conversationId rides; the
+   * imports page calls GET /api/workflows/package-draft to fetch the live draft bytes.
+   */
+  private handleResolveSaveConfirmation(toolCallId: string, isDraftSource: boolean): void {
+    const conversationId = this.conversationId();
+    if (isDraftSource && !conversationId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'No active conversation — cannot resolve a draft-source package.',
+      }));
+      return;
+    }
+
+    const inlinePackage = isDraftSource ? null : this.pendingSaves.get(toolCallId) ?? null;
+    if (!isDraftSource && !inlinePackage) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Package payload missing — re-open the chat thread or ask the assistant to re-emit it.',
+      }));
+      return;
+    }
+
+    try {
+      const handoff: ImportHandoff = {
+        v: 1,
+        stashedAtMs: Date.now(),
+        packageSource: isDraftSource ? 'draft' : 'inline',
+        conversationId: isDraftSource ? conversationId! : null,
+        package: isDraftSource ? null : inlinePackage,
+      };
+      sessionStorage.setItem(IMPORT_HANDOFF_STORAGE_KEY, JSON.stringify(handoff));
+    } catch (e) {
+      // sessionStorage can throw under quota / privacy mode. Surface so the user has a path
+      // forward (e.g., re-export and use the file-upload flow on /workflows directly).
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: `Could not stash the package for handoff: ${e instanceof Error ? e.message : String(e)}`,
+      }));
+      return;
+    }
+
+    this.updateConfirmation(toolCallId, c => ({
+      ...c,
+      state: 'success',
+      // No `applied` payload on resolve mode — the chip's success banner just tells the user
+      // we navigated away. Pinned-mutation-chip rendering reads `applied?.kind` and falls
+      // through to a generic "completed" state when absent.
+    }));
+    void this.router.navigate(['/workflows']);
   }
 
   private applyValidatedSaveConfirmation(toolCallId: string, pkg: unknown): void {
@@ -1683,10 +1752,13 @@ export class ChatPanelComponent implements OnDestroy {
 }
 
 /**
- * HAA-10: when the assistant's `save_workflow_package` tool returns a `preview_ok` verdict, the
- * chat-panel attaches a confirmation chip to the tool card so the user can authorize the save.
- * The cached package payload is held separately on the panel; this helper just produces the
- * view-model the chip renders.
+ * HAA-10 / sc-397: when the assistant's `save_workflow_package` tool returns a verdict, the
+ * chat-panel attaches a confirmation chip to the tool card. Two valid statuses produce a chip:
+ *  - `preview_ok`     → "apply" mode chip; confirm POSTs the package to /apply or /apply-from-draft.
+ *  - `preview_conflicts` → "resolve" mode chip; confirm hands off to the imports page where
+ *                          the user picks per-row resolutions (sc-397 / CR-5).
+ * The cached package payload is held separately on the panel via `pendingSaves`; this helper
+ * just produces the view-model the chip renders.
  */
 export function buildSaveConfirmationView(
   resultJson: string,
@@ -1697,6 +1769,8 @@ export function buildSaveConfirmationView(
         status?: unknown;
         packageSource?: unknown;
         snapshotId?: unknown;
+        conflictCount?: unknown;
+        refusedCount?: unknown;
         entryPoint?: { key?: unknown; version?: unknown };
       }
     | null = null;
@@ -1706,28 +1780,33 @@ export function buildSaveConfirmationView(
     return undefined;
   }
 
-  if (!parsed || parsed.status !== 'preview_ok') {
+  if (!parsed) return undefined;
+  if (parsed.status !== 'preview_ok' && parsed.status !== 'preview_conflicts') {
     return undefined;
   }
 
   // Two valid render paths:
   //  - inline: the LLM passed a `package` arg; we cached it and POST it on confirm.
   //  - draft: the LLM invoked save with no args; the package lives server-side in the
-  //    conversation's workspace as an immutable snapshot file. We post `{ conversationId,
-  //    snapshotId }` to `/api/workflows/package/apply-from-draft` so the apply binds to
-  //    the exact bytes that were validated, not whatever the live draft happens to contain.
+  //    conversation's workspace. For preview_ok the tool minted an immutable per-save
+  //    snapshot file (snapshotId); for preview_conflicts it didn't (snapshots only mint when
+  //    CanApply), and the resolve-mode chip handoff fetches the live draft via the
+  //    GET /api/workflows/package-draft endpoint instead.
   const isDraftSource = parsed.packageSource === 'draft';
   if (!isDraftSource && !pkg) {
     return undefined;
   }
 
-  // Draft path requires the snapshot id from the tool result. Without it the apply would
-  // be ambiguous (live draft vs. validated bytes) — refuse to render the chip at all so the
-  // user can't confirm a save that would be unsafe under draft mutation.
+  const isResolveMode = parsed.status === 'preview_conflicts';
+
+  // Apply-mode draft path requires the snapshot id from the tool result. Without it the apply
+  // would be ambiguous (live draft vs. validated bytes) — refuse to render the chip at all so
+  // the user can't confirm a save that would be unsafe under draft mutation. Resolve mode does
+  // NOT require a snapshot — the imports page hydrates from the live draft.
   const snapshotId = typeof parsed.snapshotId === 'string' && parsed.snapshotId.length > 0
     ? parsed.snapshotId
     : undefined;
-  if (isDraftSource && !snapshotId) {
+  if (!isResolveMode && isDraftSource && !snapshotId) {
     return undefined;
   }
 
@@ -1736,6 +1815,27 @@ export function buildSaveConfirmationView(
     typeof parsed.entryPoint?.key === 'string' ? parsed.entryPoint.key : summary?.entryPointKey ?? '';
   const entryVersion =
     typeof parsed.entryPoint?.version === 'number' ? parsed.entryPoint.version : summary?.entryPointVersion ?? 0;
+
+  if (isResolveMode) {
+    const conflictCount =
+      (typeof parsed.conflictCount === 'number' ? parsed.conflictCount : 0)
+      + (typeof parsed.refusedCount === 'number' ? parsed.refusedCount : 0);
+    const noun = conflictCount === 1 ? 'conflict' : 'conflicts';
+    const label = entryKey
+      ? `${entryKey} v${entryVersion} has ${conflictCount} ${noun} — Resolve in imports page?`
+      : `Workflow package has ${conflictCount} ${noun} — Resolve in imports page?`;
+
+    return {
+      kind: 'save_workflow_package',
+      prompt: label,
+      confirmLabel: 'Resolve',
+      cancelLabel: 'Dismiss',
+      packageSource: isDraftSource ? 'draft' : 'inline',
+      mode: 'resolve',
+      conflictCount,
+      state: 'idle',
+    };
+  }
 
   const label = entryKey
     ? `Save ${summary?.workflowName ?? entryKey} (${entryKey} v${entryVersion}) to the library?`
@@ -1747,6 +1847,7 @@ export function buildSaveConfirmationView(
     confirmLabel: 'Save',
     cancelLabel: 'Cancel',
     packageSource: isDraftSource ? 'draft' : 'inline',
+    mode: 'apply',
     snapshotId,
     state: 'idle',
   };
