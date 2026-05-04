@@ -298,6 +298,83 @@ public sealed class WorkflowDataflowAnalyzerTests
             .Should().BeEquivalentTo(new[] { "keyA", "keyB" });
     }
 
+    [Fact]
+    public void Analyze_SubflowBoundaryScripts_TreatedAsDefiniteSourcesForDownstream()
+    {
+        // sc-628: a Subflow node carries its own input + output scripts; both run in the parent
+        // saga's scope (input before the child is dispatched, output after the child terminates).
+        // setWorkflow writes from either script must surface as definite sources to nodes that
+        // sit downstream of the boundary.
+        var startId = Guid.NewGuid();
+        var subflowId = Guid.NewGuid();
+        var sinkId = Guid.NewGuid();
+        var workflow = BuildWorkflow(
+            "wf-subflow-boundary",
+            new[]
+            {
+                Node(startId, WorkflowNodeKind.Start, "kickoff", outputScript: null),
+                NodeWith(subflowId, WorkflowNodeKind.Subflow, agentKey: null,
+                    outputScript: "setWorkflow('boundaryOutVar', 'set-on-exit');",
+                    inputScript: "setWorkflow('boundaryInVar', 'set-on-entry');",
+                    subflowKey: "child", subflowVersion: 1),
+                Node(sinkId, WorkflowNodeKind.Agent, "sink", outputScript: null),
+            },
+            new[]
+            {
+                Edge(startId, "Continue", subflowId, "in", sortOrder: 0),
+                Edge(subflowId, "Continue", sinkId, "in", sortOrder: 0),
+            });
+
+        var analyzer = new WorkflowDataflowAnalyzer();
+        var scope = analyzer.GetScope(workflow, sinkId)!;
+
+        scope.WorkflowVariables.Select(v => v.Key)
+            .Should().Contain(new[] { "boundaryInVar", "boundaryOutVar" });
+        var inVar = scope.WorkflowVariables.Single(v => v.Key == "boundaryInVar");
+        inVar.Confidence.Should().Be(DataflowConfidence.Definite);
+        inVar.Sources.Should().ContainSingle().Which.NodeId.Should().Be(subflowId);
+        var outVar = scope.WorkflowVariables.Single(v => v.Key == "boundaryOutVar");
+        outVar.Confidence.Should().Be(DataflowConfidence.Definite);
+        outVar.Sources.Should().ContainSingle().Which.NodeId.Should().Be(subflowId);
+    }
+
+    [Fact]
+    public void Analyze_ReviewLoopBoundaryScripts_TreatedAsDefiniteSourcesForDownstream()
+    {
+        // sc-628 ReviewLoop variant: boundary input script runs once before round 1, output
+        // script runs once after the loop terminates. Both write workflow keys visible to
+        // downstream parent nodes.
+        var startId = Guid.NewGuid();
+        var loopId = Guid.NewGuid();
+        var sinkId = Guid.NewGuid();
+        var workflow = BuildWorkflow(
+            "wf-reviewloop-boundary",
+            new[]
+            {
+                Node(startId, WorkflowNodeKind.Start, "kickoff", outputScript: null),
+                NodeWith(loopId, WorkflowNodeKind.ReviewLoop, agentKey: null,
+                    outputScript: "setWorkflow('loopOutVar', 'set-on-exit');",
+                    inputScript: "setWorkflow('loopInVar', 'set-on-entry');",
+                    subflowKey: "loop-child", subflowVersion: 1, reviewMaxRounds: 3),
+                Node(sinkId, WorkflowNodeKind.Agent, "sink", outputScript: null),
+            },
+            new[]
+            {
+                Edge(startId, "Continue", loopId, "in", sortOrder: 0),
+                Edge(loopId, "Approved", sinkId, "in", sortOrder: 0),
+            });
+
+        var analyzer = new WorkflowDataflowAnalyzer();
+        var scope = analyzer.GetScope(workflow, sinkId)!;
+
+        scope.WorkflowVariables.Select(v => v.Key)
+            .Should().Contain(new[] { "loopInVar", "loopOutVar" });
+        scope.WorkflowVariables.Single(v => v.Key == "loopInVar").Confidence
+            .Should().Be(DataflowConfidence.Definite);
+        scope.WorkflowVariables.Single(v => v.Key == "loopOutVar").Confidence
+            .Should().Be(DataflowConfidence.Definite);
+    }
+
     private static WorkflowNode Node(
         Guid id,
         WorkflowNodeKind kind,
@@ -320,7 +397,8 @@ public sealed class WorkflowDataflowAnalyzerTests
         string? subflowKey = null,
         int? subflowVersion = null,
         int? reviewMaxRounds = null,
-        RejectionHistoryConfig? rejectionHistory = null) => new(
+        RejectionHistoryConfig? rejectionHistory = null,
+        string? inputScript = null) => new(
             Id: id,
             Kind: kind,
             AgentKey: agentKey,
@@ -332,7 +410,8 @@ public sealed class WorkflowDataflowAnalyzerTests
             SubflowVersion: subflowVersion,
             ReviewMaxRounds: reviewMaxRounds,
             RejectionHistory: rejectionHistory,
-            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar);
+            MirrorOutputToWorkflowVar: mirrorOutputToWorkflowVar,
+            InputScript: inputScript);
 
     private static WorkflowEdge Edge(Guid from, string fromPort, Guid to, string toPort, int sortOrder) =>
         new(from, fromPort, to, toPort, RotatesRound: false, SortOrder: sortOrder);

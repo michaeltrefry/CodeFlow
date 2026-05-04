@@ -131,6 +131,113 @@ public sealed class WorkflowSagaBoundaryScriptTests
     }
 
     [Fact]
+    public async Task SubflowOutputScript_SetNodePathToUnknownPort_FailsParentSagaCleanly()
+    {
+        // sc-628: a boundary output script that calls setNodePath('not-declared') must trigger
+        // LogicNodeFailureKind.UnknownPort inside LogicNodeScriptHost — surfaced as a saga
+        // FailureReason and a Failed transition. The wirable-port augmentation
+        // (BoundaryScriptPorts.GetDeclaredPorts) only adds Failed/Exhausted/loopDecision; an
+        // arbitrary port name still fails.
+        var parentTraceId = Guid.NewGuid();
+        var parentRoundId = Guid.NewGuid();
+        var parentStartId = Guid.NewGuid();
+        var parentSubflowId = Guid.NewGuid();
+        var childStartId = Guid.NewGuid();
+
+        const string outputScript = "setNodePath('TotallyMadeUpPort');";
+
+        var parent = new Workflow(
+            Key: "boundary-unknown-port-parent",
+            Version: 1,
+            Name: "boundary-unknown-port-parent",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(parentStartId, WorkflowNodeKind.Start, "kickoff", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: AllPorts, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(parentSubflowId, WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null,
+                    OutputScript: outputScript,
+                    OutputPorts: new[] { "Completed", "Failed" },
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "boundary-unknown-port-child", SubflowVersion: 1),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(parentStartId, "Completed", parentSubflowId,
+                    WorkflowEdge.DefaultInputPort, false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var child = new Workflow(
+            Key: "boundary-unknown-port-child",
+            Version: 1,
+            Name: "boundary-unknown-port-child",
+            MaxRoundsPerRound: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(childStartId, WorkflowNodeKind.Start, "child-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: AllPorts, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var artifactStore = new RecordingArtifactStore();
+
+        await using var scope = BuildHarness(new[] { parent, child },
+            new Dictionary<string, int> { ["kickoff"] = 1, ["child-agent"] = 1 },
+            artifactStore);
+        var harness = scope.Harness;
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new AgentInvokeRequested(
+                TraceId: parentTraceId,
+                RoundId: parentRoundId,
+                WorkflowKey: parent.Key,
+                WorkflowVersion: parent.Version,
+                NodeId: parentStartId,
+                AgentKey: "kickoff",
+                AgentVersion: 1,
+                InputRef: new Uri("file:///tmp/parent-in.bin"),
+                ContextInputs: new Dictionary<string, JsonElement>()));
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(parentTraceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(parentTraceId, parentRoundId, parentStartId, "kickoff", 1,
+                "Completed", "file:///tmp/parent-start-out.bin"));
+
+            var spawns = await WaitForPublishedAsync<SubflowInvokeRequested>(harness, 1);
+            var childTraceId = spawns[0].Context.Message.ChildTraceId;
+            await sagaHarness.Exists(childTraceId, x => x.Running);
+
+            var childInvokes = await WaitForPublishedAsync<AgentInvokeRequested>(harness, 2);
+            var childInvoke = childInvokes
+                .Select(m => m.Context.Message)
+                .Single(m => m.NodeId == childStartId && m.TraceId == childTraceId);
+
+            // Child completes happily; the boundary output script then trips UnknownPort.
+            await harness.Bus.Publish(BuildCompletion(childTraceId, childInvoke.RoundId, childStartId,
+                "child-agent", 1, "Completed", "file:///tmp/child-out.bin"));
+
+            await sagaHarness.Exists(childTraceId, x => x.Completed);
+            await sagaHarness.Exists(parentTraceId, x => x.Failed);
+
+            var parentSaga = sagaHarness.Sagas.Contains(parentTraceId)!;
+            parentSaga.FailureReason.Should().NotBeNullOrWhiteSpace();
+            parentSaga.FailureReason!.Should().Contain("Output script", because: "the failure was raised by the boundary output script.");
+            parentSaga.FailureReason.Should().Contain("UnknownPort",
+                because: "LogicNodeScriptHost surfaces UnknownPort when setNodePath picks a port outside the declared set.");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task SubflowOutputScript_SetOutputAndSetNodePath_RewriteArtifactAndPort()
     {
         // Parent: Start → Subflow → Agent('downstream') wired off "Reroute" port (not the
