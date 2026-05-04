@@ -480,10 +480,12 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       const decided = new Set<string>();
       const executedKeys = new Set<string>();
       for (const dec of d.decisions) {
+        if (!dec.nodeId) continue;
         decided.add(dec.nodeId);
         if (dec.outputPortName) executedKeys.add(`${dec.nodeId}::${dec.outputPortName}`);
       }
       for (const ev of d.logicEvaluations) {
+        if (!ev.nodeId) continue;
         decided.add(ev.nodeId);
         if (ev.outputPortName) executedKeys.add(`${ev.nodeId}::${ev.outputPortName}`);
       }
