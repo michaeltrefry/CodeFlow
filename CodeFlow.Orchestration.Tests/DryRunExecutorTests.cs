@@ -397,6 +397,236 @@ public sealed class DryRunExecutorTests
     }
 
     /// <summary>
+    /// sc-627 boundary input script on Subflow node: <c>setInput</c> rewrites the artifact
+    /// passed to the child walk. The first NodeEntered event inside the child should preview
+    /// the override text, not the upstream artifact.
+    /// </summary>
+    [Fact]
+    public async Task BoundaryInputScript_OnSubflow_OverridesArtifactPassedToChild()
+    {
+        var outerStartId = Guid.Parse("11ee1111-1111-1111-1111-1111111111e1");
+        var subflowId = Guid.Parse("22ee2222-2222-2222-2222-2222222222e2");
+        var innerStartId = Guid.Parse("33ee3333-3333-3333-3333-3333333333e3");
+        var innerAgentId = Guid.Parse("44ee4444-4444-4444-4444-4444444444e4");
+
+        var inner = new Workflow(
+            Key: "boundary-in-inner",
+            Version: 1,
+            Name: "Boundary input child",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: innerStartId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: innerAgentId, Kind: WorkflowNodeKind.Agent, AgentKey: "child-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 100, LayoutY: 0),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(innerStartId, "Continue", innerAgentId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var outer = new Workflow(
+            Key: "boundary-in-outer",
+            Version: 1,
+            Name: "Boundary input outer",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: outerStartId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: subflowId, Kind: WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Done" }, LayoutX: 100, LayoutY: 0,
+                    SubflowKey: "boundary-in-inner", SubflowVersion: 1,
+                    InputScript: "setInput('rewritten-by-boundary');"),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(outerStartId, "Continue", subflowId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(outer, inner);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["child-agent"] = new[] { new DryRunMockResponse("Done", "child saw it", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("boundary-in-outer", null, "original-upstream", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        // SubflowEntered's input preview reflects the rewritten artifact (boundary input
+        // script ran before the entry event was recorded).
+        var entered = result.Events.First(e => e.Kind == DryRunEventKind.SubflowEntered && e.NodeId == subflowId);
+        entered.InputPreview.Should().Be("rewritten-by-boundary");
+        // Inside the child, the agent receives the same override.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == innerAgentId && e.InputPreview == "rewritten-by-boundary");
+    }
+
+    /// <summary>
+    /// sc-627 boundary output script on Subflow node: <c>setNodePath</c> reroutes the parent
+    /// past the child's terminal port; <c>setOutput</c> rewrites the artifact propagated
+    /// downstream. Mirrors the agent-output-script semantics, applied at the boundary.
+    /// </summary>
+    [Fact]
+    public async Task BoundaryOutputScript_OnSubflow_OverridesPortAndArtifact()
+    {
+        var outerStartId = Guid.Parse("55ee5555-5555-5555-5555-5555555555e5");
+        var subflowId = Guid.Parse("66ee6666-6666-6666-6666-6666666666e6");
+        var leftId = Guid.Parse("77ee7777-7777-7777-7777-7777777777e7");
+        var rightId = Guid.Parse("88ee8888-8888-8888-8888-8888888888e8");
+        var innerStartId = Guid.Parse("99ee9999-9999-9999-9999-9999999999e9");
+
+        const string outputScript = """
+            setWorkflow('seenDecision', output.decision);
+            setNodePath('Right');
+            setOutput('artifact-from-boundary');
+            """;
+
+        var inner = new Workflow(
+            Key: "boundary-out-inner",
+            Version: 1,
+            Name: "Boundary output child",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: innerStartId, Kind: WorkflowNodeKind.Start, AgentKey: "inner-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "Left", "Right" }, LayoutX: 0, LayoutY: 0),
+            },
+            Edges: Array.Empty<WorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var outer = new Workflow(
+            Key: "boundary-out-outer",
+            Version: 1,
+            Name: "Boundary output outer",
+            MaxRoundsPerRound: 64,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(
+                    Id: outerStartId, Kind: WorkflowNodeKind.Start, AgentKey: null, AgentVersion: null,
+                    OutputScript: null, OutputPorts: new[] { "Continue" }, LayoutX: 0, LayoutY: 0),
+                new WorkflowNode(
+                    Id: subflowId, Kind: WorkflowNodeKind.Subflow, AgentKey: null, AgentVersion: null,
+                    OutputScript: outputScript,
+                    OutputPorts: new[] { "Left", "Right" }, LayoutX: 100, LayoutY: 0,
+                    SubflowKey: "boundary-out-inner", SubflowVersion: 1),
+                new WorkflowNode(
+                    Id: leftId, Kind: WorkflowNodeKind.Agent, AgentKey: "left-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "LeftDone" }, LayoutX: 200, LayoutY: 0),
+                new WorkflowNode(
+                    Id: rightId, Kind: WorkflowNodeKind.Agent, AgentKey: "right-agent", AgentVersion: 1,
+                    OutputScript: null, OutputPorts: new[] { "RightDone" }, LayoutX: 200, LayoutY: 100),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(outerStartId, "Continue", subflowId, "in", false, 0),
+                new WorkflowEdge(subflowId, "Left", leftId, "in", false, 0),
+                new WorkflowEdge(subflowId, "Right", rightId, "in", false, 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var repo = new MultiWorkflowFakeRepository(outer, inner);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            // Child terminates on Left; boundary script overrides to Right.
+            ["inner-agent"] = new[] { new DryRunMockResponse("Left", "child body", null) },
+            ["right-agent"] = new[] { new DryRunMockResponse("RightDone", "right received", null) },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("boundary-out-outer", null, "x", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.TerminalPort.Should().Be("RightDone");
+        result.WorkflowVariables.Should().ContainKey("seenDecision");
+        result.WorkflowVariables["seenDecision"].GetString().Should().Be("Left",
+            because: "the boundary script reads output.decision (the child's terminal port) before overriding.");
+        // The right-agent must have received the script-overridden artifact, not the child's
+        // original 'child body'.
+        result.Events.Should().Contain(e =>
+            e.Kind == DryRunEventKind.NodeEntered && e.NodeId == rightId && e.InputPreview == "artifact-from-boundary");
+    }
+
+    /// <summary>
+    /// sc-627 boundary scripts on a ReviewLoop node fire exactly once per loop activation, not
+    /// per iteration. Counter incremented in both input and output scripts ends at 1 even after
+    /// multiple loop iterations.
+    /// </summary>
+    [Fact]
+    public async Task BoundaryScripts_OnReviewLoop_FireExactlyOncePerLoopActivation()
+    {
+        var (outer, inner) = BuildReviewLoopPair(maxRounds: 5);
+        var loopNode = outer.Nodes.Single(n => n.Id == ReviewLoopId);
+        var loopWithScripts = loopNode with
+        {
+            InputScript = "var n = workflow.boundaryInputCount || 0; setWorkflow('boundaryInputCount', n + 1);",
+            OutputScript = """
+                var n = workflow.boundaryOutputCount || 0;
+                setWorkflow('boundaryOutputCount', n + 1);
+                setWorkflow('finalDecision', output.decision);
+                """,
+        };
+        var outerWithScripts = outer with
+        {
+            Nodes = outer.Nodes.Select(n => n.Id == ReviewLoopId ? loopWithScripts : n).ToArray(),
+        };
+
+        var repo = new MultiWorkflowFakeRepository(outerWithScripts, inner);
+        var executor = new DryRunExecutor(repo, new LogicNodeScriptHost(new MemoryCache(new MemoryCacheOptions())));
+
+        var mocks = new Dictionary<string, IReadOnlyList<DryRunMockResponse>>
+        {
+            ["producer"] = new[]
+            {
+                new DryRunMockResponse("Completed", "draft v1", null),
+                new DryRunMockResponse("Completed", "draft v2", null),
+                new DryRunMockResponse("Completed", "draft v3", null),
+            },
+            ["reviewer"] = new[]
+            {
+                new DryRunMockResponse("Rejected", "no", null),
+                new DryRunMockResponse("Rejected", "still no", null),
+                new DryRunMockResponse("Approved", "ship", null),
+            },
+        };
+
+        var result = await executor.ExecuteAsync(
+            new DryRunRequest("outer", null, "initial PRD", mocks),
+            CancellationToken.None);
+
+        result.State.Should().Be(DryRunTerminalState.Completed);
+        result.TerminalPort.Should().Be("Approved");
+        result.WorkflowVariables.Should().ContainKey("boundaryInputCount");
+        result.WorkflowVariables["boundaryInputCount"].GetInt32().Should().Be(1,
+            because: "input script must run once before round 1, not per iteration.");
+        result.WorkflowVariables.Should().ContainKey("boundaryOutputCount");
+        result.WorkflowVariables["boundaryOutputCount"].GetInt32().Should().Be(1,
+            because: "output script must run once after the loop terminates, not per iteration.");
+        result.WorkflowVariables.Should().ContainKey("finalDecision");
+        result.WorkflowVariables["finalDecision"].GetString().Should().Be("Approved",
+            because: "output script must observe the loop's exit port via output.decision.");
+    }
+
+    /// <summary>
     /// V2 P3 rejection-history accumulation: when the parent ReviewLoop has rejectionHistory
     /// enabled, each loopDecision-port round writes to the framework-managed
     /// __loop.rejectionHistory variable in the workflow bag.

@@ -565,6 +565,19 @@ public sealed class DryRunExecutor
                             contextVars, workflowVars);
                     }
 
+                    // Boundary input script: runs once before the child walk. For ReviewLoop,
+                    // ExecuteReviewLoopAsync re-uses the rewritten input across all iterations —
+                    // the script never fires per-iteration. Mirrors the saga's
+                    // PublishSubflowDispatchAsync(runInputScript: true) behavior.
+                    var subInputOutcome = RunInputScriptIfPresent(
+                        workflow, currentNode, currentInput, contextVars, workflowVars,
+                        reviewRound, maxRounds, depth, state, cancellationToken);
+                    if (subInputOutcome.FailureReason is not null)
+                    {
+                        return DryRunWalkResult.Failed(subInputOutcome.FailureReason, contextVars, workflowVars);
+                    }
+                    currentInput = subInputOutcome.EffectiveInput;
+
                     state.RecordEvent(new DryRunEvent(
                         Ordinal: state.NextOrdinal(),
                         Kind: DryRunEventKind.SubflowEntered,
@@ -661,6 +674,26 @@ public sealed class DryRunExecutor
                     }
 
                     var subTerminalPort = subResult.TerminalPort ?? "Completed";
+                    var subEffectiveOutput = subResult.FinalArtifact;
+
+                    // Boundary output script: runs once after the child terminates with the
+                    // effective port resolved (for ReviewLoop, after the loop has fully exited).
+                    // May rewrite the routing port (setNodePath), the artifact (setOutput), and
+                    // context/workflow vars. Mirrors the saga's TryEvaluateBoundaryOutputScriptAsync
+                    // hook in RouteSubflowCompletionAsync.
+                    if (!string.IsNullOrWhiteSpace(currentNode.OutputScript))
+                    {
+                        var boundaryOutcome = RunBoundaryOutputScript(
+                            workflow, currentNode, subEffectiveOutput ?? string.Empty, subTerminalPort,
+                            contextVars, workflowVars, reviewRound, maxRounds, depth, state, cancellationToken);
+                        if (boundaryOutcome.FailureReason is not null)
+                        {
+                            return DryRunWalkResult.Failed(boundaryOutcome.FailureReason, contextVars, workflowVars);
+                        }
+                        subTerminalPort = boundaryOutcome.ResolvedPort;
+                        subEffectiveOutput = boundaryOutcome.ResolvedOutput;
+                    }
+
                     lastEffectivePort = subTerminalPort;
 
                     var subEdge = workflow.FindNext(currentNode.Id, subTerminalPort);
@@ -672,13 +705,13 @@ public sealed class DryRunExecutor
                                 $"Subflow node {currentNode.Id} terminated on '{subTerminalPort}' with no wired edge.",
                                 contextVars, workflowVars);
                         }
-                        return CompleteWorkflow(workflow, currentNode, subTerminalPort, subResult.FinalArtifact, contextVars, workflowVars, state);
+                        return CompleteWorkflow(workflow, currentNode, subTerminalPort, subEffectiveOutput, contextVars, workflowVars, state);
                     }
                     state.RecordEvent(EdgeEvent(state, currentNode, subTerminalPort, subEdge, depth));
                     currentNode = workflow.FindNode(subEdge.ToNodeId)
                         ?? throw new InvalidOperationException(
                             $"Edge from subflow {currentNode.Id} on '{subTerminalPort}' targets unknown node {subEdge.ToNodeId}.");
-                    currentInput = subResult.FinalArtifact;
+                    currentInput = subEffectiveOutput;
                     break;
                 }
 
@@ -1303,6 +1336,104 @@ public sealed class DryRunExecutor
     }
 
     /// <summary>
+    /// Saga-parity output-script invocation for Subflow / ReviewLoop boundary nodes. Runs once
+    /// after the child terminates with the effective port resolved (for ReviewLoop, after the
+    /// loop has fully exited, never per iteration). The script sees the child's terminal port as
+    /// <c>output.decision</c> and may call <c>setNodePath</c> to reroute, <c>setOutput</c> to
+    /// rewrite the artifact propagated downstream, and <c>setContext</c>/<c>setWorkflow</c> to
+    /// mutate the parent's bags. Mirrors the saga's
+    /// <see cref="WorkflowSagaStateMachine.TryEvaluateBoundaryOutputScriptAsync"/> hook.
+    /// </summary>
+    private BoundaryOutputScriptOutcome RunBoundaryOutputScript(
+        Workflow workflow,
+        WorkflowNode boundaryNode,
+        string output,
+        string effectivePort,
+        Dictionary<string, JsonElement> contextVars,
+        Dictionary<string, JsonElement> workflowVars,
+        int? reviewRound,
+        int? maxRounds,
+        int depth,
+        DryRunState state,
+        CancellationToken cancellationToken)
+    {
+        // Augment author-declared ports with the implicit Failed (and synthesized Exhausted for
+        // ReviewLoop) so the boundary script can route to those exit ports via setNodePath. The
+        // validator forbids declaring these names on a node's outputPorts, so they are added at
+        // script call time only.
+        var declaredPorts = new HashSet<string>(
+            boundaryNode.OutputPorts ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            StringComparer.Ordinal)
+        {
+            "Failed"
+        };
+        if (boundaryNode.Kind == WorkflowNodeKind.ReviewLoop)
+        {
+            declaredPorts.Add("Exhausted");
+        }
+
+        var artifactJson = ParseArtifactAsJsonElement(output);
+        var scriptInput = ComposeAgentScriptInput(artifactJson, effectivePort, decisionPayload: null);
+
+        var eval = logicScriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: boundaryNode.Id,
+            script: boundaryNode.OutputScript!,
+            declaredPorts: declaredPorts,
+            input: scriptInput,
+            context: contextVars,
+            cancellationToken: cancellationToken,
+            workflow: workflowVars,
+            reviewRound: reviewRound,
+            reviewMaxRounds: maxRounds,
+            allowOutputOverride: true,
+            inputVariableName: "output",
+            requireSetNodePath: false);
+
+        state.RecordEvent(new DryRunEvent(
+            Ordinal: state.NextOrdinal(),
+            Kind: DryRunEventKind.LogicEvaluated,
+            NodeId: boundaryNode.Id,
+            NodeKind: boundaryNode.Kind.ToString(),
+            AgentKey: null,
+            PortName: eval.OutputPortName,
+            Message: eval.Failure is null
+                ? $"Boundary output script ran (port='{eval.OutputPortName ?? effectivePort}', override={(eval.OutputOverride is null ? "no" : $"yes, {eval.OutputOverride.Length} chars")})."
+                : $"Boundary output script failed ({eval.Failure}): {eval.FailureMessage}",
+            InputPreview: Preview(output),
+            OutputPreview: Preview(eval.OutputOverride),
+            ReviewRound: reviewRound,
+            MaxRounds: maxRounds,
+            SubflowDepth: depth,
+            SubflowKey: boundaryNode.SubflowKey,
+            SubflowVersion: boundaryNode.SubflowVersion,
+            Logs: eval.LogEntries,
+            DecisionPayload: null));
+
+        if (eval.Failure is not null)
+        {
+            return new BoundaryOutputScriptOutcome(
+                effectivePort,
+                output,
+                $"Output script for node {boundaryNode.Id} failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        foreach (var (k, v) in eval.ContextUpdates)
+        {
+            contextVars[k] = v;
+        }
+        foreach (var (k, v) in eval.WorkflowUpdates)
+        {
+            workflowVars[k] = v;
+        }
+
+        var resolvedPort = string.IsNullOrWhiteSpace(eval.OutputPortName) ? effectivePort : eval.OutputPortName!;
+        var resolvedOutput = eval.OutputOverride ?? output;
+        return new BoundaryOutputScriptOutcome(resolvedPort, resolvedOutput, null);
+    }
+
+    /// <summary>
     /// Saga-parity output-script invocation for Transform nodes. The script sees the rendered
     /// text as <c>output</c> — parsed JSON in <c>outputType=json</c> mode, plain string in string
     /// mode — and may call setWorkflow / setContext to mutate vars and setOutput to override the
@@ -1723,6 +1854,11 @@ public sealed class DryRunExecutor
         string Port,
         string Output,
         bool SetOutputCalled,
+        string? FailureReason);
+
+    private readonly record struct BoundaryOutputScriptOutcome(
+        string ResolvedPort,
+        string? ResolvedOutput,
         string? FailureReason);
 
     private readonly record struct TransformOutputScriptOutcome(string Output, string? FailureReason);

@@ -624,6 +624,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
 
                 await PublishSubflowDispatchAsync(
                     context,
+                    scriptHost,
+                    artifactStore,
                     saga,
                     workflow,
                     parentNode,
@@ -631,13 +633,37 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                     roundId: saga.CurrentRoundId,
                     reviewRound: outcome.NextRound,
                     reviewMaxRounds: parentNode.ReviewMaxRounds,
-                    loopDecision: ResolveLoopDecision(parentNode));
+                    loopDecision: ResolveLoopDecision(parentNode),
+                    runInputScript: false);
 
                 saga.UpdatedAtUtc = DateTime.UtcNow;
                 return;
             }
 
             effectivePortName = outcome.PortName!;
+        }
+
+        // Boundary output script (Subflow / ReviewLoop): runs once after the child terminates and
+        // the effective port is resolved — never per ReviewLoop iteration (the iterate path
+        // returned at line ~636 above before reaching here). The script sees `output.decision` =
+        // `effectivePortName` and may rewrite the port (setNodePath), the artifact (setOutput),
+        // and context/workflow vars.
+        Uri effectiveOutputRef = message.OutputRef;
+        if (parentNode is not null && !string.IsNullOrWhiteSpace(parentNode.OutputScript))
+        {
+            var boundaryOutcome = await TryEvaluateBoundaryOutputScriptAsync(
+                context, saga, workflow, parentNode, effectivePortName, effectiveOutputRef, scriptHost, artifactStore);
+
+            if (boundaryOutcome.Failed)
+            {
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason = boundaryOutcome.FailureReason;
+                saga.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            effectivePortName = boundaryOutcome.PortName;
+            effectiveOutputRef = boundaryOutcome.OutputRef;
         }
 
         // Track the parent's effective port so it rides up on TerminalPort if the parent is
@@ -661,7 +687,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             NodeId: message.ParentNodeId,
             OutputPortName: effectivePortName,
             InputRef: saga.CurrentInputRef,
-            OutputRef: message.OutputRef.ToString(),
+            OutputRef: effectiveOutputRef.ToString(),
             NodeEnteredAtUtc: saga.CurrentRoundEnteredAtUtc));
 
         // Mirror the agent-completion path: when the child's effective port is Failed, lift its
@@ -704,7 +730,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             scriptHost,
             artifactStore,
             edge,
-            upstreamOutputRef: message.OutputRef);
+            upstreamOutputRef: effectiveOutputRef);
 
         if (resolution is { FailureTerminal: true })
         {
@@ -719,7 +745,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             throw new InvalidOperationException("Logic chain resolver returned no outcome.");
         }
 
-        var dispatchInputRef = resolution.OverrideInputRef ?? message.OutputRef;
+        var dispatchInputRef = resolution.OverrideInputRef ?? effectiveOutputRef;
 
         if (resolution is { CleanlyCompleted: true })
         {
@@ -1418,6 +1444,124 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         }
 
         return InputScriptOutcome.Ok(inputRef);
+    }
+
+    /// <summary>
+    /// Result of running the Subflow / ReviewLoop boundary output script. <see cref="OutputRef"/>
+    /// always carries a usable URI (the script's override, or the original passed through). On
+    /// failure the caller transitions Failed and never inspects the URI; the field is just kept
+    /// non-null so call-site flow analysis stays clean.
+    /// </summary>
+    private readonly record struct BoundaryOutputScriptOutcome(
+        string PortName,
+        Uri OutputRef,
+        string? FailureReason)
+    {
+        public bool Failed => FailureReason is not null;
+        public static BoundaryOutputScriptOutcome Pass(string port, Uri outputRef) => new(port, outputRef, null);
+        public static BoundaryOutputScriptOutcome Fail(Uri originalOutputRef, string reason)
+            => new(string.Empty, originalOutputRef, reason);
+    }
+
+    /// <summary>
+    /// Boundary output-script execution for Subflow / ReviewLoop nodes. Runs once per child
+    /// completion (for ReviewLoop: after the loop has terminated, never per iteration), with
+    /// <c>output</c> = the child's returned artifact and <c>output.decision</c> = the effective
+    /// terminal port name (whichever port closed the boundary — for ReviewLoop that's either the
+    /// configured exit port or the synthesized <c>Exhausted</c>). The script may call
+    /// <c>setNodePath</c> to reroute, <c>setOutput</c> to rewrite the artifact propagated
+    /// downstream, and <c>setContext</c>/<c>setWorkflow</c> to mutate the parent's bags.
+    /// </summary>
+    private static async Task<BoundaryOutputScriptOutcome> TryEvaluateBoundaryOutputScriptAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        WorkflowSagaStateEntity saga,
+        Workflow workflow,
+        WorkflowNode boundaryNode,
+        string effectivePortName,
+        Uri outputRef,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore)
+    {
+        if (string.IsNullOrWhiteSpace(boundaryNode.OutputScript))
+        {
+            return BoundaryOutputScriptOutcome.Pass(effectivePortName, outputRef);
+        }
+
+        // Augment author-declared ports with the implicit Failed (and synthesized Exhausted for
+        // ReviewLoop) so a boundary script may route to those exit ports via setNodePath. Authors
+        // can never declare these in OutputPorts (validator rejects), so we add them at script
+        // call time.
+        var declaredPorts = new HashSet<string>(
+            boundaryNode.OutputPorts ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            StringComparer.Ordinal)
+        {
+            ImplicitFailedPort
+        };
+        if (boundaryNode.Kind == WorkflowNodeKind.ReviewLoop)
+        {
+            declaredPorts.Add("Exhausted");
+        }
+
+        var artifactJson = await ReadArtifactAsJsonAsync(
+            artifactStore,
+            outputRef,
+            context.CancellationToken);
+        var scriptInput = ComposeAgentScriptInput(artifactJson, effectivePortName, decisionPayload: null);
+
+        var contextInputs = DeserializeContextInputs(saga.InputsJson);
+        var workflowInputs = DeserializeContextInputs(saga.WorkflowInputsJson);
+
+        var eval = scriptHost.Evaluate(
+            workflowKey: workflow.Key,
+            workflowVersion: workflow.Version,
+            nodeId: boundaryNode.Id,
+            script: boundaryNode.OutputScript!,
+            declaredPorts: declaredPorts,
+            input: scriptInput,
+            context: contextInputs,
+            cancellationToken: context.CancellationToken,
+            workflow: workflowInputs,
+            reviewRound: saga.ParentReviewRound,
+            reviewMaxRounds: saga.ParentReviewMaxRounds,
+            allowOutputOverride: true,
+            inputVariableName: "output",
+            requireSetNodePath: false);
+
+        saga.AppendLogicEvaluation(new LogicEvaluationRecord(
+            NodeId: boundaryNode.Id,
+            OutputPortName: eval.OutputPortName,
+            RoundId: saga.CurrentRoundId,
+            Duration: eval.Duration,
+            Logs: eval.LogEntries,
+            FailureKind: eval.Failure?.ToString(),
+            FailureMessage: eval.FailureMessage,
+            RecordedAtUtc: DateTime.UtcNow));
+
+        if (eval.Failure is not null)
+        {
+            return BoundaryOutputScriptOutcome.Fail(
+                outputRef,
+                $"Output script for node {boundaryNode.Id} failed ({eval.Failure}): {eval.FailureMessage}");
+        }
+
+        ApplyScriptUpdates(saga, contextInputs, workflowInputs, eval);
+
+        var resolvedPort = string.IsNullOrWhiteSpace(eval.OutputPortName)
+            ? effectivePortName
+            : eval.OutputPortName!;
+
+        var resolvedOutputRef = outputRef;
+        if (!string.IsNullOrEmpty(eval.OutputOverride))
+        {
+            resolvedOutputRef = await WriteOverrideArtifactAsync(
+                artifactStore,
+                saga,
+                boundaryNode.AgentKey,
+                eval.OutputOverride!,
+                context.CancellationToken);
+        }
+
+        return BoundaryOutputScriptOutcome.Pass(resolvedPort, resolvedOutputRef);
     }
 
     private static async Task<DecisionOutputTemplateOutcome> TryApplyDecisionOutputTemplateAsync(
@@ -2240,10 +2384,12 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Start =>
                 PublishHandoffAsync(context, agentConfigRepo, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId, retryContext),
             WorkflowNodeKind.Subflow =>
-                PublishSubflowDispatchAsync(context, saga, workflow, node, inputRef, roundId),
+                PublishSubflowDispatchAsync(context, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId),
             WorkflowNodeKind.ReviewLoop =>
                 PublishSubflowDispatchAsync(
                     context,
+                    scriptHost,
+                    artifactStore,
                     saga,
                     workflow,
                     node,
@@ -2264,8 +2410,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         };
     }
 
-    private static Task PublishSubflowDispatchAsync(
+    private static async Task PublishSubflowDispatchAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
+        LogicNodeScriptHost scriptHost,
+        IArtifactStore artifactStore,
         WorkflowSagaStateEntity saga,
         Workflow workflow,
         WorkflowNode subflowNode,
@@ -2273,7 +2421,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         Guid roundId,
         int? reviewRound = null,
         int? reviewMaxRounds = null,
-        string? loopDecision = null)
+        string? loopDecision = null,
+        bool runInputScript = true)
     {
         if (string.IsNullOrWhiteSpace(subflowNode.SubflowKey))
         {
@@ -2290,18 +2439,38 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                 + "parent-workflow save time, not at saga dispatch.");
         }
 
-        saga.CurrentInputRef = inputRef.ToString();
+        // Boundary input script runs once per subflow activation: on plain Subflow dispatch, and
+        // before round 1 of a ReviewLoop. ReviewLoop re-dispatch (round 2+) skips it — the script
+        // is intended to shape the artifact entering the child, not to fire per iteration.
+        var effectiveInputRef = inputRef;
+        if (runInputScript && !string.IsNullOrWhiteSpace(subflowNode.InputScript))
+        {
+            var inputOutcome = await TryEvaluateInputScriptAsync(
+                context, saga, workflow, subflowNode, inputRef, scriptHost, artifactStore);
+
+            if (inputOutcome.Failed)
+            {
+                saga.PendingTransition = PendingTransitionFailed;
+                saga.FailureReason = inputOutcome.FailureReason;
+                saga.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            effectiveInputRef = inputOutcome.InputRef!;
+        }
+
+        saga.CurrentInputRef = effectiveInputRef.ToString();
 
         var workflowContext = DeserializeContextInputs(saga.WorkflowInputsJson);
 
-        return context.Publish(new SubflowInvokeRequested(
+        await context.Publish(new SubflowInvokeRequested(
             ParentTraceId: saga.TraceId,
             ParentNodeId: subflowNode.Id,
             ParentRoundId: roundId,
             ChildTraceId: Guid.NewGuid(),
             SubflowKey: subflowNode.SubflowKey,
             SubflowVersion: subflowVersion,
-            InputRef: inputRef,
+            InputRef: effectiveInputRef,
             WorkflowContext: workflowContext,
             Depth: saga.SubflowDepth + 1,
             ReviewRound: reviewRound,
