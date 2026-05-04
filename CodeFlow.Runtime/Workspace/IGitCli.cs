@@ -63,17 +63,6 @@ public interface IGitCli
 
     Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Updates the URL of an existing remote on the worktree, equivalent to
-    /// <c>git remote set-url &lt;remote&gt; &lt;url&gt;</c>. Used by <c>vcs.clone</c> to scrub
-    /// any auth-bearing URL out of <c>.git/config</c> after the initial fetch.
-    /// </summary>
-    Task SetRemoteUrlAsync(
-        string worktreePath,
-        string remoteName,
-        string url,
-        CancellationToken cancellationToken = default);
-
     Task<string> GetSymbolicHeadAsync(string gitDirectory, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<string>> LsFilesAsync(string worktreePath, CancellationToken cancellationToken = default);

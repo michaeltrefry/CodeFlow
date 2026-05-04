@@ -112,6 +112,32 @@ public sealed class GitCliTests : IDisposable
     }
 
     [Fact]
+    public async Task CloneAsync_LeavesNoAuthInGitConfig_WhenCalledWithCleanUrl()
+    {
+        // sc-662 regression: vcs.clone now calls IGitCli.CloneAsync with the *clean* URL the
+        // agent provided — no provider.BuildAuthenticatedCloneUrl, no userinfo segment, no
+        // post-clone `git remote set-url` scrub. Verify here at the IGitCli boundary that the
+        // resulting `.git/config` carries the URL exactly as supplied, with no auth wrapping
+        // anything subsequent ops in the workspace tree could surface.
+        var cli = CreateCli();
+        var source = InitRepo();
+        await File.WriteAllTextAsync(Path.Combine(source, "f.txt"), "x");
+        await cli.AddAsync(source, ["f.txt"]);
+        await cli.CommitAsync(source, "add f");
+
+        var destination = Path.Combine(NewTempDir("codeflow-clone-dest"), "clone");
+        var sourceUrl = new Uri(source).AbsoluteUri; // file:///... — same shape as a clean http(s) URL
+
+        await cli.CloneAsync(sourceUrl, destination);
+
+        var config = await File.ReadAllTextAsync(Path.Combine(destination, ".git", "config"));
+        config.Should().Contain(sourceUrl,
+            "the clean URL must land in .git/config so subsequent run_command git ops use the credential helper for auth");
+        config.Should().NotContain("@",
+            "no userinfo segment — the embed-then-scrub flow is gone (sc-662); auth flows through credential.helper at runtime");
+    }
+
+    [Fact]
     public async Task CloneMirrorAsync_ShouldProduceBareMirror()
     {
         var cli = CreateCli();

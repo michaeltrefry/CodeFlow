@@ -247,22 +247,6 @@ public sealed class GitCli : IGitCli
         await RunAsync(worktreePath, args, cancellationToken);
     }
 
-    public async Task SetRemoteUrlAsync(
-        string worktreePath,
-        string remoteName,
-        string url,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(worktreePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(remoteName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(url);
-
-        await RunAsync(
-            workingDirectory: worktreePath,
-            arguments: ["remote", "set-url", remoteName, url],
-            cancellationToken: cancellationToken);
-    }
-
     public async Task<string> RevParseAsync(
         string worktreePath,
         string rev,

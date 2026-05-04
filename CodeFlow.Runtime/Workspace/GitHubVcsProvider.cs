@@ -81,9 +81,6 @@ public sealed class GitHubVcsProvider : VcsProviderBase
         }
     }
 
-    public override string BuildAuthenticatedCloneUrl(string repoUrl) =>
-        EmbedBasicAuth(repoUrl, "x-access-token", token);
-
     private GitHubClient CreateClient() =>
         new(new ProductHeaderValue(UserAgent))
         {
