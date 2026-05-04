@@ -17,7 +17,7 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
     <div class="wf-node"
          [attr.data-kind]="kindLower"
          [attr.data-selected]="selected ? 'true' : null"
-         [attr.data-state]="data.traceState === 'active' ? 'active' : (data.traceState === 'dimmed' ? 'dimmed' : null)">
+         [attr.data-state]="data.traceState">
       <div class="wf-node-head">
         <span class="wf-node-kind">{{ kindLabel }}</span>
         <span class="wf-node-title" data-testid="title">{{ data.label }}</span>
@@ -29,14 +29,12 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
               class="wf-node-script-badge"
               title="Routing script attached"
               data-testid="node-script-badge">{{ '{ }' }}</span>
-        <span *ngIf="data.tokenUsageOverlay as tu"
-              class="wf-node-token-badge"
-              [attr.data-rolled-up]="tu.rolledUp ? 'true' : null"
-              [title]="tokenOverlayHover(tu)"
-              data-testid="node-token-badge">
-          ↑{{ formatCount(tu.inputTokens) }} ↓{{ formatCount(tu.outputTokens) }}<span class="wf-node-token-calls" *ngIf="tu.callCount > 1">·{{ tu.callCount }}</span>
-        </span>
       </div>
+      <span *ngIf="data.traceState === 'running'"
+            class="wf-node-spinner"
+            title="Currently running"
+            aria-label="Currently running"
+            data-testid="node-spinner"></span>
 
       <div class="wf-node-body">
         <div class="port-cols">
@@ -68,6 +66,15 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
             </div>
           </div>
         </div>
+      </div>
+
+      <div *ngIf="data.tokenUsageOverlay as tu" class="wf-node-foot">
+        <span class="wf-node-token-badge"
+              [attr.data-rolled-up]="tu.rolledUp ? 'true' : null"
+              [title]="tokenOverlayHover(tu)"
+              data-testid="node-token-badge">
+          ↑{{ formatCount(tu.inputTokens) }} ↓{{ formatCount(tu.outputTokens) }}<span class="wf-node-token-calls" *ngIf="tu.callCount > 1">·{{ tu.callCount }}</span>
+        </span>
       </div>
     </div>
   `,
@@ -106,12 +113,11 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
     .wf-node-row.output.implicit-failed.wired .wf-port-label {
       color: var(--color-danger, #d04848);
     }
-    /* Token Usage Tracking [Slice 7] - compact per-node badge in the node head.
+    /* Token Usage Tracking [Slice 7] - compact per-node badge in the node foot.
        Direct per-node totals get the accent variant; rolled-up totals (from a
        descendant child saga of a Subflow / ReviewLoop / Swarm) get a muted dashed
        treatment so the two are distinguishable at a glance. */
     .wf-node-token-badge {
-      margin-left: auto;
       padding: 1px 6px;
       border-radius: var(--radius-sm, 4px);
       background: color-mix(in oklab, var(--accent, #4a8fdb) 18%, transparent);
@@ -132,6 +138,23 @@ type SortValue = (ClassicPreset.Node['controls'] | ClassicPreset.Node['inputs'] 
       padding: 0 5px;
     }
     .wf-node-token-calls { opacity: 0.75; margin-left: 2px; }
+    /* Currently-running indicator. Absolutely positioned in the head's right edge so it
+       never participates in the head's flex layout (which the previous token-badge crowd
+       proved is space-tight). The pulsing border treatment lives in globals.scss next to
+       the other [data-state] node styles. */
+    .wf-node-spinner {
+      position: absolute;
+      top: 12px; right: 10px;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: 2px solid color-mix(in oklab, var(--sem-blue, #4a8fdb) 30%, transparent);
+      border-top-color: var(--sem-blue, #4a8fdb);
+      animation: wf-node-spin 0.9s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes wf-node-spin {
+      to { transform: rotate(360deg); }
+    }
   `]
 })
 export class WorkflowNodeComponent implements OnChanges {

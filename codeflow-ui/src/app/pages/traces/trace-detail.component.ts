@@ -185,6 +185,7 @@ interface ReviewLoopGroup {
                 [workflow]="workflow()"
                 [highlightedNodeIds]="highlightedNodeIds()"
                 [highlightedEdgeKeys]="highlightedEdgeKeys()"
+                [runningNodeIds]="runningNodeIds()"
                 [tokenUsageByNodeId]="tokenOverlayByNodeId()"></cf-workflow-readonly-canvas>
             </div>
           </cf-card>
@@ -458,6 +459,51 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       if (child.parentNodeId) ids.add(child.parentNodeId);
     }
     return ids.size > 0 ? Array.from(ids) : [];
+  });
+
+  /** Nodes the saga is currently mid-flight on. The readonly canvas paints these with a
+   *  pulsing border + spinner so the user can tell at a glance which step is in progress
+   *  vs. just on the executed path. Computed from the workflow graph: any target of an
+   *  executed edge that hasn't itself recorded a decision/evaluation is in flight (catches
+   *  Agent / Transform / HITL waiting / Subflow / ReviewLoop generically), plus any direct
+   *  child trace whose own state is Running (covers Subflow / ReviewLoop parents whose
+   *  synthetic completion decision hasn't landed yet, including the entry-node case where
+   *  no edge has been traversed yet). Null when the saga is not Running — no spinners on
+   *  Completed / Failed traces. */
+  readonly runningNodeIds = computed<string[] | null>(() => {
+    const d = this.detail();
+    if (!d || d.currentState !== 'Running') return null;
+    const ids = new Set<string>();
+
+    const wf = this.workflow();
+    if (wf) {
+      const decided = new Set<string>();
+      const executedKeys = new Set<string>();
+      for (const dec of d.decisions) {
+        if (!dec.nodeId) continue;
+        decided.add(dec.nodeId);
+        if (dec.outputPortName) executedKeys.add(`${dec.nodeId}::${dec.outputPortName}`);
+      }
+      for (const ev of d.logicEvaluations) {
+        if (!ev.nodeId) continue;
+        decided.add(ev.nodeId);
+        if (ev.outputPortName) executedKeys.add(`${ev.nodeId}::${ev.outputPortName}`);
+      }
+      for (const edge of wf.edges) {
+        const key = `${edge.fromNodeId}::${edge.fromPort}`;
+        if (executedKeys.has(key) && !decided.has(edge.toNodeId)) {
+          ids.add(edge.toNodeId);
+        }
+      }
+    }
+
+    for (const child of this.childTraces()) {
+      if (child.parentNodeId && child.currentState === 'Running') {
+        ids.add(child.parentNodeId);
+      }
+    }
+
+    return Array.from(ids);
   });
 
   /** Wires the trace has actually traversed, keyed `<nodeId>::<outputPortName>`. The readonly

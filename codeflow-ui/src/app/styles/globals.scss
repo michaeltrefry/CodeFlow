@@ -662,8 +662,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 0 0 2px var(--accent-dim), 0 8px 20px rgba(0,0,0,.3);
 }
 .wf-node[data-state="active"] { box-shadow: 0 0 0 2px var(--sem-blue), 0 8px 20px color-mix(in oklab, var(--sem-blue) 20%, transparent); }
+.wf-node[data-state="running"] {
+  box-shadow: 0 0 0 2px var(--sem-blue), 0 8px 20px color-mix(in oklab, var(--sem-blue) 20%, transparent);
+  animation: wf-node-running-pulse 1.6s ease-in-out infinite;
+}
 .wf-node[data-state="dimmed"] { opacity: 0.4; }
 .wf-node[data-state="error"] { box-shadow: 0 0 0 2px var(--sem-red), 0 8px 20px color-mix(in oklab, var(--sem-red) 15%, transparent); }
+@keyframes wf-node-running-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--sem-blue), 0 0 0 0 color-mix(in oklab, var(--sem-blue) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 2px var(--sem-blue), 0 0 0 6px color-mix(in oklab, var(--sem-blue) 0%,  transparent); }
+}
 
 .wf-node[data-kind="start"]      { --_kind: var(--sem-green); border-left-color: var(--sem-green); }
 .wf-node[data-kind="agent"]      { --_kind: var(--sem-blue); border-left-color: var(--sem-blue); }

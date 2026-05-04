@@ -9,7 +9,7 @@ type ClassicSchemes = GetSchemes<
 
 export type AreaExtra<Schemes extends ClassicSchemes = ClassicSchemes> = AngularArea2D<Schemes>;
 
-export type WorkflowNodeTraceState = 'active' | 'dimmed' | null;
+export type WorkflowNodeTraceState = 'active' | 'running' | 'dimmed' | null;
 
 /**
  * Compact per-node token overlay shape (Token Usage Tracking [Slice 7]). Carries
