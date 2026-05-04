@@ -170,7 +170,8 @@ public sealed class WorkflowPackageResolverTests
             CreatedBy: "tester",
             UpdatedAtUtc: DateTime.UtcNow,
             UpdatedBy: "tester",
-            IsArchived: false);
+            IsArchived: false,
+            Tags: ["review", "governance"]);
         var skill = new Skill(
             Id: 10,
             Name: "triage",
@@ -218,7 +219,8 @@ public sealed class WorkflowPackageResolverTests
                     "writer",
                     3,
                     """{"provider":"openai","model":"gpt-5","systemPrompt":"Write","outputs":[{"kind":"Completed","payloadExample":{"status":"ok"}}]}""",
-                    [new AgentOutputDeclaration("Completed", "Finished", JsonDocument.Parse("""{"status":"ok"}""").RootElement.Clone())]),
+                    [new AgentOutputDeclaration("Completed", "Finished", JsonDocument.Parse("""{"status":"ok"}""").RootElement.Clone())],
+                    ["author", "ops"]),
             },
             latestWorkflowVersions: new Dictionary<string, int>(StringComparer.Ordinal),
             latestAgentVersions: new Dictionary<string, int>(StringComparer.Ordinal)
@@ -264,6 +266,10 @@ public sealed class WorkflowPackageResolverTests
 
         package.Roles.Should().ContainSingle()
             .Which.SkillNames.Should().Equal("triage");
+        package.Roles.Single().Tags.Should().Equal("review", "governance");
+
+        package.Agents.Should().ContainSingle()
+            .Which.Tags.Should().Equal("author", "ops");
 
         package.McpServers.Should().ContainSingle();
         package.McpServers.Single().Key.Should().Be("search");
@@ -433,7 +439,8 @@ public sealed class WorkflowPackageResolverTests
         string key,
         int version,
         string configJson,
-        IReadOnlyList<AgentOutputDeclaration>? outputs = null)
+        IReadOnlyList<AgentOutputDeclaration>? outputs = null,
+        IReadOnlyList<string>? tags = null)
     {
         return new AgentConfig(
             Key: key,
@@ -443,7 +450,8 @@ public sealed class WorkflowPackageResolverTests
             ConfigJson: configJson,
             CreatedAtUtc: DateTime.UtcNow,
             CreatedBy: "tester",
-            Outputs: outputs);
+            Outputs: outputs,
+            Tags: tags);
     }
 
     private sealed class FakeWorkflowRepository(

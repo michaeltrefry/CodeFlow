@@ -29,6 +29,12 @@ public sealed class AgentConfigEntityConfiguration : IEntityTypeConfiguration<Ag
             .HasColumnType("longtext")
             .IsRequired();
 
+        builder.Property(agent => agent.TagsJson)
+            .HasColumnName("tags_json")
+            .HasColumnType("longtext")
+            .HasDefaultValue("[]")
+            .IsRequired();
+
         builder.Property(agent => agent.CreatedAtUtc)
             .HasColumnName("created_at")
             .HasColumnType("datetime(6)")

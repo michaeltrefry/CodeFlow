@@ -14,10 +14,13 @@ public sealed record AgentConfig(
     IReadOnlyList<AgentOutputDeclaration>? Outputs = null,
     string? OwningWorkflowKey = null,
     string? ForkedFromKey = null,
-    int? ForkedFromVersion = null)
+    int? ForkedFromVersion = null,
+    IReadOnlyList<string>? Tags = null)
 {
     public IReadOnlyList<AgentOutputDeclaration> DeclaredOutputs =>
         Outputs ?? Array.Empty<AgentOutputDeclaration>();
+
+    public IReadOnlyList<string> TagsOrEmpty => Tags ?? Array.Empty<string>();
 
     public bool IsWorkflowScoped => !string.IsNullOrEmpty(OwningWorkflowKey);
 

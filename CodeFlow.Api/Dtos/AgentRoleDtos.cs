@@ -5,11 +5,13 @@ namespace CodeFlow.Api.Dtos;
 public sealed record AgentRoleCreateRequest(
     string? Key,
     string? DisplayName,
-    string? Description);
+    string? Description,
+    IReadOnlyList<string>? Tags);
 
 public sealed record AgentRoleUpdateRequest(
     string? DisplayName,
-    string? Description);
+    string? Description,
+    IReadOnlyList<string>? Tags);
 
 public sealed record AgentRoleResponse(
     long Id,
@@ -22,7 +24,8 @@ public sealed record AgentRoleResponse(
     string? UpdatedBy,
     bool IsArchived,
     bool IsRetired,
-    bool IsSystemManaged = false);
+    bool IsSystemManaged,
+    IReadOnlyList<string> Tags);
 
 public sealed record AgentRoleGrantRequest(
     AgentRoleToolCategory Category,

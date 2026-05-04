@@ -49,6 +49,91 @@ public sealed class AgentRoleRepositoryTests : IAsyncLifetime
         role.Description.Should().Be("Read-only role");
         role.CreatedBy.Should().Be("tester");
         role.IsArchived.Should().BeFalse();
+        role.TagsOrEmpty.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateAsync_normalizes_and_round_trips_tags()
+    {
+        var key = $"reader-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AgentRoleRepository(context);
+
+        var id = await repo.CreateAsync(new AgentRoleCreate(
+            Key: key,
+            DisplayName: "Reader",
+            Description: null,
+            CreatedBy: "tester",
+            Tags:
+            [
+                " code-review ",
+                "security",
+                "CODE-REVIEW",
+                "",
+                "ops",
+                "docs",
+                "quality",
+                "overflow"
+            ]));
+
+        var role = await repo.GetAsync(id);
+
+        role.Should().NotBeNull();
+        role!.TagsOrEmpty.Should().Equal("code-review", "security", "ops", "docs", "quality");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_replaces_tags_with_normalized_values()
+    {
+        var key = $"reader-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AgentRoleRepository(context);
+
+        var id = await repo.CreateAsync(new AgentRoleCreate(
+            key,
+            "Reader",
+            null,
+            "tester",
+            ["old"]));
+
+        await repo.UpdateAsync(id, new AgentRoleUpdate(
+            DisplayName: "Reader 2",
+            Description: "Updated",
+            UpdatedBy: "tester",
+            Tags: [" new ", "NEW", "ops"]));
+
+        var role = await repo.GetAsync(id);
+
+        role.Should().NotBeNull();
+        role!.TagsOrEmpty.Should().Equal("new", "ops");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_preserves_existing_tags_when_tags_are_not_supplied()
+    {
+        var key = $"reader-{Guid.NewGuid():N}";
+
+        await using var context = CreateDbContext();
+        var repo = new AgentRoleRepository(context);
+
+        var id = await repo.CreateAsync(new AgentRoleCreate(
+            key,
+            "Reader",
+            null,
+            "tester",
+            ["stable"]));
+
+        await repo.UpdateAsync(id, new AgentRoleUpdate(
+            DisplayName: "Reader 2",
+            Description: "Updated",
+            UpdatedBy: "tester"));
+
+        var role = await repo.GetAsync(id);
+
+        role.Should().NotBeNull();
+        role!.TagsOrEmpty.Should().Equal("stable");
     }
 
     [Fact]

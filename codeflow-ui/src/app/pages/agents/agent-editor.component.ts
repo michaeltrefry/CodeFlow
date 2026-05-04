@@ -72,6 +72,7 @@ const DEFAULT_HEADER_STATE: AgentFormHeaderState = {
           [key]="existingKey()"
           [initialConfig]="loadedConfig()"
           [initialType]="loadedType()"
+          [initialTags]="loadedTags()"
           (saveRequested)="save($event)"></cf-agent-form>
       </div>
     </div>
@@ -87,6 +88,7 @@ export class AgentEditorPageComponent {
   protected readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
   protected readonly loadedConfig = signal<AgentConfig | null>(null);
   protected readonly loadedType = signal<'agent' | 'hitl' | null>(null);
+  protected readonly loadedTags = signal<string[]>([]);
   protected readonly saving = signal(false);
   protected readonly error = signal<string | null>(null);
 
@@ -123,8 +125,8 @@ export class AgentEditorPageComponent {
 
     const existingKey = this.existingKey();
     const save$ = existingKey
-      ? this.agentsApi.addVersion(existingKey, payload.config)
-      : this.agentsApi.create(payload.key, payload.config);
+      ? this.agentsApi.addVersion(existingKey, payload.config, payload.tags)
+      : this.agentsApi.create(payload.key, payload.config, payload.tags);
 
     save$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
@@ -142,6 +144,7 @@ export class AgentEditorPageComponent {
     const requestId = ++this.loadRequestId;
     this.loadedConfig.set(null);
     this.loadedType.set(null);
+    this.loadedTags.set([]);
     this.error.set(null);
 
     if (!existingKey) return;
@@ -151,6 +154,7 @@ export class AgentEditorPageComponent {
         if (requestId !== this.loadRequestId) return;
         this.loadedConfig.set(version.config ?? {});
         this.loadedType.set(version.type === 'hitl' ? 'hitl' : 'agent');
+        this.loadedTags.set(version.tags ?? []);
       },
       error: err => {
         if (requestId !== this.loadRequestId) return;

@@ -69,6 +69,16 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         string? createdBy,
         CancellationToken cancellationToken = default)
     {
+        return await CreateNewVersionAsync(key, configJson, createdBy, tags: null, cancellationToken);
+    }
+
+    public async Task<int> CreateNewVersionAsync(
+        string key,
+        string configJson,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
+        CancellationToken cancellationToken = default)
+    {
         var normalizedKey = NormalizeKey(key);
         var normalizedCreatedBy = NormalizeCreatedBy(createdBy);
         var configuration = AgentConfigJson.Deserialize(configJson);
@@ -105,7 +115,10 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 IsActive = true,
                 OwningWorkflowKey = latestConfig?.OwningWorkflowKey,
                 ForkedFromKey = latestConfig?.ForkedFromKey,
-                ForkedFromVersion = latestConfig?.ForkedFromVersion
+                ForkedFromVersion = latestConfig?.ForkedFromVersion,
+                TagsJson = tags is null
+                    ? latestConfig?.TagsJson ?? "[]"
+                    : WorkflowJson.SerializeTags(TagNormalizer.Normalize(tags))
             };
 
             dbContext.Agents.Add(entity);
@@ -141,6 +154,25 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         string? createdBy,
         CancellationToken cancellationToken = default)
     {
+        return await CreateForkAsync(
+            sourceKey,
+            sourceVersion,
+            workflowKey,
+            configJson,
+            createdBy,
+            tags: null,
+            cancellationToken);
+    }
+
+    public async Task<AgentConfig> CreateForkAsync(
+        string sourceKey,
+        int sourceVersion,
+        string workflowKey,
+        string configJson,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(configJson);
 
@@ -162,13 +194,13 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 IsolationLevel.Serializable,
                 cancellationToken);
 
-            var sourceExists = await dbContext.Agents
+            var source = await dbContext.Agents
                 .AsNoTracking()
-                .AnyAsync(
+                .SingleOrDefaultAsync(
                     agent => agent.Key == normalizedSourceKey && agent.Version == sourceVersion,
                     cancellationToken);
 
-            if (!sourceExists)
+            if (source is null)
             {
                 throw new AgentConfigNotFoundException(normalizedSourceKey, sourceVersion);
             }
@@ -183,7 +215,10 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 IsActive = true,
                 OwningWorkflowKey = normalizedWorkflowKey,
                 ForkedFromKey = normalizedSourceKey,
-                ForkedFromVersion = sourceVersion
+                ForkedFromVersion = sourceVersion,
+                TagsJson = tags is null
+                    ? source.TagsJson
+                    : WorkflowJson.SerializeTags(TagNormalizer.Normalize(tags))
             };
 
             dbContext.Agents.Add(entity);
@@ -202,6 +237,25 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         string forkedFromKey,
         int forkedFromVersion,
         string? createdBy,
+        CancellationToken cancellationToken = default)
+    {
+        return await CreatePublishedVersionAsync(
+            targetKey,
+            configJson,
+            forkedFromKey,
+            forkedFromVersion,
+            createdBy,
+            tags: null,
+            cancellationToken);
+    }
+
+    public async Task<int> CreatePublishedVersionAsync(
+        string targetKey,
+        string configJson,
+        string forkedFromKey,
+        int forkedFromVersion,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configJson);
@@ -226,6 +280,7 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 .ToListAsync(cancellationToken);
 
             var nextVersion = existingConfigs.Count == 0 ? 1 : existingConfigs[^1].Version + 1;
+            var latestConfig = existingConfigs.LastOrDefault();
 
             foreach (var existingConfig in existingConfigs.Where(agent => agent.IsActive))
             {
@@ -241,7 +296,10 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
                 CreatedBy = normalizedCreatedBy,
                 IsActive = true,
                 ForkedFromKey = normalizedLineageKey,
-                ForkedFromVersion = forkedFromVersion
+                ForkedFromVersion = forkedFromVersion,
+                TagsJson = tags is null
+                    ? latestConfig?.TagsJson ?? "[]"
+                    : WorkflowJson.SerializeTags(TagNormalizer.Normalize(tags))
                 // OwningWorkflowKey intentionally null — published agents are library-wide.
             };
 
@@ -370,7 +428,8 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             AgentConfigJson.ReadOutputs(entity.ConfigJson),
             entity.OwningWorkflowKey,
             entity.ForkedFromKey,
-            entity.ForkedFromVersion);
+            entity.ForkedFromVersion,
+            TagNormalizer.Normalize(WorkflowJson.DeserializeTags(entity.TagsJson)));
     }
 
     private static string NormalizeKey(string key)

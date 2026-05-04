@@ -38,6 +38,8 @@ Reusable AI-agent configurations. Each agent has a `key`, a `version`, a
 Scriban prompt template, a system prompt, a provider+model+temperature+max_tokens,
 a list of declared output ports, optional `partialPins`, and zero or more
 role assignments that control which tools/skills/MCP servers it can call.
+Agents may also carry up to five library `tags` for browsing; workflow
+packages preserve those tags on embedded `agents[]`.
 Agents are referenced from workflow nodes by `agentKey + agentVersion`.
 Editing an agent in-place from the workflow canvas forks-on-save and
 supports publish-back with drift detection.
@@ -179,7 +181,9 @@ change the prompt. Available partials:
 - **Role**: a named bundle of grants attached to an agent. Controls which
   tools the agent can invoke during execution. An agent without any role
   still has the built-in `submit` / `setWorkflow` / `setContext` tools —
-  but no host tools (filesystem, shell) and no MCP tools.
+  but no host tools (filesystem, shell) and no MCP tools. Roles may carry
+  up to five library `tags`; workflow packages preserve those tags on
+  embedded `roles[]`.
 - **Skill**: a reusable host-side capability surfaced through a role.
 - **MCP server**: an external Model Context Protocol server registered as
   a tool source; agents pick up its tools via roles that list
@@ -394,6 +398,11 @@ the first turn.** Walk the user through:
 9. **Confirmation.** Restate the design in 4–6 bullets and ask for approval
    before emitting the package.
 
+When suggesting tags for a new package, reuse the user's existing library
+vocabulary first: `list_workflows`, `list_agents`, and `list_agent_roles`
+all return tags and accept tag filters. Only invent a fresh tag when the
+existing tag set does not describe the new agent, role, or workflow.
+
 Refinement is expected. When the user replies "change X", produce a new
 package — **not a diff** — that incorporates the change. Carry forward
 every prior decision the user didn't ask to change.
@@ -451,6 +460,10 @@ make obvious. They account for nearly every guess-and-retry cycle:
 - **`agents[].outputs[]`** (top-level, OUTSIDE `config`) is exporter-only
   metadata — the importer ignores it. Don't rely on it carrying the port
   set.
+- **`agents[].tags[]` and `roles[].tags[]`** carry library browse tags in
+  packages. They are optional for backward compatibility; when present,
+  the importer trims, case-dedupes, and caps them at five, matching
+  workflow tags.
 - **`roles[].toolGrants[]`** is an array of objects:
   `[{ "category": "Host"|"Mcp", "toolIdentifier": "read_file" |
   "mcp:server:tool" }]`. NOT a string array, NOT `{ kind, tool }`.
@@ -773,6 +786,7 @@ should pick fresh ones.
       },
       "createdAtUtc": "2026-05-02T00:00:00Z",
       "createdBy": "assistant-draft",
+      "tags": ["demo", "classifier"],
       "outputs": [
         { "kind": "Continue", "description": "Hand off to the author/review loop." }
       ]
@@ -803,6 +817,7 @@ should pick fresh ones.
       },
       "createdAtUtc": "2026-05-02T00:00:00Z",
       "createdBy": "assistant-draft",
+      "tags": ["demo", "author"],
       "outputs": [
         { "kind": "Drafted", "description": "Draft (or revision) emitted." }
       ]
@@ -830,6 +845,7 @@ should pick fresh ones.
       },
       "createdAtUtc": "2026-05-02T00:00:00Z",
       "createdBy": "assistant-draft",
+      "tags": ["demo", "review"],
       "outputs": [
         { "kind": "Approved", "description": "Draft meets the brief." },
         { "kind": "Rejected", "description": "Concrete actionable feedback for the next round." }
@@ -851,6 +867,7 @@ should pick fresh ones.
       },
       "createdAtUtc": "2026-05-02T00:00:00Z",
       "createdBy": "assistant-draft",
+      "tags": ["demo", "approval"],
       "outputs": [
         { "kind": "Approved", "description": "Final draft approved by the user." },
         { "kind": "Revise", "description": "Send back for another author/review pass." }
@@ -866,6 +883,7 @@ should pick fresh ones.
       "displayName": "Demo Author Tools",
       "description": "Read access for the author so it can pull reference docs.",
       "isArchived": false,
+      "tags": ["demo", "author"],
       "toolGrants": [
         { "category": "Host", "toolIdentifier": "read_file" },
         { "category": "Mcp", "toolIdentifier": "mcp:demo-docs:search" }

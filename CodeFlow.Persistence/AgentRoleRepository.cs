@@ -63,6 +63,7 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
             Key = NormalizeKey(create.Key),
             DisplayName = Require(create.DisplayName, nameof(create.DisplayName)),
             Description = Trim(create.Description),
+            TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(create.Tags)),
             CreatedAtUtc = now,
             CreatedBy = Trim(create.CreatedBy),
             UpdatedAtUtc = now,
@@ -85,6 +86,10 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
 
         entity.DisplayName = Require(update.DisplayName, nameof(update.DisplayName));
         entity.Description = Trim(update.Description);
+        if (update.Tags is not null)
+        {
+            entity.TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(update.Tags));
+        }
         entity.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedBy = Trim(update.UpdatedBy);
 
@@ -374,7 +379,8 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         UpdatedBy: entity.UpdatedBy,
         IsArchived: entity.IsArchived,
         IsRetired: entity.IsRetired,
-        IsSystemManaged: entity.IsSystemManaged);
+        IsSystemManaged: entity.IsSystemManaged,
+        Tags: TagNormalizer.Normalize(WorkflowJson.DeserializeTags(entity.TagsJson)));
 
     private static string NormalizeKey(string key)
     {

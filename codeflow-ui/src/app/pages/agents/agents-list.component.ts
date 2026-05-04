@@ -1,4 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { useAsyncList } from '../../core/async-state';
@@ -18,7 +19,7 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
   selector: 'cf-agents-list',
   standalone: true,
   imports: [
-    RouterLink,
+    RouterLink, FormsModule,
     PageHeaderComponent, ButtonComponent, ChipComponent, IconComponent,
     SegmentedComponent, ProviderIconComponent,
   ],
@@ -40,6 +41,24 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
             [value]="filter()"
             (valueChange)="filter.set($any($event))">
           </cf-segmented>
+          <form class="tag-filter" (submit)="addTagFilter($event)">
+            <label class="field">
+              <span class="field-label">Tags</span>
+              <input
+                class="input mono tag-filter-input"
+                name="agentTagFilter"
+                list="agent-tag-options"
+                [ngModel]="tagFilterInput()"
+                (ngModelChange)="tagFilterInput.set($event)"
+                placeholder="ops, review" />
+            </label>
+            <button type="submit" cf-button variant="ghost" size="sm" icon="plus">Add tag</button>
+            <datalist id="agent-tag-options">
+              @for (tag of availableTags(); track tag) {
+                <option [value]="tag"></option>
+              }
+            </datalist>
+          </form>
         </div>
         <div class="bulk-actions">
           <span class="muted small">showing {{ visibleAgents().length }}</span>
@@ -50,6 +69,24 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
           }
         </div>
       </div>
+
+      @if (selectedTags().length > 0 || visibleTagOptions().length > 0) {
+        <div class="tag-filter-row" aria-label="Agent tag filters">
+          @for (tag of selectedTags(); track tag) {
+            <button type="button" class="tag-filter-chip active" (click)="removeTagFilter(tag)">
+              {{ tag }} <span aria-hidden="true">×</span>
+            </button>
+          }
+          @for (tag of visibleTagOptions(); track tag) {
+            <button type="button" class="tag-filter-chip" (click)="addTag(tag)">
+              {{ tag }}
+            </button>
+          }
+          @if (selectedTags().length > 0) {
+            <button type="button" cf-button variant="ghost" size="sm" icon="x" (click)="clearTagFilters()">Clear</button>
+          }
+        </div>
+      }
 
       @if (retireError()) {
         <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ retireError() }}</cf-chip></div></div>
@@ -82,6 +119,12 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
               </div>
               <div class="agent-tags">
                 <cf-chip variant="accent" mono>v{{ agent.latestVersion }}</cf-chip>
+                @for (tag of visibleAgentTags(agent); track tag) {
+                  <cf-chip mono>{{ tag }}</cf-chip>
+                }
+                @if (remainingAgentTagCount(agent) > 0) {
+                  <cf-chip mono>+{{ remainingAgentTagCount(agent) }}</cf-chip>
+                }
                 @if (agent.type === 'hitl') {
                   <cf-chip mono>hitl</cf-chip>
                 } @else {
@@ -109,6 +152,64 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
       }
     </div>
   `,
+  styles: [`
+    .tag-filter {
+      display: flex;
+      align-items: end;
+      gap: 8px;
+      min-width: min(360px, 100%);
+    }
+    .tag-filter .field {
+      min-width: 180px;
+    }
+    .tag-filter-input {
+      min-height: 34px;
+    }
+    .tag-filter-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0 10px;
+    }
+    .tag-filter-chip {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-2);
+      font: inherit;
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs);
+      cursor: pointer;
+    }
+    .tag-filter-chip:hover,
+    .tag-filter-chip:focus-visible {
+      border-color: var(--accent);
+      color: var(--accent-ink);
+      outline: none;
+    }
+    .tag-filter-chip.active {
+      background: var(--accent-weak);
+      border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+      color: var(--accent-ink);
+    }
+    @media (max-width: 760px) {
+      .list-toolbar,
+      .list-toolbar-left,
+      .tag-filter {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .tag-filter .field {
+        min-width: 0;
+      }
+    }
+  `],
 })
 export class AgentsListComponent {
   private readonly agentsApi = inject(AgentsApi);
@@ -121,6 +222,8 @@ export class AgentsListComponent {
   readonly loading = this.agentsList.loading;
   readonly error = this.agentsList.error;
   readonly filter = signal<AgentFilter>('all');
+  readonly tagFilterInput = signal('');
+  readonly selectedTags = signal<string[]>([]);
   readonly selectedKeys = signal<Set<string>>(new Set());
   readonly retiring = signal(false);
   readonly retireError = signal<string | null>(null);
@@ -128,7 +231,32 @@ export class AgentsListComponent {
 
   readonly visibleAgents = computed(() => {
     const f = this.filter();
-    return f === 'all' ? this.agents() : this.agents().filter(a => a.type === f);
+    const tags = this.selectedTags();
+    return this.agents().filter(agent =>
+      (f === 'all' || agent.type === f)
+      && (tags.length === 0 || tags.every(tag => hasTag(agent, tag))));
+  });
+
+  readonly availableTags = computed(() => {
+    const seen = new Map<string, string>();
+    for (const agent of this.agents()) {
+      for (const tag of agent.tags ?? []) {
+        const trimmed = tag.trim();
+        if (!trimmed) continue;
+        const key = trimmed.toLocaleLowerCase();
+        if (!seen.has(key)) {
+          seen.set(key, trimmed);
+        }
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  });
+
+  readonly visibleTagOptions = computed(() => {
+    const selected = new Set(this.selectedTags().map(tag => tag.toLocaleLowerCase()));
+    return this.availableTags()
+      .filter(tag => !selected.has(tag.toLocaleLowerCase()))
+      .slice(0, 12);
   });
 
   readonly filterOptions = computed<SegmentedOption[]>(() => {
@@ -160,6 +288,44 @@ export class AgentsListComponent {
     this.selectedKeys.set(next);
   }
 
+  addTagFilter(event?: Event): void {
+    event?.preventDefault();
+    const tags = parseTagInput(this.tagFilterInput());
+    if (tags.length === 0) return;
+    for (const tag of tags) {
+      this.addTag(tag);
+    }
+    this.tagFilterInput.set('');
+  }
+
+  addTag(tag: string): void {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    const next = [...this.selectedTags()];
+    if (next.some(existing => existing.localeCompare(trimmed, undefined, { sensitivity: 'accent' }) === 0)) {
+      return;
+    }
+    next.push(trimmed);
+    this.selectedTags.set(next);
+  }
+
+  removeTagFilter(tag: string): void {
+    this.selectedTags.set(this.selectedTags().filter(existing => existing !== tag));
+  }
+
+  clearTagFilters(): void {
+    this.selectedTags.set([]);
+    this.tagFilterInput.set('');
+  }
+
+  visibleAgentTags(agent: AgentSummary): string[] {
+    return (agent.tags ?? []).slice(0, 4);
+  }
+
+  remainingAgentTagCount(agent: AgentSummary): number {
+    return Math.max(0, (agent.tags?.length ?? 0) - 4);
+  }
+
   retireSelected(): void {
     const keys = [...this.selectedKeys()];
     if (keys.length === 0 || this.retiring()) return;
@@ -176,4 +342,23 @@ export class AgentsListComponent {
       }
     });
   }
+}
+
+function parseTagInput(value: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value.split(',')) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function hasTag(agent: AgentSummary, requestedTag: string): boolean {
+  return (agent.tags ?? []).some(tag =>
+    tag.localeCompare(requestedTag, undefined, { sensitivity: 'accent' }) === 0);
 }

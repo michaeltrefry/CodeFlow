@@ -58,6 +58,15 @@ import { ChipComponent } from '../../../ui/chip.component';
                       placeholder="What does this role grant?"
                       style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
           </label>
+          <label class="field span-2">
+            <span class="field-label">Tags</span>
+            <input
+              class="input mono"
+              [(ngModel)]="tagsText"
+              name="tags"
+              placeholder="review, ops, research" />
+            <span class="field-hint">Comma-separated labels for browsing and filtering.</span>
+          </label>
         </div>
 
         @if (error()) {
@@ -162,6 +171,7 @@ export class RoleEditorComponent implements OnInit {
   readonly key = signal('');
   readonly displayName = signal('');
   readonly description = signal('');
+  readonly tagsText = signal('');
   readonly role = signal<AgentRole | null>(null);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -190,6 +200,7 @@ export class RoleEditorComponent implements OnInit {
         this.key.set(role.key);
         this.displayName.set(role.displayName);
         this.description.set(role.description ?? '');
+        this.tagsText.set(formatTags(role.tags));
       });
       this.rolesApi.getGrants(existingId).subscribe(g => this.grants.set(g));
       this.loadCatalogs();
@@ -292,6 +303,7 @@ export class RoleEditorComponent implements OnInit {
       this.rolesApi.update(existingId, {
         displayName: this.displayName(),
         description: this.description() || null,
+        tags: parseTags(this.tagsText()),
       }).subscribe({
         next: role => {
           this.role.set(role);
@@ -307,6 +319,7 @@ export class RoleEditorComponent implements OnInit {
         key: this.key(),
         displayName: this.displayName(),
         description: this.description() || null,
+        tags: parseTags(this.tagsText()),
       }).subscribe({
         next: role => {
           this.saving.set(false);
@@ -320,4 +333,22 @@ export class RoleEditorComponent implements OnInit {
     }
   }
 
+}
+
+function parseTags(value: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value.split(',')) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function formatTags(tags: readonly string[] | null | undefined): string {
+  return (tags ?? []).join(', ');
 }

@@ -320,7 +320,8 @@ public sealed class WorkflowPackageResolver(
                         PayloadExample: output.PayloadExample is JsonElement payload
                             ? JsonNode.Parse(payload.GetRawText())
                             : null))
-                    .ToArray());
+                    .ToArray(),
+                Tags: agent.TagsOrEmpty.ToArray());
         }
 
         var roles = await agentRoleRepository.GetRolesForAgentAsync(normalizedAgentKey, cancellationToken);
@@ -400,7 +401,8 @@ public sealed class WorkflowPackageResolver(
             SkillNames: skillNames
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(name => name, StringComparer.Ordinal)
-                .ToArray());
+                .ToArray(),
+            Tags: role.TagsOrEmpty.ToArray());
     }
 
     private async Task AddMcpServerAsync(

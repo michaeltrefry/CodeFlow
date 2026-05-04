@@ -35,6 +35,67 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task Post_then_get_returns_normalized_tags()
+    {
+        using var client = factory.CreateClient();
+
+        var create = await client.PostAsJsonAsync("/api/agent-roles", new
+        {
+            key = $"tagged-reader-{Guid.NewGuid():N}",
+            displayName = "Tagged reader",
+            description = (string?)null,
+            tags = new[] { " Ops ", "ops", "Research" },
+        });
+
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+        var created = (await create.Content.ReadFromJsonAsync<AgentRoleDto>())!;
+        created.Tags.Should().Equal("Ops", "Research");
+
+        var fetched = await client.GetFromJsonAsync<AgentRoleDto>($"/api/agent-roles/{created.Id}");
+        fetched!.Tags.Should().Equal("Ops", "Research");
+    }
+
+    [Fact]
+    public async Task List_with_tag_filters_returns_roles_matching_all_requested_tags()
+    {
+        using var client = factory.CreateClient();
+
+        var sharedTag = $"shared-{Guid.NewGuid():N}";
+        var narrowTag = $"narrow-{Guid.NewGuid():N}";
+
+        var matching = await CreateRole(client, tags: [sharedTag, narrowTag]);
+        await CreateRole(client, tags: [sharedTag]);
+        await CreateRole(client, tags: [$"other-{Guid.NewGuid():N}"]);
+
+        var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>(
+            $"/api/agent-roles?tags={sharedTag},{narrowTag}"))!;
+
+        roles.Select(role => role.Id).Should().ContainSingle().Which.Should().Be(matching.Id);
+    }
+
+    [Fact]
+    public async Task Put_with_tags_updates_role_tags()
+    {
+        using var client = factory.CreateClient();
+
+        var role = await CreateRole(client, tags: ["old-tag"]);
+
+        var update = await client.PutAsJsonAsync($"/api/agent-roles/{role.Id}", new
+        {
+            displayName = "Updated role",
+            description = "Updated",
+            tags = new[] { "new-tag", "NEW-TAG", "ops" },
+        });
+
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+        var updated = (await update.Content.ReadFromJsonAsync<AgentRoleDto>())!;
+        updated.Tags.Should().Equal("new-tag", "ops");
+
+        var fetched = await client.GetFromJsonAsync<AgentRoleDto>($"/api/agent-roles/{role.Id}");
+        fetched!.Tags.Should().Equal("new-tag", "ops");
+    }
+
+    [Fact]
     public async Task Retire_HidesFromListAndBlocksNewAssignments()
     {
         using var client = factory.CreateClient();
@@ -211,13 +272,14 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    private static async Task<AgentRoleDto> CreateRole(HttpClient client)
+    private static async Task<AgentRoleDto> CreateRole(HttpClient client, IReadOnlyList<string>? tags = null)
     {
         var response = await client.PostAsJsonAsync("/api/agent-roles", new
         {
             key = $"role-{Guid.NewGuid():N}",
             displayName = "R",
             description = (string?)null,
+            tags,
         });
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await response.Content.ReadFromJsonAsync<AgentRoleDto>())!;
@@ -278,7 +340,8 @@ public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
         string? UpdatedBy,
         bool IsArchived,
         bool IsRetired,
-        bool IsSystemManaged);
+        bool IsSystemManaged,
+        IReadOnlyList<string> Tags);
 
     private sealed record GrantDto(string Category, string ToolIdentifier);
     private sealed record BulkRoleRetireDto(IReadOnlyList<long> RetiredIds, IReadOnlyList<long> MissingIds);

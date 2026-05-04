@@ -970,6 +970,7 @@ public sealed class WorkflowPackageImporter(
                 Key = role.Key.Trim(),
                 DisplayName = role.DisplayName.Trim(),
                 Description = Trim(role.Description),
+                TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(role.Tags)),
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 IsArchived = role.IsArchived,
@@ -1035,6 +1036,7 @@ public sealed class WorkflowPackageImporter(
                     CreatedBy = Trim(agent.CreatedBy),
                     IsActive = agent.Version == finalMaxVersion,
                     IsRetired = false,
+                    TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(agent.Tags)),
                 });
             }
         }
@@ -1102,7 +1104,7 @@ public sealed class WorkflowPackageImporter(
                 Name = workflow.Name.Trim(),
                 MaxRoundsPerRound = workflow.MaxRoundsPerRound,
                 Category = workflow.Category,
-                TagsJson = JsonSerializer.Serialize(workflow.Tags, SerializerOptions),
+                TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(workflow.Tags)),
                 WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsReads),
                 WorkflowVarsWritesJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsWrites),
                 CreatedAtUtc = UsePackageDateOrNow(workflow.CreatedAtUtc, now),
@@ -1314,6 +1316,7 @@ public sealed class WorkflowPackageImporter(
 
     private static bool Equivalent(WorkflowPackageAgent packageAgent, AgentConfig existing) =>
         packageAgent.Kind == existing.Kind &&
+        TagNormalizer.Normalize(packageAgent.Tags).SequenceEqual(existing.TagsOrEmpty, StringComparer.Ordinal) &&
         JsonNode.DeepEquals(packageAgent.Config, JsonNode.Parse(existing.ConfigJson)) &&
         SerializedEquals(packageAgent.Outputs, existing.DeclaredOutputs.Select(output => new WorkflowPackageAgentOutput(
             output.Kind,
@@ -1328,6 +1331,7 @@ public sealed class WorkflowPackageImporter(
         string.Equals(packageRole.DisplayName, existing.DisplayName, StringComparison.Ordinal) &&
         string.Equals(packageRole.Description, existing.Description, StringComparison.Ordinal) &&
         packageRole.IsArchived == existing.IsArchived &&
+        TagNormalizer.Normalize(packageRole.Tags).SequenceEqual(existing.TagsOrEmpty, StringComparer.Ordinal) &&
         SerializedEquals(
             packageRole.ToolGrants.OrderBy(grant => grant.Category).ThenBy(grant => grant.ToolIdentifier, StringComparer.Ordinal),
             existingGrants.OrderBy(grant => grant.Category).ThenBy(grant => grant.ToolIdentifier, StringComparer.Ordinal)
@@ -1408,7 +1412,7 @@ public sealed class WorkflowPackageImporter(
 
     private static WorkflowPackageWorkflow NormalizeWorkflow(WorkflowPackageWorkflow workflow) => workflow with
     {
-        Tags = workflow.Tags ?? Array.Empty<string>(),
+        Tags = TagNormalizer.Normalize(workflow.Tags),
         Nodes = (workflow.Nodes ?? Array.Empty<WorkflowPackageWorkflowNode>())
             .Select(NormalizeNode)
             .ToArray(),
@@ -1424,6 +1428,7 @@ public sealed class WorkflowPackageImporter(
     private static WorkflowPackageAgent NormalizeAgent(WorkflowPackageAgent agent) => agent with
     {
         Outputs = agent.Outputs ?? Array.Empty<WorkflowPackageAgentOutput>(),
+        Tags = TagNormalizer.Normalize(agent.Tags),
     };
 
     private static WorkflowPackageAgentRoleAssignment NormalizeAssignment(WorkflowPackageAgentRoleAssignment assignment) => assignment with
@@ -1435,6 +1440,7 @@ public sealed class WorkflowPackageImporter(
     {
         ToolGrants = role.ToolGrants ?? Array.Empty<WorkflowPackageRoleGrant>(),
         SkillNames = role.SkillNames ?? Array.Empty<string>(),
+        Tags = TagNormalizer.Normalize(role.Tags),
     };
 
     private static WorkflowPackageMcpServer NormalizeMcpServer(WorkflowPackageMcpServer server) => server with
