@@ -63,6 +63,31 @@ For `Subflow` / `ReviewLoop` nodes, the validator computes the child workflow's 
 set and requires every edge `fromPort` to be in that set (or, for ReviewLoop, in the
 synthesized union with `{Exhausted, loopDecision}`).
 
+## Boundary scripts on Subflow / ReviewLoop
+
+Subflow and ReviewLoop nodes carry their own input/output script slots (sc-626). The slots run
+in the parent saga's scope at the boundary of the child saga: the input script before the child
+is dispatched, the output script once the child has terminated and the effective port has been
+resolved.
+
+The wirable port set passed to `setNodePath` from a boundary output script is the same set
+edges may leave the boundary on, plus the implicit `Failed`:
+
+| Kind | `output.decision` carries… | `setNodePath` may target… |
+|------|----------------------------|---------------------------|
+| `Subflow` | The child's terminal port name. | Child terminal ports + `Failed`. |
+| `ReviewLoop` | Whichever port closed the loop: the child's exit port (the one that wasn't `loopDecision`) **or** the synthesized `Exhausted`. | Child terminal ports + `Exhausted` + the configured `loopDecision` + `Failed`. |
+
+For ReviewLoop, the iterate-vs-exit decision happens *before* the boundary output script runs,
+so the script fires exactly once per loop activation. Per-iteration logic belongs on nodes
+*inside* the child workflow, not on the boundary.
+
+The boundary-script port set is centralized in `CodeFlow.Persistence.BoundaryScriptPorts.GetDeclaredPorts(node, childTerminals?)`
+so the saga, the DryRunExecutor, and the editor's `/validate-script` call all agree on what's
+wirable.
+
+See `docs/subflows.md` and `docs/review-loop.md` for the per-kind authoring guidance.
+
 ## Editor affordances
 
 - **Agent/Hitl/Start port pickers** are read-only lists derived from the pinned agent's
