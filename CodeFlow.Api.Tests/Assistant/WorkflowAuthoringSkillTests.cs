@@ -343,6 +343,25 @@ public sealed class WorkflowAuthoringSkillTests
         }
     }
 
+    [Theory]
+    // Code-aware authoring lessons (epic 658 follow-up). These are durable design rules the
+    // skill must teach — losing them causes the assistant to emit dev-flow workflows that
+    // complete all their LLM work and then fail at the publish step. Add to this list as new
+    // failure modes are discovered.
+    [InlineData("Push on first commit")]
+    [InlineData("git push -u origin <featureBranch>")]
+    [InlineData("git ls-remote")]
+    [InlineData("never silently default to")]
+    [InlineData("credential helper")]
+    [InlineData("vcs.clone")]
+    [InlineData("vcs.open_pr")]
+    [InlineData("docs/code-aware-workflows.md")]
+    public void Skill_TeachesCodeAwareWorkflowPatterns(string token)
+    {
+        LoadSkill().Body.Should().Contain(token,
+            because: "code-aware workflow design patterns must stay in the skill — losing them strands real workflows at publish-time");
+    }
+
     [Fact]
     public void Exemplar_DemonstratesDeclarativeAuthoringFeatures()
     {

@@ -288,6 +288,107 @@ of wiring into 30 seconds. Available templates:
 - **Lifecycle wrapper** — three placeholder phase workflows chained by
   two HITL approval gates.
 
+### Authoring code-aware workflows (clone → edit → commit → PR)
+
+Code-aware workflows are the dev-flow pattern: clone repos, run agent
+work over them, commit, push, open a PR. The shape is straightforward,
+but a small set of design choices look correct in the package and fail
+at runtime. These lessons came from real workflows that completed all
+their LLM work and then failed at the publish step — the worst failure
+mode because it strands all the development work on a local branch and
+burns the entire token budget before surfacing the problem.
+
+Reference: `docs/code-aware-workflows.md` is the canonical platform
+contract.
+
+**Auth is automatic, but only inside `git`.** The platform's per-trace
+credential helper makes every spawned `git` process see
+`credential.helper = store --file=…/{traceId:N}`. Authors don't need to
+plumb tokens, write a credential helper of their own, or pass anything
+through agent prompts. Two preconditions for it to work:
+
+1. The trace's `repositories[]` input must include the host the workflow
+   will push to. The cred file is built from
+   `repositories[] ∩ configured GitHostSettings host`. If `repositories[]`
+   doesn't include the configured host, the helper has no entry and
+   `git push` fails with "Authentication failed".
+2. The configured `GitHostSettings` must have `HasToken = true`. Out of
+   authoring scope, but worth flagging to the user when designing a
+   workflow that targets a host they may not have configured.
+
+**Push on first commit, NOT at PR-publish time.** Whichever agent owns
+committing (typically `task-committer` or any agent doing `git commit`)
+must `git push -u origin <featureBranch>` IMMEDIATELY after the commit
+lands. Do not wait for the publish agent at the end of the workflow.
+
+- Pushing on the first commit exercises the credential boundary at task 1,
+  when the workflow can still recover (clarify with HITL, fail loudly)
+  instead of stranding all the development work on a local branch.
+- Subsequent pushes are fast-forwards, basically free.
+- The publish agent's `git push -u origin` becomes idempotent insurance,
+  not the only chance.
+
+A common anti-pattern is a workflow where only the final publish agent
+ever pushes. That design ran the entire dev/review cycle (often hours
+of LLM time) before discovering credentials were unavailable. Don't
+emit it.
+
+**Verify the base branch via `git ls-remote`, never silently default to
+`main`.** The publish agent (or whichever agent calls `vcs.open_pr`)
+must resolve the base branch in this order, stopping at the first that
+succeeds:
+
+1. If the trace's `context.repositories[i].branch` is set and non-empty,
+   use it (it was the verified upstream the developer cloned from).
+2. Otherwise run
+   `run_command "git", ["ls-remote", "--symref", "origin", "HEAD"]`
+   from the repo's `localPath`. The response's
+   `ref: refs/heads/<X>\tHEAD` line gives the authoritative default
+   branch — git's credential helper handles auth, so this works for
+   private repos too.
+3. Only as a last-resort fallback, call `vcs.get_repo` and use
+   `defaultBranch`.
+
+Do NOT default to `"main"`. Many repos use `master`, `develop`, `trunk`,
+or a release branch as the merge target. A PR opened against the wrong
+base is confusing manual cleanup that wastes the user's time.
+
+**Use `vcs.clone` once, then plain `git`.** The narrow `vcs.*` surface
+is intentional. Use:
+
+- `vcs.clone` — establishes the workspace anchor and registers the
+  clone path. Call once per repo from the setup agent.
+- `vcs.open_pr` — the delivery boundary, policed by envelope axes and
+  per-trace `repositories[]`.
+- `vcs.get_repo` — host-API metadata (visibility, default branch, clone
+  URL). Last-resort for base-branch resolution per above.
+
+Everything else uses `run_command "git", [...]`. Do NOT add agent
+prompts that re-implement git porcelain via REST or that try to mint
+their own auth — the credential helper handles every git invocation
+transparently.
+
+**Scope `vcs.*` grants per agent.** Don't grant the whole `vcs.*` set
+to every agent in the workflow. Typical scoping:
+
+- Setup / first agent that materializes the workspace: `vcs.clone`
+  (and `vcs.get_repo` if it needs to discover the upstream default
+  branch before cloning).
+- Developer / committer / general-work agents: NO `vcs.*` grants —
+  they use `run_command "git", [...]` for everything.
+- Publish agent: `vcs.open_pr` only.
+
+Keeping the surface scoped makes the workflow's intent visible at the
+role level and reduces the blast radius of a mis-prompted agent.
+
+**`workflow.repositories`, NOT `context.repositories`.** Worth restating
+in the code-aware context: the per-trace VCS allowlist lives on the
+`workflow` bag (saga-field-backed), not `context`.
+`setContext('repositories', ...)` does NOT widen the allowlist or
+trigger cred-file rewrite. The platform routes the trace-launch input
+into `workflow.repositories` automatically; if you ever need to add a
+repo mid-flow (rare), use `setWorkflow`.
+
 ### When to fan out: sub-agents vs Swarm vs ReviewLoop vs Subflow
 Pick the smallest primitive that fits — these are NOT interchangeable:
 
