@@ -10,6 +10,8 @@ public sealed class AgentConfigEntity
 
     public string ConfigJson { get; set; } = null!;
 
+    public string TagsJson { get; set; } = "[]";
+
     public DateTime CreatedAtUtc { get; set; }
 
     public string? CreatedBy { get; set; }

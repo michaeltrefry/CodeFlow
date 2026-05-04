@@ -10,6 +10,7 @@ public sealed record AgentSummaryDto(
     string? Provider,
     string? Model,
     string Type,
+    IReadOnlyList<string> Tags,
     DateTime LatestCreatedAtUtc,
     string? LatestCreatedBy,
     bool IsRetired);
@@ -17,6 +18,7 @@ public sealed record AgentSummaryDto(
 public sealed record AgentVersionSummaryDto(
     string Key,
     int Version,
+    IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
     string? CreatedBy);
 
@@ -25,6 +27,7 @@ public sealed record AgentVersionDto(
     int Version,
     string Type,
     JsonNode? Config,
+    IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
     string? CreatedBy,
     bool IsRetired);
@@ -35,15 +38,16 @@ public sealed record BulkRetireKeysResponse(
     IReadOnlyList<string> RetiredKeys,
     IReadOnlyList<string> MissingKeys);
 
-public sealed record CreateAgentRequest(string? Key, JsonElement? Config);
+public sealed record CreateAgentRequest(string? Key, JsonElement? Config, IReadOnlyList<string>? Tags);
 
-public sealed record UpdateAgentRequest(JsonElement? Config);
+public sealed record UpdateAgentRequest(JsonElement? Config, IReadOnlyList<string>? Tags);
 
 public sealed record ForkAgentRequest(
     string? SourceKey,
     int? SourceVersion,
     string? WorkflowKey,
-    JsonElement? Config);
+    JsonElement? Config,
+    IReadOnlyList<string>? Tags);
 
 public sealed record ForkAgentResponse(
     string Key,
@@ -61,7 +65,8 @@ public sealed record PublishForkStatusResponse(
 public sealed record PublishForkRequest(
     string? Mode,
     string? NewKey,
-    bool? AcknowledgeDrift);
+    bool? AcknowledgeDrift,
+    IReadOnlyList<string>? Tags);
 
 public sealed record PublishForkResponse(
     string PublishedKey,

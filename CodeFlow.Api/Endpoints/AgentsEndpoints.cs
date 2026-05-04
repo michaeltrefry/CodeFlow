@@ -248,8 +248,11 @@ public static class AgentsEndpoints
 
     private static async Task<IResult> ListAgentsAsync(
         CodeFlowDbContext dbContext,
+        HttpRequest request,
         CancellationToken cancellationToken)
     {
+        var requestedTags = ReadTagFilters(request);
+
         var entities = await dbContext.Agents
             .AsNoTracking()
             .Where(agent => !agent.IsRetired && agent.OwningWorkflowKey == null)
@@ -270,10 +273,12 @@ public static class AgentsEndpoints
                     Provider: ReadString(configNode, "provider"),
                     Model: ReadString(configNode, "model"),
                     Type: ReadString(configNode, "type") ?? "agent",
+                    Tags: ReadTags(latest.TagsJson),
                     LatestCreatedAtUtc: DateTime.SpecifyKind(latest.CreatedAtUtc, DateTimeKind.Utc),
                     LatestCreatedBy: latest.CreatedBy,
                     IsRetired: latest.IsRetired);
             })
+            .Where(summary => TagsMatch(summary.Tags, requestedTags))
             .ToArray();
 
         return Results.Ok(summaries);
@@ -300,6 +305,7 @@ public static class AgentsEndpoints
             .Select(entity => new AgentVersionSummaryDto(
                 Key: entity.Key,
                 Version: entity.Version,
+                Tags: ReadTags(entity.TagsJson),
                 CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
                 CreatedBy: entity.CreatedBy))
             .ToArray();
@@ -388,6 +394,7 @@ public static class AgentsEndpoints
             normalizedKey,
             configJson,
             currentUser.Id,
+            request.Tags,
             cancellationToken);
 
         return Results.Created($"/api/agents/{normalizedKey}/{version}", new { key = normalizedKey, version });
@@ -444,6 +451,7 @@ public static class AgentsEndpoints
             normalizedKey,
             configJson,
             currentUser.Id,
+            request.Tags,
             cancellationToken);
 
         return Results.Ok(new { key = normalizedKey, version });
@@ -522,6 +530,7 @@ public static class AgentsEndpoints
             request.WorkflowKey!,
             configJson,
             currentUser.Id,
+            request.Tags,
             cancellationToken);
 
         return Results.Created(
@@ -656,12 +665,19 @@ public static class AgentsEndpoints
             }
         }
 
+        var publishTags = request.Tags;
+        if (publishTags is null && mode == "new-agent")
+        {
+            publishTags = ReadTags(fork.TagsJson);
+        }
+
         var publishedVersion = await repository.CreatePublishedVersionAsync(
             targetKey,
             fork.ConfigJson,
             fork.ForkedFromKey,
             fork.ForkedFromVersion.Value,
             currentUser.Id,
+            publishTags,
             cancellationToken);
 
         return Results.Ok(new PublishForkResponse(
@@ -723,6 +739,7 @@ public static class AgentsEndpoints
             Version: entity.Version,
             Type: ReadString(configNode, "type") ?? "agent",
             Config: configNode,
+            Tags: ReadTags(entity.TagsJson),
             CreatedAtUtc: DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
             CreatedBy: entity.CreatedBy,
             IsRetired: entity.IsRetired);
@@ -768,6 +785,44 @@ public static class AgentsEndpoints
     }
 
     private static string NormalizeKey(string key) => key.Trim();
+
+    private static IReadOnlyList<string> ReadTagFilters(HttpRequest request)
+    {
+        var values = new List<string>();
+        foreach (var key in new[] { "tag", "tags" })
+        {
+            if (!request.Query.TryGetValue(key, out var queryValues))
+            {
+                continue;
+            }
+
+            foreach (var value in queryValues)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                values.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            }
+        }
+
+        return TagNormalizer.Normalize(values);
+    }
+
+    private static IReadOnlyList<string> ReadTags(string? tagsJson) =>
+        TagNormalizer.Normalize(WorkflowJson.DeserializeTags(tagsJson));
+
+    private static bool TagsMatch(IReadOnlyList<string> actualTags, IReadOnlyList<string> requestedTags)
+    {
+        if (requestedTags.Count == 0)
+        {
+            return true;
+        }
+
+        var actual = actualTags.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return requestedTags.All(actual.Contains);
+    }
 
     private static JsonNode? TryParseNode(string? json)
     {

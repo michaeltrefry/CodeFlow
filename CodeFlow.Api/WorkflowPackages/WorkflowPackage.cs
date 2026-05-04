@@ -119,7 +119,8 @@ public sealed record WorkflowPackageAgent(
     JsonNode? Config,
     DateTime CreatedAtUtc,
     string? CreatedBy,
-    IReadOnlyList<WorkflowPackageAgentOutput> Outputs);
+    IReadOnlyList<WorkflowPackageAgentOutput> Outputs,
+    IReadOnlyList<string>? Tags = null);
 
 public sealed record WorkflowPackageAgentOutput(
     string Kind,
@@ -136,7 +137,8 @@ public sealed record WorkflowPackageRole(
     string? Description,
     bool IsArchived,
     IReadOnlyList<WorkflowPackageRoleGrant> ToolGrants,
-    IReadOnlyList<string> SkillNames);
+    IReadOnlyList<string> SkillNames,
+    IReadOnlyList<string>? Tags = null);
 
 public sealed record WorkflowPackageRoleGrant(
     AgentRoleToolCategory Category,

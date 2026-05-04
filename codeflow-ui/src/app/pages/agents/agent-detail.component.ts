@@ -69,6 +69,9 @@ interface ReadOnlyFallbackRow {
             <cf-chip mono>v{{ v.version }}</cf-chip>
             <cf-chip>created {{ v.createdAtUtc | date:'medium' }}</cf-chip>
             <cf-chip mono>&#64;{{ v.createdBy ?? 'unknown' }}</cf-chip>
+            @for (tag of tags(); track tag) {
+              <cf-chip mono>{{ tag }}</cf-chip>
+            }
           }
         </div>
         @if (retired()) {
@@ -132,6 +135,10 @@ interface ReadOnlyFallbackRow {
                         [value]="description()"
                         placeholder="(no description)"
                         style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
+            </label>
+            <label class="field span-2">
+              <span class="field-label">Tags</span>
+              <input class="input mono" [value]="tagsText()" readonly placeholder="(none)" />
             </label>
           </div>
         </div>
@@ -519,6 +526,8 @@ export class AgentDetailComponent implements OnInit {
 
   protected readonly displayName = computed<string>(() => (this.config()?.['name'] as string) ?? '');
   protected readonly description = computed<string>(() => (this.config()?.['description'] as string) ?? '');
+  protected readonly tags = computed<readonly string[]>(() => this.viewing()?.tags ?? []);
+  protected readonly tagsText = computed<string>(() => this.tags().join(', '));
   protected readonly provider = computed<LlmProviderKey | ''>(() => this.config()?.provider ?? '');
   protected readonly providerLabel = computed<string>(() => {
     const provider = this.provider();

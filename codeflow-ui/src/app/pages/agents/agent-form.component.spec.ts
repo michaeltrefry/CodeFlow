@@ -45,6 +45,7 @@ describe('AgentFormComponent', () => {
     fixture.componentRef.setInput('key', 'reviewer/main');
     fixture.componentRef.setInput('initialType', 'agent');
     fixture.componentRef.setInput('initialConfig', initialConfig);
+    fixture.componentRef.setInput('initialTags', ['review', 'ops']);
     fixture.componentInstance.saveRequested.subscribe(save => saves.push(save));
     fixture.detectChanges();
 
@@ -66,6 +67,7 @@ describe('AgentFormComponent', () => {
         systemPrompt: 'Review carefully.',
         promptTemplate: 'Check {{ input }}',
       },
+      tags: ['review', 'ops'],
     });
     expect(saves[0].config['partialPins']).toEqual([
       { key: '@codeflow/last-round-reminder', version: 2 },

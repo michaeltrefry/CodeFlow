@@ -11,6 +11,7 @@ export interface AgentSummary {
   provider?: string | null;
   model?: string | null;
   type: string;
+  tags: string[];
   latestCreatedAtUtc: string;
   latestCreatedBy?: string | null;
   isRetired: boolean;
@@ -19,6 +20,7 @@ export interface AgentSummary {
 export interface AgentVersionSummary {
   key: string;
   version: number;
+  tags: string[];
   createdAtUtc: string;
   createdBy?: string | null;
 }
@@ -28,6 +30,7 @@ export interface AgentVersion {
   version: number;
   type: string;
   config: AgentConfig | null;
+  tags: string[];
   createdAtUtc: string;
   createdBy?: string | null;
   isRetired: boolean;
@@ -234,6 +237,7 @@ export interface AgentRole {
   updatedBy?: string | null;
   isArchived: boolean;
   isRetired: boolean;
+  tags: string[];
 }
 
 export interface AgentRoleGrant {
@@ -245,11 +249,13 @@ export interface AgentRoleCreateRequest {
   key: string;
   displayName: string;
   description?: string | null;
+  tags?: string[] | null;
 }
 
 export interface AgentRoleUpdateRequest {
   displayName: string;
   description?: string | null;
+  tags?: string[] | null;
 }
 
 export interface Skill {

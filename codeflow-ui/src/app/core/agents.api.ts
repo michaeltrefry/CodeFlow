@@ -16,8 +16,14 @@ import {
 export class AgentsApi {
   private readonly http = inject(HttpClient);
 
-  list(): Observable<AgentSummary[]> {
-    return this.http.get<AgentSummary[]>('/api/agents');
+  list(tags?: string[]): Observable<AgentSummary[]> {
+    if (!tags || tags.length === 0) {
+      return this.http.get<AgentSummary[]>('/api/agents');
+    }
+
+    return this.http.get<AgentSummary[]>('/api/agents', {
+      params: { tag: tags }
+    });
   }
 
   versions(key: string): Observable<AgentVersionSummary[]> {
@@ -32,14 +38,17 @@ export class AgentsApi {
     return this.http.get<AgentVersion>(`/api/agents/${encodeURIComponent(key)}`);
   }
 
-  create(key: string, config: AgentConfig): Observable<{ key: string; version: number }> {
-    return this.http.post<{ key: string; version: number }>('/api/agents', { key, config });
+  create(key: string, config: AgentConfig, tags?: string[]): Observable<{ key: string; version: number }> {
+    return this.http.post<{ key: string; version: number }>(
+      '/api/agents',
+      tags === undefined ? { key, config } : { key, config, tags }
+    );
   }
 
-  addVersion(key: string, config: AgentConfig): Observable<{ key: string; version: number }> {
+  addVersion(key: string, config: AgentConfig, tags?: string[]): Observable<{ key: string; version: number }> {
     return this.http.put<{ key: string; version: number }>(
       `/api/agents/${encodeURIComponent(key)}`,
-      { config }
+      tags === undefined ? { config } : { config, tags }
     );
   }
 

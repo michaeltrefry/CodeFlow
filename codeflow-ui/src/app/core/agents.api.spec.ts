@@ -33,17 +33,25 @@ describe('AgentsApi', () => {
   it('posts agent config creation and version updates using API contract bodies', () => {
     const config = { name: 'Reviewer', provider: 'openai' as const, model: 'gpt-test' };
 
-    api.create('reviewer', config).subscribe();
+    api.create('reviewer', config, ['review', 'ops']).subscribe();
     let req = httpMock.expectOne('/api/agents');
     expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual({ key: 'reviewer', config });
+    expect(req.request.body).toEqual({ key: 'reviewer', config, tags: ['review', 'ops'] });
     req.flush({ key: 'reviewer', version: 1 });
 
-    api.addVersion('reviewer/main', config).subscribe();
+    api.addVersion('reviewer/main', config, ['review']).subscribe();
     req = httpMock.expectOne('/api/agents/reviewer%2Fmain');
     expect(req.request.method).toBe('PUT');
-    expect(req.request.body).toEqual({ config });
+    expect(req.request.body).toEqual({ config, tags: ['review'] });
     req.flush({ key: 'reviewer/main', version: 8 });
+  });
+
+  it('passes repeated tag params when listing by tags', () => {
+    api.list(['ops', 'review']).subscribe();
+
+    const req = httpMock.expectOne('/api/agents?tag=ops&tag=review');
+    expect(req.request.method).toBe('GET');
+    req.flush([]);
   });
 
   it('keeps fork and publish requests aligned with backend contract shape', () => {

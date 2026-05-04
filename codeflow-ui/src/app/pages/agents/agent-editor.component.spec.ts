@@ -40,6 +40,7 @@ describe('AgentEditorPageComponent', () => {
       key: 'reviewer/main',
       version: 4,
       type: 'agent',
+      tags: ['review', 'ops'],
       config: {
         type: 'agent',
         name: 'Reviewer',
@@ -64,6 +65,7 @@ describe('AgentEditorPageComponent', () => {
       model: 'gpt-5.4',
       systemPrompt: 'Review carefully.',
     });
+    expect(save.request.body.tags).toEqual(['review', 'ops']);
     save.flush({ key: 'reviewer/main', version: 5 });
 
     expect(navigate).toHaveBeenCalledWith(['/agents', 'reviewer/main']);

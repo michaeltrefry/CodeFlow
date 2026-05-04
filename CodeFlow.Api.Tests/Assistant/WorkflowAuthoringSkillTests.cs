@@ -131,6 +131,8 @@ public sealed class WorkflowAuthoringSkillTests
     [InlineData("config.outputs")]
     [InlineData("toolGrants")]
     [InlineData("\"category\": \"Host\"|\"Mcp\"")]
+    [InlineData("agents[].tags[]")]
+    [InlineData("roles[].tags[]")]
     [InlineData("schemaVersion")]
     [InlineData("codeflow.workflow-package.v1")]
     [InlineData("entryPoint")]
@@ -247,6 +249,8 @@ public sealed class WorkflowAuthoringSkillTests
         {
             agent.Version.Should().BeGreaterThan(0,
                 because: $"agent '{agent.Key}' must carry a concrete pinned version");
+            agent.Tags.Should().NotBeEmpty(
+                because: $"agent '{agent.Key}' should show package-portable browse tags");
             agent.Config.Should().NotBeNull(
                 because: $"agent '{agent.Key}' must show a config blob in the exemplar");
 
@@ -255,6 +259,17 @@ public sealed class WorkflowAuthoringSkillTests
                 because: $"agent '{agent.Key}' must have config.outputs[] — port-coupling reads from this");
             configOutputs!.AsArray().Count.Should().BeGreaterThan(0);
         }
+    }
+
+    [Fact]
+    public void Exemplar_RolesCarryTags()
+    {
+        var json = ExtractExemplarJson(LoadSkill().Body);
+        var package = JsonSerializer.Deserialize<WorkflowPackage>(json, DeserializerOptions)!;
+
+        package.Roles.Should().NotBeEmpty(because: "the exemplar must include at least one role to teach toolGrants[] shape");
+        package.Roles.Should().AllSatisfy(role =>
+            role.Tags.Should().NotBeEmpty(because: "role tags are portable package metadata"));
     }
 
     [Fact]

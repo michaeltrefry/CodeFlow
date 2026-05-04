@@ -20,6 +20,9 @@ file static class RegistryDefaults
     /// dispatcher's 32 KB result budget.
     /// </summary>
     public const int LongStringCap = 4096;
+
+    public static IReadOnlyList<string> ReadTags(string? tagsJson) =>
+        TagNormalizer.Normalize(WorkflowJson.DeserializeTags(tagsJson));
 }
 
 /// <summary>
@@ -281,16 +284,17 @@ public sealed class ListAgentsTool(CodeFlowDbContext dbContext) : IAssistantTool
     public string Name => "list_agents";
     public string Description =>
         "List library agents (latest version per key). Returns key, latest version, name (from agent " +
-        "config), provider, model, kind, createdAtUtc, isRetired. Workflow-scoped forks are excluded — " +
+        "config), provider, model, kind, tags, createdAtUtc, isRetired. Workflow-scoped forks are excluded — " +
         "they belong to in-progress in-place edits, not the public library. Supports optional case-" +
-        "insensitive name prefix, provider filter (anthropic/openai/lmstudio), and includeRetired " +
-        "(default false). Default limit 25, max 100.";
+        "insensitive name prefix, provider filter (anthropic/openai/lmstudio), tag membership, and " +
+        "includeRetired (default false). Default limit 25, max 100.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
             ""namePrefix"": { ""type"": ""string"", ""description"": ""Case-insensitive prefix match on agent key."" },
             ""provider"": { ""type"": ""string"", ""description"": ""Filter by provider (e.g. 'anthropic', 'openai')."" },
+            ""tag"": { ""type"": ""string"", ""description"": ""Match agents that carry this tag (case-insensitive)."" },
             ""includeRetired"": { ""type"": ""boolean"", ""description"": ""Include retired agents. Default false."" },
             ""limit"": { ""type"": ""integer"", ""description"": ""Max results. Default 25, max 100."" }
         },
@@ -301,6 +305,7 @@ public sealed class ListAgentsTool(CodeFlowDbContext dbContext) : IAssistantTool
     {
         var namePrefix = AssistantToolJson.ReadOptionalString(arguments, "namePrefix");
         var providerFilter = AssistantToolJson.ReadOptionalString(arguments, "provider");
+        var tagFilter = AssistantToolJson.ReadOptionalString(arguments, "tag");
         var includeRetired = AssistantToolJson.ReadOptionalBool(arguments, "includeRetired", defaultValue: false);
         var limit = AssistantToolJson.ClampLimit(
             AssistantToolJson.ReadOptionalInt(arguments, "limit"),
@@ -336,10 +341,13 @@ public sealed class ListAgentsTool(CodeFlowDbContext dbContext) : IAssistantTool
                 {
                     view = new AgentConfigSummaryView(null, null, null);
                 }
-                return (Entity: a, View: view);
+                var tags = RegistryDefaults.ReadTags(a.TagsJson);
+                return (Entity: a, View: view, Tags: tags);
             })
             .Where(t => providerFilter is null
                 || string.Equals(t.View.Provider, providerFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(t => tagFilter is null
+                || t.Tags.Any(tag => string.Equals(tag, tagFilter, StringComparison.OrdinalIgnoreCase)))
             .Take(limit)
             .Select(t => new
             {
@@ -348,6 +356,7 @@ public sealed class ListAgentsTool(CodeFlowDbContext dbContext) : IAssistantTool
                 provider = t.View.Provider,
                 model = t.View.Model,
                 kind = t.View.Kind,
+                tags = t.Tags,
                 createdAtUtc = DateTime.SpecifyKind(t.Entity.CreatedAtUtc, DateTimeKind.Utc),
                 createdBy = t.Entity.CreatedBy,
                 isRetired = t.Entity.IsRetired,
@@ -421,6 +430,7 @@ public sealed class GetAgentTool(IAgentConfigRepository repository) : IAssistant
             kind = agent.Kind.ToString(),
             provider = agent.Configuration.Provider,
             model = agent.Configuration.Model,
+            tags = agent.TagsOrEmpty,
             systemPrompt = AssistantToolJson.TruncateText(agent.Configuration.SystemPrompt, bodyCap),
             promptTemplate = AssistantToolJson.TruncateText(agent.Configuration.PromptTemplate, bodyCap),
             maxTokens = agent.Configuration.MaxTokens,
@@ -456,7 +466,7 @@ public sealed class ListAgentVersionsTool(CodeFlowDbContext dbContext) : IAssist
     public string Name => "list_agent_versions";
     public string Description =>
         "List every saved version of an agent (newest first). Returns each version's number, " +
-        "createdAtUtc, createdBy, and isRetired flag.";
+        "createdAtUtc, createdBy, tags, and isRetired flag.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
@@ -496,6 +506,7 @@ public sealed class ListAgentVersionsTool(CodeFlowDbContext dbContext) : IAssist
                     createdAtUtc = DateTime.SpecifyKind(e.CreatedAtUtc, DateTimeKind.Utc),
                     createdBy = e.CreatedBy,
                     isRetired = e.IsRetired,
+                    tags = RegistryDefaults.ReadTags(e.TagsJson),
                 })
                 .ToArray()
         };
@@ -723,12 +734,14 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
     public string Description =>
         "List agent roles (the role-based grants surface that gives agents access to host tools, " +
         "MCP tools, sub-agents, and skills). Returns id, key, displayName, description, isArchived, " +
-        "isSystemManaged. By default excludes archived roles.";
+        "isSystemManaged, tags. Supports optional tag membership filtering. By default excludes " +
+        "archived roles.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
         ""properties"": {
-            ""includeArchived"": { ""type"": ""boolean"", ""description"": ""Include archived roles. Default false."" }
+            ""includeArchived"": { ""type"": ""boolean"", ""description"": ""Include archived roles. Default false."" },
+            ""tag"": { ""type"": ""string"", ""description"": ""Match roles that carry this tag (case-insensitive)."" }
         },
         ""additionalProperties"": false
     }");
@@ -736,7 +749,15 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
     public async Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         var includeArchived = AssistantToolJson.ReadOptionalBool(arguments, "includeArchived", defaultValue: false);
+        var tag = AssistantToolJson.ReadOptionalString(arguments, "tag");
         var roles = await repository.ListAsync(includeArchived, includeRetired: false, cancellationToken);
+        if (tag is not null)
+        {
+            roles = roles
+                .Where(role => role.TagsOrEmpty.Any(existing =>
+                    string.Equals(existing, tag, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+        }
 
         var payload = new
         {
@@ -748,6 +769,7 @@ public sealed class ListAgentRolesTool(IAgentRoleRepository repository) : IAssis
                     key = r.Key,
                     displayName = r.DisplayName,
                     description = r.Description,
+                    tags = r.TagsOrEmpty,
                     isArchived = r.IsArchived,
                     isRetired = r.IsRetired,
                     isSystemManaged = r.IsSystemManaged,
@@ -828,6 +850,7 @@ public sealed class GetAgentRoleTool(IAgentRoleRepository roleRepository, ISkill
             key = role.Key,
             displayName = role.DisplayName,
             description = role.Description,
+            tags = role.TagsOrEmpty,
             isArchived = role.IsArchived,
             isRetired = role.IsRetired,
             isSystemManaged = role.IsSystemManaged,

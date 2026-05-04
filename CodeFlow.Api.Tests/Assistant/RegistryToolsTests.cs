@@ -120,8 +120,8 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
     [Fact]
     public async Task ListAgents_FiltersByProviderAndExcludesForks()
     {
-        await SeedAgentAsync("anth-1", provider: "anthropic", model: "claude-sonnet-4");
-        await SeedAgentAsync("oa-1", provider: "openai", model: "gpt-4");
+        await SeedAgentAsync("anth-1", provider: "anthropic", model: "claude-sonnet-4", tags: ["review", "ops"]);
+        await SeedAgentAsync("oa-1", provider: "openai", model: "gpt-4", tags: ["draft"]);
         await SeedAgentAsync("__fork_xxx", provider: "anthropic", model: "claude-sonnet-4", owningWorkflowKey: "scoped");
 
         await using var scope = factory.Services.CreateAsyncScope();
@@ -133,19 +133,27 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
         var anthOnly = ParseObject(await tool.InvokeAsync(Args(new { provider = "anthropic" }), CancellationToken.None));
         anthOnly.GetProperty("count").GetInt32().Should().Be(1);
         anthOnly.GetProperty("agents")[0].GetProperty("key").GetString().Should().Be("anth-1");
+        anthOnly.GetProperty("agents")[0].GetProperty("tags").EnumerateArray()
+            .Select(tag => tag.GetString())
+            .Should().Equal("review", "ops");
+
+        var reviewOnly = ParseObject(await tool.InvokeAsync(Args(new { tag = "review" }), CancellationToken.None));
+        reviewOnly.GetProperty("count").GetInt32().Should().Be(1);
+        reviewOnly.GetProperty("agents")[0].GetProperty("key").GetString().Should().Be("anth-1");
     }
 
     [Fact]
     public async Task GetAgent_ReturnsConfigWithTruncatedPrompts()
     {
         var longPrompt = new string('p', 5000);
-        await SeedAgentAsync("verbose", provider: "anthropic", model: "claude-sonnet-4", systemPrompt: longPrompt);
+        await SeedAgentAsync("verbose", provider: "anthropic", model: "claude-sonnet-4", systemPrompt: longPrompt, tags: ["research"]);
 
         await using var scope = factory.Services.CreateAsyncScope();
         var tool = ResolveTool<GetAgentTool>(scope);
 
         var result = ParseObject(await tool.InvokeAsync(Args(new { key = "verbose" }), CancellationToken.None));
         result.GetProperty("provider").GetString().Should().Be("anthropic");
+        result.GetProperty("tags")[0].GetString().Should().Be("research");
         var systemPrompt = result.GetProperty("systemPrompt").GetString()!;
         systemPrompt.Should().Contain("[truncated"); // 5000 > 4096 cap
         systemPrompt.Length.Should().BeLessThan(5000);
@@ -237,6 +245,7 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
                 Key = "gar-test-role",
                 DisplayName = "GetAgentRole test",
                 Description = "test role",
+                TagsJson = WorkflowJson.SerializeTags(["review", "tools"]),
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow,
             };
@@ -271,6 +280,9 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
         // Lookup by id.
         var byId = ParseObject(await tool.InvokeAsync(Args(new { id = roleId }), CancellationToken.None));
         byId.GetProperty("key").GetString().Should().Be("gar-test-role");
+        byId.GetProperty("tags").EnumerateArray()
+            .Select(tag => tag.GetString())
+            .Should().Equal("review", "tools");
         byId.GetProperty("grantCount").GetInt32().Should().Be(2);
         byId.GetProperty("skillCount").GetInt32().Should().Be(1);
         byId.GetProperty("skillNames")[0].GetString().Should().Be("test-skill");
@@ -335,6 +347,37 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
             .Should().BeGreaterThanOrEqualTo(defaultResult.GetProperty("count").GetInt32());
     }
 
+    [Fact]
+    public async Task ListAgentRoles_FiltersByTag()
+    {
+        var roleKey = $"tagged-role-{Guid.NewGuid():N}";
+        await using (var seedScope = factory.Services.CreateAsyncScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AgentRoles.Add(new AgentRoleEntity
+            {
+                Key = roleKey,
+                DisplayName = "Tagged role",
+                TagsJson = WorkflowJson.SerializeTags(["ops", "review"]),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var tool = ResolveTool<ListAgentRolesTool>(scope);
+
+        var result = ParseObject(await tool.InvokeAsync(Args(new { tag = "ops" }), CancellationToken.None));
+
+        var tagged = result.GetProperty("roles")
+            .EnumerateArray()
+            .Single(role => role.GetProperty("key").GetString() == roleKey);
+        tagged.GetProperty("tags").EnumerateArray()
+            .Select(tag => tag.GetString())
+            .Should().Equal("ops", "review");
+    }
+
     private async Task<int> SeedWorkflowAsync(
         string key,
         string name,
@@ -393,7 +436,8 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
         string model,
         string? systemPrompt = null,
         string? promptTemplate = null,
-        string? owningWorkflowKey = null)
+        string? owningWorkflowKey = null,
+        IReadOnlyList<string>? tags = null)
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
@@ -416,6 +460,7 @@ public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsy
             CreatedBy = "test",
             IsActive = true,
             OwningWorkflowKey = owningWorkflowKey,
+            TagsJson = WorkflowJson.SerializeTags(tags ?? Array.Empty<string>()),
         });
         await db.SaveChangesAsync();
     }

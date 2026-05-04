@@ -12,8 +12,12 @@ import {
 export class AgentRolesApi {
   private readonly http = inject(HttpClient);
 
-  list(includeArchived = false): Observable<AgentRole[]> {
-    const params = new HttpParams().set('includeArchived', String(includeArchived));
+  list(includeArchived = false, tags?: string[]): Observable<AgentRole[]> {
+    let params = new HttpParams().set('includeArchived', String(includeArchived));
+    for (const tag of tags ?? []) {
+      params = params.append('tag', tag);
+    }
+
     return this.http.get<AgentRole[]>('/api/agent-roles', { params });
   }
 

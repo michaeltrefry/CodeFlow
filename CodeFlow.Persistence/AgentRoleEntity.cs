@@ -10,6 +10,8 @@ public sealed class AgentRoleEntity
 
     public string? Description { get; set; }
 
+    public string TagsJson { get; set; } = "[]";
+
     public DateTime CreatedAtUtc { get; set; }
 
     public string? CreatedBy { get; set; }

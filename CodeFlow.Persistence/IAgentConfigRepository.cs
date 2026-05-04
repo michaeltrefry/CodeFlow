@@ -35,6 +35,21 @@ public interface IAgentConfigRepository
         string? createdBy,
         CancellationToken cancellationToken = default);
 
+    Task<int> CreateNewVersionAsync(
+        string key,
+        string configJson,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
+        CancellationToken cancellationToken = default)
+    {
+        if (tags is not null)
+        {
+            throw new NotSupportedException("This repository does not support agent tags.");
+        }
+
+        return CreateNewVersionAsync(key, configJson, createdBy, cancellationToken);
+    }
+
     Task<int> GetLatestVersionAsync(string key, CancellationToken cancellationToken = default);
 
     Task<bool> RetireAsync(string key, CancellationToken cancellationToken = default);
@@ -71,6 +86,23 @@ public interface IAgentConfigRepository
         string? createdBy,
         CancellationToken cancellationToken = default);
 
+    Task<AgentConfig> CreateForkAsync(
+        string sourceKey,
+        int sourceVersion,
+        string workflowKey,
+        string configJson,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
+        CancellationToken cancellationToken = default)
+    {
+        if (tags is not null)
+        {
+            throw new NotSupportedException("This repository does not support agent tags.");
+        }
+
+        return CreateForkAsync(sourceKey, sourceVersion, workflowKey, configJson, createdBy, cancellationToken);
+    }
+
     Task<int> CreatePublishedVersionAsync(
         string targetKey,
         string configJson,
@@ -78,4 +110,27 @@ public interface IAgentConfigRepository
         int forkedFromVersion,
         string? createdBy,
         CancellationToken cancellationToken = default);
+
+    Task<int> CreatePublishedVersionAsync(
+        string targetKey,
+        string configJson,
+        string forkedFromKey,
+        int forkedFromVersion,
+        string? createdBy,
+        IReadOnlyList<string>? tags,
+        CancellationToken cancellationToken = default)
+    {
+        if (tags is not null)
+        {
+            throw new NotSupportedException("This repository does not support agent tags.");
+        }
+
+        return CreatePublishedVersionAsync(
+            targetKey,
+            configJson,
+            forkedFromKey,
+            forkedFromVersion,
+            createdBy,
+            cancellationToken);
+    }
 }

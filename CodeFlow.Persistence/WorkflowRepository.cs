@@ -238,7 +238,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 Name = draft.Name.Trim(),
                 MaxRoundsPerRound = draft.MaxRoundsPerRound,
                 Category = draft.Category,
-                TagsJson = WorkflowJson.SerializeTags(NormalizeTags(draft.Tags)),
+                TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(draft.Tags)),
                 WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(NormalizeWorkflowVarList(draft.WorkflowVarsReads)),
                 WorkflowVarsWritesJson = WorkflowJson.SerializeStringList(NormalizeWorkflowVarList(draft.WorkflowVarsWrites)),
                 CreatedAtUtc = DateTime.UtcNow,
@@ -342,25 +342,10 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 .Select(Map)
                 .ToArray(),
             entity.Category,
-            WorkflowJson.DeserializeTags(entity.TagsJson),
+            TagNormalizer.Normalize(WorkflowJson.DeserializeTags(entity.TagsJson)),
             WorkflowJson.DeserializeStringList(entity.WorkflowVarsReadsJson),
             WorkflowJson.DeserializeStringList(entity.WorkflowVarsWritesJson),
             entity.IsRetired);
-    }
-
-    private static IReadOnlyList<string> NormalizeTags(IReadOnlyList<string>? tags)
-    {
-        if (tags is null || tags.Count == 0)
-        {
-            return Array.Empty<string>();
-        }
-
-        return tags
-            .Where(tag => !string.IsNullOrWhiteSpace(tag))
-            .Select(tag => tag.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(5)
-            .ToArray();
     }
 
     /// <summary>

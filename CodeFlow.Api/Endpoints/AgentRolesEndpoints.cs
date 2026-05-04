@@ -61,12 +61,17 @@ public static class AgentRolesEndpoints
 
     private static async Task<IResult> ListAsync(
         IAgentRoleRepository repository,
+        HttpRequest request,
         bool? includeArchived,
         bool? includeRetired,
         CancellationToken cancellationToken)
     {
+        var requestedTags = ReadTagFilters(request);
         var roles = await repository.ListAsync(includeArchived ?? false, includeRetired ?? false, cancellationToken);
-        return Results.Ok(roles.Select(Map).ToArray());
+        return Results.Ok(roles
+            .Where(role => TagsMatch(role.TagsOrEmpty, requestedTags))
+            .Select(Map)
+            .ToArray());
     }
 
     private static async Task<IResult> GetAsync(
@@ -129,7 +134,8 @@ public static class AgentRolesEndpoints
             Key: request.Key!,
             DisplayName: request.DisplayName!,
             Description: request.Description,
-            CreatedBy: currentUser.Id), cancellationToken);
+            CreatedBy: currentUser.Id,
+            Tags: request.Tags), cancellationToken);
 
         var created = await repository.GetAsync(id, cancellationToken);
         return Results.Created($"/api/agent-roles/{id}", Map(created!));
@@ -160,7 +166,8 @@ public static class AgentRolesEndpoints
             await repository.UpdateAsync(id, new AgentRoleUpdate(
                 DisplayName: request.DisplayName!,
                 Description: request.Description,
-                UpdatedBy: currentUser.Id), cancellationToken);
+                UpdatedBy: currentUser.Id,
+                Tags: request.Tags), cancellationToken);
         }
         catch (AgentRoleNotFoundException)
         {
@@ -385,5 +392,41 @@ public static class AgentRolesEndpoints
         UpdatedBy: role.UpdatedBy,
         IsArchived: role.IsArchived,
         IsRetired: role.IsRetired,
-        IsSystemManaged: role.IsSystemManaged);
+        IsSystemManaged: role.IsSystemManaged,
+        Tags: role.TagsOrEmpty);
+
+    private static IReadOnlyList<string> ReadTagFilters(HttpRequest request)
+    {
+        var values = new List<string>();
+        foreach (var key in new[] { "tag", "tags" })
+        {
+            if (!request.Query.TryGetValue(key, out var queryValues))
+            {
+                continue;
+            }
+
+            foreach (var value in queryValues)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                values.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            }
+        }
+
+        return TagNormalizer.Normalize(values);
+    }
+
+    private static bool TagsMatch(IReadOnlyList<string> actualTags, IReadOnlyList<string> requestedTags)
+    {
+        if (requestedTags.Count == 0)
+        {
+            return true;
+        }
+
+        var actual = actualTags.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return requestedTags.All(actual.Contains);
+    }
 }

@@ -64,6 +64,7 @@ type EditorTab = 'identity' | 'prompt' | 'preview' | 'model' | 'outputs';
 export interface AgentFormSaveRequest {
   key: string;
   type: 'agent' | 'hitl';
+  tags: string[];
   config: AgentConfig;
 }
 
@@ -114,6 +115,15 @@ export interface AgentFormHeaderState {
                   <span class="field-label">Description</span>
                   <textarea class="textarea" [(ngModel)]="description" name="description" rows="2"
                             style="font-family: var(--font-sans); font-size: var(--fs-md)"></textarea>
+                </label>
+                <label class="field span-2">
+                  <span class="field-label">Tags</span>
+                  <input
+                    class="input mono"
+                    [(ngModel)]="tagsText"
+                    name="tags"
+                    placeholder="review, ops, research" />
+                  <span class="field-hint">Comma-separated labels for browsing and filtering.</span>
                 </label>
               </div>
             </div>
@@ -805,6 +815,7 @@ export class AgentFormComponent implements OnInit, OnDestroy {
   readonly existingKey = input<string | undefined>(undefined, { alias: 'key' });
   readonly initialConfig = input<AgentConfig | null>(null);
   readonly initialType = input<'agent' | 'hitl' | null>(null);
+  readonly initialTags = input<readonly string[]>([]);
 
   @Output() readonly saveRequested = new EventEmitter<AgentFormSaveRequest>();
 
@@ -812,6 +823,7 @@ export class AgentFormComponent implements OnInit, OnDestroy {
   protected readonly type = signal<'agent' | 'hitl'>('agent');
   protected readonly name = signal('');
   protected readonly description = signal('');
+  protected readonly tagsText = signal('');
   protected readonly provider = signal<LlmProviderKey>('openai');
   protected readonly model = signal('gpt-5.4');
   protected readonly systemPrompt = signal('');
@@ -970,10 +982,12 @@ export class AgentFormComponent implements OnInit, OnDestroy {
       const key = this.existingKey();
       const type = this.initialType();
       const config = this.initialConfig();
-      const signature = JSON.stringify([key ?? '', type ?? '', config ?? null]);
+      const tags = this.initialTags();
+      const signature = JSON.stringify([key ?? '', type ?? '', config ?? null, tags]);
       if (signature === this.lastHydrationSignature) return;
 
       this.lastHydrationSignature = signature;
+      this.tagsText.set(formatTags(tags));
       if (key) this.key.set(key);
       if (type) this.type.set(type);
       if (config) {
@@ -1535,7 +1549,12 @@ export class AgentFormComponent implements OnInit, OnDestroy {
       config.decisionOutputTemplates = templatesMap;
     }
 
-    this.saveRequested.emit({ key: this.key(), type: this.type(), config });
+    this.saveRequested.emit({
+      key: this.key(),
+      type: this.type(),
+      tags: parseTags(this.tagsText()),
+      config,
+    });
   }
 
   protected coerceOptionalNumber(value: unknown): number | undefined {
@@ -1776,6 +1795,24 @@ function asString(value: unknown): string | undefined {
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter(item => typeof item === 'string') as string[];
+}
+
+function parseTags(value: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value.split(',')) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function formatTags(tags: readonly string[] | null | undefined): string {
+  return (tags ?? []).join(', ');
 }
 
 interface PromptPreviewScope {

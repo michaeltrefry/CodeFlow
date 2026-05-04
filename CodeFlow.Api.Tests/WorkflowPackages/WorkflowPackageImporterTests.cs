@@ -4,6 +4,9 @@ using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeFlow.Api.Tests.WorkflowPackages;
 
@@ -70,6 +73,28 @@ public sealed class WorkflowPackageImporterTests
         conflict.Version.Should().Be(2);
         conflict.SourceVersion.Should().Be(2);
         conflict.ExistingMaxVersion.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_PersistsAgentAndRoleTagsFromPackage()
+    {
+        await using var dbContext = CreateDbContext();
+        var importer = new WorkflowPackageImporter(
+            dbContext,
+            new WorkflowRepository(dbContext),
+            new AgentConfigRepository(dbContext),
+            new AgentRoleRepository(dbContext),
+            new SkillRepository(dbContext),
+            new UnusedMcpServerRepository(),
+            new AllowingMcpEndpointPolicy());
+
+        await importer.ApplyAsync(CreatePackageWithTaggedAgentAndRole());
+
+        var importedAgent = await dbContext.Agents.SingleAsync(agent => agent.Key == "writer");
+        WorkflowJson.DeserializeTags(importedAgent.TagsJson).Should().Equal("author", "ops");
+
+        var importedRole = await dbContext.AgentRoles.SingleAsync(role => role.Key == "writer-tools");
+        WorkflowJson.DeserializeTags(importedRole.TagsJson).Should().Equal("author", "tools");
     }
 
     private static WorkflowPackage CreatePackageWithAgent(string agentKey, int agentVersion)
@@ -146,10 +171,82 @@ public sealed class WorkflowPackageImporterTests
             });
     }
 
+    private static WorkflowPackage CreatePackageWithTaggedAgentAndRole()
+    {
+        var startNodeId = Guid.NewGuid();
+        var config = JsonNode.Parse("""
+            {
+              "type": "agent",
+              "name": "Writer",
+              "provider": "openai",
+              "model": "gpt-5",
+              "systemPrompt": "Write the response, then submit.",
+              "promptTemplate": "{{ input }}",
+              "outputs": [
+                { "kind": "Completed", "description": "Done" }
+              ]
+            }
+            """)!;
+
+        var workflow = new WorkflowPackageWorkflow(
+            Key: "tagged-flow",
+            Version: 1,
+            Name: "Tagged Flow",
+            MaxRoundsPerRound: 1,
+            Category: WorkflowCategory.Workflow,
+            Tags: ["demo"],
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes:
+            [
+                new WorkflowPackageWorkflowNode(
+                    Id: startNodeId,
+                    Kind: WorkflowNodeKind.Start,
+                    AgentKey: "writer",
+                    AgentVersion: 1,
+                    OutputScript: null,
+                    OutputPorts: ["Completed"],
+                    LayoutX: 0,
+                    LayoutY: 0),
+            ],
+            Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agent = new WorkflowPackageAgent(
+            Key: "writer",
+            Version: 1,
+            Kind: AgentKind.Agent,
+            Config: config,
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "sc-620-test",
+            Outputs: [new WorkflowPackageAgentOutput("Completed", "Done", null)],
+            Tags: ["author", "ops"]);
+
+        var role = new WorkflowPackageRole(
+            Key: "writer-tools",
+            DisplayName: "Writer Tools",
+            Description: "Tools for the writer.",
+            IsArchived: false,
+            ToolGrants: Array.Empty<WorkflowPackageRoleGrant>(),
+            SkillNames: Array.Empty<string>(),
+            Tags: ["author", "tools"]);
+
+        return new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference(workflow.Key, workflow.Version),
+            Workflows: [workflow],
+            Agents: [agent],
+            AgentRoleAssignments: [new WorkflowPackageAgentRoleAssignment("writer", ["writer-tools"])],
+            Roles: [role],
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+    }
+
     private static CodeFlowDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>()
             .UseInMemoryDatabase($"workflow-package-importer-tests-{Guid.NewGuid():N}")
+            .ConfigureWarnings(warnings => warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         return new CodeFlowDbContext(options);
     }

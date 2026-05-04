@@ -145,6 +145,98 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     }
 
     [Fact]
+    public async Task CreateAndGet_ShouldRoundTripNormalizedTags()
+    {
+        using var client = factory.CreateClient();
+
+        var key = $"tagged-agent-{Guid.NewGuid():N}".ToLowerInvariant()[..40];
+        var response = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            tags = new[] { " Ops ", "ops", "Research" },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Tag me." }
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var list = await client.GetFromJsonAsync<IReadOnlyList<TaggedSummaryDto>>("/api/agents");
+        var summary = list!.Single(agent => agent.Key == key);
+        summary.Tags.Should().Equal("Ops", "Research");
+
+        var detail = await client.GetFromJsonAsync<TaggedVersionDetailDto>($"/api/agents/{key}/1");
+        detail!.Tags.Should().Equal("Ops", "Research");
+
+        var versions = await client.GetFromJsonAsync<IReadOnlyList<TaggedVersionDto>>($"/api/agents/{key}/versions");
+        versions!.Single().Tags.Should().Equal("Ops", "Research");
+    }
+
+    [Fact]
+    public async Task List_WithTagFilters_ReturnsAgentsMatchingAllRequestedTags()
+    {
+        using var client = factory.CreateClient();
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var sharedTag = $"shared-{suffix}";
+        var narrowTag = $"narrow-{suffix}";
+        var matchingKey = $"tag-match-{suffix}";
+        var partialKey = $"tag-partial-{suffix}";
+
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = matchingKey,
+            tags = new[] { sharedTag, narrowTag },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Match." }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = partialKey,
+            tags = new[] { sharedTag },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Partial." }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var repeated = await client.GetFromJsonAsync<IReadOnlyList<TaggedSummaryDto>>(
+            $"/api/agents?tag={sharedTag}&tag={narrowTag}");
+        var repeatedKeys = repeated!.Select(agent => agent.Key);
+        repeatedKeys.Should().Contain(matchingKey);
+        repeatedKeys.Should().NotContain(partialKey);
+
+        var commaSeparated = await client.GetFromJsonAsync<IReadOnlyList<TaggedSummaryDto>>(
+            $"/api/agents?tags={sharedTag},{narrowTag}");
+        var commaSeparatedKeys = commaSeparated!.Select(agent => agent.Key);
+        commaSeparatedKeys.Should().Contain(matchingKey);
+        commaSeparatedKeys.Should().NotContain(partialKey);
+    }
+
+    [Fact]
+    public async Task Put_WithTags_UpdatesLatestVersionTags()
+    {
+        using var client = factory.CreateClient();
+
+        var key = $"tag-update-{Guid.NewGuid():N}".ToLowerInvariant()[..40];
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            tags = new[] { "old-tag" },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1" }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var update = await client.PutAsJsonAsync($"/api/agents/{key}", new
+        {
+            tags = new[] { "new-tag" },
+            config = new { provider = "openai", model = "gpt-5.4", systemPrompt = "v2" }
+        });
+        update.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var latest = await client.GetFromJsonAsync<TaggedVersionDetailDto>($"/api/agents/{key}");
+        latest!.Version.Should().Be(2);
+        latest.Tags.Should().Equal("new-tag");
+
+        var versions = await client.GetFromJsonAsync<IReadOnlyList<TaggedVersionDto>>($"/api/agents/{key}/versions");
+        versions!.Should().ContainSingle(v => v.Version == 1 && v.Tags.SequenceEqual(new[] { "old-tag" }));
+        versions.Should().ContainSingle(v => v.Version == 2 && v.Tags.SequenceEqual(new[] { "new-tag" }));
+    }
+
+    [Fact]
     public async Task List_ShouldHideWorkflowScopedForks()
     {
         using var client = factory.CreateClient();
@@ -567,6 +659,13 @@ public sealed class AgentsEndpointsTests : IClassFixture<CodeFlowApiFactory>
     private sealed record SummaryDto(string Key, int LatestVersion, bool IsRetired);
 
     private sealed record VersionDetailDto(string Key, int Version, bool IsRetired);
+
+    private sealed record TaggedSummaryDto(string Key, int LatestVersion, IReadOnlyList<string> Tags, bool IsRetired);
+
+    private sealed record TaggedVersionDto(string Key, int Version, IReadOnlyList<string> Tags, bool IsRetired);
+
+    private sealed record TaggedVersionDetailDto(string Key, int Version, IReadOnlyList<string> Tags, bool IsRetired);
+
     private sealed record BulkRetireDto(IReadOnlyList<string> RetiredKeys, IReadOnlyList<string> MissingKeys);
 
     private sealed record PreviewResponse(string Rendered);
