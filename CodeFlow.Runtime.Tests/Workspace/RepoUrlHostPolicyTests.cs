@@ -145,7 +145,7 @@ public sealed class RepoUrlHostPolicyTests
         private static Exception NotCalled() => new InvalidOperationException("GitCli should not be invoked when guard rejects URL.");
 
         public Task CloneMirrorAsync(string originUrl, string destinationMirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
-        public Task<GitCloneResult> CloneAsync(string originUrl, string destinationPath, string? branch = null, int? depth = null, CancellationToken cancellationToken = default) => throw NotCalled();
+        public Task<GitCloneResult> CloneAsync(string originUrl, string destinationPath, string? branch = null, int? depth = null, IReadOnlyDictionary<string, string>? environmentVariables = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task FetchAsync(string mirrorPath, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeAddAsync(string mirrorPath, string worktreePath, string branchName, string? startPoint = null, CancellationToken cancellationToken = default) => throw NotCalled();
         public Task WorktreeRemoveAsync(string mirrorPath, string worktreePath, bool force = false, CancellationToken cancellationToken = default) => throw NotCalled();

@@ -16,19 +16,22 @@ public sealed class VcsHostToolService
     private readonly DeliveryRequestValidator deliveryValidator;
     private readonly IGitCli? gitCli;
     private readonly IRepoUrlHostGuard? hostGuard;
+    private readonly WorkspaceOptions? workspaceOptions;
 
     public VcsHostToolService(
         IVcsProviderFactory factory,
         DeliveryRequestValidator? deliveryValidator = null,
         Func<DateTimeOffset>? nowProvider = null,
         IGitCli? gitCli = null,
-        IRepoUrlHostGuard? hostGuard = null)
+        IRepoUrlHostGuard? hostGuard = null,
+        WorkspaceOptions? workspaceOptions = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         this.factory = factory;
         this.deliveryValidator = deliveryValidator ?? new DeliveryRequestValidator(nowProvider);
         this.gitCli = gitCli;
         this.hostGuard = hostGuard;
+        this.workspaceOptions = workspaceOptions;
     }
 
     public async Task<ToolResult> OpenPullRequestAsync(
@@ -208,11 +211,17 @@ public sealed class VcsHostToolService
         {
             var provider = await factory.CreateAsync(cancellationToken);
             var cloneUrl = provider.BuildAuthenticatedCloneUrl(url);
+            // sc-661: per-trace credential env (epic 658) so the spawned `git clone` can pick
+            // up the store-helper credentials when needed without leaking the token through
+            // process argv. The auth-bearing URL above is still being used today; sc-662 strips
+            // it so the helper becomes the only auth path.
+            var credentialEnv = GitCredentialEnv.Build(workspaceOptions?.GitCredentialRoot, workspace.CorrelationId);
             var result = await gitCli.CloneAsync(
                 cloneUrl,
                 destination,
                 branch,
                 depth,
+                credentialEnv,
                 cancellationToken);
 
             // Scrub the embedded auth out of .git/config so subsequent run_command git operations

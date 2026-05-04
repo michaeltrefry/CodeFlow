@@ -357,19 +357,58 @@ public sealed class WorkspaceHostToolServiceHardeningTests : IDisposable
         result.IsError.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task RunCommand_SetsGitCredentialEnvVarsOnSpawnedProcess_WhenCredentialRootConfigured()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return; // The test relies on `sh`, which doesn't ship the same way on Windows.
+        }
+
+        var credRoot = Path.Combine(Path.GetTempPath(), $"cred-env-test-{Guid.NewGuid():N}");
+        var service = NewService(commandAllowlist: new List<string> { "sh" }, gitCredentialRoot: credRoot);
+        var ctx = NewContext();
+
+        // Use `sh -c env` so the child shell prints every env var on its own line — printenv
+        // with multiple args silently skips unset ones, which masks failures here.
+        var result = await service.RunCommandAsync(
+            new ToolCall("c1", "run_command", new JsonObject
+            {
+                ["command"] = "sh",
+                ["args"] = new JsonArray("-c", "env | grep ^GIT_CONFIG_ | sort"),
+            }),
+            ctx);
+
+        result.IsError.Should().BeFalse();
+        var stdout = JsonNode.Parse(result.Content)!["stdout"]!.GetValue<string>();
+        stdout.Should().Contain("GIT_CONFIG_COUNT=2");
+        stdout.Should().Contain("GIT_CONFIG_KEY_0=credential.helper");
+        stdout.Should().Contain("GIT_CONFIG_VALUE_0=store --file=");
+        stdout.Should().Contain($"{ctx.Workspace!.CorrelationId:N}",
+            "per-trace cred file path is keyed by the trace's CorrelationId");
+        stdout.Should().Contain("GIT_CONFIG_KEY_1=credential.useHttpPath");
+        stdout.Should().Contain("GIT_CONFIG_VALUE_1=true");
+    }
+
     private WorkspaceHostToolService NewService(
         IList<string>? commandAllowlist = null,
-        WorkspaceSymlinkPolicy symlinkPolicy = WorkspaceSymlinkPolicy.RefuseForMutation)
+        WorkspaceSymlinkPolicy symlinkPolicy = WorkspaceSymlinkPolicy.RefuseForMutation,
+        string? gitCredentialRoot = null)
     {
-        return new WorkspaceHostToolService(new WorkspaceOptions
+        var options = new WorkspaceOptions
         {
             Root = workspaceRoot,
             ReadMaxBytes = 64 * 1024,
             ExecTimeoutSeconds = 30,
             ExecOutputMaxBytes = 64 * 1024,
             CommandAllowlist = commandAllowlist,
-            SymlinkPolicy = symlinkPolicy
-        });
+            SymlinkPolicy = symlinkPolicy,
+        };
+        if (gitCredentialRoot is not null)
+        {
+            options.GitCredentialRoot = gitCredentialRoot;
+        }
+        return new WorkspaceHostToolService(options);
     }
 
     private ToolExecutionContext NewContext() => new(

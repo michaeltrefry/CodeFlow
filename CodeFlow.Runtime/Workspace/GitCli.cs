@@ -32,6 +32,7 @@ public sealed class GitCli : IGitCli
         string destinationPath,
         string? branch = null,
         int? depth = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(originUrl);
@@ -52,7 +53,11 @@ public sealed class GitCli : IGitCli
         args.Add(originUrl);
         args.Add(destinationPath);
 
-        await RunAsync(workingDirectory: null, arguments: args, cancellationToken: cancellationToken);
+        await RunAsync(
+            workingDirectory: null,
+            arguments: args,
+            environmentVariables: environmentVariables,
+            cancellationToken: cancellationToken);
 
         var resolvedBranch = string.IsNullOrWhiteSpace(branch)
             ? await GetSymbolicHeadAsync(destinationPath, cancellationToken)
@@ -314,12 +319,19 @@ public sealed class GitCli : IGitCli
         return entries;
     }
 
-    private async Task<GitCommandResult> RunAsync(
+    private Task<GitCommandResult> RunAsync(
         string? workingDirectory,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
+        => RunAsync(workingDirectory, arguments, environmentVariables: null, cancellationToken);
+
+    private async Task<GitCommandResult> RunAsync(
+        string? workingDirectory,
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environmentVariables,
+        CancellationToken cancellationToken)
     {
-        var result = await RunRawAsync(workingDirectory, arguments, cancellationToken);
+        var result = await RunRawAsync(workingDirectory, arguments, environmentVariables, cancellationToken);
         if (result.ExitCode != 0)
         {
             throw new GitCommandException(
@@ -332,9 +344,16 @@ public sealed class GitCli : IGitCli
         return result;
     }
 
+    private Task<GitCommandResult> RunRawAsync(
+        string? workingDirectory,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken)
+        => RunRawAsync(workingDirectory, arguments, environmentVariables: null, cancellationToken);
+
     private async Task<GitCommandResult> RunRawAsync(
         string? workingDirectory,
         IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environmentVariables,
         CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
@@ -349,6 +368,14 @@ public sealed class GitCli : IGitCli
         if (!string.IsNullOrWhiteSpace(workingDirectory))
         {
             startInfo.WorkingDirectory = workingDirectory;
+        }
+
+        if (environmentVariables is { Count: > 0 })
+        {
+            foreach (var kv in environmentVariables)
+            {
+                startInfo.Environment[kv.Key] = kv.Value;
+            }
         }
 
         foreach (var arg in arguments)

@@ -10,12 +10,19 @@ public interface IGitCli
     /// <c>git clone --branch</c>; optional <paramref name="depth"/> is passed to <c>git clone --depth</c> for a
     /// shallow clone. Use this for the <c>vcs.clone</c> host tool path; <see cref="CloneMirrorAsync"/> is for the
     /// platform-managed bare-mirror cache.
+    ///
+    /// <paramref name="environmentVariables"/> is the per-trace credential env (epic 658) built
+    /// by <see cref="GitCredentialEnv.Build"/>; when non-empty, the entries are added to the
+    /// spawned <c>git</c> process so it picks up <c>credential.helper = store --file=...</c>
+    /// without mutating any global gitconfig. Passing <c>null</c> (or an empty dictionary)
+    /// preserves the legacy unauthenticated path for tests that don't need it.
     /// </summary>
     Task<GitCloneResult> CloneAsync(
         string originUrl,
         string destinationPath,
         string? branch = null,
         int? depth = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
         CancellationToken cancellationToken = default);
 
     Task FetchAsync(string mirrorPath, CancellationToken cancellationToken = default);
