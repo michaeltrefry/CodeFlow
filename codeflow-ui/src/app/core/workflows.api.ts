@@ -32,7 +32,10 @@ export interface ValidateScriptResponse {
   errors: ValidateScriptError[];
 }
 
-export type WorkflowPackageImportAction = 'Create' | 'Reuse' | 'Conflict';
+/** sc-395: `Refused` is a hard apply-blocker (just like `Conflict`) emitted when a user-supplied
+ *  resolution fails a structural check — today only "UseExisting on an agent whose library
+ *  max-version doesn't declare every output port the package's nodes route to." */
+export type WorkflowPackageImportAction = 'Create' | 'Reuse' | 'Conflict' | 'Refused';
 export type WorkflowPackageImportResourceKind =
   | 'Workflow'
   | 'Agent'
@@ -40,6 +43,42 @@ export type WorkflowPackageImportResourceKind =
   | 'Role'
   | 'Skill'
   | 'McpServer';
+
+/** sc-394: which of the three deterministic resolutions to apply on a Conflict row. */
+export type WorkflowPackageImportResolutionMode = 'UseExisting' | 'Bump' | 'Copy';
+
+/** sc-395: per-conflict resolution carried over the wire to /package/preview, /package/apply,
+ *  and /package/apply-from-draft. Mirrors the server's `WorkflowPackageImportResolutionRequest`.
+ *  `expectedExistingMaxVersion` is the value the client saw in the preview's `existingMaxVersion`
+ *  when it picked this resolution; the apply endpoint re-reads the live max and 409s if they
+ *  differ unless the request also carries `acknowledgeDrift: true`. */
+export interface WorkflowPackageImportResolution {
+  kind: WorkflowPackageImportResourceKind;
+  key: string;
+  /** Required for Workflow / Agent (the versioned kinds). Null for Role / Skill / McpServer / AgentRoleAssignment. */
+  sourceVersion: number | null;
+  mode: WorkflowPackageImportResolutionMode;
+  /** Required when `mode === 'Copy'`. Must be unique per kind across the resolutions list. */
+  newKey?: string | null;
+  /** Optional but strongly recommended on Bump / UseExisting — drives drift-ack on apply. */
+  expectedExistingMaxVersion?: number | null;
+}
+
+/** sc-395: 409 body returned by /package/apply or /package/apply-from-draft when one or more
+ *  resolved entities have moved between preview and apply. The imports page surfaces the moved
+ *  rows, prompts the user to re-resolve, and re-submits with `acknowledgeDrift: true`. */
+export interface WorkflowPackageImportDriftConflict {
+  error: string;
+  movedEntities: WorkflowPackageImportDriftEntry[];
+}
+
+export interface WorkflowPackageImportDriftEntry {
+  kind: WorkflowPackageImportResourceKind;
+  key: string;
+  sourceVersion: number | null;
+  expectedExistingMaxVersion: number | null;
+  currentExistingMaxVersion: number | null;
+}
 
 export interface WorkflowPackageReference {
   key: string;
@@ -71,6 +110,8 @@ export interface WorkflowPackageImportPreview {
   createCount: number;
   reuseCount: number;
   conflictCount: number;
+  /** sc-395: rows refused by a structural check on a user-supplied resolution. Hard apply-blocker. */
+  refusedCount: number;
   warningCount: number;
   canApply: boolean;
 }
@@ -240,12 +281,32 @@ export class WorkflowsApi {
     );
   }
 
-  previewPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportPreview> {
-    return this.http.post<WorkflowPackageImportPreview>('/api/workflows/package/preview', workflowPackage);
+  /** sc-395: optional `resolutions` lets the imports page (CR-4) drive a per-Conflict
+   *  preview re-run with user-chosen Bump / UseExisting / Copy choices. Wire shape is now
+   *  `{ package, resolutions }` so the server can extend the body with future fields without
+   *  breaking the bare-package contract. */
+  previewPackageImport(
+    workflowPackage: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+  ): Observable<WorkflowPackageImportPreview> {
+    return this.http.post<WorkflowPackageImportPreview>(
+      '/api/workflows/package/preview',
+      { package: workflowPackage, resolutions },
+    );
   }
 
-  applyPackageImport(workflowPackage: unknown): Observable<WorkflowPackageImportApplyResult> {
-    return this.http.post<WorkflowPackageImportApplyResult>('/api/workflows/package/apply', workflowPackage);
+  /** sc-395: `acknowledgeDrift` is required (true) when retrying an apply that previously
+   *  returned 409 (`WorkflowPackageImportDriftConflict`) — the server re-checks live max
+   *  versions and accepts the apply against the moved values. */
+  applyPackageImport(
+    workflowPackage: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+    acknowledgeDrift?: boolean,
+  ): Observable<WorkflowPackageImportApplyResult> {
+    return this.http.post<WorkflowPackageImportApplyResult>(
+      '/api/workflows/package/apply',
+      { package: workflowPackage, resolutions, acknowledgeDrift },
+    );
   }
 
   /**
@@ -254,14 +315,19 @@ export class WorkflowsApi {
    * package payload. The `snapshotId` is the immutable id the tool returned at preview time;
    * the server loads the snapshot file (NOT the live draft) so a draft mutation between
    * preview and confirm cannot make the apply target a different package than the one shown.
+   *
+   * sc-395: also threads optional `resolutions` + `acknowledgeDrift` so the chat-side flow
+   * (CR-5) can re-resolve a draft-source preview against drift.
    */
   applyPackageImportFromDraft(
     conversationId: string,
     snapshotId: string,
+    resolutions?: WorkflowPackageImportResolution[],
+    acknowledgeDrift?: boolean,
   ): Observable<WorkflowPackageImportApplyResult> {
     return this.http.post<WorkflowPackageImportApplyResult>(
       '/api/workflows/package/apply-from-draft',
-      { conversationId, snapshotId },
+      { conversationId, snapshotId, resolutions, acknowledgeDrift },
     );
   }
 

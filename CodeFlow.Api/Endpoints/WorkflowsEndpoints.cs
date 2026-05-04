@@ -200,13 +200,28 @@ public static class WorkflowsEndpoints
     }
 
     private static async Task<IResult> PreviewPackageImportAsync(
-        WorkflowPackage package,
+        PreviewPackageImportRequest request,
         IWorkflowPackageImporter importer,
         CancellationToken cancellationToken)
     {
+        if (request is null || request.Package is null)
+        {
+            return ApiResults.BadRequest("Request body must include a `package` field.");
+        }
+
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
         try
         {
-            var preview = await importer.PreviewAsync(package, cancellationToken);
+            resolutions = ConvertResolutions(request.Resolutions, out _);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+
+        try
+        {
+            var preview = await importer.PreviewAsync(request.Package, resolutions, cancellationToken);
             return Results.Ok(preview);
         }
         catch (WorkflowPackageResolutionException exception)
@@ -216,14 +231,41 @@ public static class WorkflowsEndpoints
     }
 
     private static async Task<IResult> ApplyPackageImportAsync(
-        WorkflowPackage package,
+        ApplyPackageImportRequest request,
         IWorkflowPackageImporter importer,
+        CodeFlowDbContext dbContext,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
+        if (request is null || request.Package is null)
+        {
+            return ApiResults.BadRequest("Request body must include a `package` field.");
+        }
+
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
+        Dictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions;
         try
         {
-            var result = await importer.ApplyAsync(package, cancellationToken);
+            resolutions = ConvertResolutions(request.Resolutions, out expectedMaxVersions);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+
+        // sc-395: drift-ack pre-check. Mirrors the in-place agent edit publish-back gate at
+        // POST /api/agents/{key}/publish. Re-read the live max version for each resolved
+        // entity; any value that moved beyond the preview snapshot the client picked this
+        // resolution against gets a 409 with the moved entries unless `acknowledgeDrift: true`.
+        var driftEntries = await DetectResolutionDriftAsync(dbContext, expectedMaxVersions, cancellationToken);
+        if (driftEntries.Count > 0 && request.AcknowledgeDrift != true)
+        {
+            return Results.Conflict(BuildDriftResponse(driftEntries));
+        }
+
+        try
+        {
+            var result = await importer.ApplyAsync(request.Package, resolutions, cancellationToken);
             return Results.Ok(result);
         }
         catch (WorkflowPackageResolutionException exception)
@@ -262,6 +304,7 @@ public static class WorkflowsEndpoints
         IAssistantConversationRepository conversations,
         IAssistantWorkspaceProvider workspaceProvider,
         IWorkflowPackageImporter importer,
+        CodeFlowDbContext dbContext,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -343,9 +386,29 @@ public static class WorkflowsEndpoints
             });
         }
 
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
+        Dictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions;
         try
         {
-            var result = await importer.ApplyAsync(package, cancellationToken);
+            resolutions = ConvertResolutions(request.Resolutions, out expectedMaxVersions);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+
+        // sc-395: drift-ack also gates the draft-source apply path. Same recipe as
+        // ApplyPackageImportAsync — re-read live max versions and 409 if they've moved beyond
+        // what the client's preview saw, unless `acknowledgeDrift: true`.
+        var driftEntries = await DetectResolutionDriftAsync(dbContext, expectedMaxVersions, cancellationToken);
+        if (driftEntries.Count > 0 && request.AcknowledgeDrift != true)
+        {
+            return Results.Conflict(BuildDriftResponse(driftEntries));
+        }
+
+        try
+        {
+            var result = await importer.ApplyAsync(package, resolutions, cancellationToken);
             // Snapshot consumed — clean up so the workspace doesn't accumulate them. A failure
             // here is non-fatal (the import already succeeded); silently swallow IO errors so
             // a stale-FS read doesn't undo a successful library write.
@@ -368,6 +431,110 @@ public static class WorkflowsEndpoints
                     request.ConversationId);
             return UnhandledImportProblem(exception);
         }
+    }
+
+    /// <summary>
+    /// sc-395: convert the wire-shape resolution list to the importer's domain dictionary
+    /// while extracting <see cref="WorkflowPackageImportResolutionRequest.ExpectedExistingMaxVersion"/>
+    /// values into a parallel map for the drift-ack pre-check. Throws
+    /// <see cref="WorkflowPackageResolutionException"/> on duplicate Targets — the importer
+    /// itself enforces other invariants (mode/kind compatibility, NewKey presence, target
+    /// existence in package).
+    /// </summary>
+    private static IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? ConvertResolutions(
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? wire,
+        out Dictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions)
+    {
+        expectedMaxVersions = new();
+        if (wire is null || wire.Count == 0)
+        {
+            return null;
+        }
+
+        var domain = new Dictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>(wire.Count);
+        foreach (var entry in wire)
+        {
+            if (entry is null || string.IsNullOrWhiteSpace(entry.Key))
+            {
+                throw new WorkflowPackageResolutionException(
+                    "Each resolution must include a Key. The dictionary key (Kind, Key, SourceVersion) must be unique across the resolutions list.");
+            }
+            var target = new WorkflowPackageImportResolutionKey(entry.Kind, entry.Key, entry.SourceVersion);
+            if (domain.ContainsKey(target))
+            {
+                throw new WorkflowPackageResolutionException(
+                    $"Duplicate resolution target: {entry.Kind} '{entry.Key}'"
+                    + (entry.SourceVersion is int v ? $" v{v}" : string.Empty)
+                    + ". Each (kind, key, sourceVersion) tuple may appear at most once.");
+            }
+            domain[target] = new WorkflowPackageImportResolution(target, entry.Mode, entry.NewKey);
+
+            if (entry.ExpectedExistingMaxVersion is int expected)
+            {
+                expectedMaxVersions[target] = expected;
+            }
+        }
+        return domain;
+    }
+
+    /// <summary>
+    /// sc-395: re-read the live max version for each resolved (Agent or Workflow) entity that
+    /// carried an <c>expectedExistingMaxVersion</c> from the client's preview. Returns the
+    /// per-entity drift list (empty when nothing has moved). Caller decides whether to gate
+    /// the apply on a non-empty list (current behavior: 409 unless acknowledgeDrift=true).
+    /// </summary>
+    private static async Task<IReadOnlyList<DriftEntry>> DetectResolutionDriftAsync(
+        CodeFlowDbContext dbContext,
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions,
+        CancellationToken cancellationToken)
+    {
+        if (expectedMaxVersions.Count == 0)
+        {
+            return Array.Empty<DriftEntry>();
+        }
+
+        var moved = new List<DriftEntry>();
+        foreach (var (target, expected) in expectedMaxVersions)
+        {
+            int? currentMax;
+            switch (target.Kind)
+            {
+                case WorkflowPackageImportResourceKind.Agent:
+                    currentMax = await dbContext.Agents
+                        .Where(agent => agent.Key == target.Key)
+                        .Select(agent => (int?)agent.Version)
+                        .MaxAsync(cancellationToken);
+                    break;
+                case WorkflowPackageImportResourceKind.Workflow:
+                    currentMax = await dbContext.Workflows
+                        .Where(workflow => workflow.Key == target.Key)
+                        .Select(workflow => (int?)workflow.Version)
+                        .MaxAsync(cancellationToken);
+                    break;
+                default:
+                    // Drift-ack only applies to versioned kinds; unversioned resolutions
+                    // (Skill / Role / McpServer / AgentRoleAssignment) ignore expectedMax.
+                    continue;
+            }
+
+            if (currentMax != expected)
+            {
+                moved.Add(new DriftEntry(target.Kind, target.Key, target.SourceVersion, expected, currentMax));
+            }
+        }
+        return moved;
+    }
+
+    private static DriftConflictResponse BuildDriftResponse(IReadOnlyList<DriftEntry> moved)
+    {
+        var summary = string.Join(", ", moved
+            .Select(entry => $"{entry.Kind} '{entry.Key}' moved from v{entry.ExpectedExistingMaxVersion} to v{(entry.CurrentExistingMaxVersion?.ToString() ?? "<none>")}")
+            .Take(5));
+        var more = moved.Count > 5 ? $" (+{moved.Count - 5} more)" : string.Empty;
+        return new DriftConflictResponse(
+            Error: "Library has moved between preview and apply: " + summary + more
+                + ". Re-run the preview to see the current state, or set `acknowledgeDrift: true` to apply against the new max versions.",
+            MovedEntities: moved);
     }
 
     /// <summary>
@@ -396,7 +563,52 @@ public static class WorkflowsEndpoints
             title: "Workflow package import failed.");
     }
 
-    public sealed record ApplyPackageImportFromDraftRequest(Guid ConversationId, Guid SnapshotId);
+    /// <summary>sc-395: per-conflict resolution carried over the wire. Mirrors the domain
+    /// <see cref="WorkflowPackageImportResolution"/> shape but flattens the Target record into
+    /// individual fields (the System.Text.Json default serializer doesn't round-trip nested
+    /// records as dictionary keys cleanly, and a flat shape is friendlier to TypeScript). The
+    /// optional <see cref="ExpectedExistingMaxVersion"/> is the value the client saw in the
+    /// preview's <c>existingMaxVersion</c> when it picked this resolution; the apply endpoint
+    /// re-reads the live max and rejects with 409 if they differ unless the client sets
+    /// <c>acknowledgeDrift: true</c>. Mirrors the <c>POST /api/agents/{key}/publish</c>
+    /// drift-ack shape from in-place agent edit.</summary>
+    public sealed record WorkflowPackageImportResolutionRequest(
+        WorkflowPackageImportResourceKind Kind,
+        string Key,
+        int? SourceVersion,
+        WorkflowPackageImportResolutionMode Mode,
+        string? NewKey = null,
+        int? ExpectedExistingMaxVersion = null);
+
+    public sealed record PreviewPackageImportRequest(
+        WorkflowPackage Package,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null);
+
+    public sealed record ApplyPackageImportRequest(
+        WorkflowPackage Package,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
+        bool? AcknowledgeDrift = null);
+
+    public sealed record ApplyPackageImportFromDraftRequest(
+        Guid ConversationId,
+        Guid SnapshotId,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
+        bool? AcknowledgeDrift = null);
+
+    /// <summary>sc-395: 409 body returned when one or more resolved entities have moved between
+    /// preview and apply. Each <see cref="DriftEntry"/> tells the client which entity moved and
+    /// where it is now so the imports page can re-preview, surface the moved row, and let the
+    /// user re-confirm with <c>acknowledgeDrift: true</c>.</summary>
+    public sealed record DriftConflictResponse(
+        string Error,
+        IReadOnlyList<DriftEntry> MovedEntities);
+
+    public sealed record DriftEntry(
+        WorkflowPackageImportResourceKind Kind,
+        string Key,
+        int? SourceVersion,
+        int? ExpectedExistingMaxVersion,
+        int? CurrentExistingMaxVersion);
 
     private static IResult WorkflowPackageImportValidationProblem(WorkflowPackageResolutionException exception)
     {
