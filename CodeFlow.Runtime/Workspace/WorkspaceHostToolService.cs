@@ -182,11 +182,18 @@ public sealed class WorkspaceHostToolService
             ? workspace.RootPath
             : PathConfinement.Resolve(workspace.RootPath, workingDirectory);
 
+        // sc-661: per-trace credential env (epic 658). Set on every spawned process so the
+        // common case `run_command "git", [...]` picks up the store-helper credentials
+        // automatically. Non-git commands silently inherit the env vars too — they're inert
+        // anywhere else.
+        var credentialEnv = GitCredentialEnv.Build(options.GitCredentialRoot, workspace.CorrelationId);
+
         var result = await RunProcessAsync(
             command,
             args,
             resolvedWorkingDirectory,
             effectiveTimeout,
+            credentialEnv,
             cancellationToken);
 
         var payload = new JsonObject
@@ -610,6 +617,7 @@ public sealed class WorkspaceHostToolService
         IReadOnlyList<string> args,
         string workingDirectory,
         TimeSpan timeout,
+        IReadOnlyDictionary<string, string>? environmentVariables,
         CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
@@ -621,6 +629,14 @@ public sealed class WorkspaceHostToolService
             CreateNoWindow = true,
             WorkingDirectory = workingDirectory
         };
+
+        if (environmentVariables is { Count: > 0 })
+        {
+            foreach (var kv in environmentVariables)
+            {
+                startInfo.Environment[kv.Key] = kv.Value;
+            }
+        }
 
         foreach (var arg in args)
         {

@@ -264,8 +264,6 @@ public sealed class VcsHostToolServiceTests
             if (OpenPrException is not null) throw OpenPrException;
             return Task.FromResult(OpenPrResult);
         }
-
-        public string BuildAuthenticatedCloneUrl(string repoUrl) => repoUrl;
     }
 
     private sealed class SingleProviderFactory : IVcsProviderFactory

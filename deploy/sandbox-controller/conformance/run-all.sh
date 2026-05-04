@@ -16,6 +16,7 @@ probes=(
   07-memory-cap-enforced.sh
   08-pids-cap-enforced.sh
   09-cleanup-correctness.sh
+  10-git-credential-file-isolated.sh
 )
 
 passed=0

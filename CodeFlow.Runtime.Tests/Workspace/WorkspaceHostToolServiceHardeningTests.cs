@@ -357,19 +357,62 @@ public sealed class WorkspaceHostToolServiceHardeningTests : IDisposable
         result.IsError.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task RunCommand_SetsGitCredentialEnvVarsOnSpawnedProcess_WhenCredentialRootConfigured()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return; // The test relies on `sh`, which doesn't ship the same way on Windows.
+        }
+
+        var credRoot = Path.Combine(Path.GetTempPath(), $"cred-env-test-{Guid.NewGuid():N}");
+        var service = NewService(commandAllowlist: new List<string> { "sh" }, gitCredentialRoot: credRoot);
+        var ctx = NewContext();
+
+        // Use `sh -c env` so the child shell prints every env var on its own line — printenv
+        // with multiple args silently skips unset ones, which masks failures here.
+        var result = await service.RunCommandAsync(
+            new ToolCall("c1", "run_command", new JsonObject
+            {
+                ["command"] = "sh",
+                ["args"] = new JsonArray("-c", "env | grep ^GIT_CONFIG_ | sort"),
+            }),
+            ctx);
+
+        result.IsError.Should().BeFalse();
+        var stdout = JsonNode.Parse(result.Content)!["stdout"]!.GetValue<string>();
+        stdout.Should().Contain("GIT_CONFIG_COUNT=3");
+        stdout.Should().Contain("GIT_CONFIG_KEY_0=credential.helper");
+        // VALUE_0 is intentionally empty — resets inherited helper chain. `env` prints
+        // empty-valued vars as `KEY=` so the line is present but truncated; assert presence
+        // by looking for KEY_1 sequentially.
+        stdout.Should().Contain("GIT_CONFIG_KEY_1=credential.helper");
+        stdout.Should().Contain("GIT_CONFIG_VALUE_1=store --file=");
+        stdout.Should().Contain($"{ctx.Workspace!.CorrelationId:N}",
+            "per-trace cred file path is keyed by the trace's CorrelationId");
+        stdout.Should().Contain("GIT_CONFIG_KEY_2=credential.useHttpPath");
+        stdout.Should().Contain("GIT_CONFIG_VALUE_2=true");
+    }
+
     private WorkspaceHostToolService NewService(
         IList<string>? commandAllowlist = null,
-        WorkspaceSymlinkPolicy symlinkPolicy = WorkspaceSymlinkPolicy.RefuseForMutation)
+        WorkspaceSymlinkPolicy symlinkPolicy = WorkspaceSymlinkPolicy.RefuseForMutation,
+        string? gitCredentialRoot = null)
     {
-        return new WorkspaceHostToolService(new WorkspaceOptions
+        var options = new WorkspaceOptions
         {
             Root = workspaceRoot,
             ReadMaxBytes = 64 * 1024,
             ExecTimeoutSeconds = 30,
             ExecOutputMaxBytes = 64 * 1024,
             CommandAllowlist = commandAllowlist,
-            SymlinkPolicy = symlinkPolicy
-        });
+            SymlinkPolicy = symlinkPolicy,
+        };
+        if (gitCredentialRoot is not null)
+        {
+            options.GitCredentialRoot = gitCredentialRoot;
+        }
+        return new WorkspaceHostToolService(options);
     }
 
     private ToolExecutionContext NewContext() => new(

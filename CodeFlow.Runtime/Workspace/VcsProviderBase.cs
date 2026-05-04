@@ -45,45 +45,6 @@ public abstract class VcsProviderBase : IVcsProvider
         string body,
         CancellationToken cancellationToken = default);
 
-    public abstract string BuildAuthenticatedCloneUrl(string repoUrl);
-
-    /// <summary>
-    /// Embeds <c>username:token</c> basic-auth userinfo into <paramref name="repoUrl"/>'s
-    /// authority. Refuses non-HTTPS URLs so a token never goes over plain HTTP, and refuses URLs
-    /// that already carry userinfo to avoid surprising overrides. Used by both providers'
-    /// <see cref="BuildAuthenticatedCloneUrl"/> implementations.
-    /// </summary>
-    protected static string EmbedBasicAuth(string repoUrl, string username, string token)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(repoUrl);
-        ArgumentException.ThrowIfNullOrWhiteSpace(username);
-        ArgumentException.ThrowIfNullOrWhiteSpace(token);
-
-        if (!Uri.TryCreate(repoUrl, UriKind.Absolute, out var uri))
-        {
-            throw new ArgumentException($"Repository URL '{repoUrl}' is not absolute.", nameof(repoUrl));
-        }
-        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException(
-                $"Repository URL must use https:// (was '{uri.Scheme}://').", nameof(repoUrl));
-        }
-        if (!string.IsNullOrEmpty(uri.UserInfo))
-        {
-            throw new ArgumentException(
-                "Repository URL already contains user info; refusing to override.", nameof(repoUrl));
-        }
-
-        var encodedUser = Uri.EscapeDataString(username);
-        var encodedToken = Uri.EscapeDataString(token);
-        var builder = new UriBuilder(uri)
-        {
-            UserName = encodedUser,
-            Password = encodedToken,
-        };
-        return builder.Uri.ToString();
-    }
-
     /// <summary>Validate the inputs to <see cref="GetRepoMetadataAsync"/>.</summary>
     protected static void ValidateOwnerName(string owner, string name)
     {

@@ -16,19 +16,22 @@ public sealed class VcsHostToolService
     private readonly DeliveryRequestValidator deliveryValidator;
     private readonly IGitCli? gitCli;
     private readonly IRepoUrlHostGuard? hostGuard;
+    private readonly WorkspaceOptions? workspaceOptions;
 
     public VcsHostToolService(
         IVcsProviderFactory factory,
         DeliveryRequestValidator? deliveryValidator = null,
         Func<DateTimeOffset>? nowProvider = null,
         IGitCli? gitCli = null,
-        IRepoUrlHostGuard? hostGuard = null)
+        IRepoUrlHostGuard? hostGuard = null,
+        WorkspaceOptions? workspaceOptions = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         this.factory = factory;
         this.deliveryValidator = deliveryValidator ?? new DeliveryRequestValidator(nowProvider);
         this.gitCli = gitCli;
         this.hostGuard = hostGuard;
+        this.workspaceOptions = workspaceOptions;
     }
 
     public async Task<ToolResult> OpenPullRequestAsync(
@@ -206,36 +209,18 @@ public sealed class VcsHostToolService
 
         try
         {
-            var provider = await factory.CreateAsync(cancellationToken);
-            var cloneUrl = provider.BuildAuthenticatedCloneUrl(url);
+            // sc-662: clone with the clean URL. Auth flows through the per-trace credential
+            // helper set up by sc-660 / sc-661 — git invokes `credential.helper = store --file=...`
+            // and gets the right cred for the URL's host. No token in `.git/config`, no token
+            // in process argv, no embed-then-scrub dance.
+            var credentialEnv = GitCredentialEnv.Build(workspaceOptions?.GitCredentialRoot, workspace.CorrelationId);
             var result = await gitCli.CloneAsync(
-                cloneUrl,
+                url,
                 destination,
                 branch,
                 depth,
+                credentialEnv,
                 cancellationToken);
-
-            // Scrub the embedded auth out of .git/config so subsequent run_command git operations
-            // (fetch/pull/push) don't surface the token in the workspace tree's persistent state.
-            try
-            {
-                await gitCli.SetRemoteUrlAsync(destination, "origin", url, cancellationToken);
-            }
-            catch (GitCommandException)
-            {
-                // Best effort: if scrubbing fails the clone still succeeded, but we'd rather not
-                // leave the auth-bearing URL in .git/config. Surface as a non-fatal warning by
-                // attempting to remove the cloned tree and returning a vcs_error.
-                TryDeleteDirectory(destination);
-                return new ToolResult(
-                    toolCall.Id,
-                    new JsonObject
-                    {
-                        ["error"] = "vcs_error",
-                        ["message"] = "Clone succeeded but scrubbing the auth-bearing remote URL failed; rolled back the workspace clone.",
-                    }.ToJsonString(),
-                    IsError: true);
-            }
 
             return new ToolResult(
                 toolCall.Id,
@@ -247,7 +232,7 @@ public sealed class VcsHostToolService
                     ["defaultBranch"] = result.DefaultBranch,
                 }.ToJsonString());
         }
-        catch (Exception ex) when (ex is GitCommandException)
+        catch (GitCommandException ex)
         {
             // The clone command itself failed (e.g. bad credentials, branch doesn't exist, host
             // unreachable). Clean up any partial directory git left behind so subsequent retries
@@ -261,10 +246,6 @@ public sealed class VcsHostToolService
                     ["message"] = ex.Message,
                 }.ToJsonString(),
                 IsError: true);
-        }
-        catch (Exception ex) when (ex is GitHostNotConfiguredException)
-        {
-            return BuildError(toolCall.Id, ex);
         }
     }
 

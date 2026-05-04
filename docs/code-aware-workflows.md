@@ -24,6 +24,15 @@ the prod compose stack chowns it on every `up`.
 The `vcs.*` tools (including `vcs.clone`) require a configured Git host (`GitHostSettings.Mode` +
 token). Until those are configured the tools return `error: not_configured`.
 
+### Configure the git-credential root
+
+Per-trace git credential files live at `WorkspaceOptions.GitCredentialRoot/{traceId-N}`
+(default `/var/lib/codeflow/git-creds`). The Dockerfile pre-creates this directory at mode
+`0700` owned by the app uid. Override via `Workspace__GitCredentialRoot` for non-container dev;
+the override path must be writable by `APP_UID` and **must not** sit inside `WorkingDirectoryRoot`
+or anywhere else an agent can reach via `read_file` / `run_command`. The contents are short-lived
+plain-text tokens — exposing them defeats the credential-helper boundary.
+
 ### Sweep TTL
 
 The periodic per-trace workdir sweep runs once per hour from any host running `AddCodeFlowHost`
@@ -67,6 +76,8 @@ disappearing out from under it.
 | Code-setup agent's `run_command` fails with "no active workspace context" | The trace-launch endpoint didn't seed `workflow.traceWorkDir`. Confirm `Workspace__WorkingDirectoryRoot` is set and the directory is mounted on both api and worker. |
 | `vcs.open_pr` returns `error: not_configured` | `GitHostSettings` has no token, or GitLab mode is configured without a base URL. |
 | Stale workdirs accumulating | Sweep service might not be running. Confirm `AddCodeFlowHost` is wired into the host (look for "Workdir sweep" logs). |
+| Agent's `git push` fails with "Authentication failed" | Either no `GitHostSettings` token configured, or the repo's host doesn't match the configured one (e.g. pushing to gitlab.com when only github.com is set). Check the trace's `repositories` input — every host the workflow will push to must map to a configured token. |
+| `git` not found on PATH | The runtime image isn't recent enough. The git binary was added in epic 658 — rebuild the worker / api image. |
 
 ---
 
@@ -186,6 +197,43 @@ The agent's role grants `read_file`, `apply_patch`, `run_command` (for `git chec
 `push`), `vcs.clone` (for the materialization), and the optional `vcs.get_repo` if the agent
 needs to discover the upstream default branch before the clone call.
 
+### Auth model: how `git` knows the token
+
+Agents never see the configured Git host token, but they can still use plain `git` for everything
+once a repo is cloned. The platform achieves this by:
+
+1. **Installing `git` on PATH** in the worker and api runtime images. `run_command "git", [...]`
+   "just works" — no provider abstraction in the path.
+2. **Writing a per-trace credential file** at trace start, in git's native credential-store wire
+   format (one URL per host, e.g. `https://x-access-token:TOKEN@github.com`). The file lives at
+   `WorkspaceOptions.GitCredentialRoot/{traceId-N}` (default `/var/lib/codeflow/git-creds`),
+   mode `0600`, owned by the app uid. **It is outside `WorkingDirectoryRoot`**, so the agent's
+   path-confined `read_file` and cwd-confined `run_command` cannot reach it.
+3. **Pointing `git` at the file** via `GIT_CONFIG_*` env vars set on every spawned `git` process
+   by both `run_command` and `IGitCli`. Specifically:
+   `credential.helper = store --file=…/{traceId-N}` and `credential.useHttpPath = true`.
+   No global gitconfig mutation, so concurrent traces in the same worker never collide.
+4. **Cleaning up** on the same path that removes the per-trace workdir: trace-delete,
+   happy-path completion, and the periodic `GitCredentialSweepService` (TTL = same
+   `WorkingDirectoryMaxAgeDays` setting).
+
+What this means for the agent:
+
+- `vcs.clone` runs `git clone` with the **clean** URL the agent provided — no embedded token,
+  nothing in `.git/config`, nothing in process argv.
+- After the clone, **everything else is plain `git`**: `run_command "git", ["add", "."]`,
+  `run_command "git", ["commit", "-m", "…"]`, `run_command "git", ["push", "origin", "<branch>"]`.
+  Auth flows through the credential helper transparently.
+- Pushing to a repo whose host is **not** the configured Git host produces a clear
+  `Authentication failed` error from git — the helper has no entry for that host. Declare
+  every repo the workflow will touch in the `repositories` input.
+- Token never appears in `run_command` stdout, the workspace tree, `.git/config`, or any
+  variable an agent or script can read.
+
+This is the contract for `git`-related actions. The narrow `vcs.*` surface below covers the
+verbs that *aren't* a thin wrapper around `git`: API-level operations (`open_pr`, `get_repo`)
+and the clone entry point that registers the workspace.
+
 ### The `vcs.*` host tools
 
 Agents that need to interact with the configured Git host (GitHub or GitLab) call dedicated
@@ -226,7 +274,9 @@ without needing `git ls-remote`.
 
 #### `vcs.clone`
 
-Materializes a repo into the active workspace using the configured Git host's auth. Inputs:
+Materializes a repo into the active workspace. Auth flows through the per-trace credential
+helper described in [Auth model](#auth-model-how-git-knows-the-token); the agent passes the
+clean URL and the platform handles authentication invisibly. Inputs:
 
 - `url` (string) — repo URL on the configured host. Validated against the host guard so
   cross-host cloning is denied.

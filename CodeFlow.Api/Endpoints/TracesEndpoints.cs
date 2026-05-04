@@ -264,6 +264,7 @@ public static class TracesEndpoints
         ICurrentUser currentUser,
         LogicNodeScriptHost scriptHost,
         IOptions<WorkspaceOptions> workspaceOptions,
+        IPerTraceCredentialResolver credentialResolver,
         IRefusalEventSink refusalSink,
         IIntentClarityAssessor preflightAssessor,
         IOptions<PreflightOptions> preflightOptions,
@@ -437,6 +438,31 @@ public static class TracesEndpoints
             var trimmed = new Dictionary<string, JsonElement>(effectiveContextInputs, StringComparer.Ordinal);
             trimmed.Remove(WorkflowValidator.RepositoriesInputKey);
             effectiveContextInputs = trimmed;
+
+            // sc-660: write the per-trace git-credential file outside the workspace tree so
+            // subsequent run_command git ops in the worker can authenticate against any of the
+            // declared repos via the `store --file=...` credential helper. Cred resolution is
+            // best-effort: when no git host is configured, ResolveAsync returns an empty list
+            // and the file is left absent — git ops that need auth will fail at the helper
+            // (clear "credential helper found no entries" failure), better than launching with
+            // a false sense of security.
+            try
+            {
+                var repoUrls = ExtractRepositoryUrls(resolvedRepositories);
+                var credentials = await credentialResolver.ResolveAsync(repoUrls, cancellationToken);
+                await GitCredentialFile.WriteAsync(
+                    workspaceOptions.Value.GitCredentialRoot,
+                    traceId,
+                    credentials,
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The trace can still proceed for non-git work; the credential helper just
+                // won't have entries to return. Surface to logs so operators see the IO issue.
+                // Intentionally not failing the request so a degraded credential-store mount
+                // doesn't block all workflow launches.
+            }
         }
         if (!string.IsNullOrWhiteSpace(startNode.InputScript))
         {
@@ -1505,6 +1531,9 @@ public static class TracesEndpoints
     // All failures (missing dir, IO/permission errors) are swallowed and logged by
     // TraceWorkdirCleanup.TryRemove — the API call must not fail because filesystem cleanup
     // couldn't complete. The periodic sweep catches anything left behind.
+    //
+    // sc-660: per-trace git-credential file lives in a sibling root and is removed in the
+    // same pass; same best-effort semantics, same per-trace sweep guarantee.
     private static void TryRemoveTraceWorkdirs(
         IReadOnlyCollection<WorkflowSagaStateEntity> sagas,
         IOptions<WorkspaceOptions> workspaceOptions,
@@ -1517,6 +1546,7 @@ public static class TracesEndpoints
         }
 
         var workingDirectoryRoot = workspaceOptions.Value.WorkingDirectoryRoot;
+        var credentialRoot = workspaceOptions.Value.GitCredentialRoot;
         var logger = loggerFactory.CreateLogger(typeof(TracesEndpoints));
         foreach (var saga in topLevel)
         {
@@ -1524,7 +1554,43 @@ public static class TracesEndpoints
                 workingDirectoryRoot,
                 saga.TraceId,
                 logger);
+            CodeFlow.Runtime.Workspace.GitCredentialFile.TryRemove(
+                credentialRoot,
+                saga.TraceId,
+                logger);
         }
+    }
+
+    // sc-660: extracts the `url` field from each entry in the resolved `repositories` JSON
+    // array so the credential resolver can derive distinct hosts. Shape is already validated
+    // by ValidateRepositoriesShape upstream, so this just walks; defensively returns an
+    // empty list when the value is the wrong shape rather than throwing.
+    private static IReadOnlyList<string> ExtractRepositoryUrls(JsonElement repositories)
+    {
+        if (repositories.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        var urls = new List<string>();
+        foreach (var entry in repositories.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+            if (!entry.TryGetProperty("url", out var urlElement)
+                || urlElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+            var url = urlElement.GetString();
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                urls.Add(url);
+            }
+        }
+        return urls;
     }
 
     /// <summary>

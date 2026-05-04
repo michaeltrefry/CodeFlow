@@ -194,8 +194,10 @@ public static class HostExtensions
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddSingleton<IVcsProviderFactory, VcsProviderFactory>();
+        services.AddSingleton<IPerTraceCredentialResolver, PerTraceCredentialResolver>();
 
         services.AddHostedService<WorkdirSweepService>();
+        services.AddHostedService<GitCredentialSweepService>();
 
         services.AddSingleton<DbBackedLlmProviderConfigResolver>();
         services.AddSingleton<ILlmProviderConfigResolver>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());
@@ -334,7 +336,8 @@ public static class HostExtensions
                 vcsTools: new VcsHostToolService(
                     factory: sp.GetRequiredService<IVcsProviderFactory>(),
                     gitCli: sp.GetRequiredService<IGitCli>(),
-                    hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>()),
+                    hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>(),
+                    workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
                 containerTools: sp.GetRequiredService<DockerHostToolService>(),
                 webTools: sp.GetRequiredService<WebHostToolService>()));
         services.AddSingleton<Agent>();

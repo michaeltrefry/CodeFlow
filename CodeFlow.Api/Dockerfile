@@ -29,6 +29,14 @@ RUN dotnet publish CodeFlow.Api/CodeFlow.Api.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
+# Install git so vcs.clone (via IGitCli) and agent-issued `run_command git ...` both work.
+# openssh-client covers SSH remotes; ca-certificates is usually pulled by base but is cheap to
+# pin explicitly. See sc-659 / epic 658 for the per-trace credential-helper plan that complements
+# this — agents never see a token; auth flows through git-credential-codeflow at runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
 # Run as a non-root uid so post-exploitation (SSRF, deserialization, file upload) does not
 # execute as root. We use the .NET image's standard app uid rather than assuming user-management
 # tools like adduser are installed in the runtime image.
@@ -38,8 +46,9 @@ ARG APP_UID=1654
 # prevent the assistant from creating its per-conversation workspace at /workspace/assistant.
 # Pre-creating both subdirs in the image baseline keeps the assistant workspace writable when no
 # bind-mount is configured for it.
-RUN mkdir -p /app/artifacts /workspace/assistant && \
-    chown -R ${APP_UID}:${APP_UID} /app /workspace
+RUN mkdir -p /app/artifacts /workspace/assistant /var/lib/codeflow/git-creds && \
+    chown -R ${APP_UID}:${APP_UID} /app /workspace /var/lib/codeflow && \
+    chmod 0700 /var/lib/codeflow/git-creds
 
 COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
 USER ${APP_UID}

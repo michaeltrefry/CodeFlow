@@ -515,8 +515,6 @@ public sealed class EnvelopeEnforcementTests : IDisposable
             LastOpenPrCall = (owner, name, head, baseRef, title, body);
             return Task.FromResult(OpenPrResult);
         }
-
-        public string BuildAuthenticatedCloneUrl(string repoUrl) => repoUrl;
     }
 
     private sealed class SingleProviderFactory : IVcsProviderFactory
