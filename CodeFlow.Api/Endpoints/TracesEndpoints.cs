@@ -769,9 +769,18 @@ public static class TracesEndpoints
         await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
 
+        // Register the live subscription BEFORE replaying existing decisions. Otherwise a
+        // decision that commits during the replay query (e.g., the Start node, which lands in
+        // the first second of the trace) would fan out to no subscriber and be lost — the
+        // client would see nothing happen until the next decision in the workflow. Subscribing
+        // up front means those events queue in the channel and we drain them after the replay.
+        // The client already deduplicates by `${roundId}-${agentKey}-${kind}-${timestamp}`, so
+        // the rare overlap between a replayed and live event for the same decision is harmless.
+        using var subscription = broker.Subscribe(id);
+
         await WriteExistingDecisionsAsync(httpContext, dbContext, id, cancellationToken);
 
-        await foreach (var traceEvent in broker.SubscribeAsync(id, cancellationToken))
+        await foreach (var traceEvent in subscription.ReadAllAsync(cancellationToken))
         {
             await WriteEventAsync(httpContext, traceEvent, cancellationToken);
         }

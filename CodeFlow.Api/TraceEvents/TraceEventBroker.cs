@@ -56,9 +56,15 @@ public sealed class TraceEventBroker
         return Task.CompletedTask;
     }
 
-    public async IAsyncEnumerable<TraceEvent> SubscribeAsync(
-        Guid traceId,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    /// <summary>
+    /// Eagerly registers a subscription so events published from this point forward land in the
+    /// returned channel. Callers should invoke this BEFORE doing any setup work that runs in
+    /// parallel with potential publishes — e.g., the SSE endpoint registers before reading
+    /// existing decisions from the database, so a decision committed during that read can't
+    /// slip through the gap between "registration" and "iteration starts." Dispose the handle
+    /// (or just let the cancellation token fire) to drop the subscription.
+    /// </summary>
+    public TraceEventSubscription Subscribe(Guid traceId)
     {
         var subscriptionId = Guid.NewGuid();
         var channel = Channel.CreateBounded<TraceEvent>(new BoundedChannelOptions(SubscriberChannelCapacity)
@@ -71,7 +77,54 @@ public sealed class TraceEventBroker
         var set = subscribersByTrace.GetOrAdd(traceId, static _ => new SubscriberSet());
         set.Add(subscriptionId, channel);
 
-        try
+        return new TraceEventSubscription(traceId, subscriptionId, channel, this);
+    }
+
+    public async IAsyncEnumerable<TraceEvent> SubscribeAsync(
+        Guid traceId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var subscription = Subscribe(traceId);
+        await foreach (var traceEvent in subscription.ReadAllAsync(cancellationToken))
+        {
+            yield return traceEvent;
+        }
+    }
+
+    private void RemoveSubscription(Guid traceId, Guid subscriptionId, Channel<TraceEvent> channel)
+    {
+        if (subscribersByTrace.TryGetValue(traceId, out var set))
+        {
+            set.TryRemove(subscriptionId);
+            channel.Writer.TryComplete();
+
+            // Clean up the per-trace set when the last subscriber unsubscribes so the dictionary
+            // doesn't accumulate empty entries for long-gone traces.
+            if (set.IsEmpty)
+            {
+                subscribersByTrace.TryRemove(new KeyValuePair<Guid, SubscriberSet>(traceId, set));
+            }
+        }
+    }
+
+    public sealed class TraceEventSubscription : IDisposable
+    {
+        private readonly Guid traceId;
+        private readonly Guid subscriptionId;
+        private readonly Channel<TraceEvent> channel;
+        private readonly TraceEventBroker broker;
+        private bool disposed;
+
+        internal TraceEventSubscription(Guid traceId, Guid subscriptionId, Channel<TraceEvent> channel, TraceEventBroker broker)
+        {
+            this.traceId = traceId;
+            this.subscriptionId = subscriptionId;
+            this.channel = channel;
+            this.broker = broker;
+        }
+
+        public async IAsyncEnumerable<TraceEvent> ReadAllAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -92,17 +145,12 @@ public sealed class TraceEventBroker
                 yield return traceEvent;
             }
         }
-        finally
-        {
-            set.TryRemove(subscriptionId);
-            channel.Writer.TryComplete();
 
-            // Clean up the per-trace set when the last subscriber unsubscribes so the dictionary
-            // doesn't accumulate empty entries for long-gone traces.
-            if (set.IsEmpty)
-            {
-                subscribersByTrace.TryRemove(new KeyValuePair<Guid, SubscriberSet>(traceId, set));
-            }
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            broker.RemoveSubscription(traceId, subscriptionId, channel);
         }
     }
 
