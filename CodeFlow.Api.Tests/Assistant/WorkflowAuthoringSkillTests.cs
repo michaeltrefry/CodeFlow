@@ -189,6 +189,25 @@ public sealed class WorkflowAuthoringSkillTests
     }
 
     [Fact]
+    public void Skill_DescribesVZ2AsOptInWarning()
+    {
+        // VZ2 (workflow-vars-declaration) is a save-time linting layer with two important
+        // qualifiers: it's opt-in (skipped entirely when the workflow declares neither
+        // workflowVarsReads nor workflowVarsWrites) and every finding is a Warning, not an
+        // Error (warnings never block save). A future skill edit that drops either qualifier
+        // would lead the assistant to over-prescribe declarations as a hard requirement —
+        // which they aren't. Pin both phrases on the same line as the rule id.
+        var body = LoadSkill().Body;
+        var vz2Line = body.Split('\n')
+            .FirstOrDefault(line => line.Contains("workflow-vars-declaration"));
+        vz2Line.Should().NotBeNull("the skill must mention VZ2 by its rule id");
+        vz2Line!.Should().Contain("Warning",
+            "VZ2 findings are Warnings, never Errors — the skill must not imply they block save");
+        vz2Line.Should().Contain("opt-in",
+            "VZ2 is opt-in (skipped when the workflow has no declared reads/writes); the skill must not imply it always fires");
+    }
+
+    [Fact]
     public void Skill_DoesNotImplyImporterIgnoresDb()
     {
         // The earlier "the importer does not resolve from the DB" wording contradicted the
