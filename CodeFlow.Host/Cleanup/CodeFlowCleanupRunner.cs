@@ -307,6 +307,13 @@ public sealed class CodeFlowCleanupRunner
             {
                 deleted++;
             }
+            // sc-660: same retired-trace cleanup pass also removes the cred file. Counted
+            // separately would double-report the trace; we only bump `deleted` for the workdir
+            // because that's the headline artifact the cleanup runner reports on.
+            GitCredentialFile.TryRemove(
+                workspaceOptions.Value.GitCredentialRoot,
+                saga.TraceId,
+                loggerForCleanup);
         }
 
         return deleted;

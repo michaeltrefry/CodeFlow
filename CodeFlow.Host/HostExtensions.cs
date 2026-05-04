@@ -194,8 +194,10 @@ public static class HostExtensions
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddSingleton<IVcsProviderFactory, VcsProviderFactory>();
+        services.AddSingleton<IPerTraceCredentialResolver, PerTraceCredentialResolver>();
 
         services.AddHostedService<WorkdirSweepService>();
+        services.AddHostedService<GitCredentialSweepService>();
 
         services.AddSingleton<DbBackedLlmProviderConfigResolver>();
         services.AddSingleton<ILlmProviderConfigResolver>(sp => sp.GetRequiredService<DbBackedLlmProviderConfigResolver>());

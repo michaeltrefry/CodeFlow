@@ -43,8 +43,9 @@ ARG APP_UID=1654
 # Pre-create /workspace so a missing bind-mount doesn't leave it as root:root and break host tools
 # that operate against {WorkingDirectoryRoot}/{traceId}/. See CodeFlow.Api/Dockerfile for the
 # matching commentary.
-RUN mkdir -p /app/artifacts /workspace && \
-    chown -R ${APP_UID}:${APP_UID} /app /workspace
+RUN mkdir -p /app/artifacts /workspace /var/lib/codeflow/git-creds && \
+    chown -R ${APP_UID}:${APP_UID} /app /workspace /var/lib/codeflow && \
+    chmod 0700 /var/lib/codeflow/git-creds
 
 COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
 USER ${APP_UID}

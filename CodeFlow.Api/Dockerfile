@@ -46,8 +46,9 @@ ARG APP_UID=1654
 # prevent the assistant from creating its per-conversation workspace at /workspace/assistant.
 # Pre-creating both subdirs in the image baseline keeps the assistant workspace writable when no
 # bind-mount is configured for it.
-RUN mkdir -p /app/artifacts /workspace/assistant && \
-    chown -R ${APP_UID}:${APP_UID} /app /workspace
+RUN mkdir -p /app/artifacts /workspace/assistant /var/lib/codeflow/git-creds && \
+    chown -R ${APP_UID}:${APP_UID} /app /workspace /var/lib/codeflow && \
+    chmod 0700 /var/lib/codeflow/git-creds
 
 COPY --from=build --chown=${APP_UID}:${APP_UID} /app/publish ./
 USER ${APP_UID}

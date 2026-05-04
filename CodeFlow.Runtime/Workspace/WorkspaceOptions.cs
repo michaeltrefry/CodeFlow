@@ -27,6 +27,15 @@ public sealed class WorkspaceOptions
     /// </summary>
     public const string DefaultAssistantWorkspaceRoot = "/workspace/assistant";
 
+    /// <summary>
+    /// Default container path for per-trace git credential files (epic 658). The api writes
+    /// <c>{root}/{traceId:N}</c> in git's native credential-store format at trace start; both
+    /// api and worker spawn <c>git</c> with <c>GIT_CONFIG_*</c> env vars that point
+    /// <c>credential.helper</c> at this file. Lives outside <see cref="DefaultWorkingDirectoryRoot"/>
+    /// so the agent's path-confined tools (<c>read_file</c>, <c>run_command</c>) cannot reach it.
+    /// </summary>
+    public const string DefaultGitCredentialRoot = "/var/lib/codeflow/git-creds";
+
     public string Root { get; set; } = string.Empty;
 
     /// <summary>
@@ -43,6 +52,15 @@ public sealed class WorkspaceOptions
     /// admin UI for the same reason.
     /// </summary>
     public string AssistantWorkspaceRoot { get; set; } = DefaultAssistantWorkspaceRoot;
+
+    /// <summary>
+    /// Per-trace git credential file root (epic 658). Override via
+    /// <c>Workspace__GitCredentialRoot</c> for non-container dev. Same rationale as
+    /// <see cref="WorkingDirectoryRoot"/>: not editable via the admin UI because it must match a
+    /// host-side mount the operator manages out-of-band, and the agent must never be able to
+    /// reach it.
+    /// </summary>
+    public string GitCredentialRoot { get; set; } = DefaultGitCredentialRoot;
 
     public TimeSpan WorktreeTtl { get; set; } = TimeSpan.FromHours(24);
 

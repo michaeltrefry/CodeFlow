@@ -198,10 +198,17 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         var workspaceOptions = services.GetRequiredService<IOptions<WorkspaceOptions>>();
         var loggerFactory = services.GetRequiredService<ILoggerFactory>();
 
+        var sagaLogger = loggerFactory.CreateLogger<WorkflowSagaStateMachine>();
         TraceWorkdirCleanup.TryRemove(
             workspaceOptions.Value.WorkingDirectoryRoot,
             saga.TraceId,
-            loggerFactory.CreateLogger<WorkflowSagaStateMachine>());
+            sagaLogger);
+        // sc-660: per-trace git-credential file is removed on the same happy-path tick as
+        // the workdir; the periodic GitCredentialSweepService catches anything left behind.
+        GitCredentialFile.TryRemove(
+            workspaceOptions.Value.GitCredentialRoot,
+            saga.TraceId,
+            sagaLogger);
 
         return Task.CompletedTask;
     }
