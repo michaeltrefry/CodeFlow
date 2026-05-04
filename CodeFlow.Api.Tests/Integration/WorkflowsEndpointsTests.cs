@@ -2964,4 +2964,114 @@ public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    // ------------------------------------------------------------------------------------
+    // sc-397: GET /api/workflows/package-draft for the chat-chip "Resolve in imports page"
+    // handoff. Read-only — does NOT mutate the draft or any snapshots.
+    // ------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task GetPackageDraft_ReturnsLiveDraftJson_WhenConversationOwnerCalls()
+    {
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var draftDir = Path.Combine(factory.AssistantWorkspaceRoot, conversationId.ToString("N"));
+        Directory.CreateDirectory(draftDir);
+        var draftPath = Path.Combine(draftDir, "draft.cf-workflow-package.json");
+        var draftPayload = new { schemaVersion = "codeflow.workflow-package.v1", entryPoint = new { key = "demo", version = 1 } };
+        await File.WriteAllTextAsync(draftPath, JsonSerializer.Serialize(draftPayload));
+
+        var response = await client.GetAsync($"/api/workflows/package-draft?conversationId={conversationId}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.GetProperty("schemaVersion").GetString().Should().Be("codeflow.workflow-package.v1");
+        body.RootElement.GetProperty("entryPoint").GetProperty("key").GetString().Should().Be("demo");
+
+        // Read-only contract — the draft file must still be on disk after the GET.
+        File.Exists(draftPath).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetPackageDraft_Returns404_WhenConversationDoesNotExist()
+    {
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync($"/api/workflows/package-draft?conversationId={Guid.NewGuid()}");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task GetPackageDraft_Returns404_WhenConversationIsOwnedByAnotherUser()
+    {
+        // Don't leak existence — same shape as apply-from-draft. A conversation owned by
+        // another user must surface as 404 even with a valid id.
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "some-other-user",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.GetAsync($"/api/workflows/package-draft?conversationId={conversationId}");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task GetPackageDraft_Returns404_WhenWorkspaceHasNoDraftFile()
+    {
+        // Conversation exists + user owns it, but no draft has been set (or it was cleared
+        // via the clear_workflow_package_draft tool). The chip's Resolve flow is dead in the
+        // water at this point; surface a clean 404 so the imports page can render the
+        // 'Could not load the conversation draft.' fallback rather than 500.
+        using var client = factory.CreateClient();
+
+        var conversationId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            db.AssistantConversations.Add(new AssistantConversationEntity
+            {
+                Id = conversationId,
+                UserId = "local-dev",
+                ScopeKind = AssistantConversationScopeKind.Homepage,
+                ScopeKey = "homepage",
+                SyntheticTraceId = Guid.NewGuid(),
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.GetAsync($"/api/workflows/package-draft?conversationId={conversationId}");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

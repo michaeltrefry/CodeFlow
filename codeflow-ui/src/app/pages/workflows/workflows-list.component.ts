@@ -5,6 +5,11 @@ import { Router, RouterLink } from '@angular/router';
 import { useAsyncList } from '../../core/async-state';
 import { formatHttpError } from '../../core/format-error';
 import {
+  IMPORT_HANDOFF_MAX_AGE_MS,
+  IMPORT_HANDOFF_STORAGE_KEY,
+  ImportHandoff,
+} from '../../core/import-handoff';
+import {
   WorkflowPackageDocument,
   WorkflowPackageImportAction,
   WorkflowPackageImportDriftConflict,
@@ -860,6 +865,10 @@ export class WorkflowsListComponent {
 
   constructor() {
     this.reload();
+    // sc-397: chat chip's "Resolve in imports page" handoff. Read + clear the stash on init
+    // (the read happens once per page load — clearResolutions / new file uploads don't
+    // re-trigger). On a stale stash we discard it and let the user upload normally.
+    this.consumeImportHandoff();
   }
 
   reload(): void {
@@ -1005,6 +1014,93 @@ export class WorkflowsListComponent {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
     return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+  }
+
+  /**
+   * sc-397: read + clear a chat-chip "Resolve in imports page" handoff from sessionStorage
+   * and seed the imports-preview state from it. Two flavors:
+   *   - inline: the chip stashed the package bytes alongside the conversationId; we just
+   *     hydrate `pendingImportPackage` and run preview.
+   *   - draft: the chip stashed only the conversationId; we GET the live draft from
+   *     /api/workflows/package-draft, then run preview.
+   * Stale stashes (older than IMPORT_HANDOFF_MAX_AGE_MS) are discarded silently — the user
+   * navigated away from the chip and came back later; better to render a clean page than
+   * import bytes from an old session.
+   */
+  private consumeImportHandoff(): void {
+    let raw: string | null;
+    try {
+      raw = sessionStorage.getItem(IMPORT_HANDOFF_STORAGE_KEY);
+    } catch {
+      // sessionStorage can throw under privacy mode / quota exceeded; nothing to consume.
+      return;
+    }
+    if (!raw) return;
+
+    try {
+      sessionStorage.removeItem(IMPORT_HANDOFF_STORAGE_KEY);
+    } catch {
+      // Failure to clear is non-fatal — proceed with hydration; worst case is the next page
+      // load re-hydrates with the same stash and the user sees the same preview again.
+    }
+
+    let handoff: ImportHandoff | null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || parsed.v !== 1) return;
+      handoff = parsed as ImportHandoff;
+    } catch {
+      return;
+    }
+
+    const ageMs = Date.now() - handoff.stashedAtMs;
+    if (ageMs < 0 || ageMs > IMPORT_HANDOFF_MAX_AGE_MS) return;
+
+    if (handoff.packageSource === 'inline') {
+      if (!handoff.package) return;
+      this.runHandoffPreview(handoff.package);
+      return;
+    }
+
+    if (handoff.packageSource === 'draft' && handoff.conversationId) {
+      this.importLoading.set(true);
+      this.api.getPackageDraft(handoff.conversationId).subscribe({
+        next: pkg => this.runHandoffPreview(pkg),
+        error: err => {
+          this.importLoading.set(false);
+          this.importError.set(this.errorMessage(err, 'Could not load the conversation draft.'));
+        },
+      });
+    }
+  }
+
+  /** sc-397: shared seed step for inline + draft handoffs. Mirrors the file-upload preview
+   *  path (clears resolution state, populates pendingImportPackage, runs the initial preview,
+   *  precomputes Copy suffixes) so the user lands in the same UI as a fresh upload. */
+  private runHandoffPreview(pkg: unknown): void {
+    this.importError.set(null);
+    this.importSuccess.set(null);
+    this.importPreview.set(null);
+    this.pendingImportPackage = null;
+    this.resolutions.set(new Map());
+    this.precomputedCopySuffixes.set(new Map());
+    this.driftConflict.set(null);
+    this.useExistingPrompt.set(null);
+    this.useExistingWarned.set(false);
+    this.importLoading.set(true);
+
+    this.api.previewPackageImport(pkg).subscribe({
+      next: preview => {
+        this.importPreview.set(preview);
+        this.pendingImportPackage = pkg;
+        this.importLoading.set(false);
+        void this.precomputeCopySuffixesAsync(preview, pkg);
+      },
+      error: err => {
+        this.importError.set(this.errorMessage(err, 'Failed to preview workflow package.'));
+        this.importLoading.set(false);
+      },
+    });
   }
 
   previewPackageImport(event: Event): void {

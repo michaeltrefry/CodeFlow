@@ -281,6 +281,16 @@ export class WorkflowsApi {
     );
   }
 
+  /** sc-397: fetch the live draft package from a conversation's workspace. Used by the
+   *  imports page to hydrate from a chat chip's "Resolve in imports page" handoff so the
+   *  package bytes don't have to round-trip through the chat panel and sessionStorage.
+   *  404s if the conversation doesn't belong to the caller, or if no draft is set. */
+  getPackageDraft(conversationId: string): Observable<unknown> {
+    return this.http.get<unknown>('/api/workflows/package-draft', {
+      params: { conversationId },
+    });
+  }
+
   /** sc-395: optional `resolutions` lets the imports page (CR-4) drive a per-Conflict
    *  preview re-run with user-chosen Bump / UseExisting / Copy choices. Wire shape is now
    *  `{ package, resolutions }` so the server can extend the body with future fields without

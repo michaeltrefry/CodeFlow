@@ -26,14 +26,17 @@ describe('WorkflowsListComponent (sc-396 resolutions)', () => {
     list: ReturnType<typeof vi.fn>;
     previewPackageImport: ReturnType<typeof vi.fn>;
     applyPackageImport: ReturnType<typeof vi.fn>;
+    getPackageDraft: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     vi.useFakeTimers();
+    sessionStorage.clear();
     api = {
       list: vi.fn(() => of([])),
       previewPackageImport: vi.fn(() => of(makeEmptyPreview())),
       applyPackageImport: vi.fn(() => of(makeApplyResult())),
+      getPackageDraft: vi.fn(() => of({})),
     };
 
     await TestBed.configureTestingModule({
@@ -298,6 +301,131 @@ describe('WorkflowsListComponent (sc-396 resolutions)', () => {
     const refusedOpts = component.resolutionOptions(refused);
     expect(refusedOpts.find(o => o.id === 'UseExisting')!.disabled).toBe(true);
     expect(refusedOpts.find(o => o.id === 'Bump')!.disabled).toBeFalsy();
+  });
+});
+
+// ----------------------------------------------------------------------------------------
+// sc-397: chat-chip "Resolve in imports page" handoff. Constructor reads sessionStorage,
+// hydrates pendingImportPackage + importPreview, and renders the same UI a fresh upload
+// would. Inline source carries bytes; draft source GETs them via WorkflowsApi.getPackageDraft.
+// ----------------------------------------------------------------------------------------
+describe('WorkflowsListComponent (sc-397 chat-chip handoff hydration)', () => {
+  let api: {
+    list: ReturnType<typeof vi.fn>;
+    previewPackageImport: ReturnType<typeof vi.fn>;
+    applyPackageImport: ReturnType<typeof vi.fn>;
+    getPackageDraft: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    sessionStorage.clear();
+    api = {
+      list: vi.fn(() => of([])),
+      previewPackageImport: vi.fn(() => of(makeEmptyPreview())),
+      applyPackageImport: vi.fn(() => of(makeApplyResult())),
+      getPackageDraft: vi.fn(() => of({})),
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [WorkflowsListComponent],
+      providers: [
+        provideRouter([]),
+        { provide: WorkflowsApi, useValue: api },
+      ],
+    }).compileComponents();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
+
+  it('hydrates from an inline handoff: seeds package + runs preview + clears the stash', () => {
+    const stashedPackage = { schemaVersion: 'codeflow.workflow-package.v1', entryPoint: { key: 'demo', version: 1 } };
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({
+      v: 1,
+      stashedAtMs: Date.now() - 1000,
+      packageSource: 'inline',
+      conversationId: null,
+      package: stashedPackage,
+    }));
+
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+
+    expect(api.previewPackageImport).toHaveBeenCalledTimes(1);
+    expect(api.previewPackageImport.mock.calls[0][0]).toEqual(stashedPackage);
+    expect(api.getPackageDraft).not.toHaveBeenCalled();
+    // Stash is cleared synchronously inside the constructor so a reload doesn't re-trigger.
+    expect(sessionStorage.getItem('cf.import.handoff')).toBeNull();
+    expect(fixture.componentInstance.importPreview()).not.toBeNull();
+  });
+
+  it('hydrates from a draft handoff: GETs the draft, then runs preview', () => {
+    const draftBytes = { schemaVersion: 'codeflow.workflow-package.v1', entryPoint: { key: 'demo', version: 1 } };
+    api.getPackageDraft.mockReturnValueOnce(of(draftBytes));
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({
+      v: 1,
+      stashedAtMs: Date.now() - 1000,
+      packageSource: 'draft',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      package: null,
+    }));
+
+    TestBed.createComponent(WorkflowsListComponent);
+
+    expect(api.getPackageDraft).toHaveBeenCalledWith('11111111-2222-3333-4444-555555555555');
+    expect(api.previewPackageImport).toHaveBeenCalledTimes(1);
+    expect(api.previewPackageImport.mock.calls[0][0]).toEqual(draftBytes);
+  });
+
+  it('discards a stale stash (older than IMPORT_HANDOFF_MAX_AGE_MS) without firing the preview', () => {
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({
+      v: 1,
+      stashedAtMs: Date.now() - 10 * 60 * 1000, // 10 min old, well past the 5 min cap
+      packageSource: 'inline',
+      conversationId: null,
+      package: { schemaVersion: 'codeflow.workflow-package.v1' },
+    }));
+
+    TestBed.createComponent(WorkflowsListComponent);
+
+    expect(api.previewPackageImport).not.toHaveBeenCalled();
+    expect(api.getPackageDraft).not.toHaveBeenCalled();
+    // Stale stash is still cleared so it doesn't sit in storage indefinitely.
+    expect(sessionStorage.getItem('cf.import.handoff')).toBeNull();
+  });
+
+  it('surfaces a draft-fetch error on the importError signal without crashing', () => {
+    api.getPackageDraft.mockReturnValueOnce(throwError(() => ({
+      status: 404,
+      error: 'No draft set',
+    })));
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({
+      v: 1,
+      stashedAtMs: Date.now(),
+      packageSource: 'draft',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      package: null,
+    }));
+
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+
+    expect(fixture.componentInstance.importPreview()).toBeNull();
+    // formatHttpError prefers the response body's `error` field when present (the fallback
+    // message we passed to errorMessage() is only used when the body has no actionable text).
+    expect(fixture.componentInstance.importError()).toContain('No draft set');
+  });
+
+  it('ignores a malformed stash (non-JSON or wrong version)', () => {
+    sessionStorage.setItem('cf.import.handoff', '{not json');
+    TestBed.createComponent(WorkflowsListComponent);
+    expect(api.previewPackageImport).not.toHaveBeenCalled();
+
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({ v: 99, packageSource: 'inline' }));
+    TestBed.createComponent(WorkflowsListComponent);
+    expect(api.previewPackageImport).not.toHaveBeenCalled();
   });
 });
 

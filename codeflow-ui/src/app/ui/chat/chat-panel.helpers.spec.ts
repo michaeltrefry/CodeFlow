@@ -39,7 +39,70 @@ describe('chat panel confirmation helpers', () => {
       cancelLabel: 'Cancel',
       state: 'idle',
       packageSource: 'inline',
+      mode: 'apply',
       snapshotId: undefined,
+    });
+  });
+
+  // sc-397: a `preview_conflicts` tool result builds a "Resolve in imports page" chip
+  // instead of a Save chip. The chat-panel's confirm handler stashes the package handoff
+  // and navigates to /workflows where the user picks per-row resolutions (CR-4).
+  it('builds a resolve chip when the tool result is preview_conflicts (inline source)', () => {
+    const confirmation = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_conflicts',
+        canApply: false,
+        conflictCount: 2,
+        refusedCount: 1,
+        packageSource: 'inline',
+        entryPoint: { key: 'triage-flow', version: 7 },
+      }),
+      {
+        schemaVersion: 'codeflow.workflow-package.v1',
+        entryPoint: { key: 'triage-flow', version: 7 },
+        workflows: [{ key: 'triage-flow', name: 'Triage Flow', nodes: [], edges: [] }],
+        agents: [],
+      },
+    );
+
+    expect(confirmation).toEqual({
+      kind: 'save_workflow_package',
+      prompt: 'triage-flow v7 has 3 conflicts — Resolve in imports page?',
+      confirmLabel: 'Resolve',
+      cancelLabel: 'Dismiss',
+      state: 'idle',
+      packageSource: 'inline',
+      mode: 'resolve',
+      conflictCount: 3,
+    });
+  });
+
+  // sc-397: draft-source preview_conflicts — no inline package required, no snapshot
+  // required (snapshots only mint when CanApply). The chat-panel hands off conversationId
+  // and the imports page hydrates from GET /api/workflows/package-draft.
+  it('builds a resolve chip for the draft-source preview_conflicts shape (no inline package, no snapshot)', () => {
+    const confirmation = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_conflicts',
+        canApply: false,
+        conflictCount: 1,
+        refusedCount: 0,
+        packageSource: 'draft',
+        snapshotId: null,
+        entryPoint: { key: 'triage-flow', version: 7 },
+      }),
+      undefined,
+    );
+
+    expect(confirmation).toEqual({
+      kind: 'save_workflow_package',
+      prompt: 'triage-flow v7 has 1 conflict — Resolve in imports page?',
+      confirmLabel: 'Resolve',
+      cancelLabel: 'Dismiss',
+      state: 'idle',
+      packageSource: 'draft',
+      mode: 'resolve',
+      conflictCount: 1,
     });
   });
 
@@ -75,6 +138,7 @@ describe('chat panel confirmation helpers', () => {
       cancelLabel: 'Cancel',
       state: 'idle',
       packageSource: 'draft',
+      mode: 'apply',
       snapshotId: '8af2b1d9-9c3a-4b7e-8a01-1e1c1c2d3e4f',
     });
   });
@@ -133,6 +197,7 @@ describe('chat panel confirmation helpers', () => {
       cancelLabel: 'Cancel',
       state: 'idle',
       packageSource: 'inline',
+      mode: 'apply',
       snapshotId: undefined,
     });
   });
