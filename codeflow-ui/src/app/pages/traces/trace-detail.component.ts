@@ -37,7 +37,12 @@ import {
   TokenUsageScopeRollup,
 } from '../../core/models';
 
-const DESCENDANT_REFRESH_INTERVAL_MS = 15_000;
+/**
+ * Cadence of the running-trace fallback poll. SSE is the primary live-update mechanism;
+ * this poll backstops any events the stream missed so the canvas highlight (and the
+ * descendant tree) can't drift more than this far behind the saga's actual state.
+ */
+const RUNNING_REFRESH_INTERVAL_MS = 15_000;
 
 interface TimelineEntry {
   id: string;
@@ -179,6 +184,7 @@ interface ReviewLoopGroup {
               <cf-workflow-readonly-canvas
                 [workflow]="workflow()"
                 [highlightedNodeIds]="highlightedNodeIds()"
+                [highlightedEdgeKeys]="highlightedEdgeKeys()"
                 [tokenUsageByNodeId]="tokenOverlayByNodeId()"></cf-workflow-readonly-canvas>
             </div>
           </cf-card>
@@ -452,6 +458,28 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       if (child.parentNodeId) ids.add(child.parentNodeId);
     }
     return ids.size > 0 ? Array.from(ids) : [];
+  });
+
+  /** Wires the trace has actually traversed, keyed `<nodeId>::<outputPortName>`. The readonly
+   *  canvas dims every wire whose source-port pair isn't in this set, mirroring the node
+   *  dimming above. Returns null only when the detail hasn't loaded yet — once it has, an
+   *  empty array means "dim everything," which is what we want for a saga that hasn't issued
+   *  any decisions yet. */
+  readonly highlightedEdgeKeys = computed<string[] | null>(() => {
+    const d = this.detail();
+    if (!d) return null;
+    const keys = new Set<string>();
+    for (const decision of d.decisions) {
+      if (decision.nodeId && decision.outputPortName) {
+        keys.add(`${decision.nodeId}::${decision.outputPortName}`);
+      }
+    }
+    for (const evaluation of d.logicEvaluations) {
+      if (evaluation.outputPortName) {
+        keys.add(`${evaluation.nodeId}::${evaluation.outputPortName}`);
+      }
+    }
+    return Array.from(keys);
   });
 
   readonly pendingHitlGroups = computed<PendingHitlGroup[]>(() => {
@@ -771,12 +799,18 @@ export class TraceDetailComponent implements OnInit, OnDestroy {
       next: evt => this.appendEvent(evt)
     });
 
-    interval(DESCENDANT_REFRESH_INTERVAL_MS).pipe(
+    // Periodic full reload while running. SSE drives the live updates, but a full reload here
+    // is the safety net for any event the SSE stream missed (network hiccups, proxy buffering,
+    // a decision that committed in the gap before the SSE subscriber was registered, etc.) —
+    // without it, a missed event meant the parent saga's `decisions[]` stayed stale until the
+    // *next* event arrived, and the canvas highlight would visibly skip nodes. `reload()`
+    // already chains `loadDescendantTracesFor`, so this single call refreshes both surfaces.
+    interval(RUNNING_REFRESH_INTERVAL_MS).pipe(
       takeUntilDestroyed(this.destroyRef)
     ).subscribe(() => {
       const current = this.detail();
       if (current && current.currentState === 'Running') {
-        this.loadDescendantTracesFor(current.traceId);
+        this.reload();
       }
     });
   }

@@ -205,13 +205,20 @@ public static class HostExtensions
         // rotation actually happens. Typed clients are transient; ModelClientRegistry's Resolve
         // factories invoke GetRequiredService on every agent invocation so each call sees a
         // fresh HttpClient (sharing a pooled-and-rotated HttpMessageHandler).
-        services.AddHttpClient<OpenAIModelClient>()
+        //
+        // Timeout is set to 300s (vs the HttpClient default of 100s) because complex
+        // planning / review-loop turns on large contexts can legitimately take 2+ minutes
+        // to first byte — observed live: a review-loop:plan-author-review node tripping the
+        // default 100s ceiling at ~124s. The LLM gateways themselves enforce shorter
+        // server-side limits, so this isn't a wait-forever; it just stops the client from
+        // killing a slow-but-progressing call before the provider gives up.
+        services.AddHttpClient<OpenAIModelClient>(c => c.Timeout = TimeSpan.FromSeconds(300))
             .AddTypedClient<OpenAIModelClient>((http, sp) =>
                 new OpenAIModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveOpenAI()));
-        services.AddHttpClient<AnthropicModelClient>()
+        services.AddHttpClient<AnthropicModelClient>(c => c.Timeout = TimeSpan.FromSeconds(300))
             .AddTypedClient<AnthropicModelClient>((http, sp) =>
                 new AnthropicModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveAnthropic()));
-        services.AddHttpClient<LMStudioModelClient>()
+        services.AddHttpClient<LMStudioModelClient>(c => c.Timeout = TimeSpan.FromSeconds(300))
             .AddTypedClient<LMStudioModelClient>((http, sp) =>
                 new LMStudioModelClient(http, () => sp.GetRequiredService<ILlmProviderConfigResolver>().ResolveLMStudio()));
 

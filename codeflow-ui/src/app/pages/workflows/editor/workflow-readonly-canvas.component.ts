@@ -18,6 +18,7 @@ import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20
 import { WorkflowDetail } from '../../../core/models';
 import {
   WorkflowAreaExtra,
+  WorkflowEditorConnection,
   WorkflowEditorNode,
   WorkflowNodeTokenOverlay,
   WorkflowSchemes
@@ -63,6 +64,13 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   /** When non-null, highlights the listed node ids and dims every other node. */
   readonly highlightedNodeIds = input<string[] | null>(null);
   /**
+   * When non-null, dims every wire whose `<sourceNodeId>::<sourceOutputPort>` key is NOT in
+   * the set. Mirrors the node dimming so the live trace view shows the path through the
+   * workflow on both nodes and the wires connecting them. Null = no wire dimming (full
+   * opacity for every edge), which is what the editor / static-display callers want.
+   */
+  readonly highlightedEdgeKeys = input<string[] | null>(null);
+  /**
    * Token Usage Tracking [Slice 7]: per-node token-usage overlays. The trace
    * detail page builds this map by combining slice 5's per-node rollups with the
    * descendant-saga rollups that belong to Subflow / ReviewLoop / Swarm nodes
@@ -78,11 +86,16 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
   private initialized = false;
   private loading = false;
   private wheelHandler?: (event: WheelEvent) => void;
+  /** Tracks the rendered DOM element for each connection so we can re-apply opacity styling
+   *  when `highlightedEdgeKeys` changes without re-rendering the wire. Populated by the
+   *  area-pipe `render` hook below and cleared on `unmount`. */
+  private readonly connectionElements = new Map<string, HTMLElement>();
 
   async ngAfterViewInit(): Promise<void> {
     await this.initialize();
     await this.loadCurrent();
     this.applyHighlight();
+    this.applyEdgeHighlight();
   }
 
   async ngOnChanges(changes: SimpleChanges): Promise<void> {
@@ -90,10 +103,16 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
     if (changes['workflow']) {
       await this.loadCurrent();
       this.applyHighlight();
-    } else if (changes['highlightedNodeIds'] || changes['tokenUsageByNodeId']) {
-      // Highlight + token-usage overlays both ride the same per-node update path,
-      // so a change to either re-applies both in one pass.
-      this.applyHighlight();
+      this.applyEdgeHighlight();
+    } else {
+      if (changes['highlightedNodeIds'] || changes['tokenUsageByNodeId']) {
+        // Highlight + token-usage overlays both ride the same per-node update path,
+        // so a change to either re-applies both in one pass.
+        this.applyHighlight();
+      }
+      if (changes['highlightedEdgeKeys']) {
+        this.applyEdgeHighlight();
+      }
     }
   }
 
@@ -102,6 +121,7 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       this.canvasHost.nativeElement.removeEventListener('wheel', this.wheelHandler, { capture: true });
       this.wheelHandler = undefined;
     }
+    this.connectionElements.clear();
     this.area?.destroy();
   }
 
@@ -122,6 +142,26 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
 
     editor.use(area);
     area.use(angularRender);
+
+    // Track connection elements as rete renders them so `applyEdgeHighlight` can apply opacity
+    // without re-rendering the wire. Mirror the editor canvas's bind/release pattern, minus the
+    // click-to-select handler (this canvas is read-only).
+    area.addPipe(context => {
+      if (context.type === 'render' && context.data.type === 'connection') {
+        const conn = context.data.payload as WorkflowEditorConnection;
+        this.connectionElements.set(conn.id, context.data.element);
+        // Defer one frame so the SVG path exists inside the wrapper before we touch styles.
+        requestAnimationFrame(() => this.applyEdgeOpacity(conn.id));
+      } else if (context.type === 'unmount') {
+        for (const [id, el] of this.connectionElements.entries()) {
+          if (el === context.data.element) {
+            this.connectionElements.delete(id);
+            break;
+          }
+        }
+      }
+      return context;
+    });
 
     // Swallow wheel events before they reach the rete area plugin so trackpad / wheel scrolling
     // over the readonly canvas scrolls the page instead of zooming the graph. Capture phase +
@@ -170,6 +210,10 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       for (const node of [...this.editor.getNodes()]) {
         await this.editor.removeNode(node.id);
       }
+      // The unmount pipe clears entries one-by-one as rete tears wires down, but a stale
+      // entry would still cause `applyEdgeOpacity` to mis-style a freshly-rendered wire that
+      // happened to reuse an id. Hard-reset to make the post-load state unambiguous.
+      this.connectionElements.clear();
 
       if (!wf) return;
 
@@ -209,5 +253,44 @@ export class WorkflowReadonlyCanvasComponent implements AfterViewInit, OnChanges
       editorNode.tokenUsageOverlay = tokenOverlay?.get(editorNode.nodeId) ?? null;
       void this.area.update('node', editorNode.id);
     }
+  }
+
+  /** Re-applies opacity to every currently-rendered connection. Called when
+   *  `highlightedEdgeKeys` flips (live trace tick) or after the workflow finishes loading. */
+  private applyEdgeHighlight(): void {
+    if (!this.editor || !this.area) return;
+    const keys = this.highlightedEdgeKeys();
+    const keySet = keys ? new Set(keys) : null;
+    for (const id of this.connectionElements.keys()) {
+      this.applyEdgeOpacity(id, keySet);
+    }
+  }
+
+  /** Dims a single wire when the executed-key set is non-null and its source-port pair isn't
+   *  a member. Restores full opacity when the set is null (editor / static-display mode) or
+   *  when the wire is in the set. */
+  private applyEdgeOpacity(connectionId: string, keySet?: Set<string> | null): void {
+    const element = this.connectionElements.get(connectionId);
+    if (!element || !this.editor) return;
+    const conn = this.editor.getConnection(connectionId) as WorkflowEditorConnection | undefined;
+    if (!conn) return;
+
+    element.style.transition = 'opacity 120ms ease';
+
+    // Single-call path (from the render pipe) didn't pre-build the set; resolve it lazily.
+    const set = keySet === undefined
+      ? (this.highlightedEdgeKeys() ? new Set(this.highlightedEdgeKeys()!) : null)
+      : keySet;
+
+    if (set === null) {
+      element.style.opacity = '';
+      return;
+    }
+
+    const sourceNode = this.editor.getNode(conn.source) as WorkflowEditorNode | undefined;
+    if (!sourceNode) return;
+
+    const key = `${sourceNode.nodeId}::${conn.sourceOutput}`;
+    element.style.opacity = set.has(key) ? '' : '0.25';
   }
 }
