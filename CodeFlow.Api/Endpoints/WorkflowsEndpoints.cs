@@ -2,6 +2,7 @@ using CodeFlow.Api.Assistant;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
+using CodeFlow.Api.Mapping;
 using CodeFlow.Api.Validation;
 using CodeFlow.Api.Validation.Pipeline;
 using CodeFlow.Api.WorkflowPackages;
@@ -791,7 +792,7 @@ public static class WorkflowsEndpoints
         CancellationToken cancellationToken)
     {
         var workflows = await repository.ListLatestAsync(cancellationToken);
-        return Results.Ok(workflows.Select(MapSummary).ToArray());
+        return Results.Ok(workflows.Select(w => w.ToSummaryDto()).ToArray());
     }
 
     /// <summary>
@@ -841,7 +842,7 @@ public static class WorkflowsEndpoints
             }
 
             result.Add(new RecentWorkflowDto(
-                Summary: MapSummary(workflow),
+                Summary: workflow.ToSummaryDto(),
                 LastUsedAtUtc: DateTime.SpecifyKind(row.LastUsedAtUtc, DateTimeKind.Utc)));
         }
 
@@ -859,7 +860,7 @@ public static class WorkflowsEndpoints
             return Results.NotFound();
         }
 
-        return Results.Ok(workflows.Select(MapDetail).ToArray());
+        return Results.Ok(workflows.Select(w => w.ToDetailDto()).ToArray());
     }
 
     private static async Task<IResult> GetVersionAsync(
@@ -869,7 +870,7 @@ public static class WorkflowsEndpoints
         CancellationToken cancellationToken)
     {
         var workflow = await repository.TryGetAsync(key, version, cancellationToken);
-        return workflow is null ? Results.NotFound() : Results.Ok(MapDetail(workflow));
+        return workflow is null ? Results.NotFound() : Results.Ok(workflow.ToDetailDto());
     }
 
     private static async Task<IResult> GetLatestAsync(
@@ -878,7 +879,7 @@ public static class WorkflowsEndpoints
         CancellationToken cancellationToken)
     {
         var workflow = await repository.GetLatestAsync(key, cancellationToken);
-        return workflow is null ? Results.NotFound() : Results.Ok(MapDetail(workflow));
+        return workflow is null ? Results.NotFound() : Results.Ok(workflow.ToDetailDto());
     }
 
     private static async Task<IResult> GetTerminalPortsAsync(
@@ -1313,81 +1314,6 @@ public static class WorkflowsEndpoints
                         Ordinal: input.Ordinal == 0 ? index : input.Ordinal))
                     .ToArray());
     }
-
-    private static WorkflowSummaryDto MapSummary(Workflow workflow) => new(
-        Key: workflow.Key,
-        LatestVersion: workflow.Version,
-        Name: workflow.Name,
-        Category: workflow.Category,
-        Tags: workflow.TagsOrEmpty,
-        NodeCount: workflow.Nodes.Count,
-        EdgeCount: workflow.Edges.Count,
-        InputCount: workflow.Inputs.Count,
-        CreatedAtUtc: workflow.CreatedAtUtc,
-        IsRetired: workflow.IsRetired);
-
-    private static WorkflowDetailDto MapDetail(Workflow workflow) => new(
-        Key: workflow.Key,
-        Version: workflow.Version,
-        Name: workflow.Name,
-        MaxRoundsPerRound: workflow.MaxRoundsPerRound,
-        Category: workflow.Category,
-        Tags: workflow.TagsOrEmpty,
-        CreatedAtUtc: workflow.CreatedAtUtc,
-        IsRetired: workflow.IsRetired,
-        Nodes: workflow.Nodes
-            .Select(node => new WorkflowNodeDto(
-                Id: node.Id,
-                Kind: node.Kind,
-                AgentKey: node.AgentKey,
-                AgentVersion: node.AgentVersion,
-                OutputScript: node.OutputScript,
-                OutputPorts: node.OutputPorts,
-                LayoutX: node.LayoutX,
-                LayoutY: node.LayoutY,
-                SubflowKey: node.SubflowKey,
-                SubflowVersion: node.SubflowVersion,
-                ReviewMaxRounds: node.ReviewMaxRounds,
-                LoopDecision: node.LoopDecision,
-                InputScript: node.InputScript,
-                OptOutLastRoundReminder: node.OptOutLastRoundReminder,
-                RejectionHistory: node.RejectionHistory,
-                MirrorOutputToWorkflowVar: node.MirrorOutputToWorkflowVar,
-                OutputPortReplacements: node.OutputPortReplacements,
-                Template: node.Template,
-                OutputType: node.OutputType,
-                SwarmProtocol: node.SwarmProtocol,
-                SwarmN: node.SwarmN,
-                ContributorAgentKey: node.ContributorAgentKey,
-                ContributorAgentVersion: node.ContributorAgentVersion,
-                SynthesizerAgentKey: node.SynthesizerAgentKey,
-                SynthesizerAgentVersion: node.SynthesizerAgentVersion,
-                CoordinatorAgentKey: node.CoordinatorAgentKey,
-                CoordinatorAgentVersion: node.CoordinatorAgentVersion,
-                SwarmTokenBudget: node.SwarmTokenBudget))
-            .ToArray(),
-        Edges: workflow.Edges
-            .Select(edge => new WorkflowEdgeDto(
-                FromNodeId: edge.FromNodeId,
-                FromPort: edge.FromPort,
-                ToNodeId: edge.ToNodeId,
-                ToPort: edge.ToPort,
-                RotatesRound: edge.RotatesRound,
-                SortOrder: edge.SortOrder,
-                IntentionalBackedge: edge.IntentionalBackedge))
-            .ToArray(),
-        Inputs: workflow.Inputs
-            .Select(input => new WorkflowInputDto(
-                Key: input.Key,
-                DisplayName: input.DisplayName,
-                Kind: input.Kind,
-                Required: input.Required,
-                DefaultValueJson: input.DefaultValueJson,
-                Description: input.Description,
-                Ordinal: input.Ordinal))
-            .ToArray(),
-        WorkflowVarsReads: workflow.WorkflowVarsReads,
-        WorkflowVarsWrites: workflow.WorkflowVarsWrites);
 
     private static async Task<IResult> RetireWorkflowAsync(
         string key,

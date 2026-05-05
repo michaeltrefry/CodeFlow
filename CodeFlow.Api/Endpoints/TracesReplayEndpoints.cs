@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Api.Dtos;
+using CodeFlow.Api.Mapping;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Orchestration.Replay;
 using CodeFlow.Orchestration.Replay.Admission;
@@ -248,7 +249,7 @@ public static class TracesReplayEndpoints
             FailureCode: failureCode,
             ExhaustedAgent: exhaustedAgent,
             Decisions: bundle.Decisions.Select(MapDecisionRef).ToArray(),
-            ReplayEvents: result.Events.Select(MapEvent).ToArray(),
+            ReplayEvents: result.Events.Select(e => e.ToDto()).ToArray(),
             HitlPayload: result.HitlPayload is null
                 ? null
                 : new DryRunHitlPayloadDto(
@@ -590,21 +591,4 @@ public static class TracesReplayEndpoints
         RoundId: d.RoundId,
         OriginalDecision: d.OriginalDecision);
 
-    private static DryRunEventDto MapEvent(DryRunEvent ev) => new(
-        ev.Ordinal,
-        ev.Kind.ToString(),
-        ev.NodeId,
-        ev.NodeKind,
-        ev.AgentKey,
-        ev.PortName,
-        ev.Message,
-        ev.InputPreview,
-        ev.OutputPreview,
-        ev.ReviewRound,
-        ev.MaxRounds,
-        ev.SubflowDepth,
-        ev.SubflowKey,
-        ev.SubflowVersion,
-        ev.Logs,
-        ev.DecisionPayload);
 }

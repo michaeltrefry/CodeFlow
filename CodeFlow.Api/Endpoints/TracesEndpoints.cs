@@ -1,5 +1,6 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
+using CodeFlow.Api.Mapping;
 using CodeFlow.Api.TraceEvents;
 using CodeFlow.Api.Validation;
 using CodeFlow.Contracts;
@@ -125,7 +126,7 @@ public static class TracesEndpoints
             .Take(take)
             .ToListAsync(cancellationToken);
 
-        return Results.Ok(sagas.Select(MapSummary).ToArray());
+        return Results.Ok(sagas.Select(s => s.ToSummaryDto()).ToArray());
     }
 
     private static async Task<IResult> GetTraceAsync(
@@ -241,7 +242,7 @@ public static class TracesEndpoints
 
         var response = descendants
             .Select(descendant => new TraceDescendantDto(
-                Summary: MapSummary(descendant),
+                Summary: descendant.ToSummaryDto(),
                 Detail: MapDetail(
                     descendant,
                     decisionsByCorrelationId.GetValueOrDefault(descendant.CorrelationId) ?? Array.Empty<WorkflowSagaDecisionEntity>(),
@@ -863,7 +864,7 @@ public static class TracesEndpoints
             .OrderBy(task => task.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
-        return Results.Ok(tasks.Select(MapHitl).ToArray());
+        return Results.Ok(tasks.Select(t => t.ToHitlDto()).ToArray());
     }
 
     private static async Task<IResult> SubmitHitlDecisionAsync(
@@ -1263,20 +1264,6 @@ public static class TracesEndpoints
         return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
     }
 
-    private static TraceSummaryDto MapSummary(WorkflowSagaStateEntity saga) => new(
-        TraceId: saga.TraceId,
-        WorkflowKey: saga.WorkflowKey,
-        WorkflowVersion: saga.WorkflowVersion,
-        CurrentState: saga.CurrentState,
-        CurrentAgentKey: saga.CurrentAgentKey,
-        RoundCount: saga.RoundCount,
-        CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
-        UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
-        ParentTraceId: saga.ParentTraceId,
-        ParentNodeId: saga.ParentNodeId,
-        ParentReviewRound: saga.ParentReviewRound,
-        ParentReviewMaxRounds: saga.ParentReviewMaxRounds);
-
     private static TraceDetailDto MapDetail(
         WorkflowSagaStateEntity saga,
         IReadOnlyList<WorkflowSagaDecisionEntity> decisions,
@@ -1322,36 +1309,13 @@ public static class TracesEndpoints
                 RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc)))
             .ToArray(),
         PendingHitl: pendingHitl
-            .Select(task => MapHitl(
-                task,
+            .Select(task => task.ToHitlDto(
                 originTraceId: task.TraceId,
                 subflowPath: subflowPaths.TryGetValue(task.TraceId, out var path) ? path : Array.Empty<string>()))
             .ToArray(),
         CreatedAtUtc: DateTime.SpecifyKind(saga.CreatedAtUtc, DateTimeKind.Utc),
         UpdatedAtUtc: DateTime.SpecifyKind(saga.UpdatedAtUtc, DateTimeKind.Utc),
         FailureReason: saga.FailureReason);
-
-    private static HitlTaskDto MapHitl(HitlTaskEntity task) =>
-        MapHitl(task, originTraceId: null, subflowPath: null);
-
-    private static HitlTaskDto MapHitl(
-        HitlTaskEntity task,
-        Guid? originTraceId,
-        IReadOnlyList<string>? subflowPath) => new(
-            Id: task.Id,
-            TraceId: task.TraceId,
-            RoundId: task.RoundId,
-            AgentKey: task.AgentKey,
-            AgentVersion: task.AgentVersion,
-            InputRef: new Uri(task.InputRef),
-            InputPreview: task.InputPreview,
-            CreatedAtUtc: DateTime.SpecifyKind(task.CreatedAtUtc, DateTimeKind.Utc),
-            State: task.State.ToString(),
-            Decision: task.Decision,
-            DecidedAtUtc: task.DecidedAtUtc is null ? null : DateTime.SpecifyKind(task.DecidedAtUtc.Value, DateTimeKind.Utc),
-            DeciderId: task.DeciderId,
-            OriginTraceId: originTraceId,
-            SubflowPath: subflowPath);
 
     /// <summary>
     /// Walks up <paramref name="descendantId"/>'s <c>parent_trace_id</c> chain and returns true
