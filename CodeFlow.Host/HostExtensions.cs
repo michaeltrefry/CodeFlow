@@ -61,6 +61,7 @@ public static class HostExtensions
         {
             x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
             x.AddConsumer<HitlTaskPendingEventNotificationConsumer>();
+            x.AddConsumer<TraceCleanupConsumer>();
 
             x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity, WorkflowSagaStateMachineDefinition>()
                 .EntityFrameworkRepository(r =>
