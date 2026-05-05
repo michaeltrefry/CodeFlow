@@ -10,6 +10,7 @@ public sealed class HostToolProvider : IToolProvider
     private readonly Func<DateTimeOffset> nowProvider;
     private readonly WorkspaceHostToolService workspaceTools;
     private readonly VcsHostToolService? vcsTools;
+    private readonly SetupWorkspaceHostToolService? setupWorkspaceTools;
     private readonly DockerHostToolService? containerTools;
     private readonly WebHostToolService? webTools;
 
@@ -17,12 +18,14 @@ public sealed class HostToolProvider : IToolProvider
         Func<DateTimeOffset>? nowProvider = null,
         WorkspaceHostToolService? workspaceTools = null,
         VcsHostToolService? vcsTools = null,
+        SetupWorkspaceHostToolService? setupWorkspaceTools = null,
         DockerHostToolService? containerTools = null,
         WebHostToolService? webTools = null)
     {
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
         this.workspaceTools = workspaceTools ?? new WorkspaceHostToolService();
         this.vcsTools = vcsTools;
+        this.setupWorkspaceTools = setupWorkspaceTools;
         this.containerTools = containerTools;
         this.webTools = webTools;
     }
@@ -59,6 +62,7 @@ public sealed class HostToolProvider : IToolProvider
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
             "vcs.clone" => RequireVcs().CloneAsync(toolCall, context, cancellationToken),
+            SetupWorkspaceHostToolService.ToolName => RequireSetupWorkspace().SetupWorkspaceAsync(toolCall, context, cancellationToken),
             DockerHostToolService.ContainerRunToolName => RequireContainer().RunContainerAsync(toolCall, context, cancellationToken),
             WebHostToolService.WebFetchToolName => RequireWeb().FetchAsync(toolCall, context, cancellationToken),
             WebHostToolService.WebSearchToolName => RequireWeb().SearchAsync(toolCall, context, cancellationToken),
@@ -71,6 +75,10 @@ public sealed class HostToolProvider : IToolProvider
     private VcsHostToolService RequireVcs() =>
         vcsTools ?? throw new InvalidOperationException(
             "vcs.* tools are not configured: HostToolProvider was constructed without a VcsHostToolService.");
+
+    private SetupWorkspaceHostToolService RequireSetupWorkspace() =>
+        setupWorkspaceTools ?? throw new InvalidOperationException(
+            "setup_workspace is not configured: HostToolProvider was constructed without a SetupWorkspaceHostToolService.");
 
     private DockerHostToolService RequireContainer() =>
         containerTools ?? throw new InvalidOperationException(
@@ -247,6 +255,57 @@ public sealed class HostToolProvider : IToolProvider
                         }
                     },
                     ["required"] = new JsonArray("url")
+                },
+                IsMutating: true),
+            new ToolSchema(
+                SetupWorkspaceHostToolService.ToolName,
+                "Atomic, idempotent code-aware bootstrap. Takes a list of repository URLs and, for "
+                + "each: writes the per-trace credential file, clones into the workspace, discovers "
+                + "the authoritative base branch via `git ls-remote --symref origin HEAD` (NEVER "
+                + "defaults to 'main'), creates a per-repo feature branch, and pushes the empty "
+                + "branch to validate auth at setup time. Returns rich per-repo state — verified "
+                + "baseBranch, featureBranch, baseSha, localPath — that downstream agents read "
+                + "directly via `workflow.repositories[i]`. The tool stages a "
+                + "setWorkflow('repositories', …) update internally so the per-trace VCS allowlist "
+                + "is in sync without the agent having to mirror the result. Idempotent: if a repo "
+                + "is already cloned at the expected path it round-trips with `alreadyPresent: true`. "
+                + "Use this when an architect or coding agent discovers a missing dependency "
+                + "mid-flow — call setup_workspace again with the additional URL; existing repos "
+                + "are unchanged, the new one goes through full setup. PREFER THIS over `vcs.clone` "
+                + "(deprecated) for code-aware workflows. Structured error codes: auth_unavailable, "
+                + "host_not_allowed, url_invalid, path_confined, clone_failed, branch_create_failed, "
+                + "push_failed, base_branch_lookup_failed, base_branch_mismatch, "
+                + "credential_file_write_failed, rev_parse_failed, stage_repositories_failed.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["repositories"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["description"] = "Non-empty array of `{url, branch?}` entries. `branch` is optional; "
+                                + "when supplied it must match the remote's actual default branch (the tool "
+                                + "refuses with `base_branch_mismatch` otherwise).",
+                            ["items"] = new JsonObject
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new JsonObject
+                                {
+                                    ["url"] = new JsonObject { ["type"] = "string" },
+                                    ["branch"] = new JsonObject { ["type"] = "string" },
+                                },
+                                ["required"] = new JsonArray("url"),
+                            },
+                        },
+                        ["featureBranchPrefix"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional. Synthesized as `codeflow/trace-<traceId-prefix>` when "
+                                + "omitted. The per-repo branch name becomes `<prefix>/<repo-name>`.",
+                        },
+                    },
+                    ["required"] = new JsonArray("repositories"),
                 },
                 IsMutating: true),
             new ToolSchema(

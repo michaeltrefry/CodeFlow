@@ -7,7 +7,7 @@ namespace CodeFlow.Runtime;
 
 public sealed class ContextAssembler
 {
-    internal static TimeSpan RenderTimeout => ScribanTemplateRenderer.RenderTimeout;
+    internal static TimeSpan RenderTimeout => ScribanTemplateRenderer.DefaultRenderTimeout;
 
     private readonly IScribanTemplateRenderer renderer;
 

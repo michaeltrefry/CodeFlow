@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeFlow.Runtime.Authority;
 
 namespace CodeFlow.Runtime;
@@ -19,7 +20,20 @@ namespace CodeFlow.Runtime;
 public sealed record ToolExecutionContext(
     ToolWorkspaceContext? Workspace = null,
     IReadOnlyList<ToolRepositoryContext>? Repositories = null,
-    WorkflowExecutionEnvelope? Envelope = null);
+    WorkflowExecutionEnvelope? Envelope = null)
+{
+    /// <summary>
+    /// Optional sink for host tools that need to stage mid-turn workflow-bag writes —
+    /// e.g. <c>setup_workspace</c> updating <c>workflow.repositories</c> after cloning.
+    /// When non-null, the host tool calls this to append a key/value into the same pending
+    /// pending-writes dictionary the <c>setWorkflow</c> built-in tool uses; the writes
+    /// commit on successful submit and are discarded on failure, exactly like
+    /// <c>setWorkflow</c>. <c>InvocationLoop</c> wires this when invoking external tools;
+    /// other consumers (assistant tool factory, tests) leave it null and host tools that
+    /// rely on it become no-ops in those contexts.
+    /// </summary>
+    public Action<string, JsonElement>? StageWorkflowBagWrite { get; init; }
+}
 
 public sealed record ToolWorkspaceContext(
     Guid CorrelationId,

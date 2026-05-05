@@ -338,6 +338,11 @@ public static class HostExtensions
                     gitCli: sp.GetRequiredService<IGitCli>(),
                     hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>(),
                     workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
+                setupWorkspaceTools: new SetupWorkspaceHostToolService(
+                    credentialResolver: sp.GetRequiredService<IPerTraceCredentialResolver>(),
+                    gitCli: sp.GetRequiredService<IGitCli>(),
+                    workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
+                    hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>()),
                 containerTools: sp.GetRequiredService<DockerHostToolService>(),
                 webTools: sp.GetRequiredService<WebHostToolService>()));
         services.AddSingleton<Agent>();

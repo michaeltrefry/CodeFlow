@@ -55,10 +55,34 @@ public interface IGitCli
 
     Task<bool> CommitAsync(string worktreePath, string message, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Pushes <paramref name="branch"/> to <paramref name="remote"/> from
+    /// <paramref name="worktreePath"/>. <paramref name="environmentVariables"/> is the per-trace
+    /// credential env (epic 658) — when non-empty the spawned <c>git push</c> picks up the
+    /// store credential helper, so private-repo pushes succeed without any token in argv or
+    /// <c>.git/config</c>. Passing <c>null</c> preserves the legacy unauthenticated path for
+    /// platform-internal callers (mirror cache, tests).
+    /// </summary>
     Task PushAsync(
         string worktreePath,
         string? remote = null,
         string? branch = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves the upstream default branch by running
+    /// <c>git ls-remote --symref &lt;remote&gt; HEAD</c> against the configured remote. Parses the
+    /// <c>ref: refs/heads/&lt;X&gt;\tHEAD</c> line and returns <c>&lt;X&gt;</c>. The remote talk
+    /// requires auth, so callers must thread the per-trace credential env in
+    /// <paramref name="environmentVariables"/>; without it private-repo lookups fail with a git
+    /// auth error. Throws <see cref="GitCommandException"/> on failure (network, auth) and
+    /// <see cref="InvalidOperationException"/> when the response doesn't carry a symref line.
+    /// </summary>
+    Task<string> GetRemoteHeadBranchAsync(
+        string worktreePath,
+        string? remote = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
         CancellationToken cancellationToken = default);
 
     Task<string> RevParseAsync(string worktreePath, string rev, CancellationToken cancellationToken = default);

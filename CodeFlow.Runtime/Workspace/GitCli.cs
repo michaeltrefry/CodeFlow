@@ -230,6 +230,7 @@ public sealed class GitCli : IGitCli
         string worktreePath,
         string? remote = null,
         string? branch = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(worktreePath);
@@ -244,7 +245,47 @@ public sealed class GitCli : IGitCli
             }
         }
 
-        await RunAsync(worktreePath, args, cancellationToken);
+        await RunAsync(worktreePath, args, environmentVariables, cancellationToken);
+    }
+
+    public async Task<string> GetRemoteHeadBranchAsync(
+        string worktreePath,
+        string? remote = null,
+        IReadOnlyDictionary<string, string>? environmentVariables = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(worktreePath);
+        var resolvedRemote = string.IsNullOrWhiteSpace(remote) ? "origin" : remote;
+
+        var result = await RunAsync(
+            worktreePath,
+            ["ls-remote", "--symref", resolvedRemote, "HEAD"],
+            environmentVariables,
+            cancellationToken);
+
+        // Output format from `ls-remote --symref`:
+        //   ref: refs/heads/main\tHEAD
+        //   <sha>\tHEAD
+        // We want the branch name on the first line. Parse defensively — some servers don't
+        // advertise origin/HEAD and the ref: line is missing entirely; surface that as an
+        // explicit error so the caller can fall back rather than picking up junk.
+        const string SymRefPrefix = "ref: refs/heads/";
+        foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!line.StartsWith(SymRefPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Strip the prefix and everything from the first whitespace onwards (the trailing
+            // \tHEAD part).
+            var rest = line.AsSpan(SymRefPrefix.Length);
+            var whitespaceAt = rest.IndexOfAny(' ', '\t');
+            return whitespaceAt < 0 ? rest.ToString() : rest[..whitespaceAt].ToString();
+        }
+
+        throw new InvalidOperationException(
+            $"git ls-remote --symref {resolvedRemote} HEAD returned no symref line; the remote does not advertise a default branch.");
     }
 
     public async Task<string> RevParseAsync(
