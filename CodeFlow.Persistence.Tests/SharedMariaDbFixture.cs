@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using MySqlConnector;
 using Testcontainers.MariaDb;
 
@@ -29,14 +30,83 @@ public sealed class SharedMariaDbFixture : IAsyncLifetime
     // pointed at their own database name) so the application code under test exercises real
     // SQL while still being isolated from sibling test classes.
     private const string RootPassword = "codeflow_test_root";
+    private const string TemplateDatabaseName = "_codeflow_template";
 
     public MariaDbContainer Container { get; } = new MariaDbBuilder("mariadb:11.4")
         .WithEnvironment("MARIADB_ROOT_PASSWORD", RootPassword)
         .Build();
 
+    /// <summary>
+    /// Cached <c>CREATE TABLE</c> statements captured once from the template database at
+    /// fixture startup. EnsureDatabaseAsync executes these against each per-class DB to
+    /// rebuild the schema in milliseconds — versus re-running EF migrations which is
+    /// ~3–5s per database. We use <c>SHOW CREATE TABLE</c> rather than
+    /// <c>CREATE TABLE ... LIKE</c> because the latter does not copy foreign-key
+    /// constraints (MariaDB documented behaviour), and at least one repository test
+    /// asserts on FK cascade delete.
+    /// </summary>
+    private IReadOnlyList<TemplateTable> templateTables = Array.Empty<TemplateTable>();
+
+    private sealed record TemplateTable(string Name, string CreateStatement);
+
     public async Task InitializeAsync()
     {
         await Container.StartAsync();
+        await CreateTemplateSchemaAsync();
+    }
+
+    /// <summary>
+    /// Build the schema once into a "template" database (Phase B): apply EF migrations
+    /// against an empty DB and capture the resulting table list. Per-class databases
+    /// then clone the structure via <c>CREATE TABLE ... LIKE</c> and inherit the
+    /// migration-history rows so EF treats their schema as already-up-to-date.
+    /// </summary>
+    private async Task CreateTemplateSchemaAsync()
+    {
+        await ExecuteServerSqlAsync($"CREATE DATABASE IF NOT EXISTS `{TemplateDatabaseName}`;");
+
+        var templateConnectionString = BuildConnectionStringForDatabase(TemplateDatabaseName);
+        var optionsBuilder = new DbContextOptionsBuilder<CodeFlowDbContext>();
+        CodeFlowDbContextOptions.Configure(optionsBuilder, templateConnectionString);
+
+        await using (var ctx = new CodeFlowDbContext(optionsBuilder.Options))
+        {
+            await ctx.Database.MigrateAsync();
+        }
+
+        // Capture the table names AND their CREATE statements. SHOW CREATE TABLE returns
+        // the schema with foreign-key constraints intact (CREATE TABLE LIKE does NOT —
+        // MariaDB docs explicitly call out that FK definitions are dropped). One of the
+        // repository tests asserts on FK cascade delete, so we MUST preserve FKs.
+        var names = new List<string>();
+        await using (var connection = OpenRootConnection(TemplateDatabaseName))
+        {
+            await using var listCmd = connection.CreateCommand();
+            listCmd.CommandText = "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';";
+            await using var reader = await listCmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                names.Add(reader.GetString(0));
+            }
+        }
+
+        var captured = new List<TemplateTable>();
+        await using (var connection = OpenRootConnection(TemplateDatabaseName))
+        {
+            foreach (var name in names)
+            {
+                await using var showCmd = connection.CreateCommand();
+                showCmd.CommandText = $"SHOW CREATE TABLE `{name}`;";
+                await using var reader = await showCmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    // Column 0 is the table name, column 1 is the CREATE TABLE statement.
+                    captured.Add(new TemplateTable(name, reader.GetString(1)));
+                }
+            }
+        }
+
+        templateTables = captured;
     }
 
     public async Task DisposeAsync()
@@ -45,18 +115,79 @@ public sealed class SharedMariaDbFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// Creates the named database on the shared server (idempotent — IF NOT EXISTS) and
-    /// returns a connection string scoped to it. Callers run their migrations against the
-    /// returned string. Pair with <see cref="DropDatabaseAsync"/> in <c>DisposeAsync</c>
-    /// so re-runs of the same class don't carry over state from the prior run.
+    /// Creates the named database on the shared server (idempotent — IF NOT EXISTS),
+    /// clones the schema from the template via <c>CREATE TABLE ... LIKE</c>, and copies
+    /// the EF migration-history rows so subsequent <c>ctx.Database.MigrateAsync()</c>
+    /// calls in the test class become a no-op. Returns a connection string scoped to the
+    /// new database. Pair with <see cref="DropDatabaseAsync"/> in <c>DisposeAsync</c> so
+    /// re-runs of the same class start clean.
     /// </summary>
     public async Task<string> EnsureDatabaseAsync(string databaseName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseName);
         ValidateIdentifier(databaseName);
 
-        await ExecuteServerSqlAsync($"CREATE DATABASE IF NOT EXISTS `{databaseName}`;");
+        // Drop-and-recreate so a stale schema from a prior run with different migrations
+        // doesn't carry over. Cheap on a per-class basis (~50ms vs ~5s for re-running
+        // migrations from scratch).
+        await ExecuteServerSqlAsync($"DROP DATABASE IF EXISTS `{databaseName}`;");
+        await ExecuteServerSqlAsync($"CREATE DATABASE `{databaseName}`;");
+
+        // Replay each captured CREATE TABLE statement against the new database. SHOW
+        // CREATE TABLE preserves FK constraints (unlike CREATE TABLE LIKE), so the cloned
+        // schema behaves identically to a freshly-migrated one — including cascade-delete
+        // behaviour that at least one repository test asserts on. FK checks stay off
+        // during the loop so cross-table reference order doesn't matter.
+        if (templateTables.Count > 0)
+        {
+            await using var connection = OpenRootConnection(databaseName);
+            await using (var disableFk = connection.CreateCommand())
+            {
+                disableFk.CommandText = "SET FOREIGN_KEY_CHECKS = 0;";
+                await disableFk.ExecuteNonQueryAsync();
+            }
+
+            foreach (var table in templateTables)
+            {
+                await using var createCmd = connection.CreateCommand();
+                createCmd.CommandText = table.CreateStatement;
+                await createCmd.ExecuteNonQueryAsync();
+            }
+
+            // Only copy ROWS for the migration-history table — that's the only table the
+            // template has seeded. Other tables stay empty so per-class tests start with a
+            // clean slate.
+            await using (var historyCopy = connection.CreateCommand())
+            {
+                historyCopy.CommandText =
+                    $"INSERT INTO `__EFMigrationsHistory` SELECT * FROM `{TemplateDatabaseName}`.`__EFMigrationsHistory`;";
+                await historyCopy.ExecuteNonQueryAsync();
+            }
+
+            await using (var enableFk = connection.CreateCommand())
+            {
+                enableFk.CommandText = "SET FOREIGN_KEY_CHECKS = 1;";
+                await enableFk.ExecuteNonQueryAsync();
+            }
+        }
+
         return BuildConnectionStringForDatabase(databaseName);
+    }
+
+    private MySqlConnection OpenRootConnection(string database)
+    {
+        var appBuilder = new MySqlConnectionStringBuilder(Container.GetConnectionString());
+        var rootBuilder = new MySqlConnectionStringBuilder
+        {
+            Server = appBuilder.Server,
+            Port = appBuilder.Port,
+            UserID = "root",
+            Password = RootPassword,
+            Database = database,
+        };
+        var connection = new MySqlConnection(rootBuilder.ConnectionString);
+        connection.Open();
+        return connection;
     }
 
     /// <summary>
