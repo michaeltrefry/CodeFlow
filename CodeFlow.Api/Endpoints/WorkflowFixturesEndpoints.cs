@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Api.Dtos;
+using CodeFlow.Api.Mapping;
 using CodeFlow.Orchestration.DryRun;
 using CodeFlow.Persistence;
 using Microsoft.AspNetCore.Builder;
@@ -43,7 +44,7 @@ public static class WorkflowFixturesEndpoints
         CancellationToken cancellationToken)
     {
         var fixtures = await repository.ListForWorkflowAsync(workflowKey, cancellationToken);
-        return Results.Ok(fixtures.Select(MapSummary).ToArray());
+        return Results.Ok(fixtures.Select(f => f.ToSummaryDto()).ToArray());
     }
 
     private static async Task<IResult> GetAsync(
@@ -57,7 +58,7 @@ public static class WorkflowFixturesEndpoints
         {
             return Results.NotFound();
         }
-        return Results.Ok(MapDetail(fixture));
+        return Results.Ok(fixture.ToDetailDto());
     }
 
     private static async Task<IResult> CreateAsync(
@@ -91,7 +92,7 @@ public static class WorkflowFixturesEndpoints
         };
 
         var created = await repository.CreateAsync(entity, cancellationToken);
-        return Results.Created($"/api/workflows/{workflowKey}/fixtures/{created.Id}", MapDetail(created));
+        return Results.Created($"/api/workflows/{workflowKey}/fixtures/{created.Id}", created.ToDetailDto());
     }
 
     private static async Task<IResult> UpdateAsync(
@@ -131,7 +132,7 @@ public static class WorkflowFixturesEndpoints
         existing.MockResponsesJson = SerializeMockResponses(request.MockResponses);
 
         var updated = await repository.UpdateAsync(existing, cancellationToken);
-        return Results.Ok(MapDetail(updated));
+        return Results.Ok(updated.ToDetailDto());
     }
 
     private static async Task<IResult> DeleteAsync(
@@ -191,7 +192,7 @@ public static class WorkflowFixturesEndpoints
             MockResponses: mocks);
 
         var result = await executor.ExecuteAsync(request, cancellationToken);
-        return Results.Ok(MapResult(result));
+        return Results.Ok(result.ToResponse());
     }
 
     // ---------- helpers ----------
@@ -240,75 +241,4 @@ public static class WorkflowFixturesEndpoints
 
     private static string SerializeMockResponses(JsonNode? mockResponses) =>
         mockResponses?.ToJsonString() ?? "{}";
-
-    private static WorkflowFixtureSummaryResponse MapSummary(WorkflowFixtureEntity fixture) =>
-        new(fixture.Id, fixture.WorkflowKey, fixture.FixtureKey, fixture.DisplayName,
-            fixture.CreatedAtUtc, fixture.UpdatedAtUtc);
-
-    private static WorkflowFixtureDetailResponse MapDetail(WorkflowFixtureEntity fixture)
-    {
-        var parsed = TryParseJsonObject(fixture.MockResponsesJson);
-        return new WorkflowFixtureDetailResponse(
-            fixture.Id,
-            fixture.WorkflowKey,
-            fixture.FixtureKey,
-            fixture.DisplayName,
-            fixture.StartingInput,
-            parsed,
-            fixture.CreatedAtUtc,
-            fixture.UpdatedAtUtc);
-    }
-
-    private static JsonNode TryParseJsonObject(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new JsonObject();
-        }
-        try
-        {
-            return JsonNode.Parse(json) ?? new JsonObject();
-        }
-        catch (JsonException)
-        {
-            return new JsonObject();
-        }
-    }
-
-    private static DryRunResponse MapResult(DryRunResult result) => new(
-        State: result.State.ToString(),
-        TerminalPort: result.TerminalPort,
-        FailureReason: result.FailureReason,
-        FinalArtifact: result.FinalArtifact,
-        HitlPayload: result.HitlPayload is null
-            ? null
-            : new DryRunHitlPayloadDto(
-                result.HitlPayload.NodeId,
-                result.HitlPayload.AgentKey,
-                result.HitlPayload.Input,
-                result.HitlPayload.OutputTemplate,
-                result.HitlPayload.DecisionOutputTemplates,
-                result.HitlPayload.RenderedFormPreview,
-                result.HitlPayload.RenderError),
-        WorkflowVariables: result.WorkflowVariables,
-        ContextVariables: result.ContextVariables,
-        Events: result.Events.Select(MapEvent).ToArray());
-
-    private static DryRunEventDto MapEvent(DryRunEvent ev) => new(
-        ev.Ordinal,
-        ev.Kind.ToString(),
-        ev.NodeId,
-        ev.NodeKind,
-        ev.AgentKey,
-        ev.PortName,
-        ev.Message,
-        ev.InputPreview,
-        ev.OutputPreview,
-        ev.ReviewRound,
-        ev.MaxRounds,
-        ev.SubflowDepth,
-        ev.SubflowKey,
-        ev.SubflowVersion,
-        ev.Logs,
-        ev.DecisionPayload);
 }
