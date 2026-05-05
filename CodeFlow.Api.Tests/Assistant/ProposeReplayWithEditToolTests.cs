@@ -15,7 +15,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// (synthetic subflow marker), and the malformed-edits paths (empty edits, missing fields).
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class ProposeReplayWithEditToolTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class ProposeReplayWithEditToolTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

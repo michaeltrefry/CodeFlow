@@ -1,26 +1,30 @@
 using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class McpServerRepositoryTests : IAsyncLifetime
 {
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_mcpserverrepositorytests";
+    private string? connectionString;
+
     private static readonly byte[] MasterKey = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
 
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
 
-    private string? connectionString;
+    public McpServerRepositoryTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var dbContext = CreateDbContext();
         await dbContext.Database.MigrateAsync();
@@ -28,7 +32,7 @@ public sealed class McpServerRepositoryTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await mariaDbContainer.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]

@@ -15,7 +15,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// so the assistant can recommend specific tools when a user is authoring an agent role.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class ToolDiscoveryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class ToolDiscoveryToolsTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

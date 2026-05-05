@@ -20,7 +20,8 @@ namespace CodeFlow.Api.Tests.Integration;
 /// endpoint composition are all exercised end-to-end.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class AssistantEndpointsIdempotencyTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class AssistantEndpointsIdempotencyTests
 {
     private readonly CodeFlowApiFactory factory;
     private static readonly StubAssistantForIdempotency AssistantStub = new();

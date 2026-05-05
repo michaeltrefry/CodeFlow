@@ -3,33 +3,44 @@ using CodeFlow.Runtime;
 using FluentAssertions;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer container = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_saga_persistence")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_workflowsagapersistencetests";
+    private string? connectionString;
+
+
+    public WorkflowSagaPersistenceTests(SharedMariaDbFixture mariaDb)
+
+
+    {
+
+
+        this.mariaDb = mariaDb;
+
+
+    }
+
+
 
     public async Task InitializeAsync()
     {
-        await container.StartAsync();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
     }
 
     public async Task DisposeAsync()
     {
-        await container.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]
     public async Task Saga_ShouldPersistAndReloadWithTypedAccessors()
     {
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
+        CodeFlowDbContextOptions.Configure(options, connectionString!);
 
         await using (var migrationContext = new CodeFlowDbContext(options.Options))
         {
@@ -108,7 +119,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
         // the workflow_inputs_json bag persist on the saga row alongside the existing local
         // inputs_json column.
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
+        CodeFlowDbContextOptions.Configure(options, connectionString!);
 
         await using (var migrationContext = new CodeFlowDbContext(options.Options))
         {
@@ -207,7 +218,7 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
         // round-trip cleanly, and that an appended decision with no NodeEnteredAtUtc still
         // persists as NULL so legacy rows continue to render.
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
+        CodeFlowDbContextOptions.Configure(options, connectionString!);
 
         await using (var migrationContext = new CodeFlowDbContext(options.Options))
         {

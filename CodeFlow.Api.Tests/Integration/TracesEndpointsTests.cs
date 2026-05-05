@@ -10,7 +10,8 @@ using System.Text.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class TracesEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class TracesEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 

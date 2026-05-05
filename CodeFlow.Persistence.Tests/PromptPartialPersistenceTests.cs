@@ -1,27 +1,44 @@
 using CodeFlow.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class PromptPartialPersistenceTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer container = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_partial_persistence")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_promptpartialpersistencetests";
+    private string? connectionString;
 
-    public async Task InitializeAsync() => await container.StartAsync();
 
-    public async Task DisposeAsync() => await container.DisposeAsync();
+    public PromptPartialPersistenceTests(SharedMariaDbFixture mariaDb)
+
+
+    {
+
+
+        this.mariaDb = mariaDb;
+
+
+    }
+
+
+
+    public async Task InitializeAsync()
+    {
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
+    }
+
+    public async Task DisposeAsync()
+    {
+        await mariaDb.DropDatabaseAsync(DatabaseName);
+    }
 
     [Fact]
     public async Task PromptPartial_RoundTripsThroughRepository_AndIsImmutablePerVersion()
     {
         var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(options, container.GetConnectionString());
+        CodeFlowDbContextOptions.Configure(options, connectionString!);
 
         await using (var migrationContext = new CodeFlowDbContext(options.Options))
         {

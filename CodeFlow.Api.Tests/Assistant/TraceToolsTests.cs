@@ -16,7 +16,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// corresponding tool through the live DI container and asserts on the JSON result.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class TraceToolsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class TraceToolsTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

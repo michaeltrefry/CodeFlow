@@ -15,7 +15,8 @@ namespace CodeFlow.Api.Tests.Integration;
 /// detail endpoints).
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class TraceTokenUsageEndpointTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class TraceTokenUsageEndpointTests
 {
     private readonly CodeFlowApiFactory factory;
 

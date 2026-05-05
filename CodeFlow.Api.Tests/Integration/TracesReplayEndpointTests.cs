@@ -9,7 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class TracesReplayEndpointTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class TracesReplayEndpointTests
 {
     private readonly CodeFlowApiFactory factory;
 

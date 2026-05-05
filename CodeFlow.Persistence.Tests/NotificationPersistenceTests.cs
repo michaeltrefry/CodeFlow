@@ -3,26 +3,30 @@ using CodeFlow.Persistence;
 using CodeFlow.Persistence.Notifications;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class NotificationPersistenceTests : IAsyncLifetime
 {
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_notificationpersistencetests";
+    private string? connectionString;
+
     private static readonly byte[] MasterKey = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
 
-    private readonly MariaDbContainer container = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_notifications")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
 
-    private string? connectionString;
+    public NotificationPersistenceTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await container.StartAsync();
-        connectionString = container.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var db = CreateContext();
         await db.Database.MigrateAsync();
@@ -30,7 +34,7 @@ public sealed class NotificationPersistenceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await container.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]

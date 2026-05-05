@@ -15,7 +15,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// invalid (unknown key + type mismatch), and the success preview_ok path.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class RunWorkflowToolTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class RunWorkflowToolTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

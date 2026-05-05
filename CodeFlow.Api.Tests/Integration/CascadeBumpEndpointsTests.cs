@@ -7,7 +7,8 @@ using System.Text.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class CascadeBumpEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class CascadeBumpEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 
