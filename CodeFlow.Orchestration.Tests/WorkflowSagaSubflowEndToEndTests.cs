@@ -8,6 +8,8 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 
+using CodeFlow.Orchestration.NodeDispatch;
+
 namespace CodeFlow.Orchestration.Tests;
 
 /// <summary>
@@ -714,6 +716,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             .AddSingleton<CodeFlow.Runtime.IScribanTemplateRenderer, CodeFlow.Runtime.ScribanTemplateRenderer>()
             .AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>()
             .AddSingleton<IRetryContextBuilder, RetryContextBuilder>()
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();

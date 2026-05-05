@@ -6,6 +6,7 @@ using CodeFlow.Host.Workspace;
 using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
 using CodeFlow.Orchestration.DryRun;
+using CodeFlow.Orchestration.NodeDispatch;
 using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Orchestration.Notifications.Providers.Email;
 using CodeFlow.Orchestration.Notifications.Providers.Slack;
@@ -115,6 +116,11 @@ public static class HostExtensions
         services.AddMemoryCache();
         services.AddSingleton<LogicNodeScriptHost>();
         services.AddSingleton<IWorkflowDataflowAnalyzer, WorkflowDataflowAnalyzer>();
+
+        // sc-165 / F-001+F-002 — Phase 1: per-node-kind dispatch registry. The saga's
+        // DispatchToNodeAsync resolves the registry from request services and asks for the
+        // dispatcher for the target node's kind, replacing an inline kind-switch.
+        services.AddWorkflowNodeDispatchers();
         services.AddScoped<IAgentConfigRepository, AgentConfigRepository>();
         services.AddScoped<IPromptPartialRepository, PromptPartialRepository>();
         services.AddScoped<IWorkflowRepository, WorkflowRepository>();
