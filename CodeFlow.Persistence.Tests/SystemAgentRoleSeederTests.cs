@@ -62,12 +62,14 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "apply_patch",
                 "run_command",
                 "setup_workspace",
-                "vcs.clone",
                 "vcs.get_repo",
                 "vcs.open_pr",
                 "echo",
                 "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "vcs.clone",
+            because: "sc-683 retired vcs.clone from seeded grants in favor of setup_workspace");
 
         var readOnlyShell = seeded.Single(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
         var readOnlyGrants = await ctx.AgentRoleToolGrants
@@ -107,7 +109,6 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "apply_patch",
                 "run_command",
                 "setup_workspace",
-                "vcs.clone",
                 "vcs.get_repo",
                 "vcs.open_pr",
                 "container.run",
@@ -116,6 +117,9 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "echo",
                 "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "vcs.clone",
+            because: "sc-683 retired vcs.clone from seeded grants in favor of setup_workspace");
     }
 
     [Fact]
@@ -216,7 +220,6 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             "apply_patch",
             "run_command",
             "setup_workspace",
-            "vcs.clone",
             "vcs.get_repo",
             "vcs.open_pr",
             "now");

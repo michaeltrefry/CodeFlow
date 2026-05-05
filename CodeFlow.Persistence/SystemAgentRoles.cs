@@ -34,17 +34,18 @@ public static class SystemAgentRoles
             Description: "Full read/write filesystem and shell access plus atomic code-aware "
                 + "workspace bootstrap (setup_workspace) and PR opening (vcs.open_pr). Use for "
                 + "developer agents that clone repos, edit files, run tests, and create commits. "
-                + "Prefer setup_workspace over the legacy vcs.clone for any new workflow — it "
-                + "atomically resolves credentials, clones, discovers the authoritative base "
-                + "branch, creates the feature branch, and pushes the empty branch to validate "
-                + "auth before any LLM work runs. Idempotent for mid-flow repo addition.",
+                + "setup_workspace atomically resolves credentials, clones, discovers the "
+                + "authoritative base branch, creates the feature branch, and pushes the empty "
+                + "branch to validate auth before any LLM work runs. Idempotent for mid-flow "
+                + "repo addition. (sc-683: vcs.clone is no longer granted — setup_workspace "
+                + "supersedes it; the tool is kept registered for back-compat with imported "
+                + "workflow packages but is marked deprecated in the role editor.)",
             Grants: new[]
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "setup_workspace"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.clone"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.open_pr"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
@@ -69,7 +70,6 @@ public static class SystemAgentRoles
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "setup_workspace"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.clone"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.open_pr"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "container.run"),

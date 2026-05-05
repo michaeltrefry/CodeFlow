@@ -288,6 +288,12 @@ export interface HostTool {
   description: string;
   parameters?: unknown;
   isMutating: boolean;
+  /**
+   * sc-683: tools that are still registered for back-compat but should not be granted on
+   * new role packages. The role-editor tool-picker surfaces a "deprecated" chip and the
+   * description copy explains the replacement.
+   */
+  isDeprecated?: boolean;
 }
 
 export type GitHostMode = 'GitHub' | 'GitLab';

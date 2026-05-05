@@ -6,4 +6,5 @@ public sealed record ToolSchema(
     string Name,
     string Description,
     JsonNode? Parameters,
-    bool IsMutating = false);
+    bool IsMutating = false,
+    bool IsDeprecated = false);

@@ -214,14 +214,15 @@ public sealed class HostToolProvider : IToolProvider
                 }),
             new ToolSchema(
                 "vcs.clone",
-                "Materializes a repository into the active workspace using the configured Git "
-                + "host's auth (token is platform-managed; the agent never sees it). Refuses if "
-                + "the destination path already exists. After the initial fetch the remote URL "
-                + "is scrubbed to a clean form so the auth token never persists in .git/config. "
-                + "Use this when you need to set up a workspace, including mid-flight when a "
-                + "workflow discovers a repo it did not declare in its `repos[]` input. For "
-                + "follow-up fetch / pull / checkout on an already-cloned repo, use run_command "
-                + "with git instead.",
+                "DEPRECATED — use `setup_workspace` instead. setup_workspace handles clone + "
+                + "base-branch resolution + feature-branch creation + first push atomically and "
+                + "idempotently; vcs.clone is kept registered for back-compat with imported "
+                + "workflow packages but new packages should not grant it. The seeded "
+                + "code-worker / code-builder system roles no longer include this tool.\n\n"
+                + "Original behaviour (still works): materializes a repository into the active "
+                + "workspace using the configured Git host's auth. Refuses if the destination "
+                + "path already exists. After the initial fetch the remote URL is scrubbed to a "
+                + "clean form so the auth token never persists in .git/config.",
                 new JsonObject
                 {
                     ["type"] = "object",
@@ -256,7 +257,8 @@ public sealed class HostToolProvider : IToolProvider
                     },
                     ["required"] = new JsonArray("url")
                 },
-                IsMutating: true),
+                IsMutating: true,
+                IsDeprecated: true),
             new ToolSchema(
                 SetupWorkspaceHostToolService.ToolName,
                 "Atomic, idempotent code-aware bootstrap. Takes a list of repository URLs and, for "

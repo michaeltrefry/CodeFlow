@@ -21,6 +21,7 @@ interface DisplayTool {
   description?: string | null;
   isMutating: boolean;
   isGhost: boolean;
+  isDeprecated: boolean;
 }
 
 interface DisplayGroup {
@@ -71,12 +72,15 @@ function grantKey(grant: AgentRoleGrant): string {
           @if (isExpanded(group.id)) {
             <ul class="tool-list">
               @for (tool of group.tools; track tool.identifier) {
-                <li class="tool-item" [class.ghost-tool]="tool.isGhost">
+                <li class="tool-item" [class.ghost-tool]="tool.isGhost" [class.deprecated-tool]="tool.isDeprecated">
                   @if (readOnly()) {
                     <span class="tool-label">
                       <span class="tool-name">{{ tool.label }}</span>
                       @if (tool.isGhost) {
                         <cf-chip variant="warn" mono>ghost</cf-chip>
+                      }
+                      @if (tool.isDeprecated) {
+                        <cf-chip variant="warn" mono>deprecated</cf-chip>
                       }
                       @if (tool.isMutating) {
                         <cf-chip mono>mutating</cf-chip>
@@ -93,6 +97,9 @@ function grantKey(grant: AgentRoleGrant): string {
                         <span class="tool-name">{{ tool.label }}</span>
                         @if (tool.isGhost) {
                           <cf-chip variant="warn" mono>ghost</cf-chip>
+                        }
+                        @if (tool.isDeprecated) {
+                          <cf-chip variant="warn" mono>deprecated</cf-chip>
                         }
                         @if (tool.isMutating) {
                           <cf-chip mono>mutating</cf-chip>
@@ -133,6 +140,8 @@ function grantKey(grant: AgentRoleGrant): string {
     .tool-desc { color: var(--muted); font-size: 0.8rem; }
     .tool-desc.indented { padding-left: 1.5rem; }
     .ghost-tool .tool-name { color: var(--muted); font-style: italic; }
+    .deprecated-tool .tool-name { color: var(--muted); text-decoration: line-through; }
+    .deprecated-tool .tool-desc { color: var(--muted); }
     .muted.small { font-size: 0.8rem; color: var(--muted); }
   `]
 })
@@ -164,6 +173,7 @@ export class ToolPickerComponent {
         description: t.description,
         isMutating: t.isMutating,
         isGhost: false,
+        isDeprecated: t.isDeprecated ?? false,
       })),
       ...hostSelectedGhosts.map<DisplayTool>(g => ({
         identifier: g.toolIdentifier,
@@ -172,6 +182,7 @@ export class ToolPickerComponent {
         description: null,
         isMutating: false,
         isGhost: true,
+        isDeprecated: false,
       })),
     ].filter(t => filter === '' || t.label.toLowerCase().includes(filter));
 
@@ -194,6 +205,7 @@ export class ToolPickerComponent {
           description: t.description,
           isMutating: t.isMutating,
           isGhost: false,
+          isDeprecated: false,
         })),
         ...groupGhosts.map<DisplayTool>(g => ({
           identifier: g.toolIdentifier,
@@ -202,6 +214,7 @@ export class ToolPickerComponent {
           description: null,
           isMutating: false,
           isGhost: true,
+          isDeprecated: false,
         })),
       ].filter(t => filter === '' || t.label.toLowerCase().includes(filter)
         || t.identifier.toLowerCase().includes(filter));
@@ -233,6 +246,7 @@ export class ToolPickerComponent {
           description: null,
           isMutating: false,
           isGhost: true,
+          isDeprecated: false,
         }));
       groups.push({ id: 'mcp:orphans', label: 'MCP · unknown / archived servers', tools });
     }
@@ -281,8 +295,10 @@ export class ToolPickerComponent {
     if (this.readOnly()) return;
     const current = this.value();
     const existingKeys = new Set(current.map(grantKey));
+    // Skip ghosts and deprecated tools — admins can still add a deprecated tool by hand if
+    // they really want, but bulk select-all shouldn't pull legacy surface into a fresh role.
     const additions = group.tools
-      .filter(t => !t.isGhost)
+      .filter(t => !t.isGhost && !t.isDeprecated)
       .map<AgentRoleGrant>(t => ({ category: t.category, toolIdentifier: t.identifier }))
       .filter(g => !existingKeys.has(grantKey(g)));
     if (additions.length > 0) {
