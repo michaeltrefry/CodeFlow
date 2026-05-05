@@ -4,6 +4,7 @@ using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Api.Assistant.Skills;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.CascadeBump;
+using CodeFlow.Api.Handlers;
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.TraceEvents;
 using CodeFlow.Api.Validation.Pipeline;
@@ -85,6 +86,16 @@ public static class ApiServiceCollectionExtensions
         // per-request DbContext to collect saga + decision + refusal + authority + token-usage
         // rows; the artifact store is a singleton so it doesn't pull the lifetime down.
         services.AddScoped<CodeFlow.Api.TraceBundle.TraceEvidenceBundleBuilder>();
+
+        // sc-168 / F-004: per-operation handlers carrying the orchestration that used to live
+        // inline in minimal-API handler delegates. Endpoints become auth + binding + a single
+        // ExecuteAsync call so the same logic is reachable from non-HTTP callers (homepage
+        // assistant tools, in-process tests) without standing up an HTTP host. Scoped lifetime
+        // because dependencies include scoped services (CodeFlowDbContext, IPublishEndpoint,
+        // ICurrentUser, repositories).
+        services.AddScoped<CreateTraceHandler>();
+        services.AddScoped<SubmitHitlDecisionHandler>();
+        services.AddScoped<CreateWorkflowHandler>();
 
         // Workflow validation pipeline (F1). Rules are scoped because they take a per-request
         // DbContext via WorkflowValidationContext; the pipeline itself is scoped so it picks up

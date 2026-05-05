@@ -903,92 +903,11 @@ public static class WorkflowsEndpoints
             : Results.Ok(workflow.TerminalPorts);
     }
 
-    private static async Task<IResult> CreateAsync(
+    private static Task<IResult> CreateAsync(
         CreateWorkflowRequest request,
-        IWorkflowRepository repository,
-        IAgentConfigRepository agentRepository,
-        IAgentRoleRepository roleRepository,
-        CodeFlowDbContext dbContext,
-        IAuthoringTelemetry telemetry,
-        WorkflowValidationPipeline pipeline,
+        Handlers.CreateWorkflowHandler handler,
         CancellationToken cancellationToken)
-    {
-        var validation = await WorkflowValidator.ValidateAsync(
-            request.Key ?? string.Empty,
-            request.Name,
-            request.MaxRoundsPerRound,
-            request.Nodes,
-            request.Edges,
-            request.Inputs,
-            dbContext,
-            repository,
-            agentRepository,
-            cancellationToken);
-
-        if (!validation.IsValid)
-        {
-            telemetry.ValidatorBlockedSave(
-                request.Key ?? string.Empty,
-                new[] { "workflow-validator" });
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["workflow"] = new[] { validation.Error! }
-            });
-        }
-
-        var pipelineBlock = await RunSaveTimePipelineAsync(
-            request.Key ?? string.Empty,
-            request.Name,
-            request.MaxRoundsPerRound,
-            request.Nodes,
-            request.Edges,
-            request.Inputs,
-            dbContext,
-            repository,
-            agentRepository,
-            roleRepository,
-            pipeline,
-            telemetry,
-            cancellationToken,
-            request.WorkflowVarsReads,
-            request.WorkflowVarsWrites);
-        if (pipelineBlock is not null)
-        {
-            return pipelineBlock;
-        }
-
-        var normalizedKey = request.Key!.Trim();
-        var existingWorkflow = await repository.GetLatestAsync(normalizedKey, cancellationToken);
-        if (existingWorkflow is { IsRetired: true })
-        {
-            return ApiResults.Conflict($"Workflow '{normalizedKey}' is retired. Create a new workflow with a different key.");
-        }
-
-        var existing = await dbContext.Workflows
-            .AsNoTracking()
-            .AnyAsync(workflow => workflow.Key == normalizedKey, cancellationToken);
-
-        if (existing)
-        {
-            return ApiResults.Conflict($"Workflow '{normalizedKey}' already exists. Use PUT to add a version.");
-        }
-
-        var resolvedNodes = await ResolveSubflowLatestVersionsAsync(request.Nodes!, dbContext, cancellationToken);
-        var draft = ToDraft(
-            normalizedKey,
-            request.Name!,
-            request.MaxRoundsPerRound,
-            request.Category ?? WorkflowCategory.Workflow,
-            request.Tags,
-            resolvedNodes,
-            request.Edges!,
-            request.Inputs,
-            request.WorkflowVarsReads,
-            request.WorkflowVarsWrites);
-        var version = await repository.CreateNewVersionAsync(draft, cancellationToken);
-
-        return Results.Created($"/api/workflows/{normalizedKey}/{version}", new { key = normalizedKey, version });
-    }
+        => handler.ExecuteAsync(request, cancellationToken);
 
     private static async Task<IResult> CreateVersionAsync(
         string key,
@@ -1078,7 +997,7 @@ public static class WorkflowsEndpoints
     /// Warning-only findings do not block save — the editor surfaces them via the
     /// <c>POST /validate</c> endpoint, which is what authoring UIs call interactively.
     /// </summary>
-    private static async Task<IResult?> RunSaveTimePipelineAsync(
+    internal static async Task<IResult?> RunSaveTimePipelineAsync(
         string key,
         string? name,
         int? maxRoundsPerRound,
@@ -1197,7 +1116,7 @@ public static class WorkflowsEndpoints
     /// current latest version of the referenced workflow, so the saved parent row is
     /// reproducible. Validation has already confirmed each referenced key exists.
     /// </summary>
-    private static async Task<IReadOnlyList<WorkflowNodeDto>> ResolveSubflowLatestVersionsAsync(
+    internal static async Task<IReadOnlyList<WorkflowNodeDto>> ResolveSubflowLatestVersionsAsync(
         IReadOnlyList<WorkflowNodeDto> nodes,
         CodeFlowDbContext dbContext,
         CancellationToken cancellationToken)
@@ -1240,7 +1159,7 @@ public static class WorkflowsEndpoints
             .ToArray();
     }
 
-    private static WorkflowDraft ToDraft(
+    internal static WorkflowDraft ToDraft(
         string key,
         string name,
         int? maxRoundsPerRound,
