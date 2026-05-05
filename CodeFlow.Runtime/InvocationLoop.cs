@@ -1,7 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using CodeFlow.Runtime.Observability;
 
 namespace CodeFlow.Runtime;
 
@@ -18,136 +16,11 @@ public sealed class InvocationLoop
     /// the no-outputs case would be misleading on a successful submit; the canonical
     /// <c>Completed</c> port is the safe default.
     /// </summary>
-    private const string DefaultPortName = "Completed";
-
-    /// <summary>
-    /// Cap on the serialized size of accumulated <c>setContext</c> / <c>setWorkflow</c> writes
-    /// per invocation. Mirrors the cap on <see cref="ContextAssembler"/>'s Logic-node counterpart
-    /// so agents and Logic nodes share the same bag-write budget. Exceeding the cap returns a
-    /// tool error and the loop continues — the offending value is not persisted.
-    /// </summary>
-    private const int MaxContextUpdatesChars = 256 * 1024;
-
-    /// <summary>
-    /// Cap on the length of a single <c>setContext</c> / <c>setWorkflow</c> key, mirroring the
-    /// Logic-node validation guard. Keys above this length are rejected with a tool error.
-    /// </summary>
-    private const int MaxContextKeyChars = 256;
-
-    /// <summary>
-    /// Cap on the serialized length of a single <c>setContext</c> / <c>setWorkflow</c> value
-    /// (per-call). Closes the runtime failure mode where an agent tries to stream a large
-    /// document (PRD, plan, codebase chunk) into the workflow bag mid-turn — the model has to
-    /// emit the entire value as JSON tool-call args, eating into <c>max_tokens</c> and producing
-    /// a <see cref="JsonReaderException"/> when the args JSON is truncated mid-string. The
-    /// remediation is to capture the document via an output script using <c>setOutput</c> /
-    /// <c>setWorkflow</c> in the script sandbox, where the value is bounded by the script's own
-    /// 256 KiB budget rather than the model's per-turn token allowance.
-    /// </summary>
-    private const int MaxSingleWriteChars = 16 * 1024;
-
-    private static readonly ToolSchema FailTool = new(
-        FailToolName,
-        "Fail the current agent invocation with a reason.",
-        new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["reason"] = new JsonObject
-                {
-                    ["type"] = "string"
-                }
-            },
-            ["required"] = new JsonArray("reason")
-        });
-
-    private static readonly ToolSchema SetContextTool = new(
-        SetContextToolName,
-        "Persist a value into the workflow context bag under the given key. Visible to "
-        + "downstream agents as `{{ context.<key> }}` in templates and `context.<key>` in "
-        + "Logic-node scripts. Updates accumulate during this invocation and are committed "
-        + "atomically once `submit` completes; if the agent fails, pending writes are discarded.",
-        new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["key"] = new JsonObject { ["type"] = "string" },
-                ["value"] = new JsonObject()
-            },
-            ["required"] = new JsonArray("key", "value")
-        });
-
-    private static readonly ToolSchema SetWorkflowTool = new(
-        SetWorkflowToolName,
-        "Persist a value into the per-trace-tree workflow bag under the given key. Visible to "
-        + "downstream agents and subflow children as `{{ workflow.<key> }}` in templates and "
-        + "`workflow.<key>` in scripts. Same lifecycle rules as `setContext` — committed on "
-        + "successful `submit`, discarded on failure.",
-        new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["key"] = new JsonObject { ["type"] = "string" },
-                ["value"] = new JsonObject()
-            },
-            ["required"] = new JsonArray("key", "value")
-        });
-
-    private static ToolSchema BuildSubmitTool(IReadOnlyList<string> declaredPortNames)
-    {
-        ArgumentNullException.ThrowIfNull(declaredPortNames);
-
-        var properties = new JsonObject
-        {
-            ["payload"] = new JsonObject()
-        };
-
-        var decisionSchema = new JsonObject
-        {
-            ["type"] = "string"
-        };
-
-        if (declaredPortNames.Count > 0)
-        {
-            var enumArray = new JsonArray();
-            foreach (var name in declaredPortNames)
-            {
-                enumArray.Add(name);
-            }
-            decisionSchema["enum"] = enumArray;
-            decisionSchema["description"] =
-                "The output port to route this invocation to. Must match one of the agent's "
-                + "declared output port names.";
-        }
-        else
-        {
-            decisionSchema["description"] =
-                "The output port to route this invocation to. The agent has no declared outputs; "
-                + $"omit this field to default to '{DefaultPortName}'.";
-        }
-
-        properties["decision"] = decisionSchema;
-
-        var required = declaredPortNames.Count > 0
-            ? new JsonArray("decision")
-            : new JsonArray();
-
-        return new ToolSchema(
-            SubmitToolName,
-            "Submit the final decision for this agent invocation.",
-            new JsonObject
-            {
-                ["type"] = "object",
-                ["properties"] = properties,
-                ["required"] = required
-            });
-    }
+    internal const string DefaultPortName = "Completed";
 
     private readonly IModelClient modelClient;
     private readonly ToolRegistry toolRegistry;
+    private readonly ToolInvoker toolInvoker;
     private readonly Func<DateTimeOffset> nowProvider;
 
     public InvocationLoop(
@@ -157,6 +30,7 @@ public sealed class InvocationLoop
     {
         this.modelClient = modelClient ?? throw new ArgumentNullException(nameof(modelClient));
         this.toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
+        this.toolInvoker = new ToolInvoker(toolRegistry);
         this.nowProvider = nowProvider ?? (() => DateTimeOffset.UtcNow);
     }
 
@@ -187,9 +61,9 @@ public sealed class InvocationLoop
         var contentOptionalByPort = declaredOutputs
             .Where(o => o.ContentOptional)
             .ToDictionary(o => o.Kind, _ => true, StringComparer.Ordinal);
-        var submitTool = BuildSubmitTool(declaredPortNames);
+        var submitTool = ToolSchemaBuilder.BuildSubmitTool(declaredPortNames);
         var externalTools = toolRegistry.AvailableTools(request.ToolAccessPolicy);
-        var runtimeTools = new[] { submitTool, FailTool, SetContextTool, SetWorkflowTool };
+        var runtimeTools = new[] { submitTool, ToolSchemaBuilder.FailTool, ToolSchemaBuilder.SetContextTool, ToolSchemaBuilder.SetWorkflowTool };
         var toolsByName = externalTools
             .Concat(runtimeTools)
             .ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
@@ -349,7 +223,7 @@ public sealed class InvocationLoop
                     await observer.OnToolCallStartedAsync(toolCall, cancellationToken);
                 }
 
-                if (TryHandleSetContextLikeTool(
+                if (ContextUpdateHandler.TryHandle(
                         toolCall,
                         pendingContextUpdates,
                         pendingWorkflowUpdates,
@@ -481,30 +355,14 @@ public sealed class InvocationLoop
                     continue;
                 }
 
-                // sc-680: expose a sink so host tools (setup_workspace) can stage mid-turn
-                // workflow-bag writes without owning the pending-writes dictionary themselves.
-                // The closure captures `pendingWorkflowUpdates` and shares the same caps + the
-                // reserved-key check that the setWorkflow tool path enforces. Per-invocation
-                // — we rebuild the wrapped context every call so the sink is scoped tightly
-                // and tests that don't care can still pass `request.ToolExecutionContext` raw.
-                var hostToolContext = (request.ToolExecutionContext ?? new ToolExecutionContext()) with
-                {
-                    StageWorkflowBagWrite = (key, value) =>
-                    {
-                        if (!TryStageBagWrite(
-                                pendingWorkflowUpdates,
-                                SetWorkflowToolName,
-                                key,
-                                value,
-                                isWorkflowWrite: true,
-                                out var stageError))
-                        {
-                            throw new InvalidOperationException(stageError!);
-                        }
-                    },
-                };
+                // sc-680: per-invocation wrapped context exposes StageWorkflowBagWrite to host
+                // tools (e.g. setup_workspace) so they can stage workflow-bag writes through the
+                // same caps + reserved-key check that the setWorkflow tool path enforces.
+                var hostToolContext = ContextUpdateHandler.WrapForHostTool(
+                    request.ToolExecutionContext,
+                    pendingWorkflowUpdates);
 
-                var toolResult = await InvokeToolAsync(
+                var toolResult = await toolInvoker.InvokeAsync(
                     toolCall,
                     request.ToolAccessPolicy,
                     cancellationToken,
@@ -535,36 +393,6 @@ public sealed class InvocationLoop
                         totalToolCalls);
                 }
             }
-        }
-    }
-
-    private async Task<ToolResult> InvokeToolAsync(
-        ToolCall toolCall,
-        ToolAccessPolicy? policy,
-        CancellationToken cancellationToken,
-        ToolExecutionContext? context)
-    {
-        using var activity = CodeFlowActivity.StartChild("tool.call");
-        activity?.SetTag(CodeFlowActivity.TagNames.ToolName, toolCall.Name);
-
-        try
-        {
-            var result = await toolRegistry.InvokeAsync(toolCall, policy, cancellationToken, context);
-            if (result.IsError)
-            {
-                activity?.SetStatus(ActivityStatusCode.Error, "tool reported error");
-            }
-            else
-            {
-                activity?.SetStatus(ActivityStatusCode.Ok);
-            }
-
-            return result;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
-            return new ToolResult(toolCall.Id, exception.Message, IsError: true);
         }
     }
 
@@ -728,131 +556,6 @@ public sealed class InvocationLoop
             toolCallsExecuted,
             contextUpdates,
             workflowUpdates);
-    }
-
-    private static bool TryHandleSetContextLikeTool(
-        ToolCall toolCall,
-        Dictionary<string, JsonElement> pendingContextUpdates,
-        Dictionary<string, JsonElement> pendingWorkflowUpdates,
-        out ToolResult? toolResult)
-    {
-        Dictionary<string, JsonElement>? targetBag = null;
-        string? toolDisplayName = null;
-
-        if (string.Equals(toolCall.Name, SetContextToolName, StringComparison.OrdinalIgnoreCase))
-        {
-            targetBag = pendingContextUpdates;
-            toolDisplayName = SetContextToolName;
-        }
-        else if (string.Equals(toolCall.Name, SetWorkflowToolName, StringComparison.OrdinalIgnoreCase))
-        {
-            targetBag = pendingWorkflowUpdates;
-            toolDisplayName = SetWorkflowToolName;
-        }
-
-        if (targetBag is null || toolDisplayName is null)
-        {
-            toolResult = null;
-            return false;
-        }
-
-        try
-        {
-            var keyNode = toolCall.Arguments?["key"];
-            if (keyNode is not JsonValue keyValue
-                || !keyValue.TryGetValue<string>(out var key)
-                || string.IsNullOrWhiteSpace(key))
-            {
-                throw new InvalidOperationException($"{toolDisplayName}(key, value) requires a non-empty string key.");
-            }
-
-            if (key.Length > MaxContextKeyChars)
-            {
-                throw new InvalidOperationException(
-                    $"{toolDisplayName} key length {key.Length} exceeds the {MaxContextKeyChars}-character cap.");
-            }
-
-            var valueNode = toolCall.Arguments?["value"];
-            // Treat an explicit null value as a delete — store the JSON null so saga merge
-            // overwrites the previous value with null. Missing 'value' is an error.
-            if (valueNode is null && (toolCall.Arguments is null || !toolCall.Arguments.AsObject().ContainsKey("value")))
-            {
-                throw new InvalidOperationException($"{toolDisplayName}(key, value) requires a 'value' argument.");
-            }
-
-            var element = valueNode is null
-                ? JsonDocument.Parse("null").RootElement.Clone()
-                : JsonDocument.Parse(valueNode.ToJsonString()).RootElement.Clone();
-
-            var isWorkflowWrite = string.Equals(toolDisplayName, SetWorkflowToolName, StringComparison.Ordinal);
-            if (!TryStageBagWrite(targetBag, toolDisplayName, key, element, isWorkflowWrite, out var stageError))
-            {
-                throw new InvalidOperationException(stageError!);
-            }
-
-            toolResult = new ToolResult(toolCall.Id, $"[{toolDisplayName}({key})]");
-            return true;
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or FormatException or JsonException)
-        {
-            toolResult = new ToolResult(toolCall.Id, exception.Message, IsError: true);
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Shared validation + commit for workflow / context bag writes. Used by the
-    /// <c>setContext</c> / <c>setWorkflow</c> tool path AND by host tools that stage
-    /// workflow writes via <see cref="ToolExecutionContext.StageWorkflowBagWrite"/>
-    /// (sc-680: <c>setup_workspace</c>). Mirrors the per-call value cap, the cumulative
-    /// pending-writes cap, and the reserved-key check exactly so both code paths share
-    /// a single contract.
-    /// </summary>
-    internal static bool TryStageBagWrite(
-        Dictionary<string, JsonElement> targetBag,
-        string toolDisplayName,
-        string key,
-        JsonElement element,
-        bool isWorkflowWrite,
-        out string? errorMessage)
-    {
-        if (isWorkflowWrite && ProtectedVariables.IsReserved(key))
-        {
-            errorMessage = $"setWorkflow('{key}', ...) is rejected: '{key}' is a framework-managed "
-                + "workflow variable and cannot be overwritten by agents.";
-            return false;
-        }
-
-        // Per-call value cap (V1). Reject values larger than the single-write budget before
-        // they enter the pending bag — the agent gets a typed tool error pointing at the
-        // output-script remediation path, the loop continues, and the trace doesn't risk a
-        // mid-string JSON truncation when the model retries.
-        var elementSize = element.GetRawText().Length;
-        if (elementSize > MaxSingleWriteChars)
-        {
-            errorMessage = $"{toolDisplayName} value for key '{key}' is {elementSize} chars, exceeding "
-                + $"the {MaxSingleWriteChars}-character per-call cap. Move large content to "
-                + $"an output script using setOutput / {toolDisplayName} in the script "
-                + $"sandbox; mid-turn tool-call args are constrained by the model's "
-                + $"max_tokens budget.";
-            return false;
-        }
-
-        var candidate = new Dictionary<string, JsonElement>(targetBag, StringComparer.Ordinal)
-        {
-            [key] = element
-        };
-        var serializedSize = JsonSerializer.Serialize(candidate).Length;
-        if (serializedSize > MaxContextUpdatesChars)
-        {
-            errorMessage = $"{toolDisplayName} writes total {serializedSize} chars, exceeding the "
-                + $"{MaxContextUpdatesChars}-character cap. Discarding this write.";
-            return false;
-        }
-
-        targetBag[key] = element;
-        errorMessage = null;
-        return true;
     }
 
     /// <summary>
