@@ -42,7 +42,8 @@ internal static class NotificationsTestFactoryExtensions
 }
 
 [Trait("Category", "EndToEnd")]
-public sealed class NotificationsEndpointsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class NotificationsEndpointsTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

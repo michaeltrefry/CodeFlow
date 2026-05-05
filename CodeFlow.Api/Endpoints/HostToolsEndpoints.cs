@@ -26,7 +26,8 @@ public static class HostToolsEndpoints
                 Name: tool.Name,
                 Description: tool.Description,
                 Parameters: tool.Parameters?.DeepClone(),
-                IsMutating: tool.IsMutating))
+                IsMutating: tool.IsMutating,
+                IsDeprecated: tool.IsDeprecated))
             .ToArray();
 
         return Results.Ok(response);

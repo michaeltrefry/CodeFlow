@@ -30,6 +30,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Net.Http;
 using Microsoft.Extensions.Options;
 
@@ -337,7 +338,13 @@ public static class HostExtensions
                     factory: sp.GetRequiredService<IVcsProviderFactory>(),
                     gitCli: sp.GetRequiredService<IGitCli>(),
                     hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>(),
-                    workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value),
+                    workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
+                    logger: sp.GetRequiredService<ILogger<VcsHostToolService>>()),
+                setupWorkspaceTools: new SetupWorkspaceHostToolService(
+                    credentialResolver: sp.GetRequiredService<IPerTraceCredentialResolver>(),
+                    gitCli: sp.GetRequiredService<IGitCli>(),
+                    workspaceOptions: sp.GetRequiredService<IOptions<WorkspaceOptions>>().Value,
+                    hostGuard: sp.GetRequiredService<IRepoUrlHostGuard>()),
                 containerTools: sp.GetRequiredService<DockerHostToolService>(),
                 webTools: sp.GetRequiredService<WebHostToolService>()));
         services.AddSingleton<Agent>();

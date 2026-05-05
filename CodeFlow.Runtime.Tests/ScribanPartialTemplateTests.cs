@@ -11,12 +11,19 @@ namespace CodeFlow.Runtime.Tests;
 /// </summary>
 public sealed class ScribanPartialTemplateTests
 {
+    // Production default is 100ms, which is fine in a warm process but tight when xunit is
+    // running this class in parallel with hundreds of others (cold-JIT first render can take
+    // tens of ms even for a trivial template). A 5-second test budget removes the flake
+    // without weakening any production guarantee — the ContextAssemblerTests'
+    // pathological-template + sandbox-budget assertions still use the default.
+    private static readonly TimeSpan TestRenderTimeout = TimeSpan.FromSeconds(5);
+
     private static ScriptObject EmptyScope() => new();
 
     [Fact]
     public void Render_WithPartial_ResolvesIncludeToBody()
     {
-        var renderer = new ScribanTemplateRenderer();
+        var renderer = new ScribanTemplateRenderer(TestRenderTimeout);
         var partials = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["@codeflow/reviewer-base"] = "Approve unless there is a critical gap."
@@ -35,7 +42,7 @@ public sealed class ScribanPartialTemplateTests
     {
         // Existing call sites (no partials param) must keep working unchanged. CR1 — agents
         // without partial pins render identically to pre-F3.
-        var renderer = new ScribanTemplateRenderer();
+        var renderer = new ScribanTemplateRenderer(TestRenderTimeout);
 
         var output = renderer.Render("Hello, {{ name }}.", BuildScope(("name", "world")));
 
@@ -46,7 +53,7 @@ public sealed class ScribanPartialTemplateTests
     public void Render_PartialDictPresentButNotReferenced_RendersTemplateUnchanged()
     {
         // Having partials available shouldn't perturb a template that doesn't include them.
-        var renderer = new ScribanTemplateRenderer();
+        var renderer = new ScribanTemplateRenderer(TestRenderTimeout);
         var partials = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["@codeflow/unused"] = "This should not appear."
@@ -63,7 +70,7 @@ public sealed class ScribanPartialTemplateTests
     [Fact]
     public void Render_UnknownPartialInclude_RaisesPromptTemplateException()
     {
-        var renderer = new ScribanTemplateRenderer();
+        var renderer = new ScribanTemplateRenderer(TestRenderTimeout);
         var partials = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["@codeflow/exists"] = "OK"
@@ -84,7 +91,7 @@ public sealed class ScribanPartialTemplateTests
         // Bumping a partial's body must change downstream renders only when the new version is
         // supplied. Two renders with different version-bodies prove the loader routes through
         // the dict per-call.
-        var renderer = new ScribanTemplateRenderer();
+        var renderer = new ScribanTemplateRenderer(TestRenderTimeout);
         var template = "Header\n{{ include \"@codeflow/footer\" }}";
         var v1 = new Dictionary<string, string>(StringComparer.Ordinal)
         {

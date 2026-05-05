@@ -481,11 +481,34 @@ public sealed class InvocationLoop
                     continue;
                 }
 
+                // sc-680: expose a sink so host tools (setup_workspace) can stage mid-turn
+                // workflow-bag writes without owning the pending-writes dictionary themselves.
+                // The closure captures `pendingWorkflowUpdates` and shares the same caps + the
+                // reserved-key check that the setWorkflow tool path enforces. Per-invocation
+                // — we rebuild the wrapped context every call so the sink is scoped tightly
+                // and tests that don't care can still pass `request.ToolExecutionContext` raw.
+                var hostToolContext = (request.ToolExecutionContext ?? new ToolExecutionContext()) with
+                {
+                    StageWorkflowBagWrite = (key, value) =>
+                    {
+                        if (!TryStageBagWrite(
+                                pendingWorkflowUpdates,
+                                SetWorkflowToolName,
+                                key,
+                                value,
+                                isWorkflowWrite: true,
+                                out var stageError))
+                        {
+                            throw new InvalidOperationException(stageError!);
+                        }
+                    },
+                };
+
                 var toolResult = await InvokeToolAsync(
                     toolCall,
                     request.ToolAccessPolicy,
                     cancellationToken,
-                    request.ToolExecutionContext);
+                    hostToolContext);
                 transcript.Add(new ChatMessage(
                     ChatMessageRole.Tool,
                     toolResult.Content,
@@ -749,14 +772,6 @@ public sealed class InvocationLoop
                     $"{toolDisplayName} key length {key.Length} exceeds the {MaxContextKeyChars}-character cap.");
             }
 
-            if (string.Equals(toolDisplayName, SetWorkflowToolName, StringComparison.Ordinal)
-                && ProtectedVariables.IsReserved(key))
-            {
-                throw new InvalidOperationException(
-                    $"setWorkflow('{key}', ...) is rejected: '{key}' is a framework-managed "
-                    + "workflow variable and cannot be overwritten by agents.");
-            }
-
             var valueNode = toolCall.Arguments?["value"];
             // Treat an explicit null value as a delete — store the JSON null so saga merge
             // overwrites the previous value with null. Missing 'value' is an error.
@@ -769,34 +784,12 @@ public sealed class InvocationLoop
                 ? JsonDocument.Parse("null").RootElement.Clone()
                 : JsonDocument.Parse(valueNode.ToJsonString()).RootElement.Clone();
 
-            // Per-call value cap (V1). Reject values larger than the single-write budget before
-            // they enter the pending bag — the agent gets a typed tool error pointing at the
-            // output-script remediation path, the loop continues, and the trace doesn't risk a
-            // mid-string JSON truncation when the model retries.
-            var elementSize = element.GetRawText().Length;
-            if (elementSize > MaxSingleWriteChars)
+            var isWorkflowWrite = string.Equals(toolDisplayName, SetWorkflowToolName, StringComparison.Ordinal);
+            if (!TryStageBagWrite(targetBag, toolDisplayName, key, element, isWorkflowWrite, out var stageError))
             {
-                throw new InvalidOperationException(
-                    $"{toolDisplayName} value for key '{key}' is {elementSize} chars, exceeding "
-                    + $"the {MaxSingleWriteChars}-character per-call cap. Move large content to "
-                    + $"an output script using setOutput / {toolDisplayName} in the script "
-                    + $"sandbox; mid-turn tool-call args are constrained by the model's "
-                    + $"max_tokens budget.");
+                throw new InvalidOperationException(stageError!);
             }
 
-            var candidate = new Dictionary<string, JsonElement>(targetBag, StringComparer.Ordinal)
-            {
-                [key] = element
-            };
-            var serializedSize = JsonSerializer.Serialize(candidate).Length;
-            if (serializedSize > MaxContextUpdatesChars)
-            {
-                throw new InvalidOperationException(
-                    $"{toolDisplayName} writes total {serializedSize} chars, exceeding the "
-                    + $"{MaxContextUpdatesChars}-character cap. Discarding this write.");
-            }
-
-            targetBag[key] = element;
             toolResult = new ToolResult(toolCall.Id, $"[{toolDisplayName}({key})]");
             return true;
         }
@@ -805,6 +798,61 @@ public sealed class InvocationLoop
             toolResult = new ToolResult(toolCall.Id, exception.Message, IsError: true);
             return true;
         }
+    }
+
+    /// <summary>
+    /// Shared validation + commit for workflow / context bag writes. Used by the
+    /// <c>setContext</c> / <c>setWorkflow</c> tool path AND by host tools that stage
+    /// workflow writes via <see cref="ToolExecutionContext.StageWorkflowBagWrite"/>
+    /// (sc-680: <c>setup_workspace</c>). Mirrors the per-call value cap, the cumulative
+    /// pending-writes cap, and the reserved-key check exactly so both code paths share
+    /// a single contract.
+    /// </summary>
+    internal static bool TryStageBagWrite(
+        Dictionary<string, JsonElement> targetBag,
+        string toolDisplayName,
+        string key,
+        JsonElement element,
+        bool isWorkflowWrite,
+        out string? errorMessage)
+    {
+        if (isWorkflowWrite && ProtectedVariables.IsReserved(key))
+        {
+            errorMessage = $"setWorkflow('{key}', ...) is rejected: '{key}' is a framework-managed "
+                + "workflow variable and cannot be overwritten by agents.";
+            return false;
+        }
+
+        // Per-call value cap (V1). Reject values larger than the single-write budget before
+        // they enter the pending bag — the agent gets a typed tool error pointing at the
+        // output-script remediation path, the loop continues, and the trace doesn't risk a
+        // mid-string JSON truncation when the model retries.
+        var elementSize = element.GetRawText().Length;
+        if (elementSize > MaxSingleWriteChars)
+        {
+            errorMessage = $"{toolDisplayName} value for key '{key}' is {elementSize} chars, exceeding "
+                + $"the {MaxSingleWriteChars}-character per-call cap. Move large content to "
+                + $"an output script using setOutput / {toolDisplayName} in the script "
+                + $"sandbox; mid-turn tool-call args are constrained by the model's "
+                + $"max_tokens budget.";
+            return false;
+        }
+
+        var candidate = new Dictionary<string, JsonElement>(targetBag, StringComparer.Ordinal)
+        {
+            [key] = element
+        };
+        var serializedSize = JsonSerializer.Serialize(candidate).Length;
+        if (serializedSize > MaxContextUpdatesChars)
+        {
+            errorMessage = $"{toolDisplayName} writes total {serializedSize} chars, exceeding the "
+                + $"{MaxContextUpdatesChars}-character cap. Discarding this write.";
+            return false;
+        }
+
+        targetBag[key] = element;
+        errorMessage = null;
+        return true;
     }
 
     /// <summary>

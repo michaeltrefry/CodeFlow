@@ -5,7 +5,11 @@ namespace CodeFlow.Runtime.Tests;
 
 public sealed class ScribanTemplateRendererTests
 {
-    private readonly ScribanTemplateRenderer renderer = new();
+    // Production default is 100ms; bumped here so cold-JIT first render under xunit parallel
+    // load doesn't trip the wall-clock budget. The runaway-loop and external-cancellation
+    // tests fire LoopLimit / OperationCanceledException respectively, neither of which
+    // depends on this timeout.
+    private readonly ScribanTemplateRenderer renderer = new(TimeSpan.FromSeconds(5));
 
     [Fact]
     public void Render_ShouldSubstituteScalarVariables()

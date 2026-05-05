@@ -2,26 +2,37 @@ using System.Text.Json;
 using CodeFlow.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class TokenUsageRecordPersistenceTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer container = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_token_usage")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_tokenusagerecordpersistencetests";
+    private string? connectionString;
+
+
+    public TokenUsageRecordPersistenceTests(SharedMariaDbFixture mariaDb)
+
+
+    {
+
+
+        this.mariaDb = mariaDb;
+
+
+    }
+
+
 
     public async Task InitializeAsync()
     {
-        await container.StartAsync();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
     }
 
     public async Task DisposeAsync()
     {
-        await container.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]
@@ -167,7 +178,7 @@ public sealed class TokenUsageRecordPersistenceTests : IAsyncLifetime
     private async Task<DbContextOptions<CodeFlowDbContext>> BuildOptionsAndMigrateAsync()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(builder, container.GetConnectionString());
+        CodeFlowDbContextOptions.Configure(builder, connectionString!);
         await using var migrationContext = new CodeFlowDbContext(builder.Options);
         await migrationContext.Database.MigrateAsync();
         return builder.Options;

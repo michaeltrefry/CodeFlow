@@ -2,7 +2,6 @@ using CodeFlow.Api.WorkflowTemplates;
 using CodeFlow.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
 
 namespace CodeFlow.Api.Tests.WorkflowTemplates;
 
@@ -11,28 +10,13 @@ namespace CodeFlow.Api.Tests.WorkflowTemplates;
 /// the underlying repositories rely on real transactions for atomic save sequences.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
+public sealed class WorkflowTemplateMaterializerTests : IClassFixture<WorkflowTemplateMariaDbFixture>
 {
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_template_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
+    private readonly string connectionString;
 
-    private string? connectionString;
-
-    public async Task InitializeAsync()
+    public WorkflowTemplateMaterializerTests(WorkflowTemplateMariaDbFixture fixture)
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
-
-        await using var ctx = CreateDbContext();
-        await ctx.Database.MigrateAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        await mariaDbContainer.DisposeAsync();
+        connectionString = fixture.ConnectionString;
     }
 
     [Fact]
@@ -728,8 +712,11 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
         // sc-273: a fresh DB without the code-worker seed should still materialize the
         // template — the role assignment is best-effort. Operator wires up an equivalent role
         // post-materialization if the system seeds aren't loaded.
+        // sc-699 Phase B: this class shares one MariaDB across all tests, so a sibling test
+        // may have seeded the role. Hard-delete it before the test (and re-seed at the end)
+        // so the contract under test — "role missing → no assignment" — is actually exercised.
         AgentConfigRepository.ClearCacheForTests();
-        // intentionally NOT calling SeedSystemRolesAsync() here
+        await UnseedCodeWorkerRoleAsync();
         var prefix = $"mech-noseed-{Guid.NewGuid():N}";
         var materializer = CreateMaterializer();
 
@@ -756,6 +743,23 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
         await SystemAgentRoleSeeder.SeedAsync(ctx);
     }
 
+    private async Task UnseedCodeWorkerRoleAsync()
+    {
+        // sc-699 Phase B: tests share one MariaDB; the "role-not-seeded" case asserts the
+        // materializer's best-effort behavior when CodeWorkerKey doesn't exist. Drop the
+        // role row (cascade-delete drops grants/assignments via FK) so the contract holds
+        // even if a sibling test ran SeedSystemRolesAsync first.
+        await using var ctx = CreateDbContext();
+        var existing = await ctx.AgentRoles
+            .Where(r => r.Key == SystemAgentRoles.CodeWorkerKey)
+            .ToListAsync();
+        if (existing.Count > 0)
+        {
+            ctx.AgentRoles.RemoveRange(existing);
+            await ctx.SaveChangesAsync();
+        }
+    }
+
     [Fact]
     public void TemplateRegistry_LookupIsCaseInsensitive()
     {
@@ -770,7 +774,7 @@ public sealed class WorkflowTemplateMaterializerTests : IAsyncLifetime
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();
-        CodeFlowDbContextOptions.Configure(builder, connectionString!);
+        CodeFlowDbContextOptions.Configure(builder, connectionString);
         return new CodeFlowDbContext(builder.Options);
     }
 

@@ -12,7 +12,8 @@ using System.Text.Json.Nodes;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class WorkflowsEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class WorkflowsEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 

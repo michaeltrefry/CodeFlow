@@ -11,7 +11,8 @@ using System.Text.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class AuthDiscoveryEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class AuthDiscoveryEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 

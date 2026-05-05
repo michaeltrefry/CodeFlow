@@ -16,7 +16,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// and the not-found error path.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class DiagnoseTraceToolTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class DiagnoseTraceToolTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

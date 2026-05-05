@@ -1,7 +1,5 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
 /// <summary>
@@ -10,20 +8,27 @@ namespace CodeFlow.Persistence.Tests;
 /// purge — is the schema/EF integration; running against the in-memory provider would skip
 /// the unique-violation path entirely.
 /// </summary>
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class AssistantTurnIdempotencyRepositoryTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
-
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_assistantturnidempotencyrepositorytests";
     private string? connectionString;
+
+
+
+    public AssistantTurnIdempotencyRepositoryTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var dbContext = CreateDbContext();
         await dbContext.Database.MigrateAsync();
@@ -31,7 +36,7 @@ public sealed class AssistantTurnIdempotencyRepositoryTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await mariaDbContainer.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]

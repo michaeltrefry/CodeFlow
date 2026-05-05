@@ -1,6 +1,8 @@
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Admission;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeFlow.Runtime.Workspace;
 
@@ -17,6 +19,7 @@ public sealed class VcsHostToolService
     private readonly IGitCli? gitCli;
     private readonly IRepoUrlHostGuard? hostGuard;
     private readonly WorkspaceOptions? workspaceOptions;
+    private readonly ILogger<VcsHostToolService> logger;
 
     public VcsHostToolService(
         IVcsProviderFactory factory,
@@ -24,7 +27,8 @@ public sealed class VcsHostToolService
         Func<DateTimeOffset>? nowProvider = null,
         IGitCli? gitCli = null,
         IRepoUrlHostGuard? hostGuard = null,
-        WorkspaceOptions? workspaceOptions = null)
+        WorkspaceOptions? workspaceOptions = null,
+        ILogger<VcsHostToolService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         this.factory = factory;
@@ -32,6 +36,7 @@ public sealed class VcsHostToolService
         this.gitCli = gitCli;
         this.hostGuard = hostGuard;
         this.workspaceOptions = workspaceOptions;
+        this.logger = logger ?? NullLogger<VcsHostToolService>.Instance;
     }
 
     public async Task<ToolResult> OpenPullRequestAsync(
@@ -92,6 +97,15 @@ public sealed class VcsHostToolService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
+
+        // sc-683: vcs.clone is deprecated in favor of setup_workspace, which atomically
+        // resolves credentials, clones, picks the base branch, creates the feature branch,
+        // and pushes. The tool stays registered for back-compat with imported workflow
+        // packages but every invocation logs a warning so operators see the migration prompt.
+        logger.LogWarning(
+            "vcs.clone invoked — this tool is deprecated. New workflows should call setup_workspace, "
+            + "which handles clone + base-branch resolution + feature-branch creation + first push "
+            + "atomically. See docs/code-aware-workflows.md for the migration recipe.");
 
         if (gitCli is null)
         {

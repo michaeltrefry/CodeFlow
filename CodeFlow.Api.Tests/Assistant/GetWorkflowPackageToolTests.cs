@@ -15,7 +15,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// 4 KB truncation contract are the load-bearing assertions.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class GetWorkflowPackageToolTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class GetWorkflowPackageToolTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

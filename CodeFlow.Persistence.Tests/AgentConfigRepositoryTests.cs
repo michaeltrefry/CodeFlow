@@ -2,26 +2,30 @@ using CodeFlow.Runtime;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class AgentConfigRepositoryTests : IAsyncLifetime
 {
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_agentconfigrepositorytests";
+    private string? connectionString;
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
 
-    private string? connectionString;
+    public AgentConfigRepositoryTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var dbContext = CreateDbContext();
         await dbContext.Database.MigrateAsync();
@@ -29,7 +33,7 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await mariaDbContainer.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]

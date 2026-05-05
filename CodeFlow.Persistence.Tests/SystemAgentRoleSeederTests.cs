@@ -1,23 +1,28 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_seed_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
-
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_systemagentroleseedertests";
     private string? connectionString;
+
+
+
+    public SystemAgentRoleSeederTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var ctx = CreateDbContext();
         await ctx.Database.MigrateAsync();
@@ -25,7 +30,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await mariaDbContainer.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]
@@ -56,12 +61,15 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "read_file",
                 "apply_patch",
                 "run_command",
-                "vcs.clone",
+                "setup_workspace",
                 "vcs.get_repo",
                 "vcs.open_pr",
                 "echo",
                 "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "vcs.clone",
+            because: "sc-683 retired vcs.clone from seeded grants in favor of setup_workspace");
 
         var readOnlyShell = seeded.Single(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
         var readOnlyGrants = await ctx.AgentRoleToolGrants
@@ -100,7 +108,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "read_file",
                 "apply_patch",
                 "run_command",
-                "vcs.clone",
+                "setup_workspace",
                 "vcs.get_repo",
                 "vcs.open_pr",
                 "container.run",
@@ -109,6 +117,9 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
                 "echo",
                 "now");
         grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "vcs.clone",
+            because: "sc-683 retired vcs.clone from seeded grants in favor of setup_workspace");
     }
 
     [Fact]
@@ -208,7 +219,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             "read_file",
             "apply_patch",
             "run_command",
-            "vcs.clone",
+            "setup_workspace",
             "vcs.get_repo",
             "vcs.open_pr",
             "now");

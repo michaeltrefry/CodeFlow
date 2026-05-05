@@ -386,6 +386,74 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_HostToolStagesWorkflowWriteViaSink_PersistsOnSubmit()
+    {
+        // sc-680: validates the StageWorkflowBagWrite sink end-to-end. A host tool calls the
+        // sink during its turn; on a successful submit the staged write must surface in
+        // WorkflowUpdates, exactly as if the agent had called setWorkflow directly.
+        var hostTool = new SinkUsingToolProvider("stage_test_repos");
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Calling host tool then submitting.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_host", "stage_test_repos", new JsonObject()),
+                        new ToolCall("call_submit", "submit",
+                            new JsonObject { ["decision"] = "Approved" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([hostTool]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Bootstrap.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Approved", null, null)]));
+
+        result.Decision.PortName.Should().Be("Approved");
+        result.WorkflowUpdates.Should().NotBeNull(
+            "the StageWorkflowBagWrite sink must commit on a successful submit, just like setWorkflow");
+        result.WorkflowUpdates!["repositories"].ValueKind.Should().Be(JsonValueKind.Array);
+        result.WorkflowUpdates["repositories"][0].GetProperty("url").GetString()
+            .Should().Be("https://example.invalid/owner/repo");
+    }
+
+    [Fact]
+    public async Task RunAsync_HostToolStagesWorkflowWriteViaSink_DiscardedOnFailedSubmit()
+    {
+        // Same sink + same staged write, but the agent calls the `fail` tool instead of
+        // `submit`. Pending writes (including those staged via the sink) are discarded,
+        // mirroring the existing setWorkflow contract under failure.
+        var hostTool = new SinkUsingToolProvider("stage_test_repos");
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Calling host tool then failing.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_host", "stage_test_repos", new JsonObject()),
+                        new ToolCall("call_fail", "fail",
+                            new JsonObject { ["reason"] = "blew up" })
+                    ]),
+                InvocationStopReason.ToolCalls)
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([hostTool]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Bootstrap.")],
+            "gpt-5"));
+
+        result.Decision.PortName.Should().Be("Failed");
+        result.WorkflowUpdates.Should().BeNull(
+            "fail-terminated invocations discard pending writes, including those staged via the sink");
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldExposeSetContextWrites_OnSuccessfulSubmit()
     {
         var modelClient = new ScriptedModelClient(
@@ -918,8 +986,13 @@ public sealed class InvocationLoopTests
             ToolExecutionContext: expectedContext));
 
         result.Decision.PortName.Should().Be("Completed");
+        // sc-680: InvocationLoop wraps the request's context with a StageWorkflowBagWrite
+        // sink before passing it to host tools, so equality is checked over the data fields
+        // only — the sink delegate is intentionally not part of the per-context identity.
         provider.InvokedContexts.Should().ContainSingle()
-            .Which.Should().BeEquivalentTo(expectedContext);
+            .Which.Should().BeEquivalentTo(
+                expectedContext,
+                options => options.Excluding(c => c.StageWorkflowBagWrite));
     }
 
     [Fact]
@@ -1309,6 +1382,38 @@ public sealed class InvocationLoopTests
         public Task OnToolCallStartedAsync(ToolCall call, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task OnToolCallCompletedAsync(ToolCall call, ToolResult result, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Test-only IToolProvider exposing one host tool that calls
+    /// <see cref="ToolExecutionContext.StageWorkflowBagWrite"/> with a fixed
+    /// repositories[] array. Used to exercise the InvocationLoop's sink wiring without
+    /// pulling in the full SetupWorkspaceHostToolService fixture.
+    /// </summary>
+    private sealed class SinkUsingToolProvider(string toolName) : IToolProvider
+    {
+        private readonly string toolName = toolName;
+
+        public ToolCategory Category => ToolCategory.Host;
+
+        public IReadOnlyList<ToolSchema> AvailableTools(ToolAccessPolicy policy) =>
+            [new ToolSchema(toolName, "Stages a workflow.repositories write via the sink.", new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject(),
+            }, IsMutating: true)];
+
+        public Task<ToolResult> InvokeAsync(
+            ToolCall toolCall,
+            CancellationToken cancellationToken = default,
+            ToolExecutionContext? context = null)
+        {
+            var sink = context?.StageWorkflowBagWrite
+                ?? throw new InvalidOperationException("Sink not wired — InvocationLoop must populate StageWorkflowBagWrite when invoking host tools.");
+            using var doc = JsonDocument.Parse("[{\"url\":\"https://example.invalid/owner/repo\",\"branch\":\"main\"}]");
+            sink("repositories", doc.RootElement.Clone());
+            return Task.FromResult(new ToolResult(toolCall.Id, "{\"ok\":true}"));
+        }
     }
 
     private sealed class ScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient

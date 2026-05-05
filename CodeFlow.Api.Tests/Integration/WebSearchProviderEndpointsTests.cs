@@ -8,8 +8,9 @@ using System.Net.Http.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
+[Collection("CodeFlowApi")]
 public sealed class WebSearchProviderEndpointsTests
-    : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+    : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

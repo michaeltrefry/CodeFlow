@@ -288,6 +288,132 @@ of wiring into 30 seconds. Available templates:
 - **Lifecycle wrapper** — three placeholder phase workflows chained by
   two HITL approval gates.
 
+### Authoring code-aware workflows (setup → work → PR)
+
+Code-aware workflows are the dev-flow pattern: clone repos, run agent
+work over them, commit, open a PR. One host tool — `setup_workspace` —
+collapses the entire bootstrap (clone, base-branch resolution, feature-
+branch creation, first push to register credentials) into a single
+atomic, idempotent call so authors don't have to choreograph it from
+agent prompts.
+
+Reference: `docs/code-aware-workflows.md` is the canonical platform
+contract.
+
+**Bootstrap with `setup_workspace`, not by stitching `git` calls.**
+The setup agent (the first agent that touches the repos) calls one
+tool:
+
+```
+setup_workspace({ repositories: [{ url: "https://…/repo.git" }, …] })
+```
+
+The tool returns:
+
+```
+{ repos: [{
+    url, localPath, baseBranch, featureBranch, baseSha, alreadyPresent
+  }, …]
+}
+```
+
+Stash the array via `setWorkflow("repos", result.repos)` so every
+downstream agent has a stable handle. Each agent then reads
+`workflow.repos[i].featureBranch` / `localPath` / `baseBranch` directly
+— no parsing, no guessing, no remote calls.
+
+What the tool does for you, atomically per repo:
+
+- Resolves the upstream default branch via `git ls-remote --symref
+  origin HEAD` (so the workflow doesn't silently target `main` when the
+  repo uses `master` / `develop` / `trunk`).
+- Clones into the trace workspace under `traceWorkDir`.
+- Creates `<featureBranchPrefix>/<traceId-short>` off the resolved base
+  and pushes it once with `-u`, which exercises the credential helper
+  boundary at task 1 (instead of after hours of LLM work) so any auth
+  failure surfaces before the dev cycle starts.
+- Captures the base SHA so reviewers can diff against the exact starting
+  point.
+- Stages a `setWorkflow("repositories", […])` update so subsequent
+  `vcs.open_pr` calls pass the per-trace allowlist check.
+
+**Mid-flow addition is the same call.** If the architect or coding
+agent discovers a missing dependency, call
+`setup_workspace({ repositories: [{ url: "<new-repo>.git" }] })` again.
+The tool is an idempotent merge: existing repos round-trip with
+`alreadyPresent: true` (no re-clone, no re-push), and the new one goes
+through the full setup pipeline. Re-stash the merged result with
+`setWorkflow("repos", result.repos)` so downstream agents see all
+clones.
+
+**Auth is automatic.** The platform's per-trace credential helper makes
+every spawned `git` process see
+`credential.helper = store --file=…/{traceId:N}`. Authors don't plumb
+tokens, write helpers, or pass anything through agent prompts. The only
+thing that can take it out is the `auth_unavailable` structured error
+from `setup_workspace` — which means the configured `GitHostSettings`
+has no token for the requested host. Surface that to the user, don't
+try to work around it.
+
+**Structured errors, not free-text failure.** `setup_workspace` returns
+an `error` object with a stable `code` for every failure shape:
+
+| code | meaning |
+| --- | --- |
+| `auth_unavailable` | No token configured for the requested host. |
+| `host_not_allowed` | URL host isn't on `GitHostSettings.AllowedHosts`. |
+| `url_invalid` | URL didn't parse / wasn't an `https://…/.git` shape. |
+| `path_confined` | Resolved local path escapes `traceWorkDir`. |
+| `clone_failed` | `git clone` exited non-zero. |
+| `branch_create_failed` | `git checkout -b <featureBranch>` failed. |
+| `push_failed` | First push to register the feature branch failed. |
+| `base_branch_lookup_failed` | `git ls-remote --symref origin HEAD` failed. |
+| `base_branch_mismatch` | Caller-supplied `branch` disagrees with remote HEAD. |
+| `rev_parse_failed` | Couldn't capture the base SHA. |
+| `credential_file_write_failed` | Couldn't write the per-trace cred file. |
+| `stage_repositories_failed` | Workflow-bag stage write rejected the value. |
+
+Agents handle these by surfacing the code to the user (HITL, abort port,
+or message back to the operator). Don't have agents retry or pattern-
+match against free-text — the codes are the contract.
+
+**Plain `run_command git` for the rest.** Once `setup_workspace` has
+landed, every other git operation — `git add`, `git commit`,
+`git status`, `git diff`, even subsequent `git push` after additional
+commits — is a plain `run_command "git", [...]` invocation from the
+agent. The credential helper handles auth on every git invocation
+transparently. There's no second tool to call.
+
+**Use `vcs.open_pr` for delivery.** `vcs.open_pr` is the publish
+boundary: it's the one tool policed by envelope axes and the per-trace
+`repositories[]` allowlist that `setup_workspace` populates. Grant it
+to the publish agent only.
+
+`vcs.clone` and `vcs.get_repo` are NOT needed in code-aware workflows
+— `setup_workspace` does both jobs (clone + base-branch resolution).
+`vcs.clone` is deprecated in favor of `setup_workspace`; don't grant
+it on new role packages.
+
+**Scope grants per agent.** Don't grant the whole tool set to every
+agent. Typical scoping:
+
+- Setup agent: `setup_workspace`.
+- Developer / committer / general-work agents: NO `vcs.*` or workspace
+  tools — they use `run_command "git", [...]` for everything. (If a
+  developer agent needs to add a discovered dependency repo, grant
+  `setup_workspace` too — it's idempotent so re-calling is safe.)
+- Publish agent: `vcs.open_pr` only.
+
+The seeded `code-worker` and `code-builder` roles already include
+`setup_workspace` — assign one of those to the setup agent and you're
+done.
+
+**`workflow.repositories`, NOT `context.repositories`.** Worth
+restating: the per-trace VCS allowlist lives on the `workflow` bag
+(saga-field-backed), not `context`. `setup_workspace` writes to it on
+your behalf; `setContext('repositories', ...)` does NOT widen the
+allowlist or trigger cred-file rewrite.
+
 ### When to fan out: sub-agents vs Swarm vs ReviewLoop vs Subflow
 Pick the smallest primitive that fits — these are NOT interchangeable:
 

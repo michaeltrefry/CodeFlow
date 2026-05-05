@@ -21,7 +21,8 @@ namespace CodeFlow.Api.Tests.Integration;
 /// - history reload on subsequent reads
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class AssistantEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class AssistantEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
     private static readonly StubAssistant AssistantStub = new();

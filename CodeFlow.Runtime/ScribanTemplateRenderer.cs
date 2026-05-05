@@ -23,7 +23,15 @@ public interface IScribanTemplateRenderer
 
 public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
 {
-    internal static readonly TimeSpan RenderTimeout = TimeSpan.FromMilliseconds(100);
+    /// <summary>
+    /// Default per-render sandbox budget. Tight by design — a runaway loop or recursive
+    /// partial in a real workflow shouldn't be allowed to peg a CPU core for seconds before
+    /// the host kills the request. Constructor-overridable for tests that compete for CPU
+    /// with the rest of the xunit suite (cold-JIT first-render time can be tens of ms even
+    /// for trivial templates) — production callers leave it at the default.
+    /// </summary>
+    public static readonly TimeSpan DefaultRenderTimeout = TimeSpan.FromMilliseconds(100);
+
     private const int DefaultLoopLimit = 1000;
     private const int DefaultRecursiveLimit = 64;
     private const int DefaultLimitToString = 1_000_000;
@@ -32,6 +40,13 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
     // values can shadow them on a per-render basis if absolutely required, but in practice
     // these are stable framework-managed names (mirrors `ProtectedVariables` for scripts).
     private static readonly ScriptObject Builtins = CreateBuiltins();
+
+    private readonly TimeSpan renderTimeout;
+
+    public ScribanTemplateRenderer(TimeSpan? renderTimeout = null)
+    {
+        this.renderTimeout = renderTimeout ?? DefaultRenderTimeout;
+    }
 
     private static ScriptObject CreateBuiltins()
     {
@@ -76,7 +91,7 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
                     : $"Prompt template has syntax errors: {details}");
         }
 
-        using var timeoutCts = new CancellationTokenSource(RenderTimeout);
+        using var timeoutCts = new CancellationTokenSource(renderTimeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             timeoutCts.Token, cancellationToken);
 
@@ -104,7 +119,7 @@ public sealed class ScribanTemplateRenderer : IScribanTemplateRenderer
                 throw new OperationCanceledException(cancellationToken);
             }
             throw new PromptTemplateException(
-                $"Prompt template render exceeded the {RenderTimeout.TotalMilliseconds:F0}ms sandbox budget.");
+                $"Prompt template render exceeded the {renderTimeout.TotalMilliseconds:F0}ms sandbox budget.");
         }
         catch (ScriptRuntimeException ex)
         {

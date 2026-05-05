@@ -6,4 +6,5 @@ public sealed record HostToolResponse(
     string Name,
     string Description,
     JsonNode? Parameters,
-    bool IsMutating);
+    bool IsMutating,
+    bool IsDeprecated);

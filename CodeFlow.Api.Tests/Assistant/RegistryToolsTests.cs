@@ -14,7 +14,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// through the live DI container and asserts on the JSON result.
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class RegistryToolsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class RegistryToolsTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

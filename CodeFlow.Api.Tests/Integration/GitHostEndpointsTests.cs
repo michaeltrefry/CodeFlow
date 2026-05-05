@@ -12,7 +12,8 @@ using System.Net.Http.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class GitHostEndpointsTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class GitHostEndpointsTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

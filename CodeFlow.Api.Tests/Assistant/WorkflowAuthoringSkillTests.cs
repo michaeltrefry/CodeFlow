@@ -343,6 +343,44 @@ public sealed class WorkflowAuthoringSkillTests
         }
     }
 
+    [Theory]
+    // Code-aware authoring lessons (epic 658, sc-681). The bootstrap design moved from
+    // "agent stitches `git clone` + checkout + push under prompt discipline" to "one atomic
+    // host tool (`setup_workspace`) does it deterministically." The skill teaches the new
+    // surface — base-branch resolution, push-on-first-commit, and helper-resets are no
+    // longer prompt-discipline lessons because the tool encapsulates them. Pin the
+    // tool name, the load-bearing return field (`alreadyPresent`), the mid-flow addition
+    // pattern, and a representative subset of structured-error codes so the skill can't
+    // silently drift back to the legacy choreography.
+    [InlineData("setup_workspace")]
+    [InlineData("alreadyPresent")]
+    [InlineData("Mid-flow addition")]
+    [InlineData("auth_unavailable")]
+    [InlineData("host_not_allowed")]
+    [InlineData("base_branch_mismatch")]
+    [InlineData("credential helper")]
+    [InlineData("vcs.open_pr")]
+    [InlineData("docs/code-aware-workflows.md")]
+    public void Skill_TeachesCodeAwareWorkflowPatterns(string token)
+    {
+        LoadSkill().Body.Should().Contain(token,
+            because: "code-aware workflow design patterns must stay in the skill — losing them strands real workflows at publish-time");
+    }
+
+    [Theory]
+    // sc-681: legacy prompt-discipline lessons are gone because `setup_workspace` does the
+    // job deterministically. If these phrases come back to the skill, the assistant will
+    // start telling agents to re-implement work the platform now does — wasted tokens at
+    // best, conflicting choreography at worst.
+    [InlineData("Push on first commit")]
+    [InlineData("git push -u origin <featureBranch>")]
+    [InlineData("never silently default to")]
+    public void Skill_DoesNotTeachLegacyPromptDiscipline(string token)
+    {
+        LoadSkill().Body.Should().NotContain(token,
+            because: "setup_workspace handles base-branch resolution and the first push atomically; the skill must not regress to teaching prompt-discipline workarounds");
+    }
+
     [Fact]
     public void Exemplar_DemonstratesDeclarativeAuthoringFeatures()
     {

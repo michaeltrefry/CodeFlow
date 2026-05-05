@@ -18,7 +18,8 @@ namespace CodeFlow.Api.Tests.Assistant;
 /// and a valid round-trippable package (status=preview_ok with item counts).
 /// </summary>
 [Trait("Category", "EndToEnd")]
-public sealed class SaveWorkflowPackageToolTests : IClassFixture<CodeFlowApiFactory>, IAsyncLifetime
+[Collection("CodeFlowApi")]
+public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
 {
     private readonly CodeFlowApiFactory factory;
 

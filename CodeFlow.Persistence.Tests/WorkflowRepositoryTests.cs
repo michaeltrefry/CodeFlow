@@ -1,23 +1,28 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class WorkflowRepositoryTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_workflow_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
-
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_workflowrepositorytests";
     private string? connectionString;
+
+
+
+    public WorkflowRepositoryTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
 
         await using var dbContext = CreateDbContext();
         await dbContext.Database.MigrateAsync();
@@ -25,7 +30,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await mariaDbContainer.DisposeAsync();
+        await mariaDb.DropDatabaseAsync(DatabaseName);
     }
 
     [Fact]

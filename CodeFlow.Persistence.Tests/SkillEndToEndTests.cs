@@ -2,8 +2,6 @@ using CodeFlow.Runtime;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Testcontainers.MariaDb;
-
 namespace CodeFlow.Persistence.Tests;
 
 /// <summary>
@@ -12,25 +10,35 @@ namespace CodeFlow.Persistence.Tests;
 /// -> ContextAssembler (render + inject into system message).
 /// Uses the Socratic-interview skill body as the realistic case.
 /// </summary>
+[Collection(PersistenceMariaDbCollection.Name)]
 public sealed class SkillEndToEndTests : IAsyncLifetime
 {
-    private readonly MariaDbContainer mariaDbContainer = new MariaDbBuilder("mariadb:11.4")
-        .WithDatabase("codeflow_tests")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
-
+    private readonly SharedMariaDbFixture mariaDb;
+    private const string DatabaseName = "test_skillendtoendtests";
     private string? connectionString;
+
+
+
+    public SkillEndToEndTests(SharedMariaDbFixture mariaDb)
+
+    {
+
+        this.mariaDb = mariaDb;
+
+    }
+
 
     public async Task InitializeAsync()
     {
-        await mariaDbContainer.StartAsync();
-        connectionString = mariaDbContainer.GetConnectionString();
+        connectionString = await mariaDb.EnsureDatabaseAsync(DatabaseName);
         await using var ctx = CreateDbContext();
         await ctx.Database.MigrateAsync();
     }
 
-    public async Task DisposeAsync() => await mariaDbContainer.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await mariaDb.DropDatabaseAsync(DatabaseName);
+    }
 
     [Fact]
     public async Task Granted_skill_appears_in_rendered_system_message_with_variables_substituted()

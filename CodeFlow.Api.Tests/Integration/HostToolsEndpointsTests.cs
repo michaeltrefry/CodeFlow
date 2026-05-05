@@ -4,7 +4,8 @@ using System.Net.Http.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class HostToolsEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class HostToolsEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 
@@ -56,9 +57,32 @@ public sealed class HostToolsEndpointsTests : IClassFixture<CodeFlowApiFactory>
         tools.Single(t => t.Name == "web_search").IsMutating.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Get_marks_vcs_clone_as_deprecated()
+    {
+        // sc-683: vcs.clone is deprecated in favor of setup_workspace. The role-editor
+        // tool-picker reads from /api/host-tools and uses IsDeprecated to render a chip +
+        // exclude the tool from "Select all" so admins don't pull legacy surface into a
+        // fresh role.
+        using var client = factory.CreateClient();
+
+        var tools = await client.GetFromJsonAsync<IReadOnlyList<HostToolDto>>("/api/host-tools");
+
+        tools.Should().NotBeNull();
+        var clone = tools!.Single(t => t.Name == "vcs.clone");
+        clone.IsDeprecated.Should().BeTrue();
+        clone.Description.Should().Contain("DEPRECATED");
+        clone.Description.Should().Contain("setup_workspace");
+
+        var setup = tools.Single(t => t.Name == "setup_workspace");
+        setup.IsDeprecated.Should().BeFalse(
+            because: "setup_workspace is the supported replacement, not deprecated");
+    }
+
     private sealed record HostToolDto(
         string Name,
         string Description,
         object? Parameters,
-        bool IsMutating);
+        bool IsMutating,
+        bool IsDeprecated);
 }

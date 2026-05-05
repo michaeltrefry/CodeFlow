@@ -114,6 +114,19 @@ public sealed class HostToolProviderTests : IDisposable
     }
 
     [Fact]
+    public void GetCatalog_IncludesSetupWorkspace()
+    {
+        var catalog = HostToolProvider.GetCatalog();
+        var setup = catalog.SingleOrDefault(t => t.Name == SetupWorkspaceHostToolService.ToolName);
+
+        setup.Should().NotBeNull();
+        setup!.IsMutating.Should().BeTrue();
+        setup.Parameters!["required"]!.AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should().BeEquivalentTo(new[] { "repositories" });
+    }
+
+    [Fact]
     public void GetCatalog_IncludesContainerRun()
     {
         var catalog = HostToolProvider.GetCatalog();

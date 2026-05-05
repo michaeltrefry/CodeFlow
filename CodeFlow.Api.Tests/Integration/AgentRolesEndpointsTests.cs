@@ -5,7 +5,8 @@ using System.Net.Http.Json;
 namespace CodeFlow.Api.Tests.Integration;
 
 [Trait("Category", "EndToEnd")]
-public sealed class AgentRolesEndpointsTests : IClassFixture<CodeFlowApiFactory>
+[Collection("CodeFlowApi")]
+public sealed class AgentRolesEndpointsTests
 {
     private readonly CodeFlowApiFactory factory;
 
