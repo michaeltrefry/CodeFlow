@@ -3,12 +3,9 @@ using CodeFlow.Orchestration.Scripting;
 using System.Diagnostics;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Observability;
-using CodeFlow.Runtime.Container;
-using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System.Text;
 using System.Text.Json;
 
@@ -125,140 +122,27 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
                                 .TransitionTo(Failed))));
 
         WhenEnter(Completed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Completed")));
-        WhenEnter(Completed, binder => binder.ThenAsync(TryCleanupWorkflowContainersAsync));
-        WhenEnter(Completed, binder => binder.ThenAsync(TryCleanupHappyPathWorkdirAsync));
+        WhenEnter(Completed, binder => binder.ThenAsync(context => PublishTraceTerminatedAsync(context, "Completed")));
         WhenEnter(Failed, binder => binder.ThenAsync(context => PublishSubflowCompletedIfChildAsync(context, "Failed")));
-        WhenEnter(Failed, binder => binder.ThenAsync(TryCleanupWorkflowContainersAsync));
-    }
-
-    private static async Task TryCleanupWorkflowContainersAsync(
-        BehaviorContext<WorkflowSagaStateEntity> context)
-    {
-        var services = context.GetPayload<IServiceProvider>();
-        var lifecycle = services.GetService<DockerLifecycleService>();
-        if (lifecycle is null)
-        {
-            return;
-        }
-
-        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
-        var logger = loggerFactory.CreateLogger<WorkflowSagaStateMachine>();
-
-        try
-        {
-            var cleanup = await lifecycle.CleanupWorkflowAsync(context.Saga.TraceId, context.CancellationToken);
-            if (cleanup.RemovedContainers > 0
-                || cleanup.RemovedVolumes > 0
-                || cleanup.RemovedExecutionWorkspaces > 0)
-            {
-                logger.LogInformation(
-                    "Cleaned up {ContainerCount} container(s), {VolumeCount} cache volume(s), and {WorkspaceCount} execution workspace(s) for workflow trace {TraceId}.",
-                    cleanup.RemovedContainers,
-                    cleanup.RemovedVolumes,
-                    cleanup.RemovedExecutionWorkspaces,
-                    context.Saga.TraceId);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Failed to clean up workflow-scoped Docker resources for trace {TraceId}; orphan sweep should retry later.",
-                context.Saga.TraceId);
-        }
+        WhenEnter(Failed, binder => binder.ThenAsync(context => PublishTraceTerminatedAsync(context, "Failed")));
     }
 
     /// <summary>
-    /// Happy-path workdir cleanup. Fires when a top-level saga reaches <see cref="Completed"/>
-    /// AND every entry in <c>workflow.repositories</c> has a non-empty <c>prUrl</c> (set by the
-    /// publish agent via <c>setWorkflow</c>). If either condition fails — child saga, no
-    /// repositories array, or any repo missing a PR URL — the workdir is left in place so an
-    /// operator can inspect what went wrong. Slice F's periodic sweep catches anything that's
-    /// genuinely orphaned past the configured TTL. sc-607: this read used to come off
-    /// <c>saga.InputsJson</c> (context.*) but moved to <c>saga.WorkflowInputsJson</c> when the
-    /// repos convention shifted to the workflow-context bag.
+    /// Publishes a <see cref="TraceTerminated"/> event so <c>TraceCleanupConsumer</c> can run
+    /// post-termination cleanup (Docker resources, per-trace workdir, per-trace git-credential
+    /// file) on its own. The saga itself holds no opinion about which trace is eligible for
+    /// which cleanup — the consumer evaluates policy from the event payload.
     /// </summary>
-    private static Task TryCleanupHappyPathWorkdirAsync(
-        BehaviorContext<WorkflowSagaStateEntity> context)
+    private static Task PublishTraceTerminatedAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        string finalState)
     {
         var saga = context.Saga;
-
-        // Subflow children share the parent's workdir — cleanup happens once at the top level.
-        if (saga.ParentTraceId is not null)
-        {
-            return Task.CompletedTask;
-        }
-
-        if (!AllRepositoriesHavePrUrl(saga.WorkflowInputsJson))
-        {
-            return Task.CompletedTask;
-        }
-
-        var services = context.GetPayload<IServiceProvider>();
-        var workspaceOptions = services.GetRequiredService<IOptions<WorkspaceOptions>>();
-        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
-
-        var sagaLogger = loggerFactory.CreateLogger<WorkflowSagaStateMachine>();
-        TraceWorkdirCleanup.TryRemove(
-            workspaceOptions.Value.WorkingDirectoryRoot,
-            saga.TraceId,
-            sagaLogger);
-        // sc-660: per-trace git-credential file is removed on the same happy-path tick as
-        // the workdir; the periodic GitCredentialSweepService catches anything left behind.
-        GitCredentialFile.TryRemove(
-            workspaceOptions.Value.GitCredentialRoot,
-            saga.TraceId,
-            sagaLogger);
-
-        return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// Returns true iff <paramref name="inputsJson"/> contains a non-empty <c>repositories</c>
-    /// array AND every entry has a non-empty <c>prUrl</c> string. Any other shape returns false
-    /// (i.e. workflow had no repos, or some repo failed to publish, or the field is missing).
-    /// Public for unit-testability — small pure predicate, no security implications.
-    /// </summary>
-    public static bool AllRepositoriesHavePrUrl(string? inputsJson)
-    {
-        if (string.IsNullOrWhiteSpace(inputsJson))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(inputsJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (!document.RootElement.TryGetProperty("repositories", out var repos)
-                || repos.ValueKind != JsonValueKind.Array)
-            {
-                return false;
-            }
-
-            var seen = false;
-            foreach (var entry in repos.EnumerateArray())
-            {
-                seen = true;
-                if (entry.ValueKind != JsonValueKind.Object
-                    || !entry.TryGetProperty("prUrl", out var prUrl)
-                    || prUrl.ValueKind != JsonValueKind.String
-                    || string.IsNullOrWhiteSpace(prUrl.GetString()))
-                {
-                    return false;
-                }
-            }
-
-            return seen;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
+        return context.Publish(new TraceTerminated(
+            TraceId: saga.TraceId,
+            ParentTraceId: saga.ParentTraceId,
+            FinalState: finalState,
+            WorkflowInputsJson: saga.WorkflowInputsJson));
     }
 
     private static void ApplyInitialRequest(WorkflowSagaStateEntity saga, AgentInvokeRequested message)

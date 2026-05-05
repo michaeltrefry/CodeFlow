@@ -17,21 +17,21 @@ public sealed class AllRepositoriesHavePrUrlTests
         }
         """;
 
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeTrue();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeTrue();
     }
 
     [Fact]
     public void SingleRepo_HasPrUrl_ReturnsTrue()
     {
         var json = """{"repositories": [{"url": "x", "prUrl": "y"}]}""";
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeTrue();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeTrue();
     }
 
     [Fact]
     public void EmptyArray_ReturnsFalse()
     {
         var json = """{"repositories": []}""";
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeFalse(
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeFalse(
             "no repos means the workflow wasn't a code-aware run, so cleanup must not fire");
     }
 
@@ -46,7 +46,7 @@ public sealed class AllRepositoriesHavePrUrlTests
           ]
         }
         """;
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeFalse();
     }
 
     [Fact]
@@ -60,40 +60,40 @@ public sealed class AllRepositoriesHavePrUrlTests
           ]
         }
         """;
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeFalse();
     }
 
     [Fact]
     public void NoRepositoriesField_ReturnsFalse()
     {
         var json = """{"otherField": 42}""";
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeFalse();
     }
 
     [Fact]
     public void NonObjectRoot_ReturnsFalse()
     {
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl("[1,2,3]").Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl("[1,2,3]").Should().BeFalse();
     }
 
     [Fact]
     public void NonStringPrUrl_ReturnsFalse()
     {
         var json = """{"repositories": [{"url": "x", "prUrl": 42}]}""";
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(json).Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(json).Should().BeFalse();
     }
 
     [Fact]
     public void MalformedJson_ReturnsFalse()
     {
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl("{not json").Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl("{not json").Should().BeFalse();
     }
 
     [Fact]
     public void NullOrEmpty_ReturnsFalse()
     {
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl(null).Should().BeFalse();
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl("").Should().BeFalse();
-        WorkflowSagaStateMachine.AllRepositoriesHavePrUrl("   ").Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl(null).Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl("").Should().BeFalse();
+        TraceCleanupConsumer.AllRepositoriesHavePrUrl("   ").Should().BeFalse();
     }
 }
