@@ -590,106 +590,15 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             saga.FailureReason ??= message.FailureReason;
         }
 
-        var edge = workflow.FindNext(message.ParentNodeId, effectivePortName);
-
-        if (edge is null)
-        {
-            // Unwired-port exit on the parent's Subflow/ReviewLoop node:
-            //   - The implicit Failed port: parent terminates Failed with FailureReason set.
-            //   - Any other port name: parent terminates cleanly with the port name preserved on
-            //     saga.LastEffectivePort. (If this saga itself is a child, that name rides up via
-            //     SubflowCompleted to its own parent.)
-            if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal))
-            {
-                saga.PendingTransition = PendingTransitionFailed;
-                saga.FailureReason ??=
-                    $"No outgoing edge from {(parentNode?.Kind == WorkflowNodeKind.ReviewLoop ? "ReviewLoop" : "Subflow")} node {message.ParentNodeId} port '{effectivePortName}'.";
-            }
-            else
-            {
-                saga.PendingTransition = PendingTransitionCompleted;
-            }
-
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        var resolution = await ResolveTargetThroughLogicChainAsync(
+        await RouteAfterDecisionAsync(
             context,
             workflow,
-            saga,
-            scriptHost,
-            artifactStore,
-            edge,
-            upstreamOutputRef: effectiveOutputRef);
-
-        if (resolution is { FailureTerminal: true })
-        {
-            saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason ??= BuildLogicChainFailureReason(saga);
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        if (resolution is null)
-        {
-            throw new InvalidOperationException("Logic chain resolver returned no outcome.");
-        }
-
-        var dispatchInputRef = resolution.OverrideInputRef ?? effectiveOutputRef;
-
-        if (resolution is { CleanlyCompleted: true })
-        {
-            saga.LastEffectivePort = resolution.CleanlyCompletedPort ?? TransformOutputPort;
-            saga.PendingTransition = PendingTransitionCompleted;
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        var targetNode = resolution.TerminalNode!;
-        var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
-        var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
-
-        if ((targetNode.Kind == WorkflowNodeKind.Subflow || targetNode.Kind == WorkflowNodeKind.ReviewLoop)
-            && saga.SubflowDepth + 1 > MaxSubflowDepth)
-        {
-            saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason =
-                $"SubflowDepthExceeded: spawning {targetNode.Kind} node {targetNode.Id} would yield depth "
-                + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
-        {
-            saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason ??= $"Round limit {workflow.MaxRoundsPerRound} exceeded.";
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
-
-        await DispatchToNodeAsync(
-            context,
-            agentConfigRepo,
-            scriptHost,
-            artifactStore,
-            saga,
-            workflow,
-            targetNode,
-            inputRef: dispatchInputRef,
-            roundId: targetRoundId,
-            retryContext: null);
-
-        var nowUtc = DateTime.UtcNow;
-        saga.CurrentNodeId = targetNode.Id;
-        saga.CurrentAgentKey = targetNode.AgentKey ?? string.Empty;
-        saga.CurrentRoundId = targetRoundId;
-        saga.CurrentRoundEnteredAtUtc = nowUtc;
-        saga.RoundCount = targetRoundCount;
-        saga.UpdatedAtUtc = nowUtc;
-
-        activity?.SetTag(CodeFlowActivity.TagNames.SagaState, saga.PendingTransition ?? "Routed");
+            activity,
+            sourceNodeId: message.ParentNodeId,
+            sourceKindLabel: parentNode?.Kind == WorkflowNodeKind.ReviewLoop ? "ReviewLoop node" : "Subflow node",
+            effectivePortName: effectivePortName,
+            effectiveOutputRef: effectiveOutputRef,
+            retryContextForHandoff: null);
     }
 
     private static async Task RouteCompletionAsync(
@@ -896,24 +805,75 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             }
         }
 
-        var edge = workflow.FindNext(message.FromNodeId, effectivePortName);
+        var retryContextBuilder = services.GetRequiredService<IRetryContextBuilder>();
+        var retryContext = BuildRetryContextForHandoff(retryContextBuilder, saga, message);
+
+        await RouteAfterDecisionAsync(
+            context,
+            workflow,
+            activity,
+            sourceNodeId: message.FromNodeId,
+            sourceKindLabel: "node",
+            effectivePortName: effectivePortName,
+            effectiveOutputRef: effectiveOutputRef!,
+            retryContextForHandoff: retryContext);
+    }
+
+    /// <summary>
+    /// Common routing tail shared by the agent and subflow completion paths (sc-164 / F-010):
+    /// edge lookup → unwired-port handling → logic-chain resolution → cleanly-completed /
+    /// failure-terminal handling → depth/round limits → dispatch → saga state update.
+    ///
+    /// <para>
+    /// Each completion path does its own source-specific pre-routing (Swarm dispatch + script
+    /// override + decision template for agents; ReviewLoop iterate-or-fall-through with P3 for
+    /// subflows) and constructs its own <see cref="DecisionRecord"/>; this helper picks up
+    /// once the effective port + output artifact are known. Per-source policy still rides
+    /// through the parameter list — <paramref name="retryContextForHandoff"/> is null for
+    /// subflow completions and built from the upstream agent's invocation for agent
+    /// completions, exactly as before. The asymmetric P3 firing (only on ReviewLoop iterate)
+    /// stays in the caller; this helper sees no rejection history.
+    /// </para>
+    ///
+    /// <para>
+    /// One small unification: <c>saga.FailureReason</c> assignment uses <c>??=</c> uniformly so
+    /// any reason set by an earlier step is preserved. The pre-refactor agent-path round-limit
+    /// branch used <c>=</c> (overwrite); in practice no earlier step sets a reason on the path
+    /// that reaches this branch, so the change is observably equivalent and strictly safer.
+    /// </para>
+    /// </summary>
+    private static async Task RouteAfterDecisionAsync(
+        BehaviorContext<WorkflowSagaStateEntity> context,
+        Workflow workflow,
+        Activity? activity,
+        Guid sourceNodeId,
+        string sourceKindLabel,
+        string effectivePortName,
+        Uri effectiveOutputRef,
+        CodeFlow.Contracts.RetryContext? retryContextForHandoff)
+    {
+        var saga = context.Saga;
+        var services = context.GetPayload<IServiceProvider>();
+        var agentConfigRepo = services.GetRequiredService<IAgentConfigRepository>();
+        var artifactStore = services.GetRequiredService<IArtifactStore>();
+        var scriptHost = services.GetRequiredService<LogicNodeScriptHost>();
+
+        var edge = workflow.FindNext(sourceNodeId, effectivePortName);
 
         if (edge is null)
         {
-            // Unwired-port exit rules in the new model:
+            // Unwired-port exit:
             //   - The implicit Failed port: terminate the saga as Failed with FailureReason set.
             //     Authors can wire a Failed edge to override; if they don't, the saga fails so
             //     the runtime error doesn't get silently swallowed.
-            //   - Any other port name (author-defined): terminate cleanly. The terminal port name
-            //     is preserved on saga.LastEffectivePort and rides up to the parent saga as
-            //     SubflowCompleted.OutputPortName / TerminalPort, so a parent Subflow node can
-            //     route from that exact port. Top-level workflows just complete with the terminal
-            //     name surfaced on the trace UI.
+            //   - Any other port name (author-defined): terminate cleanly. The terminal port
+            //     name is preserved on saga.LastEffectivePort and rides up to a parent saga as
+            //     SubflowCompleted.OutputPortName / TerminalPort if any.
             if (string.Equals(effectivePortName, ImplicitFailedPort, StringComparison.Ordinal))
             {
                 saga.PendingTransition = PendingTransitionFailed;
                 saga.FailureReason ??=
-                    $"No outgoing edge from node {message.FromNodeId} port '{effectivePortName}'.";
+                    $"No outgoing edge from {sourceKindLabel} {sourceNodeId} port '{effectivePortName}'.";
             }
             else
             {
@@ -948,14 +908,15 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
 
         // A Transform node in the chain may have rewritten the artifact. The dispatched node
         // (and the saga's CurrentInputRef in PublishHandoffAsync / PublishSubflowDispatchAsync)
-        // must see the rendered ref, not the original agent output ref.
+        // must see the rendered ref, not the original upstream output ref.
         var dispatchInputRef = resolution.OverrideInputRef ?? effectiveOutputRef;
 
         if (resolution is { CleanlyCompleted: true })
         {
             // Transform with no edge from "Out" — clean workflow termination with the rendered
-            // artifact as the final output. Mirrors the unwired-author-port rule above for Agent
-            // terminals; the terminal port is "Out" so a parent Subflow node can route from it.
+            // artifact as the final output. Mirrors the unwired-author-port rule above; the
+            // terminal port is "Out" (or the script's setNodePath choice) so a parent Subflow
+            // node can route from it.
             saga.LastEffectivePort = resolution.CleanlyCompletedPort ?? TransformOutputPort;
             saga.PendingTransition = PendingTransitionCompleted;
             saga.UpdatedAtUtc = DateTime.UtcNow;
@@ -965,24 +926,22 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         var targetNode = resolution.TerminalNode!;
         var targetRoundId = resolution.RotatesRound ? Guid.NewGuid() : saga.CurrentRoundId;
         var targetRoundCount = resolution.RotatesRound ? 0 : saga.RoundCount + 1;
-        var retryContextBuilder = services.GetRequiredService<IRetryContextBuilder>();
-        var retryContext = BuildRetryContextForHandoff(retryContextBuilder, saga, message);
-
-        if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
-        {
-            saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason = $"Round limit {workflow.MaxRoundsPerRound} exceeded.";
-            saga.UpdatedAtUtc = DateTime.UtcNow;
-            return;
-        }
 
         if ((targetNode.Kind == WorkflowNodeKind.Subflow || targetNode.Kind == WorkflowNodeKind.ReviewLoop)
             && saga.SubflowDepth + 1 > MaxSubflowDepth)
         {
             saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason =
+            saga.FailureReason ??=
                 $"SubflowDepthExceeded: spawning {targetNode.Kind} node {targetNode.Id} would yield depth "
                 + $"{saga.SubflowDepth + 1}, exceeding the maximum of {MaxSubflowDepth}.";
+            saga.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (!resolution.RotatesRound && targetRoundCount >= workflow.MaxRoundsPerRound)
+        {
+            saga.PendingTransition = PendingTransitionFailed;
+            saga.FailureReason ??= $"Round limit {workflow.MaxRoundsPerRound} exceeded.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }
@@ -997,7 +956,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             targetNode,
             inputRef: dispatchInputRef,
             roundId: targetRoundId,
-            retryContext: retryContext);
+            retryContext: retryContextForHandoff);
 
         var nowUtc = DateTime.UtcNow;
         saga.CurrentNodeId = targetNode.Id;
