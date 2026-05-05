@@ -4,20 +4,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using System.Text;
-using Testcontainers.RabbitMq;
 
 namespace CodeFlow.Api.Tests.DeadLetter;
 
-public sealed class RabbitMqDlqRetryTransportIntegrationTests : IAsyncLifetime
+public sealed class RabbitMqDlqRetryTransportIntegrationTests : IClassFixture<RabbitMqIntegrationFixture>
 {
-    private readonly RabbitMqContainer container = new RabbitMqBuilder("rabbitmq:4.0-management")
-        .WithUsername("codeflow")
-        .WithPassword("codeflow_dev")
-        .Build();
+    private readonly RabbitMqIntegrationFixture fixture;
 
-    public Task InitializeAsync() => container.StartAsync();
-
-    public Task DisposeAsync() => container.DisposeAsync().AsTask();
+    public RabbitMqDlqRetryTransportIntegrationTests(RabbitMqIntegrationFixture fixture)
+    {
+        this.fixture = fixture;
+    }
 
     [Fact]
     public async Task TransferAsync_MovesMatchingMessage_AndLeavesNonMatchingOnSource()
@@ -92,9 +89,9 @@ public sealed class RabbitMqDlqRetryTransportIntegrationTests : IAsyncLifetime
     {
         var options = Options.Create(new DeadLetterOptions
         {
-            ManagementHost = container.Hostname,
-            AmqpHost = container.Hostname,
-            AmqpPort = container.GetMappedPublicPort(5672),
+            ManagementHost = fixture.Container.Hostname,
+            AmqpHost = fixture.Container.Hostname,
+            AmqpPort = fixture.Container.GetMappedPublicPort(5672),
             VirtualHost = "/",
             Username = "codeflow",
             Password = "codeflow_dev",
@@ -104,8 +101,8 @@ public sealed class RabbitMqDlqRetryTransportIntegrationTests : IAsyncLifetime
 
         var factory = new ConnectionFactory
         {
-            HostName = container.Hostname,
-            Port = container.GetMappedPublicPort(5672),
+            HostName = fixture.Container.Hostname,
+            Port = fixture.Container.GetMappedPublicPort(5672),
             VirtualHost = "/",
             UserName = "codeflow",
             Password = "codeflow_dev"
