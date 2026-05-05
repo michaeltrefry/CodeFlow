@@ -41,7 +41,7 @@ public sealed partial class WorkflowSagaStateMachine
     /// protocol decides what happens after the first dispatch (contributor sequence vs.
     /// coordinator + parallel workers + synthesizer).
     /// </summary>
-    private static async Task PublishSwarmEntryAsync(
+    internal static async Task PublishSwarmEntryAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
         IArtifactStore artifactStore,

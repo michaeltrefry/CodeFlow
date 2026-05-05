@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics;
 using System.Text;
 
+using CodeFlow.Orchestration.NodeDispatch;
+
 namespace CodeFlow.Orchestration.Tests;
 
 public sealed class ObservabilityTests
@@ -63,6 +65,7 @@ public sealed class ObservabilityTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"obs-tests-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();

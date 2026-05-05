@@ -5,6 +5,8 @@ using MassTransit;
 using MassTransit.Testing;
 using Microsoft.Extensions.DependencyInjection;
 
+using CodeFlow.Orchestration.NodeDispatch;
+
 namespace CodeFlow.Orchestration.Tests.Notifications;
 
 public sealed class HitlTaskPendingEventNotificationConsumerTests
@@ -16,6 +18,7 @@ public sealed class HitlTaskPendingEventNotificationConsumerTests
 
         await using var provider = new ServiceCollection()
             .AddSingleton<INotificationDispatcher>(dispatcher)
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<HitlTaskPendingEventNotificationConsumer>();

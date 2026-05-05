@@ -1,6 +1,7 @@
 using CodeFlow.Contracts;
 using CodeFlow.Contracts.Notifications;
 using CodeFlow.Orchestration;
+using CodeFlow.Orchestration.NodeDispatch;
 using CodeFlow.Orchestration.Notifications;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -62,6 +63,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-tests-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -153,6 +155,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-retry-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -225,6 +228,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -403,6 +407,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-tool-context-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -465,6 +470,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-failure-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -532,6 +538,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-exception-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -622,6 +629,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-http-exception-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -708,6 +716,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-context-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -791,6 +800,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-workflow-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -859,6 +869,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-input-context-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -925,6 +936,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-plain-input-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -991,6 +1003,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-review-loop-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1068,6 +1081,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-rejection-history-alias-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1136,6 +1150,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-rejection-history-empty-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1332,6 +1347,7 @@ public sealed class AgentInvocationConsumerTests
                 PublicBaseUrl = "https://codeflow.example.com",
             }))
             .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1425,6 +1441,7 @@ public sealed class AgentInvocationConsumerTests
                 PublicBaseUrl = "https://codeflow.example.com",
             }))
             .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1504,6 +1521,7 @@ public sealed class AgentInvocationConsumerTests
                 PublicBaseUrl = null,
             }))
             .AddSingleton<IHitlNotificationActionUrlBuilder, DefaultHitlNotificationActionUrlBuilder>()
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1705,6 +1723,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-p2-inject-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -1776,6 +1795,7 @@ public sealed class AgentInvocationConsumerTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"consumer-p2-optout-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();

@@ -11,6 +11,8 @@ using MassTransit.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
+using CodeFlow.Orchestration.NodeDispatch;
+
 namespace CodeFlow.Orchestration.Tests.TokenTracking;
 
 /// <summary>
@@ -71,6 +73,7 @@ public sealed class AgentInvocationConsumerTokenUsageTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-tokens-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();
@@ -174,6 +177,7 @@ public sealed class AgentInvocationConsumerTokenUsageTests
             .AddScoped<IPromptPartialRepository, PromptPartialRepository>()
             .AddDbContext<CodeFlowDbContext>(options => options
                 .UseInMemoryDatabase($"agent-consumer-no-tokens-{Guid.NewGuid():N}"))
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<AgentInvocationConsumer, AgentInvocationConsumerDefinition>();

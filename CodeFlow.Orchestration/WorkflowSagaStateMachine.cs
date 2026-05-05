@@ -360,7 +360,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     /// </summary>
     public const string DefaultLoopDecision = "Rejected";
 
-    private static string ResolveLoopDecision(WorkflowNode reviewLoopNode)
+    internal static string ResolveLoopDecision(WorkflowNode reviewLoopNode)
         => string.IsNullOrWhiteSpace(reviewLoopNode.LoopDecision)
             ? DefaultLoopDecision
             : reviewLoopNode.LoopDecision!.Trim();
@@ -2249,6 +2249,15 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         saga.WorkflowInputsJson = SerializeContextInputs(workflowBag);
     }
 
+    /// <summary>
+    /// Per-node-kind dispatch surface. sc-165 / F-001+F-002 — Phase 1 replaced the inline
+    /// kind-switch with a <see cref="NodeDispatch.WorkflowNodeDispatcherRegistry"/> lookup so
+    /// each kind owns a class. Some unused dependency parameters remain on the signature
+    /// (kept for the call sites in <see cref="RouteAfterDecisionAsync"/> and the Swarm partial
+    /// that resolve them once and thread them through several helpers — not worth churning
+    /// in this PR). The agentConfigRepo / scriptHost / artifactStore params are no-ops here:
+    /// each dispatcher resolves what it needs from the saga's request services.
+    /// </summary>
     private static Task DispatchToNodeAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
@@ -2261,38 +2270,20 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         Guid roundId,
         CodeFlow.Contracts.RetryContext? retryContext)
     {
-        return node.Kind switch
-        {
-            WorkflowNodeKind.Agent or WorkflowNodeKind.Hitl or WorkflowNodeKind.Start =>
-                PublishHandoffAsync(context, agentConfigRepo, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId, retryContext),
-            WorkflowNodeKind.Subflow =>
-                PublishSubflowDispatchAsync(context, scriptHost, artifactStore, saga, workflow, node, inputRef, roundId),
-            WorkflowNodeKind.ReviewLoop =>
-                PublishSubflowDispatchAsync(
-                    context,
-                    scriptHost,
-                    artifactStore,
-                    saga,
-                    workflow,
-                    node,
-                    inputRef,
-                    roundId,
-                    reviewRound: 1,
-                    reviewMaxRounds: node.ReviewMaxRounds
-                        ?? throw new InvalidOperationException(
-                            $"ReviewLoop node {node.Id} in workflow {workflow.Key} v{workflow.Version} has no ReviewMaxRounds configured."),
-                    loopDecision: ResolveLoopDecision(node)),
-            WorkflowNodeKind.Swarm =>
-                PublishSwarmEntryAsync(context, agentConfigRepo, artifactStore, saga, workflow, node, inputRef, roundId),
-            WorkflowNodeKind.Logic =>
-                throw new InvalidOperationException(
-                    "Logic nodes should have been resolved by the logic chain resolver before reaching DispatchToNodeAsync."),
-            _ =>
-                throw new InvalidOperationException($"Unknown workflow node kind: {node.Kind}.")
-        };
+        var registry = context.GetPayload<IServiceProvider>()
+            .GetRequiredService<NodeDispatch.WorkflowNodeDispatcherRegistry>();
+        var dispatcher = registry.GetForDispatch(node.Kind);
+        return dispatcher.DispatchAsync(new NodeDispatch.NodeDispatchRequest(
+            Context: context,
+            Saga: saga,
+            Workflow: workflow,
+            Node: node,
+            InputRef: inputRef,
+            RoundId: roundId,
+            RetryContext: retryContext));
     }
 
-    private static async Task PublishSubflowDispatchAsync(
+    internal static async Task PublishSubflowDispatchAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         LogicNodeScriptHost scriptHost,
         IArtifactStore artifactStore,
@@ -2362,7 +2353,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             TraceWorkDir: saga.TraceWorkDir));
     }
 
-    private static async Task PublishHandoffAsync(
+    internal static async Task PublishHandoffAsync(
         BehaviorContext<WorkflowSagaStateEntity> context,
         IAgentConfigRepository agentConfigRepo,
         LogicNodeScriptHost scriptHost,

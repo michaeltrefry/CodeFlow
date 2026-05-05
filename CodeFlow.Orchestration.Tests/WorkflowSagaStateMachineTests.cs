@@ -10,6 +10,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
+using CodeFlow.Orchestration.NodeDispatch;
+
 namespace CodeFlow.Orchestration.Tests;
 
 [Collection("Bus integration")]
@@ -3456,6 +3458,7 @@ public sealed class WorkflowSagaStateMachineTests
             .AddSingleton<Runtime.IScribanTemplateRenderer, Runtime.ScribanTemplateRenderer>()
             .AddSingleton<IDecisionTemplateRenderer, DecisionTemplateRenderer>()
             .AddSingleton<IRetryContextBuilder, RetryContextBuilder>()
+            .AddWorkflowNodeDispatchers()
             .AddMassTransitTestHarness(x =>
             {
                 x.AddSagaStateMachine<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
