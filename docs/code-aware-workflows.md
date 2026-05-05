@@ -2,9 +2,13 @@
 
 This is the canonical reference for the Code-Aware Workflows feature: per-trace working
 directories, the `repositories` input convention, the framework-managed `workflow.traceWorkDir` /
-`workflow.traceId` variables, the `vcs.*` host tools, and the cleanup model that ties it all
-together. If you're authoring a workflow that needs to clone, edit, commit, push, or open a PR,
-start here.
+`workflow.traceId` variables, the `setup_workspace` host tool, the `vcs.open_pr` /
+`vcs.get_repo` host tools, and the cleanup model that ties it all together. If you're authoring
+a workflow that needs to clone, edit, commit, push, or open a PR, start here.
+
+The bootstrap step — clone, base-branch resolution, feature-branch creation, first push to
+register credentials — is collapsed into a single atomic, idempotent host tool
+(`setup_workspace`). Authors don't choreograph any of that from agent prompts.
 
 ## Operator setup
 
@@ -21,8 +25,9 @@ The host path under that volume must be writable by the CodeFlow service account
 `APP_UID` baked into the api/worker images — see `deploy/.env.example`). The init container in
 the prod compose stack chowns it on every `up`.
 
-The `vcs.*` tools (including `vcs.clone`) require a configured Git host (`GitHostSettings.Mode` +
-token). Until those are configured the tools return `error: not_configured`.
+`setup_workspace` and the `vcs.*` tools require a configured Git host (`GitHostSettings.Mode`
++ token). Until those are configured `setup_workspace` returns the structured error
+`auth_unavailable` and `vcs.*` returns `error: not_configured`.
 
 ### Configure the git-credential root
 
@@ -76,7 +81,9 @@ disappearing out from under it.
 | Code-setup agent's `run_command` fails with "no active workspace context" | The trace-launch endpoint didn't seed `workflow.traceWorkDir`. Confirm `Workspace__WorkingDirectoryRoot` is set and the directory is mounted on both api and worker. |
 | `vcs.open_pr` returns `error: not_configured` | `GitHostSettings` has no token, or GitLab mode is configured without a base URL. |
 | Stale workdirs accumulating | Sweep service might not be running. Confirm `AddCodeFlowHost` is wired into the host (look for "Workdir sweep" logs). |
-| Agent's `git push` fails with "Authentication failed" | Either no `GitHostSettings` token configured, or the repo's host doesn't match the configured one (e.g. pushing to gitlab.com when only github.com is set). Check the trace's `repositories` input — every host the workflow will push to must map to a configured token. |
+| `setup_workspace` returns `auth_unavailable` | No `GitHostSettings` token is configured for any of the requested repository hosts. Configure the host or remove the repo from the call. The error fires at task 1 (instead of after hours of LLM work) because `setup_workspace` exercises the credential boundary on its first push. |
+| `setup_workspace` returns `host_not_allowed` | URL host isn't on `GitHostSettings.AllowedHosts`. Add the host to the allowlist or use a URL pointing at the configured host. |
+| Agent's `git push` fails with "Authentication failed" mid-workflow | Repo wasn't seen by `setup_workspace` (so the cred-file entry is missing). Call `setup_workspace([{url}])` for the new repo; the merge is idempotent for already-cloned repos. |
 | `git` not found on PATH | The runtime image isn't recent enough. The git binary was added in epic 658 — rebuild the worker / api image. |
 
 ---
@@ -168,76 +175,130 @@ Stable for a given `(title, traceId)` pair — multi-repo workflows produce iden
 names across repos, and any downstream PR-publishing agent picks up the same name without
 coordination.
 
-### The setup-agent pattern: clone + branch + writeback
+### The setup-agent pattern: one tool call
 
-The reference implementation is the `code-setup` agent in `workflows/dev-flow-v1-package.json`.
-Its job, in three steps:
+The setup agent's job is one tool invocation. Given the trace's `workflow.repositories` input,
+call:
 
-1. Read `workflow.repositories` and `workflow.traceWorkDir`.
-2. For each repo: call `vcs.clone({url, path: <repo-name>, branch: <base-branch>})` to
-   materialize it under `{traceWorkDir}/<repo-name>` (auth is platform-managed; the agent never sees
-   a token), then `git checkout -b <feature-branch>` via `run_command`. The feature-branch name
-   is **pre-computed** in the prompt template via
-   `{{ branch_name workflow.prdTitle workflow.traceId }}` — the agent's instructions explicitly
-   say "do not invent or modify the slug." Agents that discover repos mid-flight call `vcs.clone`
-   the same way; `repos[]` declared up-front is just a hint for context-engineering, not a
-   precondition.
-3. Mid-turn, `setWorkflow('repositories', <merged-array-with-localPath-and-featureBranch>)` so
-   downstream agents (and any subflows) see:
-   ```json
-   [{
-     "url": "...",
-     "branch": "main",
-     "localPath": "/workspace/{traceId-N}/<repo>",
-     "featureBranch": "add-todo-list-3b70fc02"
-   }]
-   ```
+```
+setup_workspace({
+  repositories: [{ url: "https://github.com/foo/bar.git" }, …]
+})
+```
 
-The agent's role grants `read_file`, `apply_patch`, `run_command` (for `git checkout`, `commit`,
-`push`), `vcs.clone` (for the materialization), and the optional `vcs.get_repo` if the agent
-needs to discover the upstream default branch before the clone call.
+The tool returns:
+
+```json
+{
+  "repos": [{
+    "url": "https://github.com/foo/bar.git",
+    "localPath": "bar",
+    "baseBranch": "main",
+    "featureBranch": "task/3b70fc02",
+    "baseSha": "abc123…",
+    "alreadyPresent": false
+  }]
+}
+```
+
+Stash it via `setWorkflow("repos", result.repos)` so every downstream agent has a stable
+handle. Each agent then reads `workflow.repos[i].featureBranch` / `localPath` / `baseBranch`
+directly — no parsing, no remote calls.
+
+What the tool does for you per repo, atomically:
+
+- **Resolves the upstream default branch** via `git ls-remote --symref origin HEAD`. The
+  workflow targets `master` / `develop` / `trunk` correctly without the author having to know.
+- **Clones** into `{traceWorkDir}/<repo-basename>`. Path-confined so escapes fail with
+  `path_confined`.
+- **Creates the feature branch** as `<featureBranchPrefix>/<traceId-short>` off the resolved
+  base.
+- **Pushes once with `-u`**, which exercises the credential helper at task 1 instead of after
+  hours of LLM work. Any auth failure surfaces immediately as `auth_unavailable` /
+  `push_failed` rather than stranding development on a local branch.
+- **Captures the base SHA** so reviewers can diff against the exact starting point.
+- **Stages a `setWorkflow("repositories", […])` update** so subsequent `vcs.open_pr` calls
+  pass the per-trace allowlist check.
+
+#### Idempotent merge / mid-flow addition
+
+Re-calling `setup_workspace` is the supported way to add a repo discovered mid-workflow (the
+architect or coding agent realises the dev work touches a missing dependency). Existing repos
+round-trip with `alreadyPresent: true` — no re-clone, no re-push — and the new one goes
+through the full pipeline. Re-stash the merged result with `setWorkflow("repos", result.repos)`
+so downstream agents see all the clones.
+
+#### Structured errors
+
+`setup_workspace` returns `IsError: true` results with a stable `code` for every failure shape.
+Agents handle these by surfacing the code (HITL, abort port, message back to operator) — never
+by retrying or pattern-matching against free-text.
+
+| code | meaning |
+| --- | --- |
+| `auth_unavailable` | No token configured for the requested host. |
+| `host_not_allowed` | URL host isn't on `GitHostSettings.AllowedHosts`. |
+| `url_invalid` | URL didn't parse / wasn't an `https://…/.git` shape. |
+| `path_confined` | Resolved local path escapes `traceWorkDir`. |
+| `clone_failed` | `git clone` exited non-zero. |
+| `branch_create_failed` | `git checkout -b <featureBranch>` failed. |
+| `push_failed` | First push to register the feature branch failed. |
+| `base_branch_lookup_failed` | `git ls-remote --symref origin HEAD` failed. |
+| `base_branch_mismatch` | Caller-supplied `branch` disagrees with remote HEAD. |
+| `rev_parse_failed` | Couldn't capture the base SHA. |
+| `credential_file_write_failed` | Couldn't write the per-trace cred file. |
+| `stage_repositories_failed` | Workflow-bag stage write rejected the value. |
+
+The agent's role only needs `setup_workspace` to handle the bootstrap. Add `read_file`,
+`apply_patch`, `run_command` for the dev work that follows; the seeded `code-worker` and
+`code-builder` system roles already include all of these.
 
 ### Auth model: how `git` knows the token
 
-Agents never see the configured Git host token, but they can still use plain `git` for everything
-once a repo is cloned. The platform achieves this by:
+Agents never see the configured Git host token. Authentication flows through a per-trace
+credential helper that the platform writes once and every spawned `git` process picks up
+automatically. The plumbing:
 
-1. **Installing `git` on PATH** in the worker and api runtime images. `run_command "git", [...]`
+1. **`git` is on PATH** in the worker and api runtime images. `run_command "git", [...]`
    "just works" — no provider abstraction in the path.
-2. **Writing a per-trace credential file** at trace start, in git's native credential-store wire
-   format (one URL per host, e.g. `https://x-access-token:TOKEN@github.com`). The file lives at
+2. **`setup_workspace` populates a per-trace credential file** at the time of its first
+   invocation, in git's native credential-store wire format (one URL per host, e.g.
+   `https://x-access-token:TOKEN@github.com`). The file lives at
    `WorkspaceOptions.GitCredentialRoot/{traceId-N}` (default `/var/lib/codeflow/git-creds`),
    mode `0600`, owned by the app uid. **It is outside `WorkingDirectoryRoot`**, so the agent's
-   path-confined `read_file` and cwd-confined `run_command` cannot reach it.
-3. **Pointing `git` at the file** via `GIT_CONFIG_*` env vars set on every spawned `git` process
-   by both `run_command` and `IGitCli`. Specifically:
+   path-confined `read_file` and cwd-confined `run_command` cannot reach it. Calling
+   `setup_workspace` again to add a repo (the idempotent-merge flow) updates the file in
+   place if a new host appears.
+3. **`git` is pointed at the file** via `GIT_CONFIG_*` env vars set on every spawned `git`
+   process by both `run_command` and `IGitCli`. Specifically:
    `credential.helper = store --file=…/{traceId-N}` and `credential.useHttpPath = true`.
    No global gitconfig mutation, so concurrent traces in the same worker never collide.
-4. **Cleaning up** on the same path that removes the per-trace workdir: trace-delete,
+4. **Cleanup** runs on the same paths that remove the per-trace workdir: trace-delete,
    happy-path completion, and the periodic `GitCredentialSweepService` (TTL = same
    `WorkingDirectoryMaxAgeDays` setting).
 
 What this means for the agent:
 
-- `vcs.clone` runs `git clone` with the **clean** URL the agent provided — no embedded token,
-  nothing in `.git/config`, nothing in process argv.
-- After the clone, **everything else is plain `git`**: `run_command "git", ["add", "."]`,
-  `run_command "git", ["commit", "-m", "…"]`, `run_command "git", ["push", "origin", "<branch>"]`.
-  Auth flows through the credential helper transparently.
-- Pushing to a repo whose host is **not** the configured Git host produces a clear
-  `Authentication failed` error from git — the helper has no entry for that host. Declare
-  every repo the workflow will touch in the `repositories` input.
+- `setup_workspace` runs `git clone` with the **clean** URL the agent provided — no embedded
+  token, nothing in `.git/config`, nothing in process argv.
+- After the bootstrap, **every other git op is plain `git`**: `run_command "git", ["add",
+  "."]`, `run_command "git", ["commit", "-m", "…"]`, `run_command "git", ["push", "origin",
+  "<branch>"]`. Auth flows through the credential helper transparently.
+- A push attempt against a repo `setup_workspace` never saw is missing from the cred file and
+  surfaces "Authentication failed" from git. The fix is to call `setup_workspace([{url}])`
+  for the new repo (the idempotent merge handles already-present clones); it's not the
+  workflow's job to mint URLs by hand.
 - Token never appears in `run_command` stdout, the workspace tree, `.git/config`, or any
   variable an agent or script can read.
 
 This is the contract for `git`-related actions. The narrow `vcs.*` surface below covers the
-verbs that *aren't* a thin wrapper around `git`: API-level operations (`open_pr`, `get_repo`)
-and the clone entry point that registers the workspace.
+verbs that *aren't* a thin wrapper around `git`: API-level operations (`open_pr`, `get_repo`).
 
 ### The `vcs.*` host tools
 
 Agents that need to interact with the configured Git host (GitHub or GitLab) call dedicated
-host tools. The platform manages auth — agents never see or pass the token.
+host tools. The platform manages auth — agents never see or pass the token. Bootstrap is
+covered by `setup_workspace`; the surface below is the publish boundary.
 
 #### `vcs.open_pr`
 
@@ -269,32 +330,23 @@ GitHostSettings hasn't been set up yet — useful diagnostic for fresh deploymen
 #### `vcs.get_repo`
 
 Reads basic repo metadata: `defaultBranch`, `cloneUrl`, `visibility` (`Public` / `Private` /
-`Internal` / `Unknown`). Useful before opening a PR to confirm the upstream default branch
-without needing `git ls-remote`.
+`Internal` / `Unknown`). `setup_workspace` does its own base-branch resolution via
+`git ls-remote --symref origin HEAD`, so most code-aware workflows don't need this — it stays
+available for the rare case where an agent wants the visibility / clone URL fields without
+running git.
 
-#### `vcs.clone`
+#### `vcs.clone` (deprecated)
 
-Materializes a repo into the active workspace. Auth flows through the per-trace credential
-helper described in [Auth model](#auth-model-how-git-knows-the-token); the agent passes the
-clean URL and the platform handles authentication invisibly. Inputs:
-
-- `url` (string) — repo URL on the configured host. Validated against the host guard so
-  cross-host cloning is denied.
-- `path` (string, optional) — workspace-relative destination. Must stay confined to the trace's
-  workdir. Defaults to the repo's basename (e.g. `myrepo` for `https://github.com/foo/myrepo`).
-- `branch` (string, optional) — branch or tag to check out. Defaults to the repo's default.
-- `depth` (integer, optional) — `--depth` for a shallow clone. Omit for a full clone.
-
-Returns on success: `{ path, branch, head, defaultBranch }` — `head` is the resolved commit SHA.
-
-Refuses if the destination already exists (with anything in it), so calling `vcs.clone` twice for
-the same destination is a tool error rather than a silent overwrite. Use `run_command` (`git
-fetch`/`git checkout`) for follow-up navigation on an already-cloned repo.
+Superseded by `setup_workspace`, which handles clone + base-branch resolution + feature-branch
+creation + first push atomically and idempotently. The tool is still registered for back-compat
+with imported workflow packages, but new packages should use `setup_workspace` instead — the
+deprecation surface in the role editor flags it on assignment. The seeded `code-worker` and
+`code-builder` system roles no longer grant `vcs.clone`.
 
 #### Granting the tools
 
 The tools live in the `Host` category and are visible in the role editor. The reference
-`code-worker` role in `workflows/dev-flow-v1-package.json` grants the read+write set:
+`code-worker` system role grants the bootstrap + dev-work set:
 
 ```json
 {
@@ -303,7 +355,7 @@ The tools live in the `Host` category and are visible in the role editor. The re
     {"category": "Host", "toolIdentifier": "read_file"},
     {"category": "Host", "toolIdentifier": "apply_patch"},
     {"category": "Host", "toolIdentifier": "run_command"},
-    {"category": "Host", "toolIdentifier": "vcs.clone"},
+    {"category": "Host", "toolIdentifier": "setup_workspace"},
     {"category": "Host", "toolIdentifier": "vcs.open_pr"},
     {"category": "Host", "toolIdentifier": "vcs.get_repo"},
     {"category": "Host", "toolIdentifier": "echo"},
@@ -312,15 +364,20 @@ The tools live in the `Host` category and are visible in the role editor. The re
 }
 ```
 
+`setup_workspace` is the bootstrap entry point; `vcs.open_pr` is the publish boundary. The
+two together cover both ends of a code-aware workflow.
+
 ### The PR-publishing pattern
 
-The reference implementation is the `publish` agent in `workflows/dev-flow-v1-package.json`.
 Per-repo flow:
 
-1. From the repo's `localPath`, run `git push -u origin <featureBranch>` via `run_command`.
-2. Parse `<owner>` and `<name>` from the repo's `url`.
-3. Call `vcs.open_pr` with `{ owner, name, head: <featureBranch>, base: <upstream-default>,
-   title, body }`. Don't compose REST calls or pass tokens.
+1. Push any commits made since the last `git push` from the repo's `localPath` via
+   `run_command "git", ["push", "origin", "<featureBranch>"]`. The first push was already
+   issued by `setup_workspace`, so this is a fast-forward (or a no-op if no new commits).
+2. Parse `<owner>` and `<name>` from `workflow.repos[i].url`.
+3. Call `vcs.open_pr` with `{ owner, name, head: <featureBranch>, base: <baseBranch>, title,
+   body }`. Don't compose REST calls or pass tokens. The `baseBranch` is whatever
+   `setup_workspace` resolved — read it from `workflow.repos[i].baseBranch`, don't re-resolve.
 4. Mid-turn, `setWorkflow('repositories', ...)` to update each entry with the returned `prUrl`.
    Keep the rest of the entry intact.
 
@@ -351,10 +408,10 @@ debug. The sweep eventually reclaims it.
 
 ## Authoring a code-aware workflow
 
-The minimum viable code-aware workflow has four nodes wired in sequence:
+The minimum viable code-aware workflow has three nodes wired in sequence:
 
 ```
-Start (code-setup) → Agent (developer) → Agent (publish) → terminal
+Start (setup) → Agent (developer / reviewer loop) → Agent (publish) → terminal
 ```
 
 Recipe:
@@ -362,21 +419,31 @@ Recipe:
 1. Declare two workflow inputs:
    - `input` (Text) — the implementation plan or task brief.
    - `repositories` (Json, required) — the repo list.
-2. Reuse or copy the `code-setup` agent. It needs the `code-worker` role (or any role that
-   grants `read_file`, `apply_patch`, `run_command`, `vcs.get_repo`).
-3. Add your dev work between setup and publish. The dev agent reads `workflow.repositories[i].localPath`
-   to know where each clone lives, edits files, runs tests, commits.
-4. Reuse or copy the `publish` agent. Same role.
-5. Optional: an `inputScript` on the `Start` node can extract the PRD title and stash it as
-   `workflow.prdTitle` so the setup agent's `branch_name` filter has a meaningful slug source. See
-   the existing inputScript in `dev-flow-v1-package.json`'s start node for the regex.
+2. Setup agent: one `setup_workspace({repositories: workflow.repositories})` tool call,
+   then `setWorkflow("repos", result.repos)`. Assign the seeded `code-worker` role (already
+   includes `setup_workspace`).
+3. Dev work: any combination of single agents, ReviewLoop, or Subflows. Each reads
+   `workflow.repos[i].localPath` / `featureBranch` / `baseBranch` for paths and runs
+   `read_file`, `apply_patch`, `run_command "git", [...]` for the actual changes. The
+   credential helper handles auth on every git invocation.
+4. Publish agent: parses `<owner>` / `<name>` from `workflow.repos[i].url`, calls
+   `vcs.open_pr({owner, name, head: featureBranch, base: baseBranch, …})`. Assign the
+   `code-worker` role (already includes `vcs.open_pr`).
 
 Things you do **not** need to do:
 
-- ❌ Compute the trace's workdir path yourself. Read `workflow.traceWorkDir`.
-- ❌ Compute the feature branch name in agent prose. Use `{{ branch_name title traceId }}`.
+- ❌ Compute the trace's workdir path yourself. `setup_workspace` writes into
+  `workflow.traceWorkDir` and reports the resolved `localPath` per repo.
+- ❌ Compute the feature branch name in agent prose. `setup_workspace` derives it.
+- ❌ Resolve the upstream default branch. `setup_workspace` runs `git ls-remote` for you.
+- ❌ Push on first commit "to exercise the credential boundary." `setup_workspace` does that
+  on its first invocation.
 - ❌ Manage a token or compose REST calls for PR creation. Call `vcs.open_pr`.
 - ❌ Schedule cleanup. The platform handles it.
+
+For a discovered mid-workflow dependency, call `setup_workspace([{url: <new-url>}])` again
+from whichever agent noticed; the merge is idempotent and existing repos report
+`alreadyPresent: true`.
 
 ---
 
@@ -390,5 +457,7 @@ Things you do **not** need to do:
   built-in filters.
 - `docs/subflows.md` — child sagas, including how workflow variables (and therefore `traceWorkDir`/`traceId`)
   are inherited via copy-on-fork.
-- `workflows/dev-flow-v1-package.json` — the reference implementation; every concept in this
-  doc has a corresponding piece in that package.
+- `workflows/dev-flow-v1-package.json` and `workflows/dev-flow-v2-package.json` — pre-
+  `setup_workspace` reference implementations. They predate the atomic-bootstrap design and
+  use the legacy choreography (`vcs.clone` + `run_command git checkout -b` + manual base-
+  branch lookup); a refresh against `setup_workspace` is tracked as follow-up authoring work.
