@@ -201,9 +201,11 @@ The tool returns:
 }
 ```
 
-Stash it via `setWorkflow("repos", result.repos)` so every downstream agent has a stable
-handle. Each agent then reads `workflow.repos[i].featureBranch` / `localPath` / `baseBranch`
-directly — no parsing, no remote calls.
+`setup_workspace` automatically stages `setWorkflow("repositories", result.repositories)` on
+submit, so downstream agents read `workflow.repositories[i].featureBranch` / `localPath` /
+`baseBranch` directly — no parsing, no remote calls, no manual mirror by the agent. The
+framework's per-trace allowlist (`saga.RepositoriesJson`) keys off the same array so the
+rich author-facing shape and the slim runtime contract stay in lockstep.
 
 What the tool does for you per repo, atomically:
 
@@ -225,8 +227,9 @@ What the tool does for you per repo, atomically:
 Re-calling `setup_workspace` is the supported way to add a repo discovered mid-workflow (the
 architect or coding agent realises the dev work touches a missing dependency). Existing repos
 round-trip with `alreadyPresent: true` — no re-clone, no re-push — and the new one goes
-through the full pipeline. Re-stash the merged result with `setWorkflow("repos", result.repos)`
-so downstream agents see all the clones.
+through the full pipeline. The tool re-stages `setWorkflow("repositories", …)` with the
+merged array on every call, so downstream agents and `saga.RepositoriesJson` always reflect
+the latest set without the agent doing anything manual.
 
 #### Structured errors
 
@@ -374,10 +377,10 @@ Per-repo flow:
 1. Push any commits made since the last `git push` from the repo's `localPath` via
    `run_command "git", ["push", "origin", "<featureBranch>"]`. The first push was already
    issued by `setup_workspace`, so this is a fast-forward (or a no-op if no new commits).
-2. Parse `<owner>` and `<name>` from `workflow.repos[i].url`.
+2. Parse `<owner>` and `<name>` from `workflow.repositories[i].url`.
 3. Call `vcs.open_pr` with `{ owner, name, head: <featureBranch>, base: <baseBranch>, title,
    body }`. Don't compose REST calls or pass tokens. The `baseBranch` is whatever
-   `setup_workspace` resolved — read it from `workflow.repos[i].baseBranch`, don't re-resolve.
+   `setup_workspace` resolved — read it from `workflow.repositories[i].baseBranch`, don't re-resolve.
 4. Mid-turn, `setWorkflow('repositories', ...)` to update each entry with the returned `prUrl`.
    Keep the rest of the entry intact.
 
@@ -419,14 +422,15 @@ Recipe:
 1. Declare two workflow inputs:
    - `input` (Text) — the implementation plan or task brief.
    - `repositories` (Json, required) — the repo list.
-2. Setup agent: one `setup_workspace({repositories: workflow.repositories})` tool call,
-   then `setWorkflow("repos", result.repos)`. Assign the seeded `code-worker` role (already
-   includes `setup_workspace`).
+2. Setup agent: one `setup_workspace({repositories: workflow.repositories})` tool call.
+   The tool stages `setWorkflow("repositories", result.repositories)` itself on submit, so
+   the agent does nothing further. Assign the seeded `code-worker` role (already includes
+   `setup_workspace`).
 3. Dev work: any combination of single agents, ReviewLoop, or Subflows. Each reads
-   `workflow.repos[i].localPath` / `featureBranch` / `baseBranch` for paths and runs
+   `workflow.repositories[i].localPath` / `featureBranch` / `baseBranch` for paths and runs
    `read_file`, `apply_patch`, `run_command "git", [...]` for the actual changes. The
    credential helper handles auth on every git invocation.
-4. Publish agent: parses `<owner>` / `<name>` from `workflow.repos[i].url`, calls
+4. Publish agent: parses `<owner>` / `<name>` from `workflow.repositories[i].url`, calls
    `vcs.open_pr({owner, name, head: featureBranch, base: baseBranch, …})`. Assign the
    `code-worker` role (already includes `vcs.open_pr`).
 

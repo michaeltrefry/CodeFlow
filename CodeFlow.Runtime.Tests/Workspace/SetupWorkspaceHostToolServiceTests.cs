@@ -44,7 +44,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
 
         result.IsError.Should().BeFalse(result.Content);
         var payload = JsonNode.Parse(result.Content)!.AsObject();
-        var repos = payload["repos"]!.AsArray();
+        var repos = payload["repositories"]!.AsArray();
         repos.Count.Should().Be(1);
 
         var repoZero = repos[0]!.AsObject();
@@ -90,7 +90,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
             traceId: traceId,
             sink: sink);
         first.IsError.Should().BeFalse(first.Content);
-        var firstFeatureBranch = JsonNode.Parse(first.Content)!["repos"]![0]!["featureBranch"]!.GetValue<string>();
+        var firstFeatureBranch = JsonNode.Parse(first.Content)!["repositories"]![0]!["featureBranch"]!.GetValue<string>();
 
         var second = await CallSetupWorkspace(
             service,
@@ -101,7 +101,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
             sink: sink);
         second.IsError.Should().BeFalse(second.Content);
 
-        var secondRepos = JsonNode.Parse(second.Content)!["repos"]!.AsArray();
+        var secondRepos = JsonNode.Parse(second.Content)!["repositories"]!.AsArray();
         secondRepos.Count.Should().Be(1);
         secondRepos[0]!["alreadyPresent"]!.GetValue<bool>().Should().BeTrue("re-calling setup_workspace must report alreadyPresent for existing clones");
         secondRepos[0]!["featureBranch"]!.GetValue<string>().Should().Be(firstFeatureBranch, "the synthesized feature-branch name must be deterministic per traceId");
@@ -139,7 +139,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
             sink: sink);
         second.IsError.Should().BeFalse(second.Content);
 
-        var repos = JsonNode.Parse(second.Content)!["repos"]!.AsArray();
+        var repos = JsonNode.Parse(second.Content)!["repositories"]!.AsArray();
         repos.Count.Should().Be(2);
 
         var byUrl = repos.ToDictionary(r => r!["url"]!.GetValue<string>());
@@ -249,7 +249,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
             sink: sink);
 
         result.IsError.Should().BeFalse(result.Content);
-        var featureBranch = JsonNode.Parse(result.Content)!["repos"]![0]!["featureBranch"]!.GetValue<string>();
+        var featureBranch = JsonNode.Parse(result.Content)!["repositories"]![0]!["featureBranch"]!.GetValue<string>();
         featureBranch.Should().Be("story/sc-1234/fixture-g");
     }
 
