@@ -3,6 +3,7 @@ import {
   buildDraftSaveConfirmationView,
   buildPinnedMutationChip,
   buildReplayConfirmationView,
+  buildResolvePivotPatch,
   buildRunConfirmationView,
   buildSaveConfirmationView,
   scopesEqual,
@@ -252,6 +253,78 @@ describe('chat panel confirmation helpers', () => {
       canConfirm: true,
       canCancel: true,
     });
+  });
+
+  it('pivots an apply-mode chip into resolve mode when a click-time preview surfaces conflicts', () => {
+    // Regression for a bug where the inline-path's preview-at-click-time conflict bounced
+    // the user with a flat "Workflow save failed" banner instead of the imports-page handoff
+    // chip. Symptom in chat: "Workflow package cannot be saved: Role <key> conflicts. …".
+    // Fix routes through this pure helper so the click-time pivot and the tool-result-driven
+    // resolve render are guaranteed to produce identical chip view-models.
+    const patch = buildResolvePivotPatch({
+      entryPoint: { key: 'shortcut-intake', version: 3 },
+      canApply: false,
+      createCount: 0,
+      reuseCount: 0,
+      conflictCount: 1,
+      refusedCount: 0,
+      warningCount: 0,
+      warnings: [],
+      items: [
+        {
+          kind: 'Role',
+          key: 'shortcut-intake-tools',
+          version: null,
+          action: 'Conflict',
+          message: 'A role with this key already exists with different metadata, grants, or skills.',
+        },
+      ],
+    });
+
+    expect(patch).toEqual({
+      mode: 'resolve',
+      state: 'idle',
+      prompt: 'shortcut-intake v3 has 1 conflict — Resolve in imports page?',
+      confirmLabel: 'Resolve',
+      cancelLabel: 'Dismiss',
+      conflictCount: 1,
+    });
+  });
+
+  it('rolls Refused row count into the resolve-mode pluralisation', () => {
+    // Refused (sc-395) is a structural apply-blocker just like Conflict; the chip's count
+    // must include both so the prompt reads correctly when, e.g., a UseExisting resolution
+    // can't rewrite ports.
+    const patch = buildResolvePivotPatch({
+      entryPoint: { key: 'pkg', version: 1 },
+      canApply: false,
+      createCount: 0,
+      reuseCount: 0,
+      conflictCount: 1,
+      refusedCount: 1,
+      warningCount: 0,
+      warnings: [],
+      items: [],
+    });
+
+    expect(patch.prompt).toBe('pkg v1 has 2 conflicts — Resolve in imports page?');
+    expect(patch.conflictCount).toBe(2);
+  });
+
+  it('falls back to a generic prompt when entryPoint is missing', () => {
+    const patch = buildResolvePivotPatch({
+      entryPoint: undefined as never,
+      canApply: false,
+      createCount: 0,
+      reuseCount: 0,
+      conflictCount: 1,
+      refusedCount: 0,
+      warningCount: 0,
+      warnings: [],
+      items: [],
+    });
+
+    expect(patch.prompt).toBe('Workflow package has 1 conflict — Resolve in imports page?');
   });
 
   it('summarizes package preview conflicts before applying a save', () => {
