@@ -140,6 +140,59 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             {
                 return Error($"Could not parse `package` as a workflow package document: {ex.Message}");
             }
+
+            // Stage the inline package as the conversation's draft so it has the same artifact
+            // surface the zero-arg path produces. Without this, a `save_workflow_package({package: ...})`
+            // call yields no draft artifact event — the user can't recover the bytes from the
+            // rail if the chip is dismissed, which is the exact failure mode that motivated the
+            // Artifacts epic. Recording happens further down so the artifact event captures the
+            // same JsonNode the snapshot path uses; we keep the parsed node here.
+            if (workspace is not null)
+            {
+                try
+                {
+                    draftNodeForSnapshot = JsonNode.Parse(packageElement.GetRawText());
+                }
+                catch (JsonException)
+                {
+                    // Re-parse failure is implausible (we just deserialized the same bytes
+                    // above), but defensive: the snapshot path is best-effort.
+                    draftNodeForSnapshot = null;
+                }
+
+                if (draftNodeForSnapshot is not null)
+                {
+                    try
+                    {
+                        await WorkflowPackageDraftStore.WriteAsync(workspace, draftNodeForSnapshot, cancellationToken);
+
+                        // Record the draft artifact so the rail / inline pill always surfaces
+                        // the bytes the user is about to confirm. Mirrors set_workflow_package_draft;
+                        // any prior draft artifact for this conversation is superseded by name.
+                        if (artifactRecorder is not null)
+                        {
+                            var draftInfo = new FileInfo(WorkflowPackageDraftStore.ResolveDraftPath(workspace));
+                            var draftSummary = WorkflowPackageDraftStore.Summarize(draftNodeForSnapshot, draftInfo.Length);
+                            await artifactRecorder.RecordAsync(
+                                conversationId: workspace.CorrelationId,
+                                kind: ArtifactEventKind.WorkflowPackageDraft,
+                                name: WorkflowPackageDraftStore.DraftFileName,
+                                relativePath: WorkflowPackageDraftStore.DraftFileName,
+                                snapshotId: null,
+                                summaryJson: draftSummary.ToJsonString(AssistantToolJson.SerializerOptions),
+                                supersedesPriorByName: true,
+                                cancellationToken: cancellationToken);
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // Workspace IO failure must not break the in-turn save flow — the user
+                        // can still confirm via the inline chip even without the rail entry.
+                        // Drop the snapshot reference so the recorder block below skips too.
+                        draftNodeForSnapshot = null;
+                    }
+                }
+            }
         }
         else if (packagePropertyPresent)
         {

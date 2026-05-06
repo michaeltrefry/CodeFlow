@@ -138,6 +138,65 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Invoke_InlinePath_StagesDraftAndRecordsArtifactEvent()
+    {
+        // Regression: the inline path of save_workflow_package (assistant passes the full package
+        // as a tool argument, the most common shape) MUST also record a WorkflowPackageDraft
+        // artifact so the rail / inline pill surfaces a downloadable bytes for recovery if the
+        // chat-side Save chip is dismissed. Without this the original "lost workflow package"
+        // scenario the Artifacts epic was built for still hits.
+        const string agentKey = "inline-path-artifact-writer";
+        await SeedAgentAsync(agentKey);
+
+        var workspaceDir = Path.Combine(
+            Path.GetTempPath(),
+            "cf-inline-artifact-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspaceDir);
+        var conversationId = await SeedConversationAsync();
+        var workspace = new ToolWorkspaceContext(conversationId, workspaceDir);
+
+        try
+        {
+            var package = await BuildSelfContainedPackageAsync($"inline-artifact-flow-{Guid.NewGuid():N}", agentKey);
+            var args = JsonSerializer.SerializeToElement(new
+            {
+                package = JsonSerializer.SerializeToElement(package),
+            });
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var draftFactory = scope.ServiceProvider.GetRequiredService<WorkflowDraftAssistantToolFactory>();
+            var saveTool = draftFactory.Build(workspace).OfType<SaveWorkflowPackageTool>().Single();
+
+            var result = await saveTool.InvokeAsync(args, CancellationToken.None);
+            result.IsError.Should().BeFalse();
+
+            // The draft file on disk now mirrors the inline package the user passed.
+            var draftPath = WorkflowPackageDraftStore.ResolveDraftPath(workspace);
+            File.Exists(draftPath).Should().BeTrue();
+
+            // Crucially, an artifact event was recorded for the draft so the chat panel surfaces
+            // a downloadable rail entry. Read directly from the repository — owner-scoped reads
+            // ride through the normal endpoint in production, but the persistence-level check is
+            // what pins the regression.
+            await using var verifyScope = factory.Services.CreateAsyncScope();
+            var artifactRepo = verifyScope.ServiceProvider.GetRequiredService<IAssistantArtifactRepository>();
+            var events = await artifactRepo.ListByConversationAsync(conversationId);
+
+            events.Should().Contain(e =>
+                e.Kind == ArtifactEventKind.WorkflowPackageDraft
+                && e.Name == WorkflowPackageDraftStore.DraftFileName,
+                because: "inline-path saves must produce the same draft artifact set/patch produces");
+        }
+        finally
+        {
+            if (Directory.Exists(workspaceDir))
+            {
+                Directory.Delete(workspaceDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Invoke_DraftPath_SnapshotsValidatedBytes_AndIsImmuneToLaterMutation()
     {
         // The big Codex finding: the chip must apply EXACTLY the bytes the user saw at preview

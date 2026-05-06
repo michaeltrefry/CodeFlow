@@ -191,6 +191,13 @@ interface PinnedMutationChip {
                           (click)="openArtifactDiff(entry)"
                         >Diff</button>
                       }
+                      <button
+                        type="button"
+                        class="artifact-pill-dismiss"
+                        title="Hide from thread (still in rail)"
+                        aria-label="Dismiss inline pill"
+                        (click)="dismissArtifactPill(entry.id)"
+                      >×</button>
                     }
                   </span>
                 </div>
@@ -639,6 +646,20 @@ interface PinnedMutationChip {
       color: var(--warn, #f5a623);
       padding: 2px 8px;
     }
+    .artifact-pill-dismiss {
+      appearance: none;
+      cursor: pointer;
+      background: transparent;
+      border: none;
+      color: var(--text-muted, #9aa3b2);
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 6px;
+      margin-left: 2px;
+    }
+    .artifact-pill-dismiss:hover {
+      color: var(--text, #E7E9EE);
+    }
     .ws-prompt {
       flex: 0 0 auto;
       display: flex;
@@ -788,6 +809,14 @@ export class ChatPanelComponent implements OnDestroy {
    * seed this from `applyConversationPayload` so reload restores the same pills.
    */
   protected readonly artifactEvents = signal<ArtifactEventView[]>([]);
+
+  /**
+   * Per-conversation dismissal set. Inline pills the user has hidden via the × button stop
+   * rendering between message bubbles, but stay in `artifactEvents` so the rail still shows
+   * them — the rail is the persistent surface; the thread is the live feed. Cleared on
+   * scope change so a fresh conversation starts with no dismissals.
+   */
+  private readonly dismissedArtifactPillIds = signal<ReadonlySet<string>>(new Set<string>());
 
   /**
    * sc-795 (AA-4): currently-open artifact preview. Null when no sheet is showing. Setting
@@ -1002,7 +1031,11 @@ export class ChatPanelComponent implements OnDestroy {
     const tools = this.toolCalls();
     const pending = this.pending();
     const optimistic = this.optimisticUser();
-    const artifacts = this.artifactEvents();
+    // Inline pills filter out user-dismissed entries (the rail still shows them — the inline
+    // surface is transient feed, the rail is the persistent surface) AND superseded entries
+    // (older drafts roll up under the latest one in the rail's "Show superseded" toggle).
+    const dismissed = this.dismissedArtifactPillIds();
+    const artifacts = this.artifactEvents().filter(a => !dismissed.has(a.id) && !a.superseded);
 
     // Find the last persisted assistant message — only relevant when there's no streaming
     // bubble, since otherwise the streaming bubble is the destination.
@@ -2010,6 +2043,8 @@ export class ChatPanelComponent implements OnDestroy {
     // sc-793: artifact events are per-conversation; clear on scope change so the next
     // conversation's pills don't bleed in.
     this.artifactEvents.set([]);
+    // Inline-pill dismissals are also per-conversation — fresh thread, fresh feed.
+    this.dismissedArtifactPillIds.set(new Set<string>());
     this.conversationInputTokens.set(0);
     this.conversationOutputTokens.set(0);
   }
@@ -2075,6 +2110,21 @@ export class ChatPanelComponent implements OnDestroy {
 
   protected closeArtifactPreview(): void {
     this.artifactPreview.set(null);
+  }
+
+  /**
+   * Hide an artifact's inline pill from the thread. The pill stays in the rail (the
+   * persistent surface), so the user can still Download / View / Diff / Save from there;
+   * dismiss is just the "I see this, stop showing it inline" gesture. Per-conversation,
+   * cleared on scope change.
+   */
+  protected dismissArtifactPill(eventId: string): void {
+    this.dismissedArtifactPillIds.update(prev => {
+      if (prev.has(eventId)) return prev;
+      const next = new Set(prev);
+      next.add(eventId);
+      return next;
+    });
   }
 
   /**
