@@ -11,6 +11,7 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
 
     private readonly IAssistantTurnIdempotencyRepository repository;
     private readonly AssistantTurnSignalRegistry signalRegistry;
+    private readonly AssistantTurnSubscriptionRegistry subscriptionRegistry;
     private readonly IOptions<AssistantTurnIdempotencyOptions> options;
     private readonly ILogger<AssistantTurnIdempotencyCoordinator> logger;
     private readonly TimeProvider timeProvider;
@@ -18,12 +19,14 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
     public AssistantTurnIdempotencyCoordinator(
         IAssistantTurnIdempotencyRepository repository,
         AssistantTurnSignalRegistry signalRegistry,
+        AssistantTurnSubscriptionRegistry subscriptionRegistry,
         IOptions<AssistantTurnIdempotencyOptions> options,
         ILogger<AssistantTurnIdempotencyCoordinator> logger,
         TimeProvider timeProvider)
     {
         this.repository = repository;
         this.signalRegistry = signalRegistry;
+        this.subscriptionRegistry = subscriptionRegistry;
         this.options = options;
         this.logger = logger;
         this.timeProvider = timeProvider;
@@ -55,6 +58,7 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
                     claimed.Record.Id,
                     repository,
                     signalRegistry,
+                    subscriptionRegistry,
                     timeProvider);
                 return new AssistantTurnDispatchOutcome.Claimed(claimed.Record, recorder);
 
@@ -171,17 +175,25 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
             return Array.Empty<(string, string)>();
         }
     }
-
-    private sealed record RecordedFrame(string Event, string? Payload);
 }
 
-internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder
+/// <summary>
+/// sc-803 — Multicast assistant turn recorder. Captures every <see cref="Record"/> call into
+/// an in-memory snapshot and fans the same frame out to any active subscribers (the
+/// originating endpoint plus any retries that attached via the
+/// <see cref="AssistantTurnSubscriptionRegistry"/>). On <see cref="FlushAsync"/> it persists
+/// the full stream and closes every live subscriber cleanly.
+/// </summary>
+internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder, IAssistantTurnPublisher
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    private readonly List<RecordedFrame> frames = new();
+    private readonly object lockObj = new();
+    private readonly List<RecordedFrame> snapshot = new();
+    private readonly List<SubscriberSink> sinks = new();
     private readonly IAssistantTurnIdempotencyRepository repository;
     private readonly AssistantTurnSignalRegistry signalRegistry;
+    private readonly AssistantTurnSubscriptionRegistry subscriptionRegistry;
     private readonly TimeProvider timeProvider;
     private bool flushed;
 
@@ -189,12 +201,18 @@ internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder
         Guid recordId,
         IAssistantTurnIdempotencyRepository repository,
         AssistantTurnSignalRegistry signalRegistry,
+        AssistantTurnSubscriptionRegistry subscriptionRegistry,
         TimeProvider timeProvider)
     {
         RecordId = recordId;
         this.repository = repository;
         this.signalRegistry = signalRegistry;
+        this.subscriptionRegistry = subscriptionRegistry;
         this.timeProvider = timeProvider;
+
+        // Register before returning so a retry that races the producer's first Record call
+        // still finds a publisher and attaches with an empty snapshot.
+        subscriptionRegistry.Register(recordId, this);
     }
 
     public Guid RecordId { get; }
@@ -202,34 +220,93 @@ internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder
     public void Record(string eventName, string payload)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
-        if (flushed)
+
+        var frame = new RecordedFrame(eventName, payload ?? "{}");
+        SubscriberSink[] toPublish;
+        lock (lockObj)
         {
-            // Recording after Flush is a programmer error; surface loudly in tests.
-            throw new InvalidOperationException("Recorder has already been flushed.");
+            if (flushed)
+            {
+                // Recording after Flush is a programmer error; surface loudly in tests.
+                throw new InvalidOperationException("Recorder has already been flushed.");
+            }
+
+            snapshot.Add(frame);
+            toPublish = sinks.Count == 0 ? Array.Empty<SubscriberSink>() : sinks.ToArray();
         }
 
-        frames.Add(new RecordedFrame(eventName, payload ?? "{}"));
+        // Publish outside the lock so a slow-subscriber `TryComplete` (which may run user
+        // continuations) never holds back the producer thread or other subscribers.
+        foreach (var sink in toPublish)
+        {
+            sink.TryPublishOrDrop(frame);
+        }
+    }
+
+    public IAssistantTurnSubscription Subscribe(int capacity, TimeSpan lifetime)
+    {
+        lock (lockObj)
+        {
+            if (flushed)
+            {
+                // Producer already flushed; the snapshot is the entire event stream.
+                return new SnapshotSubscription(snapshot.ToArray(), completed: true);
+            }
+
+            var sink = new SubscriberSink(capacity, lifetime, timeProvider);
+            sinks.Add(sink);
+            // Snapshot is captured atomically with sink registration so the subscriber sees
+            // exactly the frames that were already produced + every frame produced after.
+            return new LiveSubscription(snapshot.ToArray(), sink, RemoveSink);
+        }
+    }
+
+    private void RemoveSink(SubscriberSink sink)
+    {
+        lock (lockObj)
+        {
+            sinks.Remove(sink);
+        }
     }
 
     public async Task FlushAsync(AssistantTurnIdempotencyStatus terminalStatus, CancellationToken cancellationToken)
     {
-        if (flushed)
+        SubscriberSink[] toClose;
+        string json;
+        lock (lockObj)
         {
-            return;
+            if (flushed)
+            {
+                return;
+            }
+
+            flushed = true;
+            json = JsonSerializer.Serialize(snapshot, JsonOptions);
+            toClose = sinks.Count == 0 ? Array.Empty<SubscriberSink>() : sinks.ToArray();
+            sinks.Clear();
         }
 
-        flushed = true;
-        var json = JsonSerializer.Serialize(frames, JsonOptions);
-        await repository.MarkTerminalAsync(
-            RecordId,
-            terminalStatus,
-            json,
-            timeProvider.GetUtcNow().UtcDateTime,
-            cancellationToken);
-        signalRegistry.Signal(RecordId);
+        try
+        {
+            await repository.MarkTerminalAsync(
+                RecordId,
+                terminalStatus,
+                json,
+                timeProvider.GetUtcNow().UtcDateTime,
+                cancellationToken);
+        }
+        finally
+        {
+            // Always release subscribers + signal waiters even if persistence fails — a hung
+            // subscriber is worse than a missing replay record.
+            subscriptionRegistry.Unregister(RecordId);
+            signalRegistry.Signal(RecordId);
+            foreach (var sink in toClose)
+            {
+                sink.Complete();
+            }
+        }
     }
-
-    private sealed record RecordedFrame(string Event, string Payload);
 }
 
 public sealed class AssistantTurnIdempotencyOptions
@@ -252,4 +329,18 @@ public sealed class AssistantTurnIdempotencyOptions
 
     /// <summary>How often the background sweep removes expired rows.</summary>
     public TimeSpan SweepInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// sc-803 — Per-subscriber bounded channel capacity for live-tail reattach. A retry whose
+    /// reader falls behind by more than this many frames is dropped (its channel is completed
+    /// with an error) so the producer is never stalled.
+    /// </summary>
+    public int LiveTailSubscriberCapacity { get; set; } = 256;
+
+    /// <summary>
+    /// sc-803 — Maximum lifetime of a live-tail subscriber before its channel is closed with
+    /// a timeout. Defaults to <see cref="WaitTimeout"/> when zero or negative — a producer
+    /// that never flushes (process exit) shouldn't keep retries hanging forever.
+    /// </summary>
+    public TimeSpan LiveTailSubscriberLifetime { get; set; } = TimeSpan.Zero;
 }
