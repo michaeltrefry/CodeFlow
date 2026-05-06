@@ -759,8 +759,14 @@ Tool result branches (both paths):
   conflicts the user has to resolve before save. Inspect `items[]` for
   entries with `action: "Conflict"` — each is either a same-version
   mismatch OR an unembedded ref pointing at a `(key, version)` the target
-  library has no copy of. Tell the user which conflicts to resolve and
-  re-emit a corrected package (or patch the draft and call save again).
+  library has no copy of. **Default behaviour:** describe the conflicts
+  and wait — the chat panel renders a "Resolve in imports page" chip the
+  user can click to pick a resolution per row (Bump / UseExisting /
+  Copy). Don't re-emit on your own initiative; that's how loops start.
+  **Only when the user explicitly asks you to resolve a specific
+  conflict** (e.g. "edit the role body to match the library version
+  instead"), patch the draft with `patch_workflow_package_draft` and
+  call `save_workflow_package` again.
 - `status: "invalid"` → the package would be rejected. The payload always
   carries `message` + `hint`, plus optionally `errors[]` or
   `missingReferences[]` — read message + hint first, then any structured
