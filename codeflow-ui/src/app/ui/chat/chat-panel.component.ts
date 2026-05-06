@@ -23,6 +23,7 @@ import { TracesApi } from '../../core/traces.api';
 import { CreateTraceRequest, LlmProviderKey, LlmProviderModelOption, ReplayRequest } from '../../core/models';
 import { IconComponent } from '../icon.component';
 import { ArtifactPreviewComponent } from './artifact-preview.component';
+import { ArtifactRailComponent } from './artifact-rail.component';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
@@ -109,6 +110,7 @@ interface PinnedMutationChip {
     ChatToolbarComponent,
     IconComponent,
     ArtifactPreviewComponent,
+    ArtifactRailComponent,
   ],
   template: `
     <section class="chat-panel" [attr.data-scope-kind]="effectiveScope().kind">
@@ -224,6 +226,14 @@ interface PinnedMutationChip {
           </div>
         }
       </div>
+
+      @if (artifactEvents().length > 0 && conversationId(); as convId) {
+        <cf-artifact-rail
+          [events]="artifactEvents()"
+          [conversationId]="convId"
+          (viewRequested)="openArtifactPreview($event)"
+        />
+      }
 
       @if (chips().length > 0) {
         <div class="chat-panel-chips" data-testid="suggestion-chips">
