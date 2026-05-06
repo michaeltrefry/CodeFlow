@@ -142,7 +142,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
-        IAssistantArtifactRepository artifactRepository,
+        IAssistantArtifactReadRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -187,7 +187,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
-        IAssistantArtifactRepository artifactRepository,
+        IAssistantArtifactReadRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         // For reads we never want to mint a fresh anon cookie — that would lose the existing
@@ -242,7 +242,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository conversations,
-        IAssistantArtifactRepository artifactRepository,
+        IAssistantArtifactReadRepository artifactRepository,
         IAssistantWorkspaceProvider workspaceProvider,
         CancellationToken cancellationToken)
     {
@@ -355,7 +355,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository conversations,
-        IAssistantArtifactRepository artifactRepository,
+        IAssistantArtifactReadRepository artifactRepository,
         IAssistantWorkspaceProvider workspaceProvider,
         IWorkflowPackageImporter importer,
         CancellationToken cancellationToken)

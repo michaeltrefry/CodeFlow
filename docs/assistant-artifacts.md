@@ -119,31 +119,86 @@ chat panel hydrates from there.
   actions (Download, View, Save to library for package kinds).
 - **Read-only Monaco preview** opens in a side sheet on View.
 
-### Generalization (Phase 3)
+### The recorder contract (locked in AA-8)
 
-Introduce `IArtifactRecorder` consumed by tools that produce files:
+`IArtifactRecorder` (in `CodeFlow.Api/Assistant/Artifacts/`) is the
+canonical write path for every artifact event. Producer tools call
+this; nothing else writes directly to the repository.
 
 ```csharp
 public interface IArtifactRecorder
 {
-    Task<Guid> RecordAsync(
+    Task<AssistantArtifactEvent> RecordAsync(
         Guid conversationId,
         ArtifactEventKind kind,
         string name,
         string relativePath,
         Guid? snapshotId,
-        object? summary,
-        bool supersedesPrior,
-        CancellationToken ct);
+        string? summaryJson,
+        bool supersedesPriorByName,
+        CancellationToken cancellationToken = default);
+
+    Task<int> ClearByNameAsync(
+        Guid conversationId,
+        string name,
+        CancellationToken cancellationToken = default);
+
+    Task<int> MarkSnapshotExpiredAsync(
+        Guid snapshotId,
+        CancellationToken cancellationToken = default);
 }
 ```
 
-Existing producers (set / patch / save / clear workflow package
-draft) migrate to this interface. New producers (`diagnose_trace`
-exports, evidence bundles) implement it directly. The recorder is
-also responsible for marking prior events superseded when
-`supersedesPrior` is true (e.g., a fresh `set_workflow_package_draft`
-supersedes the previous draft event).
+Repository access is split:
+
+- `IAssistantArtifactReadRepository` — list + get; injected by API
+  endpoints that surface artifacts to the chat panel.
+- `IAssistantArtifactRepository` (extends the read interface) —
+  full read+write; injected only by the recorder. Producer code that
+  injects this interface to bypass the recorder is a code-review
+  red flag.
+
+### `ArtifactEventKind` values + `relativePath` conventions
+
+Numeric values are stable (the column stores the int code). New kinds
+are additive; reordering / removing values would corrupt rows.
+
+| Kind                       | Value | Live? | `name` shape                                | `relativePath`                                       |
+| -------------------------- | ----- | ----- | ------------------------------------------- | ---------------------------------------------------- |
+| `WorkflowPackageDraft`     | 1     | yes   | `draft.cf-workflow-package.json`            | same as `name`                                       |
+| `WorkflowPackageSnapshot`  | 2     | no    | `snapshot-{guid:N}.cf-workflow-package.json`| same as `name`                                       |
+| `TraceDiagnostic` (AA-9)   | 3     | yes   | `diagnose-{traceId:N}-{utcTs}.json`         | same as `name`                                       |
+| `EvidenceBundle` (AA-9)    | 4     | yes   | `evidence-{traceId:N}-{utcTs}.zip`          | same as `name`                                       |
+
+Bytes always live under the conversation's workspace root. `name` is
+what the chat panel displays in the pill; `relativePath` is what the
+download endpoint resolves on disk. They're equal for every kind
+shipped today; future kinds with subdirectories (e.g. attachments
+under `attachments/{guid}/...`) can diverge.
+
+### Implementing a new artifact producer
+
+1. Pick (or add) an `ArtifactEventKind` value. Reserve the int via
+   numeric assignment in the enum and add a row to the table above.
+2. Inject `IArtifactRecorder` into the producer (tool, endpoint,
+   service — anything with the conversation id in scope).
+3. After successfully writing the bytes to disk in the conversation
+   workspace, call `RecordAsync` with the kind, `name`,
+   `relativePath`, optional `snapshotId` (only for snapshot kinds),
+   optional `summaryJson` (any free-form JSON the UI will use to
+   render the pill summary line), and `supersedesPriorByName: true`
+   when the new event replaces an active prior event with the same
+   name.
+4. If the producer's bytes are immutable and consumed downstream
+   (apply-from-draft semantics), call `MarkSnapshotExpiredAsync`
+   before deleting the file so the metadata row outlives the bytes
+   in a discoverable state.
+5. Add unit + integration tests mirroring AA-1's
+   `WorkflowPackageDraftToolsTests` and `AssistantArtifactRepositoryTests`.
+
+The chat panel renders pills + rail rows automatically — no UI
+changes needed for a new kind, unless the kind needs custom actions
+beyond Download / View.
 
 ## Implementation plan (10 slices)
 

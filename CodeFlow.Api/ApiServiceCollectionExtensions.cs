@@ -133,7 +133,14 @@ public static class ApiServiceCollectionExtensions
         services.Configure<AssistantOptions>(configuration.GetSection(AssistantOptions.SectionName));
         services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
-        services.AddScoped<IAssistantArtifactRepository, AssistantArtifactRepository>();
+        // sc-799 (AA-8): register the concrete first so both interface registrations resolve
+        // to the same instance per scope. Endpoints inject IAssistantArtifactReadRepository;
+        // the recorder takes the writer interface. Producer code can't bypass the recorder
+        // by injecting the writer directly — they'd have to know the concrete type, and
+        // discoverability is gated by the read interface in DI.
+        services.AddScoped<AssistantArtifactRepository>();
+        services.AddScoped<IAssistantArtifactRepository>(sp => sp.GetRequiredService<AssistantArtifactRepository>());
+        services.AddScoped<IAssistantArtifactReadRepository>(sp => sp.GetRequiredService<AssistantArtifactRepository>());
         // sc-793 (AA-2): collector is scoped — same scope as the recorder and the assistant —
         // so the recorder's appends and the assistant's drains share one buffer per request.
         services.AddScoped<IArtifactEventCollector, ArtifactEventCollector>();
