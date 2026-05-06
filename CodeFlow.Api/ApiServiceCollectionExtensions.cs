@@ -218,7 +218,10 @@ public static class ApiServiceCollectionExtensions
         // HAA-12: focused diagnosis tool. Composes the data the existing trace tools already
         // expose (saga + decisions + logic evals + token usage) into a single structured verdict
         // with anomaly heuristics applied server-side. Read-only; no chip.
-        services.AddScoped<IAssistantTool, DiagnoseTraceTool>();
+        // sc-800 (AA-9): DiagnoseTraceTool is now built per-turn by TraceProducerToolFactory so
+        // it can take a workspace context + record a TraceDiagnostic artifact. ExportEvidenceBundleTool
+        // ships in the same factory.
+        services.AddScoped<TraceProducerToolFactory>();
 
         // HAA-13: confirmation-gated Replay-with-Edit bridge. Validation-only tool; the UI POSTs
         // to /api/traces/{id}/replay (DryRunExecutor v4) when the user clicks the Replay chip.

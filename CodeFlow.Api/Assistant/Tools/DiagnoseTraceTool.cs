@@ -1,6 +1,9 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using CodeFlow.Api.Assistant.Artifacts;
 using CodeFlow.Api.TokenTracking;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using Microsoft.EntityFrameworkCore;
 
 namespace CodeFlow.Api.Assistant.Tools;
@@ -25,10 +28,32 @@ namespace CodeFlow.Api.Assistant.Tools;
 ///   as both a failing node (when the saga ended Failed because of it) and an anomaly (when the
 ///   saga ended Completed despite a recovered logic failure).
 /// </remarks>
-public sealed class DiagnoseTraceTool(
-    CodeFlowDbContext dbContext,
-    ITokenUsageRecordRepository tokenUsageRepository) : IAssistantTool
+public sealed class DiagnoseTraceTool : IAssistantTool
 {
+    private readonly CodeFlowDbContext dbContext;
+    private readonly ITokenUsageRecordRepository tokenUsageRepository;
+    private readonly ToolWorkspaceContext? workspace;
+    private readonly IArtifactRecorder? artifactRecorder;
+
+    /// <summary>
+    /// AA-9 (sc-800): when <paramref name="workspace"/> + <paramref name="artifactRecorder"/>
+    /// are both non-null, the tool writes its diagnosis JSON to the conversation workspace
+    /// and registers a <c>TraceDiagnostic</c> artifact event so the chat panel surfaces a
+    /// downloadable pill. Falls back to "result-only" when either is null (no workspace
+    /// available, e.g. demo-mode homepage scope before workspace setup).
+    /// </summary>
+    public DiagnoseTraceTool(
+        CodeFlowDbContext dbContext,
+        ITokenUsageRecordRepository tokenUsageRepository,
+        ToolWorkspaceContext? workspace = null,
+        IArtifactRecorder? artifactRecorder = null)
+    {
+        this.dbContext = dbContext;
+        this.tokenUsageRepository = tokenUsageRepository;
+        this.workspace = workspace;
+        this.artifactRecorder = artifactRecorder;
+    }
+
     private const string FailedState = "Failed";
     private const long LongDurationMsThreshold = 60_000;
     private const long AbsoluteTokenSpikeThreshold = 50_000;
@@ -115,7 +140,47 @@ public sealed class DiagnoseTraceTool(
             },
         };
 
-        return new AssistantToolResult(JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions));
+        var resultJson = JsonSerializer.Serialize(payload, AssistantToolJson.SerializerOptions);
+
+        // sc-800 (AA-9): persist the diagnosis as a downloadable artifact when the conversation
+        // has a writable workspace. The on-disk filename embeds the trace id + a UTC timestamp
+        // so multiple diagnoses on the same trace coexist without collision.
+        if (workspace is not null && artifactRecorder is not null)
+        {
+            try
+            {
+                Directory.CreateDirectory(workspace.RootPath);
+                var timestamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
+                var fileName = $"diagnose-{traceId:N}-{timestamp}.json";
+                var filePath = Path.Combine(workspace.RootPath, fileName);
+                await File.WriteAllTextAsync(filePath, resultJson, cancellationToken);
+
+                var summary = JsonSerializer.Serialize(new
+                {
+                    traceId = saga.TraceId,
+                    workflowKey = saga.WorkflowKey,
+                    currentState = saga.CurrentState,
+                    failingNodeCount = failingNodes.Count,
+                    anomalyCount = anomalies.Count,
+                });
+                await artifactRecorder.RecordAsync(
+                    conversationId: workspace.CorrelationId,
+                    kind: ArtifactEventKind.TraceDiagnostic,
+                    name: fileName,
+                    relativePath: fileName,
+                    snapshotId: null,
+                    summaryJson: summary,
+                    supersedesPriorByName: false,
+                    cancellationToken: cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Artifact recording is best-effort — the diagnosis result still goes back to
+                // the LLM. A workspace IO failure must not break the in-turn answer.
+            }
+        }
+
+        return new AssistantToolResult(resultJson);
     }
 
     private static string BuildSummary(WorkflowSagaStateEntity saga, int failingNodeCount, int anomalyCount)
