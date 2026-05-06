@@ -49,7 +49,34 @@ public sealed class ProposeReplayWithEditTool(CodeFlowDbContext dbContext) : IAs
             },
             ""edits"": {
                 ""type"": ""array"",
-                ""description"": ""One entry per substitution. Each must target a recorded (agentKey, ordinal) pair in the trace.""
+                ""description"": ""One entry per substitution. Each must target a recorded (agentKey, ordinal) pair in the trace. Provide at least one of `decision`, `output`, or `payload` per edit — that cross-field rule is enforced in code, not in the schema."",
+                ""items"": {
+                    ""type"": ""object"",
+                    ""properties"": {
+                        ""agentKey"": {
+                            ""type"": ""string"",
+                            ""description"": ""The recorded decision's agent key.""
+                        },
+                        ""ordinal"": {
+                            ""type"": ""integer"",
+                            ""minimum"": 1,
+                            ""description"": ""1-based per-agent invocation ordinal in the trace (the Nth time this agent ran).""
+                        },
+                        ""decision"": {
+                            ""type"": ""string"",
+                            ""description"": ""Override the recorded decision (e.g., a different output port name).""
+                        },
+                        ""output"": {
+                            ""type"": ""string"",
+                            ""description"": ""Override the recorded output content.""
+                        },
+                        ""payload"": {
+                            ""description"": ""Override the recorded payload. Free-form JSON; the replay path treats it as opaque.""
+                        }
+                    },
+                    ""required"": [""agentKey"", ""ordinal""],
+                    ""additionalProperties"": false
+                }
             },
             ""force"": {
                 ""type"": ""boolean"",
