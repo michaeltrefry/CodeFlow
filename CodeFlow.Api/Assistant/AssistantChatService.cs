@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -116,12 +117,28 @@ public sealed class AssistantChatService(
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Assistant turn failed for conversation {ConversationId}", conversationId);
-                    failureMessage = ex.Message;
+                    failureMessage = ClassifyTurnFailureMessage(ex);
                     item = null;
                 }
 
                 if (failureMessage is not null)
                 {
+                    // If any text reached the user before the stream broke, persist it as the
+                    // assistant message so the partial draft + the tokens already paid for don't
+                    // vanish. The next turn's history will include the truncated content, giving
+                    // the model + the user something to resume from instead of starting over.
+                    if (contentBuffer.Length > 0)
+                    {
+                        var partial = await conversations.AppendMessageAsync(
+                            conversationId,
+                            AssistantMessageRole.Assistant,
+                            contentBuffer.ToString(),
+                            provider: finalProvider,
+                            model: finalModel,
+                            invocationId: invocationId,
+                            cancellationToken);
+                        yield return new AssistantMessagePersisted(partial);
+                    }
                     yield return new TurnFailed(failureMessage);
                     yield break;
                 }
@@ -254,6 +271,24 @@ public sealed class AssistantChatService(
         if (!obj.TryGetProperty(propertyName, out var prop)) return null;
         if (prop.ValueKind != JsonValueKind.Number) return null;
         return prop.TryGetInt64(out var v) ? v : null;
+    }
+
+    /// <summary>
+    /// Translates the most common provider-stream failure modes into a message a non-engineer
+    /// can read. Falls back to <see cref="Exception.Message"/> for anything we haven't classified
+    /// — better to surface the raw text than to blanket-mask everything as "Something went wrong."
+    /// </summary>
+    internal static string ClassifyTurnFailureMessage(Exception ex)
+    {
+        // OpenAI/Anthropic SSE streams expose mid-flight network drops as HttpIOException
+        // ResponseEnded. The underlying message ("The response ended prematurely.") is fine but
+        // gives the user no signal that this is a transient connection drop, not a model-side
+        // refusal. Rephrase so the chat banner makes the right next step (retry) obvious.
+        if (ex is HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded })
+        {
+            return "The model's response stream dropped before it finished. Any partial reply was saved — retry to continue.";
+        }
+        return ex.Message;
     }
 }
 
