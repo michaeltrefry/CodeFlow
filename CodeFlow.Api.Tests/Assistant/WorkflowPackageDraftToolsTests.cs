@@ -67,6 +67,51 @@ public sealed class WorkflowPackageDraftToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task SetDraft_FirstCall_FlagsWasOverwriteFalse_AndPointsAtPatch()
+    {
+        var tool = new SetWorkflowPackageDraftTool(workspace, recorder);
+        var args = JsonDocument.Parse("""
+        { "package": { "schemaVersion": "codeflow.workflow-package.v1", "workflows": [{ "key": "x" }] } }
+        """).RootElement;
+
+        var result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        var parsed = JsonDocument.Parse(result.ResultJson).RootElement;
+        parsed.GetProperty("wasOverwrite").GetBoolean().Should().BeFalse(
+            "first set on a fresh workspace is the assemble-once path, not an overwrite");
+        parsed.GetProperty("message").GetString().Should().Contain(
+            "patch_workflow_package_draft",
+            "the result message must point at the cheap edit path");
+    }
+
+    [Fact]
+    public async Task SetDraft_SecondCall_FlagsWasOverwriteTrue_AndCarriesSharperNudge()
+    {
+        // Reproducer for the assistant's "regenerate the entire package on every refinement"
+        // anti-pattern. The static tool description and the workflow-authoring skill both
+        // say to use patch for incremental edits, but the assistant ignores them. The runtime
+        // result message picks up the nudge on every redundant overwrite so the next turn's
+        // input includes a fresh hint.
+        var tool = new SetWorkflowPackageDraftTool(workspace, recorder);
+        var args = JsonDocument.Parse("""
+        { "package": { "schemaVersion": "codeflow.workflow-package.v1", "workflows": [{ "key": "x" }] } }
+        """).RootElement;
+
+        await tool.InvokeAsync(args, CancellationToken.None);
+        var second = await tool.InvokeAsync(args, CancellationToken.None);
+
+        second.IsError.Should().BeFalse();
+        var parsed = JsonDocument.Parse(second.ResultJson).RootElement;
+        parsed.GetProperty("wasOverwrite").GetBoolean().Should().BeTrue();
+        var message = parsed.GetProperty("message").GetString()!;
+        message.Should().Contain("REPLACED in full", "make the cost concrete");
+        message.Should().Contain("patch_workflow_package_draft", "name the cheap path");
+        message.Should().Contain("get_workflow_package_draft",
+            "remind the model to read state before computing patch paths");
+    }
+
+    [Fact]
     public async Task GetDraft_AfterSet_ReturnsStoredPackage()
     {
         var setTool = new SetWorkflowPackageDraftTool(workspace, recorder);
