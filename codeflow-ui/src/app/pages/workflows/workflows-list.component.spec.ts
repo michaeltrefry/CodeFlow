@@ -302,6 +302,39 @@ describe('WorkflowsListComponent (sc-396 resolutions)', () => {
     expect(refusedOpts.find(o => o.id === 'UseExisting')!.disabled).toBe(true);
     expect(refusedOpts.find(o => o.id === 'Bump')!.disabled).toBeFalsy();
   });
+
+  it('unversioned-kind Conflict rows offer UseExisting even though existingMaxVersion is null', () => {
+    // sc-396 follow-up: importer doesn't fill `existingMaxVersion` on Role/Skill/McpServer/
+    // AgentRoleAssignment conflicts, so the original gate (existingMaxVersion != null) yielded
+    // an empty dropdown. The conflict itself signals the library row exists, so UseExisting
+    // is the natural resolution.
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+    const component = fixture.componentInstance;
+
+    for (const kind of ['Role', 'Skill', 'McpServer', 'AgentRoleAssignment'] as const) {
+      const conflict: WorkflowPackageImportItem = {
+        kind,
+        key: 'thing',
+        version: null,
+        action: 'Conflict',
+        message: 'Library copy differs',
+        sourceVersion: null,
+        existingMaxVersion: null,
+      };
+      seedPreview(component, [conflict]);
+
+      const options = component.resolutionOptions(conflict);
+      expect(options.map(o => o.id)).toEqual(['UseExisting']);
+      expect(options[0].label).toBe('Use existing');
+      expect(options[0].disabled).toBeFalsy();
+
+      // Picking UseExisting on an unversioned kind commits directly without the modal warning
+      // (which is about node-ref rewrites — irrelevant when nothing is version-pinned).
+      component.onResolutionChange(conflict, 'UseExisting');
+      expect(component.useExistingPrompt()).toBeNull();
+      expect(component.resolutions().get(`${kind}:thing:`)!.mode).toBe('UseExisting');
+    }
+  });
 });
 
 // ----------------------------------------------------------------------------------------

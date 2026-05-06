@@ -1691,10 +1691,18 @@ export class ChatPanelComponent implements OnDestroy {
       return;
     }
 
-    const hasSaveToolCall = this.toolCalls().some(
-      card => card.name === SAVE_WORKFLOW_PACKAGE_TOOL || card.confirmation?.kind === 'save_workflow_package',
-    );
-    if (hasSaveToolCall) {
+    // A cancelled save chip (user dismissed a resolve-mode prompt and asked the assistant to
+    // modify) shouldn't suppress the markdown-fallback surface — otherwise the next assistant
+    // turn that emits a corrected `cf-workflow-package` block would silently drop on the floor.
+    // Match only chips that are still actionable (idle, applying, or terminally succeeded/failed
+    // with a payload the user might want to retry).
+    const hasActiveSaveToolCall = this.toolCalls().some(card => {
+      const isSaveCard = card.name === SAVE_WORKFLOW_PACKAGE_TOOL
+        || card.confirmation?.kind === 'save_workflow_package';
+      if (!isSaveCard) return false;
+      return card.confirmation?.state !== 'cancelled';
+    });
+    if (hasActiveSaveToolCall) {
       return;
     }
 
