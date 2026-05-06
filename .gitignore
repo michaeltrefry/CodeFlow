@@ -26,7 +26,10 @@ bld/
 # .NET Core
 project.lock.json
 project.fragment.lock.json
-artifacts/
+# Anchored to repo root: catches the standard .NET output dir without colliding with
+# source folders named Artifacts (case-insensitive macOS filesystems would otherwise
+# match e.g. CodeFlow.Api/Assistant/Artifacts/).
+/artifacts/
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
