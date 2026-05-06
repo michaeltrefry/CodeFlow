@@ -218,11 +218,14 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
     public string Name => "set_workflow_package_draft";
 
     public string Description =>
-        "Save a workflow package as the conversation's working draft (overwrites any existing draft). " +
-        "Returns a small summary; the full package is not echoed back. Use this once after assembling " +
-        "a package, then iterate with `patch_workflow_package_draft`. When you're ready to save to the " +
-        "library, call `save_workflow_package` with NO arguments — it will read this draft from disk. " +
-        "This avoids re-emitting the full package on every refinement turn.";
+        "Save a workflow package as the conversation's working draft. **Use ONCE** when first " +
+        "assembling a package — re-calling this tool to make incremental edits wastes 50–200 KB " +
+        "of input tokens per turn for changes that fit in a few JSON Patch ops. The cheap edit " +
+        "path is `patch_workflow_package_draft({ operations: [...] })`; call " +
+        "`get_workflow_package_draft()` first if you need to see the current state to compute " +
+        "paths. When you're ready to save to the library, call `save_workflow_package` with NO " +
+        "arguments — it reads this draft from disk. Returns a small summary; the package is not " +
+        "echoed back. Overwriting an existing draft is allowed but flagged in the result.";
 
     public JsonElement InputSchema => AssistantToolJson.Schema(@"{
         ""type"": ""object"",
@@ -249,11 +252,17 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
         {
             return Error(
                 "The `package` argument is a redaction placeholder, not a real workflow package. "
-                + "The redacted shape `{\"_redacted\": true, \"sha256\": ..., \"summary\": ...}` "
-                + "is what your prior tool_use Inputs are replaced with in your transcript history "
-                + "to save tokens — it is NOT a callable input. Re-emit the actual workflow-package "
-                + "JSON, or call `get_workflow_package_draft` to read the current draft and "
-                + "`patch_workflow_package_draft` to apply incremental edits.");
+                + "The shape `{\"_redacted\": true, \"sha256\": ..., \"summary\": ...}` is the "
+                + "transcript-only stub the runtime substitutes for prior package emissions to "
+                + "save tokens; the original draft is intact on disk. **Recovery procedure** "
+                + "(do this in order, do not loop): "
+                + "1) Call `get_workflow_package_draft()` to surface the current bytes. "
+                + "2) Compute the targeted JSON Patch ops the user's request needs. "
+                + "3) Call `patch_workflow_package_draft({ operations: [...] })` — DO NOT "
+                + "re-emit the full package via `set_workflow_package_draft` for an edit, "
+                + "that's the expensive path you just bounced off. "
+                + "Re-emitting is only correct when starting a fresh design, not when iterating "
+                + "on an existing draft.");
         }
 
         JsonNode? packageNode;
@@ -270,6 +279,12 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
         {
             return Error("Argument `package` deserialized to null.");
         }
+
+        // Detect the "I'm calling set again to make a small edit" reflex so the tool result
+        // can carry a sharper nudge toward `patch_workflow_package_draft` than the static
+        // tool description alone — assistants observed in the wild burn 50–200 KB / turn
+        // re-emitting the whole payload when 2–3 JSON Patch ops would do.
+        var wasOverwrite = File.Exists(WorkflowPackageDraftStore.ResolveDraftPath(workspace));
 
         await WorkflowPackageDraftStore.WriteAsync(workspace, packageNode, cancellationToken);
         var info = new FileInfo(WorkflowPackageDraftStore.ResolveDraftPath(workspace));
@@ -288,12 +303,24 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
             supersedesPriorByName: true,
             cancellationToken: cancellationToken);
 
+        var message = wasOverwrite
+            ? "Draft REPLACED in full. If this turn's change was small (an edge, a port name, "
+              + "a scalar), `patch_workflow_package_draft({ operations: [...] })` would have "
+              + "cost a few hundred tokens vs the 50–200 KB you just spent on a re-emit. "
+              + "Future small edits MUST use the patch path; call `get_workflow_package_draft()` "
+              + "first if you need to see the current state to compute paths. To save to the "
+              + "library, call `save_workflow_package` with no arguments."
+            : "Draft saved. Future edits should use `patch_workflow_package_draft` (cheap) "
+              + "rather than another `set_workflow_package_draft` (full re-emit). To save to "
+              + "the library, call `save_workflow_package` with no arguments.";
+
         var payload = new JsonObject
         {
             ["status"] = "saved",
+            ["wasOverwrite"] = wasOverwrite,
             ["path"] = WorkflowPackageDraftStore.DraftFileName,
             ["summary"] = summary,
-            ["message"] = "Draft saved. To iterate, call `patch_workflow_package_draft` with JSON Patch operations. To save to the library, call `save_workflow_package` with no arguments.",
+            ["message"] = message,
         };
         return new AssistantToolResult(payload.ToJsonString(AssistantToolJson.SerializerOptions));
     }
