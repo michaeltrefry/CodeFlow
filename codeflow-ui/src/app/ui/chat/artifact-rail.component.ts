@@ -83,12 +83,11 @@ import { ArtifactEventView } from './chat-panel.component';
                   @if (e.expired) {
                     <span class="artifact-rail-status">Expired</span>
                   } @else {
-                    <a
+                    <button
+                      type="button"
                       class="artifact-rail-action"
-                      [attr.href]="downloadUrl(e)"
-                      [attr.download]="e.name"
-                      rel="noopener"
-                    >Download</a>
+                      (click)="onDownload(e)"
+                    >Download</button>
                     <button
                       type="button"
                       class="artifact-rail-action"
@@ -284,6 +283,12 @@ export class ArtifactRailComponent {
    * event + the entry-point key from the package summary and mounts the diff side sheet.
    */
   @Output() readonly diffRequested = new EventEmitter<ArtifactEventView>();
+  /**
+   * Download bubbles up so the chat panel can JS-drive the save-as via Angular HttpClient.
+   * Bubbling instead of inlining `<a download>` because the production auth is JwtBearer
+   * only — a plain link request comes in unauthenticated and the download endpoint 404s.
+   */
+  @Output() readonly downloadRequested = new EventEmitter<ArtifactEventView>();
 
   protected readonly collapseThreshold = COLLAPSE_THRESHOLD;
   protected readonly showSuperseded = signal<boolean>(false);
@@ -315,8 +320,8 @@ export class ArtifactRailComponent {
     this.collapsed.set(true);
   }
 
-  protected downloadUrl(view: ArtifactEventView): string {
-    return `/api/assistant/conversations/${encodeURIComponent(view.conversationId)}/artifacts/${encodeURIComponent(view.id)}`;
+  protected onDownload(view: ArtifactEventView): void {
+    this.downloadRequested.emit(view);
   }
 
   protected onView(view: ArtifactEventView): void {

@@ -14,6 +14,7 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { AuthService } from '../../auth/auth.service';
 import { ensureMonacoEditorStyles, ensureMonacoEnvironment, loadMonacoEditor } from '../../pages/workflows/editor/monaco-environment';
 
 /**
@@ -118,6 +119,7 @@ import { ensureMonacoEditorStyles, ensureMonacoEnvironment, loadMonacoEditor } f
 })
 export class ArtifactPreviewComponent implements AfterViewInit, OnDestroy {
   private readonly destroyRef = inject(DestroyRef);
+  private readonly auth = inject(AuthService);
 
   /** Conversation id that owns the artifact — drives the download endpoint URL. */
   readonly conversationId = input.required<string>();
@@ -170,6 +172,15 @@ export class ArtifactPreviewComponent implements AfterViewInit, OnDestroy {
     const aborter = new AbortController();
     this.aborter = aborter;
 
+    // Production auth is JwtBearer-only; a plain `fetch` bypasses Angular's authInterceptor
+    // and lands at the server unauthenticated, which the artifact-download owner check 404s.
+    // Attach the bearer manually here — same posture as cancelLiveTurn in assistant-stream.
+    const accessToken = this.auth.getValidAccessToken();
+    const headers: Record<string, string> = {};
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
     let response: Response;
     try {
       response = await fetch(
@@ -177,6 +188,7 @@ export class ArtifactPreviewComponent implements AfterViewInit, OnDestroy {
         {
           credentials: 'include',
           signal: aborter.signal,
+          headers,
         },
       );
     } catch (e) {
