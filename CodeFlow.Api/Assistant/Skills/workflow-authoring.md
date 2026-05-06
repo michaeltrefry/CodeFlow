@@ -311,16 +311,18 @@ setup_workspace({ repositories: [{ url: "https://…/repo.git" }, …] })
 The tool returns:
 
 ```
-{ repos: [{
-    url, localPath, baseBranch, featureBranch, baseSha, alreadyPresent
+{ repositories: [{
+    url, branch, localPath, baseBranch, featureBranch, baseSha, alreadyPresent
   }, …]
 }
 ```
 
-Stash the array via `setWorkflow("repos", result.repos)` so every
-downstream agent has a stable handle. Each agent then reads
-`workflow.repos[i].featureBranch` / `localPath` / `baseBranch` directly
-— no parsing, no guessing, no remote calls.
+`setup_workspace` automatically stages `setWorkflow("repositories", result.repositories)`
+on submit — the agent never has to mirror it. Downstream agents read
+`workflow.repositories[i].featureBranch` / `localPath` / `baseBranch` directly. The same
+array seeds the framework's per-trace allowlist (`saga.RepositoriesJson`) so the rich
+author-facing shape and the slim `{url, branch}` runtime contract stay in lockstep — there
+is exactly one canonical key, `repositories`.
 
 What the tool does for you, atomically per repo:
 
@@ -342,9 +344,10 @@ agent discovers a missing dependency, call
 `setup_workspace({ repositories: [{ url: "<new-repo>.git" }] })` again.
 The tool is an idempotent merge: existing repos round-trip with
 `alreadyPresent: true` (no re-clone, no re-push), and the new one goes
-through the full setup pipeline. Re-stash the merged result with
-`setWorkflow("repos", result.repos)` so downstream agents see all
-clones.
+through the full setup pipeline. The tool re-stages
+`setWorkflow("repositories", …)` with the merged array on every call,
+so `workflow.repositories` and `saga.RepositoriesJson` always reflect
+the latest set without any manual mirror by the agent.
 
 **Auth is automatic.** The platform's per-trace credential helper makes
 every spawned `git` process see

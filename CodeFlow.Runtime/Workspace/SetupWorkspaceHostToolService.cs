@@ -141,8 +141,13 @@ public sealed class SetupWorkspaceHostToolService
             ? $"codeflow/trace-{workspace.CorrelationId.ToString("N")[..8]}"
             : request.FeatureBranchPrefix.Trim();
 
+        // sc-X (2026-05-06): one canonical bag key for repository state. The framework's
+        // saga-state-machine lift only reads `{url, branch}` from each entry but ignores
+        // extra fields, so the rich shape (localPath / featureBranch / baseSha / …) lives
+        // under the same `repositories` key the saga + Authority + trace cleanup consume.
+        // Keeping a separate `repos` array invited the "which key do I read" confusion the
+        // assistant skill was repeating to authors.
         var resultRepos = new JsonArray();
-        var stagedRepositories = new JsonArray();
 
         foreach (var (entry, parsedRef) in parsedRefs)
         {
@@ -254,20 +259,18 @@ public sealed class SetupWorkspaceHostToolService
                 return Error(toolCall.Id, "rev_parse_failed", ex.Message, url: entry.Url);
             }
 
+            // sc-X: `branch` is duplicated alongside `baseBranch` so the framework's slim
+            // {url, branch} reader (ParseRepositoriesJson) sees the canonical field, while
+            // downstream Scriban templates can keep using the descriptive `baseBranch`.
             resultRepos.Add(new JsonObject
             {
                 ["url"] = entry.Url,
+                ["branch"] = baseBranch,
                 ["localPath"] = MakeWorkspaceRelativePath(workspace.RootPath, localPath),
                 ["baseBranch"] = baseBranch,
                 ["featureBranch"] = featureBranch,
                 ["baseSha"] = baseSha,
                 ["alreadyPresent"] = alreadyPresent,
-            });
-
-            stagedRepositories.Add(new JsonObject
-            {
-                ["url"] = entry.Url,
-                ["branch"] = baseBranch,
             });
         }
 
@@ -279,7 +282,7 @@ public sealed class SetupWorkspaceHostToolService
         {
             try
             {
-                using var doc = JsonDocument.Parse(stagedRepositories.ToJsonString());
+                using var doc = JsonDocument.Parse(resultRepos.ToJsonString());
                 context.StageWorkflowBagWrite("repositories", doc.RootElement.Clone());
             }
             catch (Exception ex) when (ex is JsonException or InvalidOperationException)
@@ -295,7 +298,7 @@ public sealed class SetupWorkspaceHostToolService
             toolCall.Id,
             new JsonObject
             {
-                ["repos"] = resultRepos,
+                ["repositories"] = resultRepos,
             }.ToJsonString());
     }
 
