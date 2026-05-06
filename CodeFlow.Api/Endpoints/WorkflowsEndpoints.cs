@@ -1,4 +1,5 @@
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Artifacts;
 using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
@@ -313,6 +314,7 @@ public static class WorkflowsEndpoints
         IAssistantConversationRepository conversations,
         IAssistantWorkspaceProvider workspaceProvider,
         IWorkflowPackageImporter importer,
+        IArtifactRecorder artifactRecorder,
         CodeFlowDbContext dbContext,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -418,6 +420,19 @@ public static class WorkflowsEndpoints
         try
         {
             var result = await importer.ApplyAsync(package, resolutions, cancellationToken);
+            // sc-792: mark the snapshot's artifact event expired BEFORE deleting the file so a
+            // concurrent read from a still-rendered chat doesn't see "exists in DB but not on
+            // disk". The snapshot bytes are immutable past this point — apply consumed them.
+            try
+            {
+                await artifactRecorder.MarkSnapshotExpiredAsync(request.SnapshotId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Marking expired is best-effort — apply already succeeded, don't undo it.
+                loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.WorkflowsEndpoints")
+                    .LogWarning(ex, "Failed to mark artifact event expired for snapshot {SnapshotId}.", request.SnapshotId);
+            }
             // Snapshot consumed — clean up so the workspace doesn't accumulate them. A failure
             // here is non-fatal (the import already succeeded); silently swallow IO errors so
             // a stale-FS read doesn't undo a successful library write.

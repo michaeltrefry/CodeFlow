@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CodeFlow.Api.Assistant.Artifacts;
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using Json.Patch;
 
@@ -203,11 +205,14 @@ public static class WorkflowPackageDraftStore
 public sealed class SetWorkflowPackageDraftTool : IAssistantTool
 {
     private readonly ToolWorkspaceContext workspace;
+    private readonly IArtifactRecorder artifactRecorder;
 
-    public SetWorkflowPackageDraftTool(ToolWorkspaceContext workspace)
+    public SetWorkflowPackageDraftTool(ToolWorkspaceContext workspace, IArtifactRecorder artifactRecorder)
     {
         ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentNullException.ThrowIfNull(artifactRecorder);
         this.workspace = workspace;
+        this.artifactRecorder = artifactRecorder;
     }
 
     public string Name => "set_workflow_package_draft";
@@ -269,6 +274,19 @@ public sealed class SetWorkflowPackageDraftTool : IAssistantTool
         await WorkflowPackageDraftStore.WriteAsync(workspace, packageNode, cancellationToken);
         var info = new FileInfo(WorkflowPackageDraftStore.ResolveDraftPath(workspace));
         var summary = WorkflowPackageDraftStore.Summarize(packageNode, info.Length);
+
+        // sc-792: register the draft as an artifact event so the chat UI can surface a
+        // downloadable pill. workspace.CorrelationId == conversationId for the assistant
+        // workspace provider (AssistantWorkspaceProvider builds the context this way).
+        await artifactRecorder.RecordAsync(
+            conversationId: workspace.CorrelationId,
+            kind: ArtifactEventKind.WorkflowPackageDraft,
+            name: WorkflowPackageDraftStore.DraftFileName,
+            relativePath: WorkflowPackageDraftStore.DraftFileName,
+            snapshotId: null,
+            summaryJson: summary.ToJsonString(AssistantToolJson.SerializerOptions),
+            supersedesPriorByName: true,
+            cancellationToken: cancellationToken);
 
         var payload = new JsonObject
         {
@@ -347,11 +365,14 @@ public sealed class GetWorkflowPackageDraftTool : IAssistantTool
 public sealed class PatchWorkflowPackageDraftTool : IAssistantTool
 {
     private readonly ToolWorkspaceContext workspace;
+    private readonly IArtifactRecorder artifactRecorder;
 
-    public PatchWorkflowPackageDraftTool(ToolWorkspaceContext workspace)
+    public PatchWorkflowPackageDraftTool(ToolWorkspaceContext workspace, IArtifactRecorder artifactRecorder)
     {
         ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentNullException.ThrowIfNull(artifactRecorder);
         this.workspace = workspace;
+        this.artifactRecorder = artifactRecorder;
     }
 
     public string Name => "patch_workflow_package_draft";
@@ -439,6 +460,18 @@ public sealed class PatchWorkflowPackageDraftTool : IAssistantTool
         var info = new FileInfo(WorkflowPackageDraftStore.ResolveDraftPath(workspace));
         var summary = WorkflowPackageDraftStore.Summarize(updated, info.Length);
 
+        // sc-792: each successful patch produces a new draft revision; record an event and
+        // mark the prior draft event superseded so the rail/timeline carries lineage.
+        await artifactRecorder.RecordAsync(
+            conversationId: workspace.CorrelationId,
+            kind: ArtifactEventKind.WorkflowPackageDraft,
+            name: WorkflowPackageDraftStore.DraftFileName,
+            relativePath: WorkflowPackageDraftStore.DraftFileName,
+            snapshotId: null,
+            summaryJson: summary.ToJsonString(AssistantToolJson.SerializerOptions),
+            supersedesPriorByName: true,
+            cancellationToken: cancellationToken);
+
         var payload = new JsonObject
         {
             ["status"] = "patched",
@@ -462,11 +495,14 @@ public sealed class PatchWorkflowPackageDraftTool : IAssistantTool
 public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
 {
     private readonly ToolWorkspaceContext workspace;
+    private readonly IArtifactRecorder artifactRecorder;
 
-    public ClearWorkflowPackageDraftTool(ToolWorkspaceContext workspace)
+    public ClearWorkflowPackageDraftTool(ToolWorkspaceContext workspace, IArtifactRecorder artifactRecorder)
     {
         ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentNullException.ThrowIfNull(artifactRecorder);
         this.workspace = workspace;
+        this.artifactRecorder = artifactRecorder;
     }
 
     public string Name => "clear_workflow_package_draft";
@@ -486,7 +522,7 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
         ""additionalProperties"": false
     }");
 
-    public Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
+    public async Task<AssistantToolResult> InvokeAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         // Refuse to clear while a Save chip is still pending the user's click. Snapshots are
         // written by save_workflow_package on preview_ok and deleted by the apply endpoint on a
@@ -504,17 +540,29 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
                     + "consumes the snapshot) or to explicitly tell you they are done with this draft. "
                     + "If they want to iterate further, call `patch_workflow_package_draft` instead.",
             };
-            return Task.FromResult(new AssistantToolResult(
+            return new AssistantToolResult(
                 refusal.ToJsonString(AssistantToolJson.SerializerOptions),
-                IsError: true));
+                IsError: true);
         }
 
         var deleted = WorkflowPackageDraftStore.Delete(workspace);
+
+        // sc-792: mark the active draft event(s) superseded so the rail stops surfacing the
+        // pill. Snapshot events are untouched — they're immutable and remain downloadable
+        // until the apply endpoint expires them.
+        if (deleted)
+        {
+            await artifactRecorder.ClearByNameAsync(
+                conversationId: workspace.CorrelationId,
+                name: WorkflowPackageDraftStore.DraftFileName,
+                cancellationToken: cancellationToken);
+        }
+
         var payload = new JsonObject
         {
             ["status"] = deleted ? "cleared" : "not_found",
         };
-        return Task.FromResult(new AssistantToolResult(payload.ToJsonString(AssistantToolJson.SerializerOptions)));
+        return new AssistantToolResult(payload.ToJsonString(AssistantToolJson.SerializerOptions));
     }
 }
 
@@ -533,26 +581,31 @@ public sealed class ClearWorkflowPackageDraftTool : IAssistantTool
 public sealed class WorkflowDraftAssistantToolFactory
 {
     private readonly IWorkflowPackageImporter importer;
+    private readonly IArtifactRecorder artifactRecorder;
 
-    public WorkflowDraftAssistantToolFactory(IWorkflowPackageImporter importer)
+    public WorkflowDraftAssistantToolFactory(
+        IWorkflowPackageImporter importer,
+        IArtifactRecorder artifactRecorder)
     {
         ArgumentNullException.ThrowIfNull(importer);
+        ArgumentNullException.ThrowIfNull(artifactRecorder);
         this.importer = importer;
+        this.artifactRecorder = artifactRecorder;
     }
 
     public IReadOnlyList<IAssistantTool> Build(ToolWorkspaceContext? conversationWorkspace)
     {
         var tools = new List<IAssistantTool>
         {
-            new SaveWorkflowPackageTool(importer, conversationWorkspace),
+            new SaveWorkflowPackageTool(importer, conversationWorkspace, artifactRecorder),
         };
 
         if (conversationWorkspace is not null)
         {
-            tools.Add(new SetWorkflowPackageDraftTool(conversationWorkspace));
+            tools.Add(new SetWorkflowPackageDraftTool(conversationWorkspace, artifactRecorder));
             tools.Add(new GetWorkflowPackageDraftTool(conversationWorkspace));
-            tools.Add(new PatchWorkflowPackageDraftTool(conversationWorkspace));
-            tools.Add(new ClearWorkflowPackageDraftTool(conversationWorkspace));
+            tools.Add(new PatchWorkflowPackageDraftTool(conversationWorkspace, artifactRecorder));
+            tools.Add(new ClearWorkflowPackageDraftTool(conversationWorkspace, artifactRecorder));
         }
 
         return tools;

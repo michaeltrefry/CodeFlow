@@ -151,11 +151,14 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
         await SeedAgentAsync(agentKey);
 
         // Fresh isolated workspace dir for this test (don't pollute the fixture's shared root).
+        // sc-792: workspace.CorrelationId must reference a real conversation row because the
+        // snapshot-path artifact recorder bumps UpdatedAtUtc on the parent conversation.
         var workspaceDir = Path.Combine(
             Path.GetTempPath(),
             "cf-snapshot-binding-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspaceDir);
-        var workspace = new ToolWorkspaceContext(Guid.NewGuid(), workspaceDir);
+        var conversationId = await SeedConversationAsync();
+        var workspace = new ToolWorkspaceContext(conversationId, workspaceDir);
 
         try
         {
@@ -239,7 +242,8 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
             Path.GetTempPath(),
             "cf-snapshot-format-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspaceDir);
-        var workspace = new ToolWorkspaceContext(Guid.NewGuid(), workspaceDir);
+        var conversationId = await SeedConversationAsync();
+        var workspace = new ToolWorkspaceContext(conversationId, workspaceDir);
 
         try
         {
@@ -534,6 +538,21 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
         // common case during refinement.)
         parsed.GetProperty("reuseCount").GetInt32().Should().BeGreaterThan(0);
         parsed.GetProperty("message").GetString().Should().Contain("Save");
+    }
+
+    /// <summary>
+    /// sc-792: snapshot-path artifact recording bumps UpdatedAtUtc on the parent conversation,
+    /// so the workspace's CorrelationId (= conversation id, per AssistantWorkspaceProvider) must
+    /// reference a real row. Seeds a homepage conversation owned by a fresh user and returns its id.
+    /// </summary>
+    private async Task<Guid> SeedConversationAsync()
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var conversations = scope.ServiceProvider.GetRequiredService<IAssistantConversationRepository>();
+        var conversation = await conversations.GetOrCreateAsync(
+            $"haa10-tests-{Guid.NewGuid():N}",
+            AssistantConversationScope.Homepage());
+        return conversation.Id;
     }
 
     private async Task SeedAgentAsync(string key)

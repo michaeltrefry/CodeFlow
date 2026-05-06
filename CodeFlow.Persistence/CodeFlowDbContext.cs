@@ -60,6 +60,8 @@ public sealed class CodeFlowDbContext(DbContextOptions<CodeFlowDbContext> option
 
     public DbSet<AssistantTurnIdempotencyEntity> AssistantTurnIdempotency => Set<AssistantTurnIdempotencyEntity>();
 
+    public DbSet<AssistantArtifactEventEntity> AssistantArtifactEvents => Set<AssistantArtifactEventEntity>();
+
     public DbSet<RefusalEventEntity> RefusalEvents => Set<RefusalEventEntity>();
 
     public DbSet<AgentInvocationAuthorityEntity> AgentInvocationAuthority => Set<AgentInvocationAuthorityEntity>();
