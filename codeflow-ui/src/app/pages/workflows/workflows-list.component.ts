@@ -1180,16 +1180,27 @@ export class WorkflowsListComponent {
     return this.resolutions().get(this.rowKey(item));
   }
 
-  /** Choices for a row's dropdown. Three modes are wired today; UseExisting requires a
-   *  library version, Bump/Copy require both a sourceVersion and a versioned kind. */
+  /** Choices for a row's dropdown. Three modes are wired today; UseExisting is offered for any
+   *  unversioned-kind Conflict (Role/Skill/McpServer/AgentRoleAssignment) since the conflict by
+   *  definition means the library has the entity, plus for versioned kinds when the importer
+   *  carried `existingMaxVersion`. Bump/Copy require both a sourceVersion and a versioned kind. */
   resolutionOptions(item: WorkflowPackageImportItem): Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> {
     const versionedKind = item.kind === 'Agent' || item.kind === 'Workflow';
     const out: Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> = [];
 
-    if (item.existingMaxVersion != null) {
+    // For unversioned kinds, the importer doesn't populate `existingMaxVersion` — the conflict
+    // itself signals that the library already has a row for this key with different content.
+    // Drop the existence-by-version gate; gate by the row being a Conflict instead.
+    const hasLibraryEntry = versionedKind
+      ? item.existingMaxVersion != null
+      : item.action === 'Conflict' || item.action === 'Refused';
+
+    if (hasLibraryEntry) {
       out.push({
         id: 'UseExisting',
-        label: `Use existing v${item.existingMaxVersion}`,
+        label: versionedKind && item.existingMaxVersion != null
+          ? `Use existing v${item.existingMaxVersion}`
+          : 'Use existing',
         // Refused-on-UseExisting can't be re-resolved by picking UseExisting again — same
         // structural mismatch fires.
         disabled: item.action === 'Refused',
@@ -1231,7 +1242,12 @@ export class WorkflowsListComponent {
       choice.newKey = `${item.key}-${suffix}`;
     }
 
-    if (mode === 'UseExisting' && !this.useExistingWarned()) {
+    // The modal warns about node refs being rewritten to the library's higher version — only
+    // meaningful for versioned kinds. Unversioned kinds (Role/Skill/McpServer/AssignmentMap)
+    // just drop the package's row; nothing in the workflow nodes pins them by version, so
+    // there's no surprise to flag.
+    const versionedKind = item.kind === 'Agent' || item.kind === 'Workflow';
+    if (mode === 'UseExisting' && versionedKind && !this.useExistingWarned()) {
       this.useExistingPrompt.set({
         rowKey: key,
         choice,
