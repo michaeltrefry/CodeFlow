@@ -1,5 +1,6 @@
 using Anthropic;
 using CodeFlow.Api.Assistant;
+using CodeFlow.Api.Assistant.Artifacts;
 using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Api.Assistant.Skills;
 using CodeFlow.Api.Assistant.Tools;
@@ -132,6 +133,8 @@ public static class ApiServiceCollectionExtensions
         services.Configure<AssistantOptions>(configuration.GetSection(AssistantOptions.SectionName));
         services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
+        services.AddScoped<IAssistantArtifactRepository, AssistantArtifactRepository>();
+        services.AddScoped<IArtifactRecorder, ArtifactRecorder>();
         services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
 
         // sc-525: idempotency for retried assistant turn POSTs. Repository is scoped (DbContext);

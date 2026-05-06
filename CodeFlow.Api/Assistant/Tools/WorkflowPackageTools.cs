@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CodeFlow.Api.Assistant.Artifacts;
 using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
@@ -27,18 +28,25 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
 {
     private readonly IWorkflowPackageImporter importer;
     private readonly ToolWorkspaceContext? workspace;
+    private readonly IArtifactRecorder? artifactRecorder;
 
     /// <summary>
     /// Constructor used by the per-turn factory. <paramref name="workspace"/> is non-null when
     /// the conversation has a writable workspace — in that mode the tool also accepts a zero-arg
     /// invocation and reads the package from <c>draft.cf-workflow-package.json</c> in the
     /// workspace, so the LLM doesn't have to re-emit the full payload.
+    /// <paramref name="artifactRecorder"/> is null only on the constructor used by the
+    /// no-workspace registration in DI (where the snapshot path can't trigger anyway).
     /// </summary>
-    public SaveWorkflowPackageTool(IWorkflowPackageImporter importer, ToolWorkspaceContext? workspace = null)
+    public SaveWorkflowPackageTool(
+        IWorkflowPackageImporter importer,
+        ToolWorkspaceContext? workspace = null,
+        IArtifactRecorder? artifactRecorder = null)
     {
         ArgumentNullException.ThrowIfNull(importer);
         this.importer = importer;
         this.workspace = workspace;
+        this.artifactRecorder = artifactRecorder;
     }
 
     public string Name => "save_workflow_package";
@@ -269,6 +277,28 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 return Error($"Could not snapshot the draft for confirmation: {ex.Message}");
+            }
+
+            // sc-792: register the snapshot as an artifact event so the chat UI can offer the
+            // user a download even if they dismiss / lose the Save chip. Snapshots are
+            // immutable; do NOT supersede prior snapshot events. The recorder is null only on
+            // the no-workspace DI registration; here we have a workspace, so the factory will
+            // have provided a recorder.
+            if (artifactRecorder is not null)
+            {
+                var summaryNode = WorkflowPackageDraftStore.Summarize(
+                    draftNodeForSnapshot,
+                    new FileInfo(WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, draftSnapshotId.Value)).Length);
+                var snapshotName = Path.GetFileName(WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, draftSnapshotId.Value));
+                await artifactRecorder.RecordAsync(
+                    conversationId: workspace.CorrelationId,
+                    kind: ArtifactEventKind.WorkflowPackageSnapshot,
+                    name: snapshotName,
+                    relativePath: snapshotName,
+                    snapshotId: draftSnapshotId,
+                    summaryJson: summaryNode.ToJsonString(AssistantToolJson.SerializerOptions),
+                    supersedesPriorByName: false,
+                    cancellationToken: cancellationToken);
             }
         }
 
