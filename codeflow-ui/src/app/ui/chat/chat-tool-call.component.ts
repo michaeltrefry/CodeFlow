@@ -23,9 +23,23 @@ export interface ChatToolCallConfirmation {
    * cached and POSTs to `/api/workflows/package/apply` on confirm. `'draft'` = the LLM invoked
    * the tool with no arguments; the package lives in the conversation's workspace draft and the
    * chat-panel POSTs to `/api/workflows/package/apply-from-draft` so the payload never round-trips
-   * through the browser. Default `'inline'` for backward compatibility.
+   * through the browser. `'artifact'` (sc-797 / AA-6) = "Save to library" was clicked from the
+   * artifact rail; the chat-panel POSTs to `/api/workflows/package/apply-from-artifact` keyed by
+   * `(conversationId, eventId)`. Default `'inline'` for backward compatibility.
    */
-  packageSource?: 'inline' | 'draft';
+  packageSource?: 'inline' | 'draft' | 'artifact';
+  /**
+   * sc-797 (AA-6): for `save_workflow_package` artifact-source chips only. The durable
+   * artifact event id the apply path keys off. Distinct from `snapshotId` — drafts have no
+   * snapshot but every artifact has a stable event id.
+   */
+  artifactEventId?: string;
+  /**
+   * sc-797 (AA-6): for `save_workflow_package` artifact-source chips only. Display name of
+   * the underlying artifact, surfaced in the chip's prompt so the user knows which row's
+   * Save they confirmed.
+   */
+  artifactName?: string;
   /**
    * sc-397: for `save_workflow_package` only. `'apply'` (the default) is the legacy chip — the
    * tool returned `preview_ok` and clicking confirm POSTs the package to /apply or

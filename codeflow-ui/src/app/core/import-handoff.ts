@@ -4,13 +4,17 @@
  * just before navigating to /workflows; the imports page reads + clears the handoff on init
  * so a reload doesn't re-trigger the redirect.
  *
- * Two source variants:
- *   - 'inline' — the LLM passed the package as a tool-call argument; the chat panel has the
- *     bytes cached in `pendingSaves` and rides them through the stash.
- *   - 'draft'  — the LLM invoked save_workflow_package with no arguments; the package lives
- *     in the conversation workspace. Only the conversationId rides through the stash; the
- *     imports page calls `GET /api/workflows/package-draft?conversationId=…` to fetch the
- *     bytes when it hydrates.
+ * Three source variants:
+ *   - 'inline'   — the LLM passed the package as a tool-call argument; the chat panel has
+ *     the bytes cached in `pendingSaves` and rides them through the stash.
+ *   - 'draft'    — the LLM invoked save_workflow_package with no arguments; the package
+ *     lives in the conversation workspace. Only conversationId rides through the stash;
+ *     the imports page calls `GET /api/workflows/package-draft?conversationId=…` to fetch
+ *     the bytes when it hydrates.
+ *   - 'artifact' — sc-797 (AA-6) Save-to-library from the artifact rail produced a
+ *     preview_conflicts and the user clicked Resolve. conversationId + eventId ride; the
+ *     imports page fetches bytes via `GET /api/assistant/conversations/{id}/artifacts/{eventId}`
+ *     (the AA-4 download endpoint).
  */
 export const IMPORT_HANDOFF_STORAGE_KEY = 'cf.import.handoff';
 
@@ -24,9 +28,11 @@ export interface ImportHandoff {
   v: 1;
   /** Wall-clock at stash time so the imports page can ignore stale stashes. */
   stashedAtMs: number;
-  packageSource: 'inline' | 'draft';
-  /** Required when packageSource === 'draft'; null otherwise. */
+  packageSource: 'inline' | 'draft' | 'artifact';
+  /** Required when packageSource === 'draft' or 'artifact'; null otherwise. */
   conversationId: string | null;
+  /** Required when packageSource === 'artifact'; null otherwise. */
+  eventId?: string | null;
   /** Required when packageSource === 'inline'; null otherwise. The bytes are the parsed
    *  package object (the chip's cached `pendingSaves` value). */
   package: unknown;

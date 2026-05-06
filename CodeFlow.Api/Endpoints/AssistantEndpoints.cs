@@ -1,11 +1,15 @@
 using CodeFlow.Api.Assistant;
 using CodeFlow.Api.Assistant.Idempotency;
+using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TokenTracking;
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Preflight;
+using CodeFlow.Runtime.Workspace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -34,6 +38,22 @@ public static class AssistantEndpoints
         group.MapGet("/conversations/{id:guid}", GetConversationAsync);
         group.MapPost("/conversations/{id:guid}/fork", ForkConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
+
+        // sc-795 (AA-4): streams the bytes referenced by an artifact event so the chat
+        // panel's Download / View actions can pull a workflow-package draft or snapshot
+        // straight from the conversation workspace. Owner-scoped via the same resolver
+        // pattern the message endpoints use.
+        group.MapGet(
+            "/conversations/{conversationId:guid}/artifacts/{eventId:guid}",
+            DownloadArtifactAsync);
+
+        // sc-797 (AA-6): preview-and-validate a save from the artifact rail. Mirrors the
+        // `save_workflow_package` tool's response shape so the chat panel can reuse its
+        // existing chip view-model. Closes the dismissed-chip recovery loop — any artifact
+        // the user can see in the rail can be saved straight to the library.
+        group.MapPost(
+            "/conversations/{conversationId:guid}/artifacts/{eventId:guid}/save",
+            PreviewArtifactSaveAsync);
 
         // HAA-14: aggregated token usage across the user's assistant conversations. Drives the
         // homepage rail's assistant-token chip; lives on the assistant prefix because it scopes
@@ -122,6 +142,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
+        IAssistantArtifactRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -148,11 +169,16 @@ public static class AssistantEndpoints
 
         var conversation = await repository.GetOrCreateAsync(userId, scope, cancellationToken);
         var messages = await repository.ListMessagesAsync(conversation.Id, cancellationToken);
+        // sc-794 (AA-3): hydrate the inline artifact pills on conversation load. Owner-scoped:
+        // the conversation lookup above already enforced ownership via GetOrCreate / scope key,
+        // so we can list events directly without a second auth pass.
+        var artifactEvents = await artifactRepository.ListByConversationAsync(conversation.Id, cancellationToken);
 
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = messages.Select(MapMessage).ToArray()
+            messages = messages.Select(MapMessage).ToArray(),
+            artifactEvents = artifactEvents.Select(MapArtifactEvent).ToArray(),
         });
     }
 
@@ -161,6 +187,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
+        IAssistantArtifactRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         // For reads we never want to mint a fresh anon cookie — that would lose the existing
@@ -178,11 +205,333 @@ public static class AssistantEndpoints
         }
 
         var messages = await repository.ListMessagesAsync(id, cancellationToken);
+        var artifactEvents = await artifactRepository.ListByConversationAsync(id, cancellationToken);
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = messages.Select(MapMessage).ToArray()
+            messages = messages.Select(MapMessage).ToArray(),
+            artifactEvents = artifactEvents.Select(MapArtifactEvent).ToArray(),
         });
+    }
+
+    /// <summary>
+    /// sc-795 (AA-4): streams the bytes referenced by an artifact event. The chat panel's
+    /// Download / View actions hit this endpoint with the durable event id so the user can
+    /// retrieve a workflow-package draft (live bytes from the workspace draft file) or a
+    /// snapshot (immutable per-save bytes) at any point — even after dismissing the Save chip.
+    ///
+    /// Auth mirrors the rest of /api/assistant/conversations/{id}/...: the conversation must
+    /// exist AND be owned by the calling user. The events list is owner-scoped by AA-3, so a
+    /// non-owner can't even discover an event id; returning 404 here keeps that posture.
+    ///
+    /// Expired / superseded behavior:
+    ///  - Snapshot consumed by apply (AA-1's orphan-guard): the event row carries an
+    ///    `expired_at` timestamp + the file is gone. Return 410 Gone with a payload the
+    ///    chat panel can flip the pill to expired state on. No 200 + zero bytes.
+    ///  - File-on-disk missing for any other reason (workspace rotated, manual cleanup):
+    ///    same 410 Gone path. The pill becomes a tombstone.
+    ///
+    /// Content-Disposition uses `attachment; filename="..."` so the browser default is to
+    /// save rather than navigate. The chat panel's Download action can rely on a plain
+    /// `&lt;a download&gt;` (or fetch + Blob save); the View action does its own fetch and
+    /// renders the bytes in a Monaco side sheet.
+    /// </summary>
+    private static async Task<IResult> DownloadArtifactAsync(
+        Guid conversationId,
+        Guid eventId,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantArtifactRepository artifactRepository,
+        IAssistantWorkspaceProvider workspaceProvider,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(
+            httpContext,
+            allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId)
+            || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            // Same posture as the message-list path: don't leak existence to non-owners.
+            return Results.NotFound();
+        }
+
+        var evt = await artifactRepository.GetAsync(eventId, cancellationToken);
+        if (evt is null || evt.ConversationId != conversationId)
+        {
+            return Results.NotFound();
+        }
+
+        if (evt.ExpiredAtUtc is not null)
+        {
+            // Snapshot already consumed by apply, or otherwise tombstoned — return 410 Gone
+            // so the chat panel can flip the pill to expired state. Carry a small JSON body
+            // for parity with the rest of the assistant endpoints' error shapes.
+            return Results.Json(
+                new { state = "expired", message = "This artifact has been consumed and is no longer downloadable." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        // Resolve the on-disk path. Snapshot kinds key off the snapshot id so the immutable
+        // bytes are addressable even if the live draft has been overwritten; everything else
+        // resolves through the event's relative path.
+        string filePath;
+        if (evt.SnapshotId is { } snapshotId && evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            filePath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+        }
+        else
+        {
+            // Defense in depth: refuse a relative path that escapes the workspace root via `..`
+            // or absolute components. The recorder writes simple file names (draft.cf-...,
+            // snapshot-{guid}.cf-...) so a normalized join must stay under workspace.RootPath.
+            var combined = Path.GetFullPath(Path.Combine(workspace.RootPath, evt.RelativePath));
+            var rootFull = Path.GetFullPath(workspace.RootPath);
+            if (!combined.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(combined, rootFull, StringComparison.Ordinal))
+            {
+                return Results.NotFound();
+            }
+            filePath = combined;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            // Same shape as expired — file is gone, the metadata row outlives the bytes.
+            return Results.Json(
+                new { state = "expired", message = "Artifact bytes are no longer available on disk." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        // Stream the file with attachment Content-Disposition so a plain `<a download>` saves
+        // rather than navigates. Content-type is application/json for package artifacts (the
+        // only kinds AA-1/AA-2 produce); future kinds can refine this.
+        var contentType = evt.Kind switch
+        {
+            ArtifactEventKind.WorkflowPackageDraft => "application/json",
+            ArtifactEventKind.WorkflowPackageSnapshot => "application/json",
+            _ => "application/octet-stream",
+        };
+
+        var stream = File.OpenRead(filePath);
+        return Results.File(stream, contentType: contentType, fileDownloadName: evt.Name);
+    }
+
+    /// <summary>
+    /// sc-797 (AA-6): preview-and-validate a "Save to library" from the artifact rail.
+    /// Reads the bytes the artifact event references, runs them through the importer's
+    /// preview + validation pipeline, and returns the same JSON shape the
+    /// <c>save_workflow_package</c> tool emits — <c>buildSaveConfirmationView</c> on the
+    /// chat panel reuses its existing logic to render the resulting chip (apply mode for
+    /// preview_ok, resolve mode for preview_conflicts, error otherwise).
+    ///
+    /// The wire shape's <c>packageSource</c> is <c>"artifact"</c> (vs the tool's
+    /// <c>"draft"</c> / <c>"inline"</c>) and carries <c>eventId</c> instead of
+    /// <c>snapshotId</c>; the chat panel's apply path keys off this discriminator and POSTs
+    /// to <c>/api/workflows/package/apply-from-artifact</c>.
+    /// </summary>
+    private static async Task<IResult> PreviewArtifactSaveAsync(
+        Guid conversationId,
+        Guid eventId,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantArtifactRepository artifactRepository,
+        IAssistantWorkspaceProvider workspaceProvider,
+        IWorkflowPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(
+            httpContext,
+            allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId)
+            || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            return Results.NotFound();
+        }
+
+        var evt = await artifactRepository.GetAsync(eventId, cancellationToken);
+        if (evt is null || evt.ConversationId != conversationId)
+        {
+            return Results.NotFound();
+        }
+        if (evt.ExpiredAtUtc is not null)
+        {
+            return Results.Json(
+                new { state = "expired", message = "This artifact has been consumed and is no longer applyable." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+        if (evt.Kind != ArtifactEventKind.WorkflowPackageDraft
+            && evt.Kind != ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            return ApiResults.BadRequest($"Save is only supported for package-kind artifacts; this event is {evt.Kind}.");
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        // Resolve the on-disk path through the same helper the apply endpoint uses so a `..`
+        // escape lands the same 404 in both paths.
+        string filePath;
+        if (evt.SnapshotId is { } snapshotId && evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            filePath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+        }
+        else
+        {
+            var combined = Path.GetFullPath(Path.Combine(workspace.RootPath, evt.RelativePath));
+            var rootFull = Path.GetFullPath(workspace.RootPath);
+            if (!combined.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(combined, rootFull, StringComparison.Ordinal))
+            {
+                return Results.NotFound();
+            }
+            filePath = combined;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            return Results.Json(
+                new { state = "expired", message = "Artifact bytes are no longer available on disk." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        WorkflowPackage? package;
+        try
+        {
+            await using var stream = File.OpenRead(filePath);
+            package = await JsonSerializer.DeserializeAsync<WorkflowPackage>(
+                stream,
+                AssistantToolJson.SerializerOptions,
+                cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            var payload = new
+            {
+                status = "invalid",
+                message = $"Could not parse the artifact as a workflow package document: {ex.Message}",
+                hint = "The artifact bytes on disk failed to deserialize. The conversation's workspace may be corrupted; ask the assistant to re-emit the package.",
+            };
+            return Results.Ok(payload);
+        }
+        if (package is null)
+        {
+            return Results.Ok(new
+            {
+                status = "invalid",
+                message = "The artifact bytes on disk deserialized to null.",
+            });
+        }
+
+        WorkflowPackageImportPreview preview;
+        try
+        {
+            preview = await importer.PreviewAsync(package, cancellationToken);
+        }
+        catch (WorkflowPackageResolutionException ex)
+        {
+            return Results.Ok(new
+            {
+                status = "invalid",
+                message = ex.Message,
+                missingReferences = ex.MissingReferences
+                    .Select(r => new { kind = r.Kind.ToString(), key = r.Key, version = r.Version, referencedBy = r.ReferencedBy })
+                    .ToArray(),
+                hint = "The package failed structural validation (schema version, entry-point, or a node carrying an unresolved ref). The artifact may be from an older / incompatible workflow shape.",
+            });
+        }
+
+        if (preview.CanApply)
+        {
+            WorkflowPackageValidationResult validation;
+            try
+            {
+                validation = await importer.ValidateAsync(package, cancellationToken);
+            }
+            catch (WorkflowPackageResolutionException ex)
+            {
+                return Results.Ok(new
+                {
+                    status = "invalid",
+                    message = ex.Message,
+                    hint = "The package was rejected during validation. The artifact bytes may be stale.",
+                });
+            }
+            if (!validation.IsValid)
+            {
+                return Results.Ok(new
+                {
+                    status = "invalid",
+                    message = "The package would be rejected at save time. Fix the listed errors.",
+                    errors = validation.Errors
+                        .Select(e => new { workflowKey = e.WorkflowKey, message = e.Message, ruleIds = e.RuleIds ?? Array.Empty<string>() })
+                        .ToArray(),
+                });
+            }
+        }
+
+        var summary = new
+        {
+            status = preview.CanApply ? "preview_ok" : "preview_conflicts",
+            entryPoint = new { key = preview.EntryPoint.Key, version = preview.EntryPoint.Version },
+            createCount = preview.CreateCount,
+            reuseCount = preview.ReuseCount,
+            conflictCount = preview.ConflictCount,
+            refusedCount = preview.RefusedCount,
+            warningCount = preview.WarningCount,
+            warnings = preview.Warnings.ToArray(),
+            items = preview.Items
+                .Select(i => new { kind = i.Kind.ToString(), key = i.Key, version = i.Version, action = i.Action.ToString(), message = i.Message })
+                .ToArray(),
+            canApply = preview.CanApply,
+            // Tells the chat UI which apply path to use:
+            //   "artifact" → POST /api/workflows/package/apply-from-artifact with conversationId + eventId
+            // The chip's Resolve handoff uses the same shape with packageSource: 'artifact'.
+            packageSource = "artifact",
+            conversationId,
+            eventId,
+            artifactName = evt.Name,
+            message = preview.CanApply
+                ? "Preview validated. Click Save in the chip to apply this artifact to the library."
+                : "Preview produced conflicts. The chip's Resolve action navigates to the imports page where you can pick per-row resolutions.",
+        };
+        return Results.Ok(summary);
     }
 
     private static async Task<IResult> CreateConversationAsync(
@@ -215,7 +564,11 @@ public static class AssistantEndpoints
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = Array.Empty<object>()
+            messages = Array.Empty<object>(),
+            // sc-794 (AA-3): empty for shape parity with get / get-or-create. A fresh
+            // conversation has no artifact events; fork would too (the bytes live in the
+            // source conversation's workspace, not the fork's).
+            artifactEvents = Array.Empty<object>(),
         });
     }
 
@@ -262,7 +615,8 @@ public static class AssistantEndpoints
         return Results.Ok(new
         {
             conversation = MapConversation(fork.Conversation),
-            messages = fork.Messages.Select(MapMessage).ToArray()
+            messages = fork.Messages.Select(MapMessage).ToArray(),
+            artifactEvents = Array.Empty<object>()
         });
     }
 
@@ -798,6 +1152,27 @@ public static class AssistantEndpoints
         updatedAtUtc = summary.UpdatedAtUtc,
         messageCount = summary.MessageCount,
         firstUserMessagePreview = summary.FirstUserMessagePreview
+    };
+
+    /// <summary>
+    /// sc-794 (AA-3) — projection used by conversation-load to hydrate the chat panel's
+    /// inline artifact pills. Mirrors the live SSE <c>artifact-event</c> payload shape so the
+    /// frontend can use one type for both paths, plus pre-computed <c>superseded</c> /
+    /// <c>expired</c> booleans so the panel can render the right state without re-walking
+    /// the list to find supersession links itself.
+    /// </summary>
+    private static object MapArtifactEvent(AssistantArtifactEvent evt) => new
+    {
+        id = evt.Id,
+        conversationId = evt.ConversationId,
+        sequence = evt.Sequence,
+        kind = evt.Kind.ToString(),
+        name = evt.Name,
+        snapshotId = evt.SnapshotId,
+        summary = evt.SummaryJson,
+        createdAtUtc = evt.CreatedAtUtc,
+        superseded = evt.SupersededByEventId is not null,
+        expired = evt.ExpiredAtUtc is not null,
     };
 
     private static object MapMessage(AssistantMessage message) => new

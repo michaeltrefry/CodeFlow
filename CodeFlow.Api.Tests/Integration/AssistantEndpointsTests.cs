@@ -671,6 +671,405 @@ public sealed class AssistantEndpointsTests
         refusalCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task GetOrCreate_HydratesArtifactEvents_FromPersistedRows()
+    {
+        // sc-794 (AA-3): a Set→Patch sequence on the draft tools persists two artifact events
+        // (the second supersedes the first by name). A subsequent get-or-create on the same
+        // scope must return both events, with `superseded` pre-computed by the server so the
+        // chat panel can render directly without walking the chain.
+        //
+        // Use a unique entity scope per test so artifact events from sibling tests don't bleed
+        // in. Homepage scope under the shared demo user is a single conversation across all
+        // tests in this fixture; that creates flaky cross-test pollution once any sibling test
+        // also writes events.
+        AssistantStub.Reset();
+        var entityType = $"aa3-hydrate-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+
+        var convResp = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        // Drive the recorder directly — same path the workflow-package draft tools take when
+        // they fire mid-turn. Two events on the same name; the second supersedes the first.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: "{\"entryPoint\":{\"key\":\"demo\",\"version\":1}}",
+                supersedesPriorByName: true,
+                cancellationToken: default);
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: "{\"entryPoint\":{\"key\":\"demo\",\"version\":1}}",
+                supersedesPriorByName: true,
+                cancellationToken: default);
+        }
+
+        // Reload — the get-or-create response must carry both events with the right flags.
+        var reload = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        reload.StatusCode.Should().Be(HttpStatusCode.OK);
+        var reloadPayload = await reload.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+
+        reloadPayload!.ArtifactEvents.Should().NotBeNull();
+        reloadPayload.ArtifactEvents!.Should().HaveCount(2);
+
+        var ordered = reloadPayload.ArtifactEvents.OrderBy(e => e.Sequence).ToArray();
+        ordered[0].Superseded.Should().BeTrue("the first event was superseded by the second");
+        ordered[1].Superseded.Should().BeFalse("the second event is the active draft");
+        ordered.Should().AllSatisfy(e =>
+        {
+            e.Kind.Should().Be("WorkflowPackageDraft");
+            e.Name.Should().Be("draft.cf-workflow-package.json");
+            e.ConversationId.Should().Be(conversation.Id);
+            e.Expired.Should().BeFalse();
+        });
+    }
+
+    [Fact]
+    public async Task GetById_DoesNotLeakArtifactEvents_AcrossOwners()
+    {
+        // sc-794 (AA-3): the events list is owner-scoped. A non-owner who somehow learned a
+        // conversation id must get the same 404 the existing message-list path returns — the
+        // events list is a read-side surface that can leak draft content / lineage so the
+        // ownership check has to fire BEFORE we list events.
+        AssistantStub.Reset();
+        var entityType = $"aa3-cross-owner-{Guid.NewGuid():N}";
+
+        // Create the conversation as user A (the default test client mints an anonymous demo
+        // user via the user-resolver fallback). Add an event so the leak surface is non-empty.
+        using var ownerClient = CreateClientWithStub();
+        var convResp = await ownerClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+        }
+
+        // Force the conversation to be owned by a real (non-demo) user so the demo-fallback
+        // shortcut in the user resolver doesn't hand the row back to a fresh client. The
+        // resolver falls back to a demo cookie for anon callers but only when the row's owner
+        // already IS a demo id — flipping it to a real user defeats that for cross-owner reads.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await db.AssistantConversations.SingleAsync(c => c.Id == conversation.Id);
+            entity.UserId = $"real-user-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        // A different client (fresh demo cookie) attempts to GET by id. The existing
+        // ownership check must 404; the artifact-events list rides through the same gate so
+        // no events leak in the response body either.
+        using var attackerClient = CreateClientWithStub();
+        var attackerResp = await attackerClient.GetAsync($"/api/assistant/conversations/{conversation.Id}");
+        attackerResp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task DownloadArtifact_StreamsDraftBytes_ForOwner()
+    {
+        // sc-795 (AA-4): an active draft event downloads as the live workspace draft bytes.
+        // The endpoint resolves `relative_path` under the conversation workspace and streams
+        // the file with a Content-Disposition that the chat panel's <a download> can ride.
+        AssistantStub.Reset();
+        var entityType = $"aa4-download-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+
+        var convResp = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            // Materialize the workspace + write a real draft file so the endpoint has bytes to
+            // stream. The recorder + draft store both key off the conversation workspace, so
+            // ToolWorkspaceContext.CorrelationId == conversation.Id.
+            var workspaceProvider = scope.ServiceProvider.GetRequiredService<CodeFlow.Runtime.Workspace.IAssistantWorkspaceProvider>();
+            var workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversation.Id);
+            var draftJson = System.Text.Json.Nodes.JsonNode.Parse("""{"schemaVersion":"codeflow.workflow-package.v1","entryPoint":{"key":"demo","version":1}}""")!;
+            await CodeFlow.Api.Assistant.Tools.WorkflowPackageDraftStore.WriteAsync(workspace, draftJson, default);
+
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                CodeFlow.Api.Assistant.Tools.WorkflowPackageDraftStore.DraftFileName,
+                CodeFlow.Api.Assistant.Tools.WorkflowPackageDraftStore.DraftFileName,
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+        }
+
+        var resp = await client.GetAsync($"/api/assistant/conversations/{conversation.Id}/artifacts/{eventId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+        resp.Content.Headers.ContentDisposition?.DispositionType.Should().Be("attachment");
+        resp.Content.Headers.ContentDisposition?.FileName.Should().Contain("draft");
+
+        var bytes = await resp.Content.ReadAsStringAsync();
+        bytes.Should().Contain("codeflow.workflow-package.v1");
+        bytes.Should().Contain("demo");
+    }
+
+    [Fact]
+    public async Task DownloadArtifact_ReturnsGone_WhenEventIsExpired()
+    {
+        // sc-795 (AA-4): an event whose snapshot has been consumed by apply (AA-1's
+        // orphan-guard marks it expired before deleting the file) returns 410 Gone with a
+        // small JSON body the chat panel uses to flip the pill state. NOT a 200+empty.
+        AssistantStub.Reset();
+        var entityType = $"aa4-expired-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+
+        var convResp = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        Guid snapshotId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageSnapshot,
+                "snapshot.cf-workflow-package.json",
+                "snapshot.cf-workflow-package.json",
+                snapshotId: snapshotId,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+
+            // Mark expired exactly the way the apply endpoint would.
+            await recorder.MarkSnapshotExpiredAsync(snapshotId, default);
+        }
+
+        var resp = await client.GetAsync($"/api/assistant/conversations/{conversation.Id}/artifacts/{eventId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.Gone);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain("expired");
+    }
+
+    [Fact]
+    public async Task DownloadArtifact_ReturnsNotFound_ForCrossOwner()
+    {
+        // sc-795 (AA-4): the same posture as AA-3's hydration owner check — a non-owner gets
+        // 404 even with a valid event id. The conversation lookup runs the resolver gate
+        // before we touch the artifact repository.
+        AssistantStub.Reset();
+        var entityType = $"aa4-cross-owner-{Guid.NewGuid():N}";
+        using var ownerClient = CreateClientWithStub();
+        var convResp = await ownerClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+        }
+
+        // Flip the conversation owner to a real (non-demo) user so the demo-fallback in the
+        // resolver doesn't hand the row back to a fresh anonymous client.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await db.AssistantConversations.SingleAsync(c => c.Id == conversation.Id);
+            entity.UserId = $"real-user-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        using var attackerClient = CreateClientWithStub();
+        var resp = await attackerClient.GetAsync($"/api/assistant/conversations/{conversation.Id}/artifacts/{eventId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PreviewArtifactSave_ReturnsNotFound_ForCrossOwner()
+    {
+        // sc-797 (AA-6): preview endpoint mirrors the AA-4 download endpoint's auth posture —
+        // a non-owner gets 404 even with a valid event id. Owner check fires before we touch
+        // the artifact repository, so existence is never leaked.
+        AssistantStub.Reset();
+        var entityType = $"aa6-preview-cross-{Guid.NewGuid():N}";
+        using var ownerClient = CreateClientWithStub();
+        var convResp = await ownerClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+        }
+
+        // Flip the conversation owner so the demo-fallback in the resolver can't hand it
+        // back to a fresh anonymous client.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await db.AssistantConversations.SingleAsync(c => c.Id == conversation.Id);
+            entity.UserId = $"real-user-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        using var attackerClient = CreateClientWithStub();
+        var resp = await attackerClient.PostAsJsonAsync(
+            $"/api/assistant/conversations/{conversation.Id}/artifacts/{eventId}/save",
+            new { });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PreviewArtifactSave_ReturnsGone_WhenArtifactExpired()
+    {
+        // sc-797 (AA-6): the preview endpoint short-circuits with 410 Gone for an expired
+        // event — apply already consumed the snapshot, so there's nothing to save.
+        AssistantStub.Reset();
+        var entityType = $"aa6-preview-expired-{Guid.NewGuid():N}";
+        using var client = CreateClientWithStub();
+        var convResp = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        var snapshotId = Guid.NewGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageSnapshot,
+                "snapshot.cf-workflow-package.json",
+                "snapshot.cf-workflow-package.json",
+                snapshotId: snapshotId,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+            await recorder.MarkSnapshotExpiredAsync(snapshotId, default);
+        }
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/assistant/conversations/{conversation.Id}/artifacts/{eventId}/save",
+            new { });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Gone);
+    }
+
+    [Fact]
+    public async Task ApplyFromArtifact_ReturnsNotFound_ForCrossOwner()
+    {
+        // sc-797 (AA-6): apply-from-artifact mirrors apply-from-draft's auth posture. The
+        // workflow library write needs explicit auth (PolicyBundles.PackageImportWrite) AND
+        // ownership of the source conversation; cross-owner gets 404 like every other
+        // assistant-scoped read/write.
+        AssistantStub.Reset();
+        var entityType = $"aa6-apply-cross-{Guid.NewGuid():N}";
+        using var ownerClient = CreateClientWithStub();
+        var convResp = await ownerClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "entity", entityType, entityId = "1" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        Guid eventId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            var evt = await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+            eventId = evt.Id;
+        }
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await db.AssistantConversations.SingleAsync(c => c.Id == conversation.Id);
+            entity.UserId = $"real-user-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        using var attackerClient = CreateClientWithStub();
+        var resp = await attackerClient.PostAsJsonAsync(
+            "/api/workflows/package/apply-from-artifact",
+            new { conversationId = conversation.Id, eventId });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     private static List<SseFrame> ParseSse(string body)
     {
         var frames = new List<SseFrame>();
@@ -702,10 +1101,26 @@ public sealed class AssistantEndpointsTests
 
     private sealed record SseFrame(string Event, string Data);
 
-    private sealed record ConversationResponse(ConversationDto Conversation, IReadOnlyList<MessageDto> Messages);
+    private sealed record ConversationResponse(
+        ConversationDto Conversation,
+        IReadOnlyList<MessageDto> Messages,
+        IReadOnlyList<ArtifactEventDto>? ArtifactEvents = null);
     private sealed record ConversationDto(Guid Id, ScopeDto Scope, Guid SyntheticTraceId);
     private sealed record ScopeDto(string Kind, string? EntityType, string? EntityId);
     private sealed record MessageDto(Guid Id, int Sequence, string Role, string Content, string? Provider, string? Model);
+    // sc-794 (AA-3) — artifact-event projection on conversation load. Server pre-computes
+    // superseded / expired so the frontend renders directly without re-walking the chain.
+    private sealed record ArtifactEventDto(
+        Guid Id,
+        Guid ConversationId,
+        int Sequence,
+        string Kind,
+        string Name,
+        Guid? SnapshotId,
+        string? Summary,
+        DateTime CreatedAtUtc,
+        bool Superseded,
+        bool Expired);
 
     // HAA-14 test DTOs.
     private sealed record ConversationListResponse(IReadOnlyList<ConversationSummaryDto> Conversations);

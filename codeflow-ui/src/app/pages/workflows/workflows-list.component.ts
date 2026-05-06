@@ -1071,6 +1071,21 @@ export class WorkflowsListComponent {
           this.importError.set(this.errorMessage(err, 'Could not load the conversation draft.'));
         },
       });
+      return;
+    }
+
+    if (handoff.packageSource === 'artifact' && handoff.conversationId && handoff.eventId) {
+      // sc-797 (AA-6): Save-to-library from the artifact rail produced preview_conflicts and
+      // the user clicked Resolve. Fetch the bytes from the AA-4 download endpoint, then run
+      // the same hydration path the inline / draft handoffs use.
+      this.importLoading.set(true);
+      this.api.getArtifactBytes(handoff.conversationId, handoff.eventId).subscribe({
+        next: pkg => this.runHandoffPreview(pkg),
+        error: err => {
+          this.importLoading.set(false);
+          this.importError.set(this.errorMessage(err, 'Could not load the artifact bytes.'));
+        },
+      });
     }
   }
 

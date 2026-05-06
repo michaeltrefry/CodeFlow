@@ -39,6 +39,31 @@ export interface AssistantConversation {
 export interface ConversationResponse {
   conversation: AssistantConversation;
   messages: AssistantMessage[];
+  /**
+   * sc-794 (AA-3): inline artifact pills hydrated from `assistant_artifact_events` so reload +
+   * thread switch restore the pills the user saw mid-turn. Optional for back-compat with
+   * pre-AA-3 server bodies — older servers omit the field; the chat panel treats absence as
+   * "no events" rather than throwing.
+   */
+  artifactEvents?: HydratedArtifactEvent[];
+}
+
+/**
+ * sc-794 (AA-3): persisted artifact-event projection used by conversation load. Mirrors the
+ * live SSE `ArtifactEvent` payload (`assistant-stream.ts`) plus pre-computed `superseded` /
+ * `expired` flags — server walks the supersede chain so the panel can render directly.
+ */
+export interface HydratedArtifactEvent {
+  id: string;
+  conversationId: string;
+  sequence: number;
+  kind: string;
+  name: string;
+  snapshotId: string | null;
+  summary: string | null;
+  createdAtUtc: string;
+  superseded: boolean;
+  expired: boolean;
 }
 
 /**
@@ -151,5 +176,19 @@ export class AssistantApi {
    */
   getDefaults(): Observable<AssistantDefaultsResponse> {
     return this.http.get<AssistantDefaultsResponse>('/api/assistant/defaults');
+  }
+
+  /**
+   * sc-797 (AA-6) — preview-and-validate a "Save to library" from the artifact rail. The
+   * response shape mirrors the assistant's `save_workflow_package` tool result so the chat
+   * panel can reuse `buildSaveConfirmationView`. `packageSource` is always `"artifact"` and
+   * the response carries `eventId` instead of `snapshotId` so the apply path goes through
+   * `/api/workflows/package/apply-from-artifact`.
+   */
+  previewArtifactSave(conversationId: string, eventId: string): Observable<unknown> {
+    return this.http.post<unknown>(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/artifacts/${encodeURIComponent(eventId)}/save`,
+      {},
+    );
   }
 }
