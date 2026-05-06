@@ -1,15 +1,36 @@
 namespace CodeFlow.Persistence;
 
 /// <summary>
-/// Kinds of artifacts the assistant can produce. Lock the enum values via <see cref="int"/>
-/// conversion so the column stores a stable numeric code regardless of how the enum is
-/// reordered or extended in source. Values: 1 = workflow-package draft, 2 = workflow-package
-/// snapshot. Reserved for Phase 3: 3 = trace diagnostic, 4 = evidence bundle.
+/// Kinds of artifacts the assistant can produce. Numeric values are STABLE — the column
+/// stores the int code, so reordering / removing values would corrupt existing rows.
+/// Adding new values is safe; producers in Phase 3 register new kinds without touching
+/// existing ones.
+/// <para/>
+/// sc-799 (AA-8): values 3 and 4 are reserved for AA-9's producers so the contract is
+/// locked here, even though the producers haven't shipped yet.
+/// <list type="bullet">
+///   <item><c>WorkflowPackageDraft = 1</c> — live draft of a workflow package; one active
+///     row per (conversation, name). Set / patch replace via supersession.
+///     <c>relativePath</c> convention: <c>draft.cf-workflow-package.json</c>.</item>
+///   <item><c>WorkflowPackageSnapshot = 2</c> — immutable per-save snapshot of a draft;
+///     <c>name</c> uses a GUID suffix so multiple coexist. Apply marks the row expired.
+///     <c>relativePath</c> convention: <c>snapshot-{guid:N}.cf-workflow-package.json</c>.</item>
+///   <item><c>TraceDiagnostic = 3</c> — JSON summary written by the
+///     <c>diagnose_trace</c> tool (AA-9). Live; no supersession.
+///     <c>relativePath</c> convention: <c>diagnose-{traceId:N}-{utcTimestamp}.json</c>.</item>
+///   <item><c>EvidenceBundle = 4</c> — zipped trace evidence bundle exported by AA-9.
+///     Live; no supersession.
+///     <c>relativePath</c> convention: <c>evidence-{traceId:N}-{utcTimestamp}.zip</c>.</item>
+/// </list>
 /// </summary>
 public enum ArtifactEventKind
 {
     WorkflowPackageDraft = 1,
     WorkflowPackageSnapshot = 2,
+    /// <summary>sc-799 (AA-8): reserved for AA-9's <c>diagnose_trace</c> producer.</summary>
+    TraceDiagnostic = 3,
+    /// <summary>sc-799 (AA-8): reserved for AA-9's evidence-bundle producer.</summary>
+    EvidenceBundle = 4,
 }
 
 /// <summary>

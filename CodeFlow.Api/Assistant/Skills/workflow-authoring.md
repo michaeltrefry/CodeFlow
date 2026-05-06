@@ -750,11 +750,26 @@ When the user asks to save / import / add / commit the drafted package:
 - **Fallback (inline path):** if no workspace is available, call
   `save_workflow_package({ package: ... })` with the full payload.
 
+**The artifact rail is a parallel surface.** Every successful
+`set_workflow_package_draft` / `patch_workflow_package_draft` /
+`save_workflow_package` (preview_ok path) emits an artifact event the
+chat panel renders as a downloadable pill inline AND in the pinned
+rail above the composer. If the user dismisses the chat-side Save
+chip, the rail still has a "Save to library" button keyed off the
+same artifact — the user is never stranded. You don't need to do
+anything special to surface the rail; recording the artifact happens
+automatically inside the tool. Just be aware that "Save chip" and
+"rail Save button" are equivalent paths and the user may choose
+either.
+
 Tool result branches (both paths):
-- `status: "preview_ok"` → STOP. The chip is in front of the user. Do not
-  call the tool again or take further action; wait for the user's next
-  message. If the user says they don't see a chip, that is a UI render
-  concern, NOT a signal to re-invoke the save tool.
+- `status: "preview_ok"` → STOP. The chip is in front of the user, AND
+  the artifact pill / rail entry are downloadable surfaces. Do not call
+  the tool again or take further action; wait for the user's next
+  message. If the user says they don't see a chip, point them at the
+  artifact rail above the composer — same outcome via the Save button
+  there. Re-invoking the save tool is NOT the answer to a UI render
+  concern.
 - `status: "preview_conflicts"` → the import preview surfaced one or more
   conflicts the user has to resolve before save. Inspect `items[]` for
   entries with `action: "Conflict"` — each is either a same-version

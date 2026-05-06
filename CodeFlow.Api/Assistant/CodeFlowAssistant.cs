@@ -59,6 +59,7 @@ public sealed class CodeFlowAssistant(
     IRoleResolutionService roleResolution,
     AgentRoleToolFactory roleToolFactory,
     WorkflowDraftAssistantToolFactory workflowDraftToolFactory,
+    TraceProducerToolFactory traceProducerToolFactory,
     IAssistantWorkspaceProvider workspaceProvider,
     IAssistantConversationRepository conversations,
     Artifacts.IArtifactEventCollector artifactEventCollector,
@@ -219,6 +220,16 @@ public sealed class CodeFlowAssistant(
         if (draftTools.Count > 0)
         {
             dispatcher = MergeDispatcherWithOverride(dispatcher, draftTools);
+        }
+
+        // sc-800 (AA-9): trace producers (diagnose_trace, export_evidence_bundle) build per
+        // turn so they can record artifacts in the conversation workspace. The factory always
+        // returns both tools; the workspace context is what gates artifact recording inside
+        // each tool — diagnose falls back to result-only on no workspace, export refuses.
+        var traceProducerTools = traceProducerToolFactory.Build(conversationDraftWorkspace);
+        if (traceProducerTools.Count > 0)
+        {
+            dispatcher = MergeDispatcherWithOverride(dispatcher, traceProducerTools);
         }
 
         var allowedTools = FilterTools(dispatcher.Tools, toolPolicy);

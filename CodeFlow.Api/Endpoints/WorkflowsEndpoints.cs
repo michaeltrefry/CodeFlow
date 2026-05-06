@@ -331,7 +331,7 @@ public static class WorkflowsEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository conversations,
-        IAssistantArtifactRepository artifactRepository,
+        IAssistantArtifactReadRepository artifactRepository,
         IAssistantWorkspaceProvider workspaceProvider,
         IWorkflowPackageImporter importer,
         IArtifactRecorder artifactRecorder,

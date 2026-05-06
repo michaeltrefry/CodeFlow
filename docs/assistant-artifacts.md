@@ -119,81 +119,140 @@ chat panel hydrates from there.
   actions (Download, View, Save to library for package kinds).
 - **Read-only Monaco preview** opens in a side sheet on View.
 
-### Generalization (Phase 3)
+### The recorder contract (locked in AA-8)
 
-Introduce `IArtifactRecorder` consumed by tools that produce files:
+`IArtifactRecorder` (in `CodeFlow.Api/Assistant/Artifacts/`) is the
+canonical write path for every artifact event. Producer tools call
+this; nothing else writes directly to the repository.
 
 ```csharp
 public interface IArtifactRecorder
 {
-    Task<Guid> RecordAsync(
+    Task<AssistantArtifactEvent> RecordAsync(
         Guid conversationId,
         ArtifactEventKind kind,
         string name,
         string relativePath,
         Guid? snapshotId,
-        object? summary,
-        bool supersedesPrior,
-        CancellationToken ct);
+        string? summaryJson,
+        bool supersedesPriorByName,
+        CancellationToken cancellationToken = default);
+
+    Task<int> ClearByNameAsync(
+        Guid conversationId,
+        string name,
+        CancellationToken cancellationToken = default);
+
+    Task<int> MarkSnapshotExpiredAsync(
+        Guid snapshotId,
+        CancellationToken cancellationToken = default);
 }
 ```
 
-Existing producers (set / patch / save / clear workflow package
-draft) migrate to this interface. New producers (`diagnose_trace`
-exports, evidence bundles) implement it directly. The recorder is
-also responsible for marking prior events superseded when
-`supersedesPrior` is true (e.g., a fresh `set_workflow_package_draft`
-supersedes the previous draft event).
+Repository access is split:
 
-## Implementation plan (10 slices)
+- `IAssistantArtifactReadRepository` — list + get; injected by API
+  endpoints that surface artifacts to the chat panel.
+- `IAssistantArtifactRepository` (extends the read interface) —
+  full read+write; injected only by the recorder. Producer code that
+  injects this interface to bypass the recorder is a code-review
+  red flag.
+
+### `ArtifactEventKind` values + `relativePath` conventions
+
+Numeric values are stable (the column stores the int code). New kinds
+are additive; reordering / removing values would corrupt rows.
+
+| Kind                       | Value | Live? | `name` shape                                | `relativePath`                                       |
+| -------------------------- | ----- | ----- | ------------------------------------------- | ---------------------------------------------------- |
+| `WorkflowPackageDraft`     | 1     | yes   | `draft.cf-workflow-package.json`            | same as `name`                                       |
+| `WorkflowPackageSnapshot`  | 2     | no    | `snapshot-{guid:N}.cf-workflow-package.json`| same as `name`                                       |
+| `TraceDiagnostic` (AA-9)   | 3     | yes   | `diagnose-{traceId:N}-{utcTs}.json`         | same as `name`                                       |
+| `EvidenceBundle` (AA-9)    | 4     | yes   | `evidence-{traceId:N}-{utcTs}.zip`          | same as `name`                                       |
+
+Bytes always live under the conversation's workspace root. `name` is
+what the chat panel displays in the pill; `relativePath` is what the
+download endpoint resolves on disk. They're equal for every kind
+shipped today; future kinds with subdirectories (e.g. attachments
+under `attachments/{guid}/...`) can diverge.
+
+### Implementing a new artifact producer
+
+1. Pick (or add) an `ArtifactEventKind` value. Reserve the int via
+   numeric assignment in the enum and add a row to the table above.
+2. Inject `IArtifactRecorder` into the producer (tool, endpoint,
+   service — anything with the conversation id in scope).
+3. After successfully writing the bytes to disk in the conversation
+   workspace, call `RecordAsync` with the kind, `name`,
+   `relativePath`, optional `snapshotId` (only for snapshot kinds),
+   optional `summaryJson` (any free-form JSON the UI will use to
+   render the pill summary line), and `supersedesPriorByName: true`
+   when the new event replaces an active prior event with the same
+   name.
+4. If the producer's bytes are immutable and consumed downstream
+   (apply-from-draft semantics), call `MarkSnapshotExpiredAsync`
+   before deleting the file so the metadata row outlives the bytes
+   in a discoverable state.
+5. Add unit + integration tests mirroring AA-1's
+   `WorkflowPackageDraftToolsTests` and `AssistantArtifactRepositoryTests`.
+
+The chat panel renders pills + rail rows automatically — no UI
+changes needed for a new kind, unless the kind needs custom actions
+beyond Download / View.
+
+## Implementation plan (10 slices) — all shipped 2026-05-06
 
 ### Phase 1 — inline artifact pills, persistence-grade
 
-- **AA-1** Persistence + recorder hooks. New `assistant_artifact_events`
+- **AA-1** ✅ Persistence + recorder. `assistant_artifact_events`
   table (EF migration), `IAssistantArtifactRepository`,
-  `IArtifactRecorder` (Phase 1 scope: invoked from
-  `WorkflowPackageDraftTools` + `WorkflowPackageTools` snapshot
-  emit). Unit-tested.
-- **AA-2** Live SSE + inline pill render. New `artifact-event`
+  `IArtifactRecorder`. Producers: `WorkflowPackageDraftTools` +
+  `WorkflowPackageTools` snapshot emit. Apply-from-draft orphan-
+  guard.
+- **AA-2** ✅ Live SSE + inline pill render. New `artifact-event`
   stream item; chat-panel ingests and renders a pill anchored to
-  the in-flight assistant message. No persistence read yet — pills
-  appear during the turn.
-- **AA-3** Conversation-load hydration. Extend
-  `ConversationResponse` with `artifactEvents`; chat-panel seeds
-  pills on load. Pills survive reload + thread switch.
-- **AA-4** Download + read-only preview. New endpoint streams
-  bytes. Chat-panel pill's Download triggers a blob save; View
-  opens a Monaco-readonly side sheet.
+  the in-flight assistant message.
+- **AA-3** ✅ Conversation-load hydration. `ConversationResponse`
+  carries `artifactEvents`; chat-panel seeds pills on load. Pills
+  survive reload + thread switch.
+- **AA-4** ✅ Download + read-only Monaco preview side sheet. The
+  endpoint streams bytes with `Content-Disposition: attachment`;
+  410 Gone on expired events.
 
 ### Phase 2 — pinned rail + recovery affordance
 
-- **AA-5** Artifact rail. Pinned strip above composer shows all
-  non-superseded artifacts, ordered newest-first. Same Download /
-  View actions as the inline pill.
-- **AA-6** Save-to-library from rail. New
-  `POST .../artifacts/{id}/save` endpoint mirrors
-  `save_workflow_package` semantics for package-kind artifacts;
-  rail mini-chip mirrors the chat chip's apply / resolve outcomes.
-  Closes the dismissed-chip recovery loop (the original motivating
-  scenario).
-- **AA-7** Diff viewer. From any package-kind pill or rail entry,
-  open a Monaco side-by-side diff against (a) the prior snapshot
-  for that name, or (b) the current library version. Read-only.
+- **AA-5** ✅ Artifact rail. Pinned strip above composer shows all
+  non-superseded artifacts newest-first. Toggle reveals
+  superseded; collapse-to-chip threshold at 4 entries.
+- **AA-6** ✅ Save-to-library from rail. `POST
+  /api/assistant/conversations/{id}/artifacts/{eventId}/save`
+  preview + `POST /api/workflows/package/apply-from-artifact`
+  apply. Mini-chip reuses the chat chip's view-model via
+  `buildSaveConfirmationView`; resolve path stashes a new
+  `'artifact'` import-handoff variant. **Closes the dismissed-
+  chip recovery loop (the original motivating scenario).**
+- **AA-7** ✅ Diff viewer. From any package-kind pill or rail
+  entry, side-by-side Monaco diff against (a) prior superseded
+  same-name event, or (b) current library version of the entry-
+  point workflow.
 
 ### Phase 3 — generalize the artifact contract
 
-- **AA-8** `ArtifactEventKind` taxonomy + `IArtifactRecorder`
-  abstraction shipped as the canonical write path; migrate all
-  existing package-draft producers off direct repo writes.
-- **AA-9** Trace-diagnostic + evidence-bundle producers emit
-  artifact events. `diagnose_trace` writes a JSON summary as an
-  artifact; `export_evidence_bundle` writes the zipped bundle as
-  an artifact. (Existing trace evidence-bundle endpoint stays —
-  this is the conversation-scoped surface.)
-- **AA-10** Documentation + skill prompt update. Add producer
-  guidance to `Assistant/Skills/workflow-authoring.md` and any
-  new producer skill so future tools naturally write artifact
-  events.
+- **AA-8** ✅ Lock the recorder contract. Split
+  `IAssistantArtifactRepository` into a public read interface +
+  inheriting write interface (only the recorder takes the
+  writer). `ArtifactEventKind` enum extended with `TraceDiagnostic`
+  + `EvidenceBundle` (numeric values pinned). Documented
+  `relativePath` conventions per kind.
+- **AA-9** ✅ `diagnose_trace` writes a JSON summary as a
+  `TraceDiagnostic` artifact; new `export_evidence_bundle` tool
+  writes the zipped bundle as an `EvidenceBundle` artifact.
+  Existing trace evidence-bundle endpoint stays untouched — this
+  is the homepage-assistant surface for the same artifact.
+- **AA-10** ✅ Documentation + skill-prompt update.
+  `Assistant/Skills/workflow-authoring.md` mentions the rail as a
+  parallel save surface; README has a §Artifacts subsection
+  linking back to this doc.
 
 ## Risks and follow-ups
 

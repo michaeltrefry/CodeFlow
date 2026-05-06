@@ -22,6 +22,7 @@ import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { TracesApi } from '../../core/traces.api';
 import { CreateTraceRequest, LlmProviderKey, LlmProviderModelOption, ReplayRequest } from '../../core/models';
 import { IconComponent } from '../icon.component';
+import { ArtifactDiffComponent, findPriorArtifactByName } from './artifact-diff.component';
 import { ArtifactPreviewComponent } from './artifact-preview.component';
 import { ArtifactRailComponent } from './artifact-rail.component';
 import { ChatComposerComponent } from './chat-composer.component';
@@ -110,6 +111,7 @@ interface PinnedMutationChip {
     ChatToolbarComponent,
     IconComponent,
     ArtifactPreviewComponent,
+    ArtifactDiffComponent,
     ArtifactRailComponent,
   ],
   template: `
@@ -183,6 +185,13 @@ interface PinnedMutationChip {
                         class="artifact-pill-action"
                         (click)="openArtifactPreview(entry)"
                       >View</button>
+                      @if (isPackageArtifact(entry)) {
+                        <button
+                          type="button"
+                          class="artifact-pill-action"
+                          (click)="openArtifactDiff(entry)"
+                        >Diff</button>
+                      }
                     }
                   </span>
                 </div>
@@ -233,6 +242,7 @@ interface PinnedMutationChip {
           [conversationId]="convId"
           (viewRequested)="openArtifactPreview($event)"
           (saveRequested)="onArtifactSaveRequested($event)"
+          (diffRequested)="openArtifactDiff($event)"
         />
       }
 
@@ -354,6 +364,17 @@ interface PinnedMutationChip {
         [name]="preview.name"
         (closed)="closeArtifactPreview()"
         (expired)="onArtifactExpired(preview.eventId)"
+      />
+    }
+
+    @if (artifactDiff(); as diff) {
+      <cf-artifact-diff
+        [conversationId]="diff.conversationId"
+        [event]="diff.event"
+        [priorEvent]="diff.priorEvent"
+        [entryPointKey]="diff.entryPointKey"
+        [entryPointVersion]="diff.entryPointVersion"
+        (closed)="closeArtifactDiff()"
       />
     }
   `,
@@ -766,6 +787,18 @@ export class ChatPanelComponent implements OnDestroy {
     eventId: string;
     conversationId: string;
     name: string;
+  } | null>(null);
+
+  /**
+   * sc-798 (AA-7): currently-open diff view. Null when no sheet is showing. The diff
+   * component fetches both sides on its own; the chat panel just packages the inputs.
+   */
+  protected readonly artifactDiff = signal<{
+    conversationId: string;
+    event: ArtifactEventView;
+    priorEvent: ArtifactEventView | null;
+    entryPointKey: string | null;
+    entryPointVersion: number | null;
   } | null>(null);
 
   /** The conversation scope. Changing it re-resolves the conversation. */
@@ -1959,6 +1992,42 @@ export class ChatPanelComponent implements OnDestroy {
   }
 
   /**
+   * sc-798 (AA-7): only package-kind artifacts are diffable today. AA-9 (Phase 3) widens
+   * this if non-package producers ever want a diff view.
+   */
+  protected isPackageArtifact(view: ArtifactEventView): boolean {
+    return view.artifactKind === 'WorkflowPackageDraft'
+      || view.artifactKind === 'WorkflowPackageSnapshot';
+  }
+
+  /**
+   * sc-798 (AA-7): open the side-by-side Monaco diff for an artifact. The chat panel
+   * computes the diff inputs (prior superseded event by name, entry-point key from the
+   * summary) so the diff component itself stays a presentation surface.
+   */
+  protected openArtifactDiff(view: ArtifactEventView): void {
+    if (view.expired) return;
+    if (!this.isPackageArtifact(view)) return;
+    const conversationId = view.conversationId;
+    if (!conversationId) return;
+
+    const priorEvent = findPriorArtifactByName(this.artifactEvents(), view);
+    const entry = parseEntryPointFromSummary(view.summary);
+
+    this.artifactDiff.set({
+      conversationId,
+      event: view,
+      priorEvent,
+      entryPointKey: entry?.key ?? null,
+      entryPointVersion: entry?.version ?? null,
+    });
+  }
+
+  protected closeArtifactDiff(): void {
+    this.artifactDiff.set(null);
+  }
+
+  /**
    * sc-795 (AA-4): the preview sheet emits `expired` when the download endpoint returns
    * 410 Gone. Flip the matching pill locally so the rail/inline view shows the expired
    * state without a separate refetch. AA-3 hydration would deliver the same flag on the
@@ -2201,6 +2270,25 @@ export class ChatPanelComponent implements OnDestroy {
  * The cached package payload is held separately on the panel via `pendingSaves`; this helper
  * just produces the view-model the chip renders.
  */
+/**
+ * sc-798 (AA-7): parse the artifact event's recorder-supplied summary for the entry-point
+ * key + version. Drives the Library mode of the diff viewer — null return means the
+ * Library tab grays out (no entry-point to compare against). Resilient to absent / partial
+ * summaries since the recorder's `summary_json` is free-form.
+ */
+export function parseEntryPointFromSummary(summary: string | null): { key: string; version: number | null } | null {
+  if (!summary) return null;
+  try {
+    const parsed = JSON.parse(summary) as { entryPoint?: { key?: unknown; version?: unknown } };
+    const key = parsed.entryPoint?.key;
+    if (typeof key !== 'string' || key.length === 0) return null;
+    const version = typeof parsed.entryPoint?.version === 'number' ? parsed.entryPoint.version : null;
+    return { key, version };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * sc-797 (AA-6): synthesize a stable tool-call card id for an artifact-rail save attempt.
  * Prefix lets `onConfirmToolCall` / `onCancelToolCall` distinguish artifact saves from

@@ -179,8 +179,12 @@ public sealed class DiagnoseTraceToolTests : IAsyncLifetime
     }
 
     private static DiagnoseTraceTool ResolveTool(AsyncServiceScope scope) =>
-        scope.ServiceProvider
-            .GetServices<IAssistantTool>()
+        // sc-800 (AA-9): DiagnoseTraceTool is now built per-turn by TraceProducerToolFactory
+        // (so it can record artifacts in the conversation workspace). The tests don't have a
+        // workspace — pass null so it falls back to result-only mode, exercising the same
+        // code path the homepage assistant uses when no workspace is materialized yet.
+        scope.ServiceProvider.GetRequiredService<TraceProducerToolFactory>()
+            .Build(conversationWorkspace: null)
             .OfType<DiagnoseTraceTool>()
             .Single();
 
