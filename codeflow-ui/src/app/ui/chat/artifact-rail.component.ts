@@ -94,6 +94,14 @@ import { ArtifactEventView } from './chat-panel.component';
                       class="artifact-rail-action"
                       (click)="onView(e)"
                     >View</button>
+                    @if (isPackageKind(e)) {
+                      <button
+                        type="button"
+                        class="artifact-rail-action"
+                        data-testid="artifact-rail-diff"
+                        (click)="onDiff(e)"
+                      >Diff</button>
+                    }
                     @if (isPackageKind(e) && !e.superseded) {
                       <button
                         type="button"
@@ -271,6 +279,11 @@ export class ArtifactRailComponent {
    * does NOT call the save API directly — it stays a pure presentation component.
    */
   @Output() readonly saveRequested = new EventEmitter<ArtifactEventView>();
+  /**
+   * sc-798 (AA-7): bubbles up "Diff" intent. The chat panel computes the prior superseded
+   * event + the entry-point key from the package summary and mounts the diff side sheet.
+   */
+  @Output() readonly diffRequested = new EventEmitter<ArtifactEventView>();
 
   protected readonly collapseThreshold = COLLAPSE_THRESHOLD;
   protected readonly showSuperseded = signal<boolean>(false);
@@ -312,6 +325,10 @@ export class ArtifactRailComponent {
 
   protected onSave(view: ArtifactEventView): void {
     this.saveRequested.emit(view);
+  }
+
+  protected onDiff(view: ArtifactEventView): void {
+    this.diffRequested.emit(view);
   }
 
   /** sc-797 (AA-6): only package-kind artifacts are saveable today. AA-9 (Phase 3) widens this
