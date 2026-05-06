@@ -254,11 +254,17 @@ public static class AssistantEndpoints
         IAssistantConversationRepository conversations,
         IAssistantArtifactReadRepository artifactRepository,
         IAssistantWorkspaceProvider workspaceProvider,
+        ILogger<AssistantEndpointsLogCategory> logger,
         CancellationToken cancellationToken)
     {
         var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
         if (conversation is null)
         {
+            // Distinguishable in logs from the other 404 branches so a user "I clicked the
+            // chip and got 404" report is debuggable without a debugger.
+            logger.LogInformation(
+                "Artifact download 404: conversation {ConversationId} not found (URL likely points at a non-conversation guid).",
+                conversationId);
             return Results.NotFound();
         }
 
@@ -269,12 +275,30 @@ public static class AssistantEndpoints
             || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
         {
             // Same posture as the message-list path: don't leak existence to non-owners.
+            logger.LogInformation(
+                "Artifact download 404: caller userId mismatch on conversation {ConversationId} (resolved={ResolvedUserId}, owner={OwnerUserId}).",
+                conversationId, userId ?? "(null)", conversation.UserId);
             return Results.NotFound();
         }
 
         var evt = await artifactRepository.GetAsync(eventId, cancellationToken);
-        if (evt is null || evt.ConversationId != conversationId)
+        if (evt is null)
         {
+            logger.LogInformation(
+                "Artifact download 404: event {EventId} not found (orphaned chip or wrong id).",
+                eventId);
+            return Results.NotFound();
+        }
+        if (evt.ConversationId != conversationId)
+        {
+            // This is the symptom of the carve-out failing — the row was stamped with a
+            // conversation id that doesn't match the URL. Today's code paths can't produce
+            // this (TryResolveConversationWorkspace pins all artifact recording to the chat),
+            // but we log it loudly so a regression shows up.
+            logger.LogWarning(
+                "Artifact download 404: event {EventId} stamped with conversation {EventConversationId} but URL is {UrlConversationId}. "
+                + "This indicates an artifact-recording path bypassed the conversation-workspace carve-out.",
+                eventId, evt.ConversationId, conversationId);
             return Results.NotFound();
         }
 
