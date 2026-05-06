@@ -202,7 +202,9 @@ public sealed class AssistantTurnIdempotencyCoordinatorTests
                 LiveTailSubscriberCapacity = 64,
                 LiveTailSubscriberLifetime = TimeSpan.FromSeconds(5),
             });
-            Subscriptions = new AssistantTurnSubscriptionRegistry(Options);
+            Subscriptions = new AssistantTurnSubscriptionRegistry(
+                Options,
+                NullLogger<AssistantTurnSubscriptionRegistry>.Instance);
             Coordinator = new AssistantTurnIdempotencyCoordinator(
                 Repository,
                 SignalRegistry,
