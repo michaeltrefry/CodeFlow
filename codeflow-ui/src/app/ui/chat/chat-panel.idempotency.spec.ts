@@ -1,4 +1,5 @@
 import { generateIdempotencyKey } from './chat-panel.component';
+import { parseSseFrame } from '../../core/assistant-stream';
 
 /**
  * sc-525 — Spec for the chat-panel's per-turn idempotency-key generator. The full
@@ -58,5 +59,56 @@ describe('chat-panel idempotency key generator', () => {
     expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(key.length).toBeGreaterThanOrEqual(8);
     expect(key.length).toBeLessThanOrEqual(128);
+  });
+});
+
+/**
+ * sc-806 — Banner UX: when the server emits a structured SSE error frame with the
+ * `turn-still-running` code, the chat panel must surface BOTH Retry and Cancel. We test
+ * the SSE parser end of that contract here (pure function, deterministic). The "renders
+ * both buttons" half is exercised by the component-level test in CodeFlow.Api.Tests
+ * through the chat-panel.component.ts template binding on `canCancelTurnFromBanner()`.
+ */
+describe('parseSseFrame error frame (sc-806 structured payload)', () => {
+  function errorFrame(body: unknown) {
+    return parseSseFrame({ eventName: 'error', dataLines: [JSON.stringify(body)] });
+  }
+
+  it('extracts the turn-still-running code from the new payload shape', () => {
+    const frame = errorFrame({
+      code: 'turn-still-running',
+      message: 'Your previous turn is still running on the server. Wait a few seconds and retry, or cancel to start fresh.',
+    });
+
+    expect(frame).toEqual({
+      kind: 'error',
+      code: 'turn-still-running',
+      message: 'Your previous turn is still running on the server. Wait a few seconds and retry, or cancel to start fresh.',
+    });
+  });
+
+  it('extracts the live-tail-fell-behind and live-tail-timeout codes the same way', () => {
+    expect(errorFrame({ code: 'live-tail-fell-behind', message: 'x' }))
+      .toMatchObject({ kind: 'error', code: 'live-tail-fell-behind' });
+    expect(errorFrame({ code: 'live-tail-timeout', message: 'x' }))
+      .toMatchObject({ kind: 'error', code: 'live-tail-timeout' });
+  });
+
+  it('returns code: null when the server omits it (older deployments)', () => {
+    // Pre-AR-4 servers emit `{ message }` without a code — clients must treat that as a
+    // generic error (Retry only, no Cancel) so the banner doesn't show a stale affordance.
+    expect(errorFrame({ message: 'Something broke' }))
+      .toEqual({ kind: 'error', code: null, message: 'Something broke' });
+  });
+
+  it('treats a non-string code as null', () => {
+    // Defensive parse: a malformed/numeric `code` shouldn't trip the banner branch logic.
+    expect(errorFrame({ code: 42, message: 'msg' }))
+      .toEqual({ kind: 'error', code: null, message: 'msg' });
+  });
+
+  it('treats an empty-string code as null so equality checks against known codes still fail', () => {
+    expect(errorFrame({ code: '', message: 'msg' }))
+      .toEqual({ kind: 'error', code: null, message: 'msg' });
   });
 });

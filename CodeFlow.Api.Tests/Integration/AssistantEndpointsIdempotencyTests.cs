@@ -8,6 +8,7 @@ using CodeFlow.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -385,6 +386,86 @@ public sealed class AssistantEndpointsIdempotencyTests
         var firstPayload = firstFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
         var secondPayload = secondFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
         secondPayload.Should().BeEquivalentTo(firstPayload, opts => opts.WithStrictOrdering());
+    }
+
+    [Fact]
+    public async Task Wait_timeout_emits_structured_error_frame_with_turn_still_running_code()
+    {
+        // sc-806 — when a duplicate arrives, finds the row InFlight, but cannot live-tail
+        // (no local producer — simulated here by unregistering before the duplicate fires),
+        // the WaitThenReplay path's wait-timeout error must surface a structured payload
+        // `{ code: "turn-still-running", message: "..." }`. The chat panel keys off that code
+        // to render a Cancel affordance alongside Retry.
+        AssistantStub.Reset();
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("eventually"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        AssistantStub.SetGate(release.Task);
+
+        // Override WaitTimeout to a short value so the test doesn't sit for the production 60s
+        // default. The Subscribe-registry override is via Unregister below — we leave the
+        // singleton in place so the originating turn still self-registers, then drop the
+        // entry to simulate a cross-instance retry.
+        var clientFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, config) =>
+            {
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Assistant:Idempotency:WaitTimeout"] = "00:00:00.250",
+                    ["Assistant:Idempotency:WaitPollInterval"] = "00:00:00.050",
+                });
+            });
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<ICodeFlowAssistant>();
+                services.AddSingleton<ICodeFlowAssistant>(AssistantStub);
+            });
+        });
+        using var client = clientFactory.CreateClient();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var firstTask = SendMessageAsync(client, conversation.Id, "wait-timeout repro", key);
+
+        var gatedAt = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.GateEntered == 0 && DateTime.UtcNow < gatedAt)
+        {
+            await Task.Delay(20);
+        }
+        AssistantStub.GateEntered.Should().BeGreaterThan(0);
+
+        // Drop the recorder from the local subscription registry so the duplicate's
+        // dispatcher TrySubscribe returns null → WaitThenReplay path engages.
+        Guid recordId;
+        using (var scope = clientFactory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var record = await dbContext.AssistantTurnIdempotency
+                .AsNoTracking()
+                .SingleAsync(e => e.ConversationId == conversation.Id);
+            recordId = record.Id;
+        }
+        var subscriptionRegistry = clientFactory.Services
+            .GetRequiredService<AssistantTurnSubscriptionRegistry>();
+        subscriptionRegistry.Unregister(recordId);
+
+        var (secondFrames, _) = await SendMessageAsync(client, conversation.Id, "wait-timeout repro", key);
+
+        var errorFrame = secondFrames.SingleOrDefault(f => f.Event == "error");
+        errorFrame.Should().NotBeNull("WaitThenReplay timeout must emit an SSE error frame");
+        var payload = JsonSerializer.Deserialize<JsonElement>(errorFrame!.Data, JsonOpts);
+        payload.GetProperty("code").GetString().Should().Be("turn-still-running",
+            "the structured payload code is what the chat panel keys off to surface Cancel");
+        payload.GetProperty("message").GetString().Should().Contain("still running",
+            "the new copy must reflect that the previous turn is running on the server");
+
+        // Release the gate so the originating turn finishes and the test fixture cleans up.
+        release.SetResult(true);
+        await firstTask;
     }
 
     [Fact]
