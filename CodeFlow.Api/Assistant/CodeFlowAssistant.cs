@@ -61,6 +61,7 @@ public sealed class CodeFlowAssistant(
     WorkflowDraftAssistantToolFactory workflowDraftToolFactory,
     IAssistantWorkspaceProvider workspaceProvider,
     IAssistantConversationRepository conversations,
+    Artifacts.IArtifactEventCollector artifactEventCollector,
     ILogger<CodeFlowAssistant> logger) : ICodeFlowAssistant
 {
     public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
@@ -599,6 +600,13 @@ public sealed class CodeFlowAssistant(
                 yield return new AssistantToolCallStarted(pending.Id, pending.Name, args);
                 var result = await dispatcher.InvokeAsync(pending.Name, args, cancellationToken);
                 yield return new AssistantToolCallCompleted(pending.Id, pending.Name, result.ResultJson, result.IsError);
+                // sc-793 (AA-2): drain any artifact events the tool produced. Yield them
+                // immediately after the tool's own result so the chat panel can attach the
+                // pill to the same in-flight assistant message.
+                foreach (var collected in artifactEventCollector.Drain())
+                {
+                    yield return new AssistantArtifactEventEmitted(collected.Event, collected.SupersedesPriorByName);
+                }
                 dispatched.Add((pending, args, result));
             }
 
@@ -952,6 +960,12 @@ public sealed class CodeFlowAssistant(
                 yield return new AssistantToolCallStarted(id, name, args);
                 var result = await dispatcher.InvokeAsync(name, args, cancellationToken);
                 yield return new AssistantToolCallCompleted(id, name, result.ResultJson, result.IsError);
+                // sc-793 (AA-2): mirror the Anthropic-branch drain so OpenAI flows surface
+                // artifact pills the same way.
+                foreach (var collected in artifactEventCollector.Drain())
+                {
+                    yield return new AssistantArtifactEventEmitted(collected.Event, collected.SupersedesPriorByName);
+                }
                 dispatchedOpenAi.Add((pending, args, result));
             }
 

@@ -716,6 +716,22 @@ public static class AssistantEndpoints
                 result = tcc.ResultJson,
                 isError = tcc.IsError
             }, JsonOptions)),
+            // sc-793 (AA-2): live inline artifact pill. Carries the durable id (download
+            // endpoint will key off it in AA-4), kind for icon/label selection, name + summary
+            // for body text, and the supersession flag so prior pills with the same name can
+            // be marked stale without an extra round-trip.
+            ArtifactEventEmitted ae => ("artifact-event", JsonSerializer.Serialize(new
+            {
+                id = ae.Event.Id,
+                conversationId = ae.Event.ConversationId,
+                sequence = ae.Event.Sequence,
+                kind = ae.Event.Kind.ToString(),
+                name = ae.Event.Name,
+                snapshotId = ae.Event.SnapshotId,
+                summary = ae.Event.SummaryJson,
+                supersedesPriorByName = ae.SupersedesPriorByName,
+                createdAtUtc = ae.Event.CreatedAtUtc,
+            }, JsonOptions)),
             TurnFailed f => ("error", JsonSerializer.Serialize(new { message = f.Message }, JsonOptions)),
             _ => ("unknown", "{}")
         };

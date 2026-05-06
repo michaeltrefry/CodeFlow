@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CodeFlow.Persistence;
 
 namespace CodeFlow.Api.Assistant;
 
@@ -34,3 +35,16 @@ public sealed record AssistantToolCallStarted(string ToolUseId, string Name, Jso
 /// </summary>
 public sealed record AssistantToolCallCompleted(string ToolUseId, string Name, string ResultJson, bool IsError)
     : AssistantStreamItem;
+
+/// <summary>
+/// sc-793 (AA-2): emitted when a producer tool successfully recorded a downloadable artifact
+/// (workflow-package draft or snapshot today, more in Phase 3). The chat panel renders an inline
+/// pill anchored to the in-flight assistant message; AA-3 adds reload survival via persisted
+/// hydration; AA-4 wires the Download / View actions.
+/// </summary>
+/// <param name="SupersedesPriorByName">When true, the chat panel marks all prior pills with the
+/// same <see cref="AssistantArtifactEvent.Name"/> in this conversation as superseded. Mirrors
+/// the recorder's repository-side supersession without requiring the panel to know exact ids.</param>
+public sealed record AssistantArtifactEventEmitted(
+    AssistantArtifactEvent Event,
+    bool SupersedesPriorByName) : AssistantStreamItem;

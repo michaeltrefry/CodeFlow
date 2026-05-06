@@ -185,6 +185,10 @@ public sealed class AssistantChatService(
                         yield return new ToolCallCompleted(tcc.ToolUseId, tcc.Name, tcc.ResultJson, tcc.IsError);
                         break;
 
+                    case AssistantArtifactEventEmitted ae:
+                        yield return new ArtifactEventEmitted(ae.Event, ae.SupersedesPriorByName);
+                        break;
+
                     case AssistantTurnError err:
                         yield return new TurnFailed(err.Message);
                         yield break;
@@ -285,3 +289,13 @@ public sealed record ToolCallStarted(string Id, string Name, JsonElement Argumen
 /// a recoverable tool error from a successful invocation.
 /// </summary>
 public sealed record ToolCallCompleted(string Id, string Name, string ResultJson, bool IsError) : AssistantTurnEvent;
+
+/// <summary>
+/// sc-793 (AA-2): a producer tool successfully recorded a downloadable artifact. The chat panel
+/// renders an inline pill anchored to the in-flight assistant message. <see cref="SupersedesPriorByName"/>
+/// rides through from the recorder so the panel can mark prior pills with the same
+/// <see cref="AssistantArtifactEvent.Name"/> as superseded without a separate round-trip.
+/// </summary>
+public sealed record ArtifactEventEmitted(
+    AssistantArtifactEvent Event,
+    bool SupersedesPriorByName) : AssistantTurnEvent;

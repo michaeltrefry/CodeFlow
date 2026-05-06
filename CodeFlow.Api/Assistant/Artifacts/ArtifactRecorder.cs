@@ -2,7 +2,9 @@ using CodeFlow.Persistence;
 
 namespace CodeFlow.Api.Assistant.Artifacts;
 
-public sealed class ArtifactRecorder(IAssistantArtifactRepository repository) : IArtifactRecorder
+public sealed class ArtifactRecorder(
+    IAssistantArtifactRepository repository,
+    IArtifactEventCollector collector) : IArtifactRecorder
 {
     public async Task<AssistantArtifactEvent> RecordAsync(
         Guid conversationId,
@@ -33,6 +35,11 @@ public sealed class ArtifactRecorder(IAssistantArtifactRepository repository) : 
                 added.Id,
                 cancellationToken);
         }
+
+        // sc-793 (AA-2): push to the per-turn collector so the assistant loop yields it as a
+        // stream item right after the tool that produced it completes. Persistence already
+        // happened above — this is purely the live UI surface.
+        collector.Append(added, supersedesPriorByName);
 
         return added;
     }
