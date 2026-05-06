@@ -316,12 +316,14 @@ public sealed class SaveWorkflowPackageTool : IAssistantTool
             snapshotId = draftSnapshotId?.ToString(),
             note,
             // sc-397: when CanApply is false, the chat-panel renders a "Resolve in imports
-            // page" chip that hands the package off to the imports page. The user picks
-            // resolutions there (Bump / UseExisting / Copy) — the LLM must NOT spin trying
-            // to fix the conflicts itself by re-emitting the package.
+            // page" chip that hands the package off to the imports page. Default behaviour
+            // is to wait for the user — re-emitting the package on your own initiative is
+            // how loops start. The user may, however, explicitly ask you to fix a specific
+            // conflict (e.g. "edit the role body to match the library"); in that case patch
+            // the draft and call save again.
             message = preview.CanApply
                 ? "Preview validated. The user must click the 'Save' chip in chat to confirm — do not call this tool again or take further action until the user responds."
-                : "Preview produced conflicts. A 'Resolve in imports page' chip will appear in chat that lets the user pick a resolution per row (Bump / UseExisting / Copy). Do NOT re-emit the package or call this tool again — wait for the user to navigate through the chip and apply the resolved import.",
+                : "Preview produced conflicts. A 'Resolve in imports page' chip will appear in chat that lets the user pick a resolution per row (Bump / UseExisting / Copy). Default to surfacing the conflicts and waiting for the user — do not re-emit the package on your own initiative. If the user explicitly asks you to resolve a specific conflict (e.g. by editing an entity to match the library), patch the draft with patch_workflow_package_draft and call save_workflow_package again.",
         };
 
         return new AssistantToolResult(JsonSerializer.Serialize(summary, AssistantToolJson.SerializerOptions));
