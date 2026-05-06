@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Persistence;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -282,19 +283,29 @@ public sealed class AssistantTurnRecorderSubscriptionTests
             SubscriptionRegistry = new AssistantTurnSubscriptionRegistry(
                 options,
                 NullLogger<AssistantTurnSubscriptionRegistry>.Instance);
+            // sc-808 (AR-6): the recorder now resolves its repository through a scope so it
+            // doesn't capture the request DbContext. Build a singleton-backed ServiceProvider
+            // so each test scope hands back our shared in-memory repo.
+            var services = new ServiceCollection();
+            services.AddSingleton<IAssistantTurnIdempotencyRepository>(Repository);
+            ServiceProvider = services.BuildServiceProvider();
+            ScopeFactory = ServiceProvider.GetRequiredService<IServiceScopeFactory>();
         }
 
         public TimeProvider TimeProvider { get; }
         public InMemoryAssistantTurnIdempotencyRepository Repository { get; }
         public AssistantTurnSignalRegistry SignalRegistry { get; }
         public AssistantTurnSubscriptionRegistry SubscriptionRegistry { get; }
+        public ServiceProvider ServiceProvider { get; }
+        public IServiceScopeFactory ScopeFactory { get; }
 
         public BufferedAssistantTurnRecorder NewRecorder() => new(
             Guid.NewGuid(),
-            Repository,
+            ScopeFactory,
             SignalRegistry,
             SubscriptionRegistry,
-            TimeProvider);
+            TimeProvider,
+            NullLogger<BufferedAssistantTurnRecorder>.Instance);
     }
 
     /// <summary>
