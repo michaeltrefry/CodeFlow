@@ -4,6 +4,7 @@ using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TokenTracking;
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
@@ -45,6 +46,14 @@ public static class AssistantEndpoints
         group.MapGet(
             "/conversations/{conversationId:guid}/artifacts/{eventId:guid}",
             DownloadArtifactAsync);
+
+        // sc-797 (AA-6): preview-and-validate a save from the artifact rail. Mirrors the
+        // `save_workflow_package` tool's response shape so the chat panel can reuse its
+        // existing chip view-model. Closes the dismissed-chip recovery loop — any artifact
+        // the user can see in the rail can be saved straight to the library.
+        group.MapPost(
+            "/conversations/{conversationId:guid}/artifacts/{eventId:guid}/save",
+            PreviewArtifactSaveAsync);
 
         // HAA-14: aggregated token usage across the user's assistant conversations. Drives the
         // homepage rail's assistant-token chip; lives on the assistant prefix because it scopes
@@ -325,6 +334,204 @@ public static class AssistantEndpoints
 
         var stream = File.OpenRead(filePath);
         return Results.File(stream, contentType: contentType, fileDownloadName: evt.Name);
+    }
+
+    /// <summary>
+    /// sc-797 (AA-6): preview-and-validate a "Save to library" from the artifact rail.
+    /// Reads the bytes the artifact event references, runs them through the importer's
+    /// preview + validation pipeline, and returns the same JSON shape the
+    /// <c>save_workflow_package</c> tool emits — <c>buildSaveConfirmationView</c> on the
+    /// chat panel reuses its existing logic to render the resulting chip (apply mode for
+    /// preview_ok, resolve mode for preview_conflicts, error otherwise).
+    ///
+    /// The wire shape's <c>packageSource</c> is <c>"artifact"</c> (vs the tool's
+    /// <c>"draft"</c> / <c>"inline"</c>) and carries <c>eventId</c> instead of
+    /// <c>snapshotId</c>; the chat panel's apply path keys off this discriminator and POSTs
+    /// to <c>/api/workflows/package/apply-from-artifact</c>.
+    /// </summary>
+    private static async Task<IResult> PreviewArtifactSaveAsync(
+        Guid conversationId,
+        Guid eventId,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantArtifactRepository artifactRepository,
+        IAssistantWorkspaceProvider workspaceProvider,
+        IWorkflowPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(
+            httpContext,
+            allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId)
+            || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            return Results.NotFound();
+        }
+
+        var evt = await artifactRepository.GetAsync(eventId, cancellationToken);
+        if (evt is null || evt.ConversationId != conversationId)
+        {
+            return Results.NotFound();
+        }
+        if (evt.ExpiredAtUtc is not null)
+        {
+            return Results.Json(
+                new { state = "expired", message = "This artifact has been consumed and is no longer applyable." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+        if (evt.Kind != ArtifactEventKind.WorkflowPackageDraft
+            && evt.Kind != ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            return ApiResults.BadRequest($"Save is only supported for package-kind artifacts; this event is {evt.Kind}.");
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        // Resolve the on-disk path through the same helper the apply endpoint uses so a `..`
+        // escape lands the same 404 in both paths.
+        string filePath;
+        if (evt.SnapshotId is { } snapshotId && evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            filePath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+        }
+        else
+        {
+            var combined = Path.GetFullPath(Path.Combine(workspace.RootPath, evt.RelativePath));
+            var rootFull = Path.GetFullPath(workspace.RootPath);
+            if (!combined.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(combined, rootFull, StringComparison.Ordinal))
+            {
+                return Results.NotFound();
+            }
+            filePath = combined;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            return Results.Json(
+                new { state = "expired", message = "Artifact bytes are no longer available on disk." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        WorkflowPackage? package;
+        try
+        {
+            await using var stream = File.OpenRead(filePath);
+            package = await JsonSerializer.DeserializeAsync<WorkflowPackage>(
+                stream,
+                AssistantToolJson.SerializerOptions,
+                cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            var payload = new
+            {
+                status = "invalid",
+                message = $"Could not parse the artifact as a workflow package document: {ex.Message}",
+                hint = "The artifact bytes on disk failed to deserialize. The conversation's workspace may be corrupted; ask the assistant to re-emit the package.",
+            };
+            return Results.Ok(payload);
+        }
+        if (package is null)
+        {
+            return Results.Ok(new
+            {
+                status = "invalid",
+                message = "The artifact bytes on disk deserialized to null.",
+            });
+        }
+
+        WorkflowPackageImportPreview preview;
+        try
+        {
+            preview = await importer.PreviewAsync(package, cancellationToken);
+        }
+        catch (WorkflowPackageResolutionException ex)
+        {
+            return Results.Ok(new
+            {
+                status = "invalid",
+                message = ex.Message,
+                missingReferences = ex.MissingReferences
+                    .Select(r => new { kind = r.Kind.ToString(), key = r.Key, version = r.Version, referencedBy = r.ReferencedBy })
+                    .ToArray(),
+                hint = "The package failed structural validation (schema version, entry-point, or a node carrying an unresolved ref). The artifact may be from an older / incompatible workflow shape.",
+            });
+        }
+
+        if (preview.CanApply)
+        {
+            WorkflowPackageValidationResult validation;
+            try
+            {
+                validation = await importer.ValidateAsync(package, cancellationToken);
+            }
+            catch (WorkflowPackageResolutionException ex)
+            {
+                return Results.Ok(new
+                {
+                    status = "invalid",
+                    message = ex.Message,
+                    hint = "The package was rejected during validation. The artifact bytes may be stale.",
+                });
+            }
+            if (!validation.IsValid)
+            {
+                return Results.Ok(new
+                {
+                    status = "invalid",
+                    message = "The package would be rejected at save time. Fix the listed errors.",
+                    errors = validation.Errors
+                        .Select(e => new { workflowKey = e.WorkflowKey, message = e.Message, ruleIds = e.RuleIds ?? Array.Empty<string>() })
+                        .ToArray(),
+                });
+            }
+        }
+
+        var summary = new
+        {
+            status = preview.CanApply ? "preview_ok" : "preview_conflicts",
+            entryPoint = new { key = preview.EntryPoint.Key, version = preview.EntryPoint.Version },
+            createCount = preview.CreateCount,
+            reuseCount = preview.ReuseCount,
+            conflictCount = preview.ConflictCount,
+            refusedCount = preview.RefusedCount,
+            warningCount = preview.WarningCount,
+            warnings = preview.Warnings.ToArray(),
+            items = preview.Items
+                .Select(i => new { kind = i.Kind.ToString(), key = i.Key, version = i.Version, action = i.Action.ToString(), message = i.Message })
+                .ToArray(),
+            canApply = preview.CanApply,
+            // Tells the chat UI which apply path to use:
+            //   "artifact" → POST /api/workflows/package/apply-from-artifact with conversationId + eventId
+            // The chip's Resolve handoff uses the same shape with packageSource: 'artifact'.
+            packageSource = "artifact",
+            conversationId,
+            eventId,
+            artifactName = evt.Name,
+            message = preview.CanApply
+                ? "Preview validated. Click Save in the chip to apply this artifact to the library."
+                : "Preview produced conflicts. The chip's Resolve action navigates to the imports page where you can pick per-row resolutions.",
+        };
+        return Results.Ok(summary);
     }
 
     private static async Task<IResult> CreateConversationAsync(

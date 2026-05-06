@@ -1,4 +1,4 @@
-import { applyArtifactEvent, ArtifactEventView, hydrateArtifactEventViews } from './chat-panel.component';
+import { applyArtifactEvent, ArtifactEventView, artifactSaveCardId, buildSaveConfirmationView, hydrateArtifactEventViews } from './chat-panel.component';
 import { ArtifactEvent, parseSseFrame } from '../../core/assistant-stream';
 import { HydratedArtifactEvent } from '../../core/assistant.api';
 
@@ -169,6 +169,80 @@ describe('parseSseFrame artifact-event handling', () => {
       event: expect.objectContaining({ id: 'event-1', kind: 'WorkflowPackageSnapshot' }),
       supersedesPriorByName: false,
     });
+  });
+});
+
+describe('buildSaveConfirmationView for artifact source (AA-6)', () => {
+  it('builds an apply chip with packageSource artifact + eventId from a preview_ok response', () => {
+    const result = buildSaveConfirmationView(JSON.stringify({
+      status: 'preview_ok',
+      packageSource: 'artifact',
+      conversationId: 'conv-1',
+      eventId: 'evt-1',
+      artifactName: 'draft.cf-workflow-package.json',
+      entryPoint: { key: 'demo-flow', version: 1 },
+      canApply: true,
+    }), null);
+
+    expect(result).toBeDefined();
+    expect(result!.kind).toBe('save_workflow_package');
+    expect(result!.packageSource).toBe('artifact');
+    expect(result!.mode).toBe('apply');
+    expect(result!.artifactEventId).toBe('evt-1');
+    expect(result!.artifactName).toBe('draft.cf-workflow-package.json');
+    expect(result!.confirmLabel).toBe('Save');
+  });
+
+  it('builds a resolve chip from a preview_conflicts artifact response', () => {
+    const result = buildSaveConfirmationView(JSON.stringify({
+      status: 'preview_conflicts',
+      packageSource: 'artifact',
+      conversationId: 'conv-1',
+      eventId: 'evt-2',
+      artifactName: 'draft.cf-workflow-package.json',
+      entryPoint: { key: 'demo-flow', version: 1 },
+      conflictCount: 2,
+      refusedCount: 0,
+    }), null);
+
+    expect(result).toBeDefined();
+    expect(result!.mode).toBe('resolve');
+    expect(result!.packageSource).toBe('artifact');
+    expect(result!.artifactEventId).toBe('evt-2');
+    expect(result!.confirmLabel).toBe('Resolve');
+    expect(result!.conflictCount).toBe(2);
+  });
+
+  it('returns undefined when an artifact response is missing the eventId', () => {
+    // Defense-in-depth: a server bug that omitted eventId would otherwise produce a chip
+    // with no apply path. Refuse to render so the user doesn't get stuck on a confirmable
+    // chip that always errors.
+    const result = buildSaveConfirmationView(JSON.stringify({
+      status: 'preview_ok',
+      packageSource: 'artifact',
+      conversationId: 'conv-1',
+      entryPoint: { key: 'demo', version: 1 },
+    }), null);
+
+    expect(result).toBeUndefined();
+  });
+
+  it('preserves the legacy inline-source path (no eventId required)', () => {
+    // Regression guard: the artifact-source widening must not break the inline path.
+    const result = buildSaveConfirmationView(JSON.stringify({
+      status: 'preview_ok',
+      entryPoint: { key: 'inline-flow', version: 1 },
+    }), { schemaVersion: 'codeflow.workflow-package.v1', entryPoint: { key: 'inline-flow', version: 1 } });
+
+    expect(result).toBeDefined();
+    expect(result!.packageSource).toBe('inline');
+    expect(result!.artifactEventId).toBeUndefined();
+  });
+
+  it('artifactSaveCardId produces a stable, distinguishable id per event', () => {
+    expect(artifactSaveCardId('evt-1')).toBe('artifact-save:evt-1');
+    expect(artifactSaveCardId('evt-1')).toBe(artifactSaveCardId('evt-1'));
+    expect(artifactSaveCardId('evt-1')).not.toBe(artifactSaveCardId('evt-2'));
   });
 });
 

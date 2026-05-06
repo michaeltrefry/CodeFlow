@@ -67,6 +67,12 @@ public static class WorkflowsEndpoints
         group.MapPost("/package/apply-from-draft", ApplyPackageImportFromDraftAsync)
             .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
 
+        // sc-797 (AA-6): apply path for "Save to library from rail". Reads the bytes the
+        // artifact event references (workspace draft or snapshot) and applies. Same auth
+        // policy as the other apply paths.
+        group.MapPost("/package/apply-from-artifact", ApplyPackageImportFromArtifactAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
+
         // sc-397: read the live draft from a conversation's workspace. The chat chip's
         // "Resolve in imports page" handoff calls this so the imports page can hydrate from
         // the same bytes the assistant just previewed without round-tripping the package
@@ -307,6 +313,192 @@ public static class WorkflowsEndpoints
     /// so a draft mutation between preview and confirmation can't make the user import a
     /// different package than the one they approved.
     /// </summary>
+    /// <summary>
+    /// sc-797 (AA-6): apply path for "Save to library" from the artifact rail. Reads the
+    /// bytes the artifact event references (live workspace draft for Draft kind; immutable
+    /// per-save bytes for Snapshot kind), runs them through the importer with the same
+    /// resolutions / drift-ack contract as apply-from-draft, and on success marks the
+    /// underlying snapshot expired (if any).
+    ///
+    /// The Draft kind is read live — same posture as the inline pill's Download endpoint.
+    /// The user is opting in to "save whatever the draft is right now" by clicking Save in
+    /// the rail; if the assistant has patched the draft since they last looked, that's the
+    /// expected outcome. The Snapshot kind reads the immutable bytes so a Save-from-rail on
+    /// an older Save-chip's snapshot still applies the bytes the user originally validated.
+    /// </summary>
+    private static async Task<IResult> ApplyPackageImportFromArtifactAsync(
+        ApplyPackageImportFromArtifactRequest request,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantArtifactRepository artifactRepository,
+        IAssistantWorkspaceProvider workspaceProvider,
+        IWorkflowPackageImporter importer,
+        IArtifactRecorder artifactRecorder,
+        CodeFlowDbContext dbContext,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.ConversationId == Guid.Empty)
+        {
+            return ApiResults.BadRequest("conversationId is required.");
+        }
+        if (request.EventId == Guid.Empty)
+        {
+            return ApiResults.BadRequest("eventId is required.");
+        }
+
+        var conversation = await conversations.GetByIdAsync(request.ConversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            return Results.NotFound();
+        }
+
+        var evt = await artifactRepository.GetAsync(request.EventId, cancellationToken);
+        if (evt is null || evt.ConversationId != request.ConversationId)
+        {
+            return Results.NotFound();
+        }
+        if (evt.ExpiredAtUtc is not null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { "This artifact has been consumed and is no longer applyable." }
+            });
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(request.ConversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (!TryResolveArtifactPath(evt, workspace, out var filePath))
+        {
+            return Results.NotFound();
+        }
+        if (!File.Exists(filePath))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { "Artifact bytes are no longer available on disk." }
+            });
+        }
+
+        WorkflowPackage? package;
+        try
+        {
+            await using var stream = File.OpenRead(filePath);
+            package = await JsonSerializer.DeserializeAsync<WorkflowPackage>(
+                stream,
+                AssistantToolJson.SerializerOptions,
+                cancellationToken);
+        }
+        catch (JsonException ex)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { $"The artifact bytes on disk could not be parsed: {ex.Message}" }
+            });
+        }
+        if (package is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["package"] = new[] { "The artifact bytes on disk deserialized to null." }
+            });
+        }
+
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
+        Dictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions;
+        try
+        {
+            resolutions = ConvertResolutions(request.Resolutions, out expectedMaxVersions);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+
+        var driftEntries = await DetectResolutionDriftAsync(dbContext, expectedMaxVersions, cancellationToken);
+        if (driftEntries.Count > 0 && request.AcknowledgeDrift != true)
+        {
+            return Results.Conflict(BuildDriftResponse(driftEntries));
+        }
+
+        try
+        {
+            var result = await importer.ApplyAsync(package, resolutions, cancellationToken);
+            // For snapshot kinds, mark the underlying snapshot expired + delete the file (same
+            // as apply-from-draft). Drafts stay live — the user can keep iterating.
+            if (evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot && evt.SnapshotId is { } snapshotId)
+            {
+                try { await artifactRecorder.MarkSnapshotExpiredAsync(snapshotId, cancellationToken); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.WorkflowsEndpoints")
+                        .LogWarning(ex, "Failed to mark artifact event expired for snapshot {SnapshotId}.", snapshotId);
+                }
+                try { WorkflowPackageDraftStore.DeleteSnapshot(workspace, snapshotId); }
+                catch (IOException) { /* best-effort cleanup; ignore */ }
+            }
+            return Results.Ok(result);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return WorkflowPackageImportValidationProblem(exception);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.WorkflowsEndpoints")
+                .LogError(exception, "Unhandled exception in apply-package-import-from-artifact for conversation {ConversationId} event {EventId}.",
+                    request.ConversationId, request.EventId);
+            return UnhandledImportProblem(exception);
+        }
+    }
+
+    /// <summary>
+    /// sc-797 (AA-6): resolve an artifact event's on-disk path. Snapshot kinds key off the
+    /// snapshot id; drafts (and future kinds) resolve through the event's relative_path with
+    /// a normalized-join guard against `..` escapes. Returns false when the event references
+    /// a path that escapes the workspace root — the caller should 404.
+    /// </summary>
+    private static bool TryResolveArtifactPath(
+        AssistantArtifactEvent evt,
+        ToolWorkspaceContext workspace,
+        out string filePath)
+    {
+        if (evt.SnapshotId is { } snapshotId && evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            filePath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+            return true;
+        }
+
+        var combined = Path.GetFullPath(Path.Combine(workspace.RootPath, evt.RelativePath));
+        var rootFull = Path.GetFullPath(workspace.RootPath);
+        if (!combined.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(combined, rootFull, StringComparison.Ordinal))
+        {
+            filePath = string.Empty;
+            return false;
+        }
+        filePath = combined;
+        return true;
+    }
+
     private static async Task<IResult> ApplyPackageImportFromDraftAsync(
         ApplyPackageImportFromDraftRequest request,
         HttpContext httpContext,
@@ -678,6 +870,16 @@ public static class WorkflowsEndpoints
     public sealed record ApplyPackageImportFromDraftRequest(
         Guid ConversationId,
         Guid SnapshotId,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
+        bool? AcknowledgeDrift = null);
+
+    /// <summary>sc-797 (AA-6) — body for /package/apply-from-artifact. Same shape as
+    /// apply-from-draft but keys off (conversationId, eventId) so the user can apply ANY
+    /// artifact they see in the rail, not only the snapshot the most recent Save chip
+    /// minted.</summary>
+    public sealed record ApplyPackageImportFromArtifactRequest(
+        Guid ConversationId,
+        Guid EventId,
         IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
         bool? AcknowledgeDrift = null);
 

@@ -291,6 +291,18 @@ export class WorkflowsApi {
     });
   }
 
+  /**
+   * sc-797 (AA-6): fetch an artifact's bytes for the imports-page handoff. The endpoint
+   * lives on the assistant prefix (it owns auth against the conversation owner) and streams
+   * application/json for package kinds — Angular's HttpClient auto-parses when the response
+   * Content-Type is JSON, which is exactly what we want.
+   */
+  getArtifactBytes(conversationId: string, eventId: string): Observable<unknown> {
+    return this.http.get<unknown>(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/artifacts/${encodeURIComponent(eventId)}`,
+    );
+  }
+
   /** sc-395: optional `resolutions` lets the imports page (CR-4) drive a per-Conflict
    *  preview re-run with user-chosen Bump / UseExisting / Copy choices. Wire shape is now
    *  `{ package, resolutions }` so the server can extend the body with future fields without
@@ -338,6 +350,25 @@ export class WorkflowsApi {
     return this.http.post<WorkflowPackageImportApplyResult>(
       '/api/workflows/package/apply-from-draft',
       { conversationId, snapshotId, resolutions, acknowledgeDrift },
+    );
+  }
+
+  /**
+   * sc-797 (AA-6): apply path for "Save to library" from the artifact rail. Reads the
+   * artifact's bytes (live workspace draft for Draft kind; immutable per-save bytes for
+   * Snapshot kind) and applies. Same `resolutions` + `acknowledgeDrift` contract as
+   * apply-from-draft so the imports-page handoff with `packageSource: 'artifact'` rides
+   * through the same mechanics.
+   */
+  applyPackageImportFromArtifact(
+    conversationId: string,
+    eventId: string,
+    resolutions?: WorkflowPackageImportResolution[],
+    acknowledgeDrift?: boolean,
+  ): Observable<WorkflowPackageImportApplyResult> {
+    return this.http.post<WorkflowPackageImportApplyResult>(
+      '/api/workflows/package/apply-from-artifact',
+      { conversationId, eventId, resolutions, acknowledgeDrift },
     );
   }
 

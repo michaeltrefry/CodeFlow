@@ -94,6 +94,14 @@ import { ArtifactEventView } from './chat-panel.component';
                       class="artifact-rail-action"
                       (click)="onView(e)"
                     >View</button>
+                    @if (isPackageKind(e) && !e.superseded) {
+                      <button
+                        type="button"
+                        class="artifact-rail-action artifact-rail-action-primary"
+                        data-testid="artifact-rail-save"
+                        (click)="onSave(e)"
+                      >Save to library</button>
+                    }
                   }
                 </span>
               </li>
@@ -230,6 +238,13 @@ import { ArtifactEventView } from './chat-panel.component';
     .artifact-rail-action:hover {
       background: color-mix(in oklab, var(--accent, #5765ff) 12%, transparent);
     }
+    .artifact-rail-action-primary {
+      border-color: var(--accent, #5765ff);
+      color: var(--accent, #5765ff);
+    }
+    .artifact-rail-action-primary:hover {
+      background: color-mix(in oklab, var(--accent, #5765ff) 18%, transparent);
+    }
     .artifact-rail-status {
       font-size: 11px;
       color: var(--warn, #f5a623);
@@ -250,6 +265,12 @@ export class ArtifactRailComponent {
 
   /** Bubbles up so the chat panel can mount its existing Monaco side sheet. */
   @Output() readonly viewRequested = new EventEmitter<ArtifactEventView>();
+  /**
+   * sc-797 (AA-6): bubbles up "Save to library" intent so the chat panel can run the
+   * preview-then-confirm flow through its existing chip infrastructure. The rail itself
+   * does NOT call the save API directly — it stays a pure presentation component.
+   */
+  @Output() readonly saveRequested = new EventEmitter<ArtifactEventView>();
 
   protected readonly collapseThreshold = COLLAPSE_THRESHOLD;
   protected readonly showSuperseded = signal<boolean>(false);
@@ -287,6 +308,17 @@ export class ArtifactRailComponent {
 
   protected onView(view: ArtifactEventView): void {
     this.viewRequested.emit(view);
+  }
+
+  protected onSave(view: ArtifactEventView): void {
+    this.saveRequested.emit(view);
+  }
+
+  /** sc-797 (AA-6): only package-kind artifacts are saveable today. AA-9 (Phase 3) widens this
+   *  for trace-diagnostic + evidence-bundle producers (which have nothing to save). */
+  protected isPackageKind(view: ArtifactEventView): boolean {
+    return view.artifactKind === 'WorkflowPackageDraft'
+      || view.artifactKind === 'WorkflowPackageSnapshot';
   }
 
   protected formatArtifactAge(iso: string, now: number): string {

@@ -177,4 +177,18 @@ export class AssistantApi {
   getDefaults(): Observable<AssistantDefaultsResponse> {
     return this.http.get<AssistantDefaultsResponse>('/api/assistant/defaults');
   }
+
+  /**
+   * sc-797 (AA-6) — preview-and-validate a "Save to library" from the artifact rail. The
+   * response shape mirrors the assistant's `save_workflow_package` tool result so the chat
+   * panel can reuse `buildSaveConfirmationView`. `packageSource` is always `"artifact"` and
+   * the response carries `eventId` instead of `snapshotId` so the apply path goes through
+   * `/api/workflows/package/apply-from-artifact`.
+   */
+  previewArtifactSave(conversationId: string, eventId: string): Observable<unknown> {
+    return this.http.post<unknown>(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/artifacts/${encodeURIComponent(eventId)}/save`,
+      {},
+    );
+  }
 }

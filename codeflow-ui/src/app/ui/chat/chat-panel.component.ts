@@ -232,6 +232,7 @@ interface PinnedMutationChip {
           [events]="artifactEvents()"
           [conversationId]="convId"
           (viewRequested)="openArtifactPreview($event)"
+          (saveRequested)="onArtifactSaveRequested($event)"
         />
       }
 
@@ -1381,11 +1382,17 @@ export class ChatPanelComponent implements OnDestroy {
     const card = this.toolCalls().find(c => c.id === toolCallId);
     const conf = card?.confirmation;
     const isDraftSource = conf?.packageSource === 'draft';
+    const isArtifactSource = conf?.packageSource === 'artifact';
 
     // sc-397: resolve-mode chip routes the user to the imports page where they pick per-row
     // resolutions; the apply-mode chips below run their respective POST flows.
     if (conf?.mode === 'resolve') {
-      this.handleResolveSaveConfirmation(toolCallId, isDraftSource);
+      this.handleResolveSaveConfirmation(toolCallId, isDraftSource, isArtifactSource);
+      return;
+    }
+
+    if (isArtifactSource) {
+      this.applyArtifactSaveConfirmation(toolCallId);
       return;
     }
 
@@ -1435,6 +1442,71 @@ export class ChatPanelComponent implements OnDestroy {
    * The server reads from the snapshot, not the live draft, so a draft mutation between preview
    * and confirm cannot redirect this Save to a different package.
    */
+  /**
+   * sc-797 (AA-6): apply path for artifact-source chips. POSTs to apply-from-artifact with
+   * (conversationId, eventId). On success, mark the underlying artifact pill expired
+   * locally so the rail flips immediately — the AA-1 backend already marked the row
+   * expired for snapshot kinds, but a draft kind stays live so the rail still surfaces it
+   * for further saves.
+   */
+  private applyArtifactSaveConfirmation(toolCallId: string): void {
+    const conversationId = this.conversationId();
+    if (!conversationId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'No active conversation — cannot save this artifact.',
+      }));
+      return;
+    }
+
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const eventId = card?.confirmation?.artifactEventId;
+    if (!eventId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Artifact event id missing on this Save chip — re-click Save in the rail.',
+      }));
+      return;
+    }
+
+    this.updateConfirmation(toolCallId, c => ({ ...c, state: 'applying' }));
+    this.workflowsApi.applyPackageImportFromArtifact(conversationId, eventId).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: result => {
+        this.workflowsApi.getLatest(result.entryPoint.key).pipe(
+          takeUntilDestroyed(this.destroyRef),
+        ).subscribe({
+          next: () => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'success',
+              applied: { kind: 'workflow', key: result.entryPoint.key, version: result.entryPoint.version },
+            }));
+          },
+          error: err => {
+            this.updateConfirmation(toolCallId, c => ({
+              ...c,
+              state: 'error',
+              errorMessage:
+                `Save returned success, but CodeFlow could not load workflow `
+                + `${result.entryPoint.key}: ${formatHttpError(err)}`,
+            }));
+          },
+        });
+      },
+      error: err => {
+        this.updateConfirmation(toolCallId, c => ({
+          ...c,
+          state: 'error',
+          errorMessage: `Save from artifact failed: ${formatHttpError(err)}`,
+        }));
+      },
+    });
+  }
+
   private applyDraftSaveConfirmation(toolCallId: string): void {
     const conversationId = this.conversationId();
     if (!conversationId) {
@@ -1503,19 +1575,36 @@ export class ChatPanelComponent implements OnDestroy {
    * directly into pendingImportPackage. Draft source: only the conversationId rides; the
    * imports page calls GET /api/workflows/package-draft to fetch the live draft bytes.
    */
-  private handleResolveSaveConfirmation(toolCallId: string, isDraftSource: boolean): void {
+  private handleResolveSaveConfirmation(
+    toolCallId: string,
+    isDraftSource: boolean,
+    isArtifactSource: boolean,
+  ): void {
     const conversationId = this.conversationId();
-    if (isDraftSource && !conversationId) {
+    if ((isDraftSource || isArtifactSource) && !conversationId) {
       this.updateConfirmation(toolCallId, c => ({
         ...c,
         state: 'error',
-        errorMessage: 'No active conversation — cannot resolve a draft-source package.',
+        errorMessage: 'No active conversation — cannot resolve this package.',
       }));
       return;
     }
 
-    const inlinePackage = isDraftSource ? null : this.pendingSaves.get(toolCallId) ?? null;
-    if (!isDraftSource && !inlinePackage) {
+    const card = this.toolCalls().find(c => c.id === toolCallId);
+    const eventId = card?.confirmation?.artifactEventId ?? null;
+    if (isArtifactSource && !eventId) {
+      this.updateConfirmation(toolCallId, c => ({
+        ...c,
+        state: 'error',
+        errorMessage: 'Artifact event id missing — re-open the rail and click Save again.',
+      }));
+      return;
+    }
+
+    const inlinePackage = (isDraftSource || isArtifactSource)
+      ? null
+      : this.pendingSaves.get(toolCallId) ?? null;
+    if (!isDraftSource && !isArtifactSource && !inlinePackage) {
       this.updateConfirmation(toolCallId, c => ({
         ...c,
         state: 'error',
@@ -1528,9 +1617,10 @@ export class ChatPanelComponent implements OnDestroy {
       const handoff: ImportHandoff = {
         v: 1,
         stashedAtMs: Date.now(),
-        packageSource: isDraftSource ? 'draft' : 'inline',
-        conversationId: isDraftSource ? conversationId! : null,
-        package: isDraftSource ? null : inlinePackage,
+        packageSource: isArtifactSource ? 'artifact' : isDraftSource ? 'draft' : 'inline',
+        conversationId: (isDraftSource || isArtifactSource) ? conversationId! : null,
+        eventId: isArtifactSource ? eventId : null,
+        package: (isDraftSource || isArtifactSource) ? null : inlinePackage,
       };
       sessionStorage.setItem(IMPORT_HANDOFF_STORAGE_KEY, JSON.stringify(handoff));
     } catch (e) {
@@ -1881,6 +1971,64 @@ export class ChatPanelComponent implements OnDestroy {
   }
 
   /**
+   * sc-797 (AA-6): the rail's "Save to library" button bubbled an intent here. POST the
+   * preview-and-validate to the assistant endpoint and fold the response into the existing
+   * tool-call card infrastructure so the user gets the same Save / Resolve / Dismiss chip
+   * shape they see when the assistant runs `save_workflow_package` itself.
+   *
+   * Synthesizes a tool-call card with id `artifact-save:{eventId}` so the existing
+   * onConfirmToolCall / onCancelToolCall flow can route it. The card name is
+   * `save_workflow_package` so the chip styling and confirmation handler match.
+   */
+  protected onArtifactSaveRequested(view: ArtifactEventView): void {
+    const conversationId = this.conversationId();
+    if (!conversationId) return;
+    if (view.expired || view.superseded) return;
+
+    const cardId = artifactSaveCardId(view.id);
+    // If a card already exists for this artifact (the user clicked Save twice), just refresh
+    // it — drop any prior cancelled state.
+    this.toolCalls.update(list => {
+      const existing = list.findIndex(c => c.id === cardId);
+      const card: ChatToolCallView = {
+        id: cardId,
+        name: 'save_workflow_package',
+        status: 'pending',
+        argsPreview: undefined,
+      };
+      if (existing >= 0) {
+        const next = list.slice();
+        next[existing] = card;
+        return next;
+      }
+      return [...list, card];
+    });
+
+    this.api.previewArtifactSave(conversationId, view.id).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: result => {
+        const resultJson = JSON.stringify(result);
+        const confirmation = buildSaveConfirmationView(resultJson, null);
+        this.toolCalls.update(list => list.map(card => card.id === cardId ? {
+          ...card,
+          status: 'success',
+          resultPreview: truncatePreview(resultJson),
+          confirmation,
+        } : card));
+        this.scrollToBottom();
+      },
+      error: err => {
+        this.toolCalls.update(list => list.map(card => card.id === cardId ? {
+          ...card,
+          status: 'error',
+          errorMessage: formatHttpError(err),
+        } : card));
+      },
+    });
+  }
+
+  /**
    * Render a one-line summary string from the recorder's `summary_json` for the pill. The
    * summary is free-form; we only try a couple of common shapes (entry-point + node count
    * for workflow packages) and fall back to null so the pill body collapses to just the name.
@@ -2054,6 +2202,16 @@ export class ChatPanelComponent implements OnDestroy {
  * just produces the view-model the chip renders.
  */
 /**
+ * sc-797 (AA-6): synthesize a stable tool-call card id for an artifact-rail save attempt.
+ * Prefix lets `onConfirmToolCall` / `onCancelToolCall` distinguish artifact saves from
+ * real assistant tool calls if needed. Stable across retries — re-clicking Save on the same
+ * row replaces the prior card rather than stacking.
+ */
+export function artifactSaveCardId(eventId: string): string {
+  return `artifact-save:${eventId}`;
+}
+
+/**
  * sc-793 (AA-2): pure helper that applies a freshly-streamed artifact event to the in-memory
  * pill list. Exported so unit tests can exercise the supersession / dedupe semantics without
  * spinning up TestBed.
@@ -2127,6 +2285,8 @@ export function buildSaveConfirmationView(
         status?: unknown;
         packageSource?: unknown;
         snapshotId?: unknown;
+        eventId?: unknown;
+        artifactName?: unknown;
         conflictCount?: unknown;
         refusedCount?: unknown;
         entryPoint?: { key?: unknown; version?: unknown };
@@ -2143,15 +2303,18 @@ export function buildSaveConfirmationView(
     return undefined;
   }
 
-  // Two valid render paths:
+  // Three valid render paths:
   //  - inline: the LLM passed a `package` arg; we cached it and POST it on confirm.
   //  - draft: the LLM invoked save with no args; the package lives server-side in the
   //    conversation's workspace. For preview_ok the tool minted an immutable per-save
-  //    snapshot file (snapshotId); for preview_conflicts it didn't (snapshots only mint when
-  //    CanApply), and the resolve-mode chip handoff fetches the live draft via the
-  //    GET /api/workflows/package-draft endpoint instead.
+  //    snapshot file (snapshotId); for preview_conflicts it didn't.
+  //  - artifact (sc-797 / AA-6): "Save to library" was clicked on an artifact-rail row;
+  //    the bytes live server-side keyed by (conversationId, eventId). No snapshot is
+  //    required — the apply path reads through the artifact event the same way
+  //    apply-from-draft reads through the snapshot.
   const isDraftSource = parsed.packageSource === 'draft';
-  if (!isDraftSource && !pkg) {
+  const isArtifactSource = parsed.packageSource === 'artifact';
+  if (!isDraftSource && !isArtifactSource && !pkg) {
     return undefined;
   }
 
@@ -2168,11 +2331,29 @@ export function buildSaveConfirmationView(
     return undefined;
   }
 
+  // Artifact path requires the event id on both apply and resolve — without it neither the
+  // apply-from-artifact endpoint nor the imports-page handoff can locate the bytes.
+  const artifactEventId = typeof parsed.eventId === 'string' && parsed.eventId.length > 0
+    ? parsed.eventId
+    : undefined;
+  if (isArtifactSource && !artifactEventId) {
+    return undefined;
+  }
+  const artifactName = typeof parsed.artifactName === 'string' && parsed.artifactName.length > 0
+    ? parsed.artifactName
+    : undefined;
+
   const summary = pkg ? summarizeWorkflowPackage(pkg) : null;
   const entryKey =
     typeof parsed.entryPoint?.key === 'string' ? parsed.entryPoint.key : summary?.entryPointKey ?? '';
   const entryVersion =
     typeof parsed.entryPoint?.version === 'number' ? parsed.entryPoint.version : summary?.entryPointVersion ?? 0;
+
+  const sourceLabel = isArtifactSource
+    ? 'artifact' as const
+    : isDraftSource
+      ? 'draft' as const
+      : 'inline' as const;
 
   if (isResolveMode) {
     const conflictCount =
@@ -2188,25 +2369,31 @@ export function buildSaveConfirmationView(
       prompt: label,
       confirmLabel: 'Resolve',
       cancelLabel: 'Dismiss',
-      packageSource: isDraftSource ? 'draft' : 'inline',
+      packageSource: sourceLabel,
       mode: 'resolve',
       conflictCount,
+      artifactEventId,
+      artifactName,
       state: 'idle',
     };
   }
 
-  const label = entryKey
-    ? `Save ${summary?.workflowName ?? entryKey} (${entryKey} v${entryVersion}) to the library?`
-    : 'Save this workflow package to the library?';
+  const label = isArtifactSource && artifactName
+    ? `Save ${entryKey ? entryKey + ' v' + entryVersion : artifactName} to the library?`
+    : entryKey
+      ? `Save ${summary?.workflowName ?? entryKey} (${entryKey} v${entryVersion}) to the library?`
+      : 'Save this workflow package to the library?';
 
   return {
     kind: 'save_workflow_package',
     prompt: label,
     confirmLabel: 'Save',
     cancelLabel: 'Cancel',
-    packageSource: isDraftSource ? 'draft' : 'inline',
+    packageSource: sourceLabel,
     mode: 'apply',
     snapshotId,
+    artifactEventId,
+    artifactName,
     state: 'idle',
   };
 }
