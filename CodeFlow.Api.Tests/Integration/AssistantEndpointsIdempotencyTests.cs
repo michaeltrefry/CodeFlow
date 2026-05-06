@@ -623,6 +623,117 @@ public sealed class AssistantEndpointsIdempotencyTests
     }
 
     [Fact]
+    public async Task Delete_cancel_endpoint_terminates_an_in_flight_turn_with_failed()
+    {
+        // sc-809 (AR-7) — DELETE the in-flight turn with a valid (conversationId, key). The
+        // background task gets cancelled, the recorder flushes Failed.
+        AssistantStub.Reset();
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("hello"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        AssistantStub.SetGate(release.Task);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var origTask = SendMessageAsync(client, conversation.Id, "long turn", key);
+
+        // Wait for the producer to actually be in flight.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.GateEntered == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+        AssistantStub.GateEntered.Should().BeGreaterThan(0);
+
+        // DELETE the turn.
+        using var cancelResponse = await client.DeleteAsync(
+            $"/api/assistant/conversations/{conversation.Id}/turns/{key}");
+        cancelResponse.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // Originating client gets some response (whatever frames + done) — we only care
+        // that the record reaches Failed. Release the gate first to unblock the stub if
+        // the cancel hasn't propagated all the way through.
+        release.SetResult(true);
+        await origTask;
+
+        // Poll for terminal status.
+        var pollDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        AssistantTurnIdempotencyStatus? status = null;
+        while (DateTime.UtcNow < pollDeadline)
+        {
+            using var scope = factory.Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await dbContext.AssistantTurnIdempotency
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.ConversationId == conversation.Id);
+            if (entity is not null && entity.Status != AssistantTurnIdempotencyStatus.InFlight)
+            {
+                status = entity.Status;
+                break;
+            }
+            await Task.Delay(50);
+        }
+        status.Should().Be(AssistantTurnIdempotencyStatus.Failed,
+            "DELETE on an in-flight record terminates the background task with Failed");
+    }
+
+    [Fact]
+    public async Task Delete_cancel_returns_204_for_already_terminal_records()
+    {
+        // sc-809 (AR-7) — calling DELETE on a record that's already terminal is a no-op
+        // success. The chat panel uses this idempotently from cancelTurn() so a stale
+        // record doesn't surface an error to the user.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("done"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        // Run a turn to completion so the record is Completed.
+        await PostMessageAsync(client, conversation.Id, "finish me", key);
+
+        using var cancelResponse = await client.DeleteAsync(
+            $"/api/assistant/conversations/{conversation.Id}/turns/{key}");
+        cancelResponse.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Delete_cancel_returns_404_when_record_does_not_exist()
+    {
+        // sc-809 (AR-7) — DELETE for a non-existent (conversationId, key) returns 404. Same
+        // shape ops won't ever leak record existence to a probing client.
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        using var response = await client.DeleteAsync(
+            $"/api/assistant/conversations/{conversation.Id}/turns/{key}");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Delete_cancel_returns_404_for_a_malformed_key()
+    {
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+
+        using var response = await client.DeleteAsync(
+            $"/api/assistant/conversations/{conversation.Id}/turns/short");
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            "the key validator must short-circuit before the lookup so a probe can't distinguish 'bad key' from 'no record'");
+    }
+
+    [Fact]
     public async Task No_header_preserves_existing_behavior()
     {
         AssistantStub.Reset();

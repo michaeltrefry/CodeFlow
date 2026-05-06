@@ -417,4 +417,14 @@ public sealed class AssistantTurnIdempotencyOptions
     /// that never flushes (process exit) shouldn't keep retries hanging forever.
     /// </summary>
     public TimeSpan LiveTailSubscriberLifetime { get; set; } = TimeSpan.Zero;
+
+    /// <summary>
+    /// sc-809 (AR-7) — Hard ceiling on background turn-task lifetime. When this elapses the
+    /// task's <see cref="CancellationTokenSource"/> fires; the producer sees a cancel and
+    /// the recorder flushes terminal <see cref="AssistantTurnIdempotencyStatus.Failed"/>.
+    /// Must never exceed <see cref="RecordTtl"/> — the sweep that removes the idempotency
+    /// row would otherwise run while the task is still publishing. Defaults to
+    /// <see cref="RecordTtl"/> when zero or negative.
+    /// </summary>
+    public TimeSpan MaxTurnLifetime { get; set; } = TimeSpan.Zero;
 }

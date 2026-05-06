@@ -125,6 +125,33 @@ export interface SendTurnOptions {
   idempotencyKey?: string;
 }
 
+/**
+ * sc-809 (AR-7) — Best-effort cancel for an in-flight assistant turn. The chat panel calls
+ * this when the user clicks Cancel; after AR-6 the turn runs in a background task on the
+ * server that survives client disconnect, so the only way to actually take it down is this
+ * DELETE. Fire-and-forget: a network failure is fine, the lifetime ceiling will reap a
+ * stuck task eventually.
+ */
+export async function cancelLiveTurn(
+  conversationId: string,
+  idempotencyKey: string,
+  auth: AuthService,
+): Promise<void> {
+  const accessToken = auth.getValidAccessToken();
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+  try {
+    await fetch(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(idempotencyKey)}`,
+      { method: 'DELETE', headers },
+    );
+  } catch {
+    // Best-effort — never block the UI on a cancel network failure.
+  }
+}
+
 export function streamAssistantTurn(
   conversationId: string,
   content: string,

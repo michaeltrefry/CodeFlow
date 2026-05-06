@@ -155,6 +155,32 @@ public sealed class AssistantTurnTaskRegistryTests
     }
 
     [Fact]
+    public async Task Lifetime_ceiling_fires_and_terminates_a_blocked_producer_with_failed()
+    {
+        // sc-809 (AR-7): a wedged producer (e.g. stuck LLM call) must eventually be reaped
+        // by the MaxTurnLifetime ceiling so the idempotency row reaches a terminal status
+        // before its TTL sweep runs.
+        var fixture = NewFixture(maxTurnLifetime: TimeSpan.FromMilliseconds(150));
+        var recorder = fixture.NewRecorder();
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var task = fixture.Registry.Start(
+            recorder.RecordId,
+            (sp, ct) => ProducerThatBlocksOn(release.Task, ct),
+            recorder);
+
+        await task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        var terminal = fixture.Repository.Terminals.Should().ContainSingle().Subject;
+        terminal.Status.Should().Be(AssistantTurnIdempotencyStatus.Failed,
+            "lifetime ceiling cancellation lands as Failed, same path as Cancel()");
+
+        // Hygiene: release the gate so the producer's awaiter unwinds (the task above is
+        // already complete via cancellation, but the TCS shouldn't be left dangling).
+        release.SetResult(true);
+    }
+
+    [Fact]
     public async Task Start_throws_if_a_task_is_already_registered_for_the_same_record()
     {
         var fixture = NewFixture();
@@ -217,11 +243,11 @@ public sealed class AssistantTurnTaskRegistryTests
         predicate().Should().BeTrue("predicate should have flipped within the timeout");
     }
 
-    private static Fixture NewFixture() => new();
+    private static Fixture NewFixture(TimeSpan? maxTurnLifetime = null) => new(maxTurnLifetime);
 
     private sealed class Fixture
     {
-        public Fixture()
+        public Fixture(TimeSpan? maxTurnLifetime = null)
         {
             Repository = new InMemoryAssistantTurnIdempotencyRepository();
             SignalRegistry = new AssistantTurnSignalRegistry();
@@ -229,6 +255,7 @@ public sealed class AssistantTurnTaskRegistryTests
             {
                 LiveTailSubscriberCapacity = 64,
                 LiveTailSubscriberLifetime = TimeSpan.FromSeconds(5),
+                MaxTurnLifetime = maxTurnLifetime ?? TimeSpan.FromSeconds(30),
             });
             SubscriptionRegistry = new AssistantTurnSubscriptionRegistry(
                 options,
@@ -241,6 +268,8 @@ public sealed class AssistantTurnTaskRegistryTests
             ScopeFactory = ServiceProvider.GetRequiredService<IServiceScopeFactory>();
             Registry = new AssistantTurnTaskRegistry(
                 ScopeFactory,
+                options,
+                TimeProvider.System,
                 NullLogger<AssistantTurnTaskRegistry>.Instance);
         }
 
