@@ -734,6 +734,64 @@ public sealed class AssistantEndpointsIdempotencyTests
     }
 
     [Fact]
+    public async Task Producer_fault_terminates_record_failed_and_replays_with_error_frame()
+    {
+        // sc-811 (AR-8) — explicit regression: a producer fault still ends in Failed and
+        // surfaces the synthetic error frame from the registry. The endpoint never throws
+        // — it just sees the channel close and writes done. A retry replays the recorded
+        // stream including the error frame.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("partial-1"),
+            new AssistantTextDelta("partial-2"),
+            // The stub throws before reaching this; it's only here to make sure the test
+            // doesn't accidentally pass because the reply ran out.
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        AssistantStub.ThrowAfter(2);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var (frames, status) = await SendMessageAsync(client, conversation.Id, "fault me", key);
+        status.Should().Be(HttpStatusCode.OK,
+            "the endpoint never propagates the fault — the producer's exception is contained in the registry");
+
+        // The stream contains the partial deltas + an error frame + done.
+        frames.Count(f => f.Event == "text-delta").Should().Be(2);
+        frames.Should().Contain(f => f.Event == "error",
+            "the registry records a synthetic error frame on producer fault so retries see a uniform terminal SSE shape");
+        frames.Should().Contain(f => f.Event == "done");
+
+        // Wait for the row to flip terminal — the registry's flush is async-after-throw.
+        AssistantTurnIdempotencyStatus? finalStatus = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            using var scope = factory.Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await dbContext.AssistantTurnIdempotency
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.ConversationId == conversation.Id);
+            if (entity is not null && entity.Status != AssistantTurnIdempotencyStatus.InFlight)
+            {
+                finalStatus = entity.Status;
+                break;
+            }
+            await Task.Delay(50);
+        }
+        finalStatus.Should().Be(AssistantTurnIdempotencyStatus.Failed);
+
+        // A retry replays the recorded stream — same partial deltas + error frame + done.
+        var (retryFrames, _) = await SendMessageAsync(client, conversation.Id, "fault me", key);
+        retryFrames.Count(f => f.Event == "text-delta").Should().Be(2);
+        retryFrames.Should().Contain(f => f.Event == "error");
+        AssistantStub.CallCount.Should().Be(1, "the retry replays — no second LLM invocation on a Failed record");
+    }
+
+    [Fact]
     public async Task No_header_preserves_existing_behavior()
     {
         AssistantStub.Reset();
@@ -857,6 +915,7 @@ public sealed class AssistantEndpointsIdempotencyTests
         private Task? gate;
         private Task? midStreamGate;
         private int midStreamGateAfter;
+        private int throwAfterIndex = -1;
 
         public void Reset()
         {
@@ -867,7 +926,15 @@ public sealed class AssistantEndpointsIdempotencyTests
             gate = null;
             midStreamGate = null;
             midStreamGateAfter = 0;
+            throwAfterIndex = -1;
         }
+
+        /// <summary>
+        /// sc-811 (AR-8) — Make the stub throw after yielding <paramref name="afterIndex"/>
+        /// items. Drives the "producer fault still ends in Failed" regression: the registry
+        /// must catch the throw, record a synthetic error frame, and flush terminal Failed.
+        /// </summary>
+        public void ThrowAfter(int afterIndex) => throwAfterIndex = afterIndex;
 
         public void SetReply(IReadOnlyList<AssistantStreamItem> items) => reply = items;
 
@@ -915,11 +982,16 @@ public sealed class AssistantEndpointsIdempotencyTests
 
             var midGate = midStreamGate;
             var midAfter = midStreamGateAfter;
+            var throwIdx = throwAfterIndex;
             for (var i = 0; i < reply.Count; i++)
             {
                 if (midGate is not null && i == midAfter)
                 {
                     await midGate.WaitAsync(cancellationToken);
+                }
+                if (throwIdx >= 0 && i == throwIdx)
+                {
+                    throw new InvalidOperationException("synthetic stub fault");
                 }
                 yield return reply[i];
                 Interlocked.Increment(ref yieldedCount);
