@@ -896,10 +896,18 @@ public static class AssistantEndpoints
 
                     if (terminal.Status == AssistantTurnIdempotencyStatus.InFlight)
                     {
+                        // sc-806: structured error payload — UI keys off `code` to surface
+                        // both Retry and Cancel on this specific failure mode (the previous
+                        // turn is still running on the server; retrying just re-enters the
+                        // same wait, so a Cancel affordance is essential).
                         await WriteRawEventAsync(
                             httpContext,
                             "error",
-                            JsonSerializer.Serialize(new { message = "Original request is still in progress; please retry." }, JsonOptions),
+                            JsonSerializer.Serialize(new
+                            {
+                                code = AssistantTurnErrorCodes.TurnStillRunning,
+                                message = "Your previous turn is still running on the server. Wait a few seconds and retry, or cancel to start fresh.",
+                            }, JsonOptions),
                             cancellationToken);
                         await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
                         return;
@@ -956,6 +964,7 @@ public static class AssistantEndpoints
                         // requesting a fresh turn instead of hanging.
                         await TryWriteErrorAndDoneAsync(
                             httpContext,
+                            AssistantTurnErrorCodes.LiveTailFellBehind,
                             "Live-tail subscriber fell behind; please retry.");
                     }
                     catch (TimeoutException)
@@ -963,6 +972,7 @@ public static class AssistantEndpoints
                         // AR-1 lifetime ceiling. Same shape as the fell-behind branch.
                         await TryWriteErrorAndDoneAsync(
                             httpContext,
+                            AssistantTurnErrorCodes.LiveTailTimeout,
                             "Live-tail subscriber timed out; please retry.");
                     }
                     finally
@@ -1167,13 +1177,15 @@ public static class AssistantEndpoints
     /// sc-805 — best-effort terminal frame pair for the live-tail error paths. Uses
     /// <see cref="CancellationToken.None"/> so a closed-but-still-flushable response can
     /// receive the closing handshake even if the request token has fired; if the client
-    /// is already gone the writes throw and we swallow them.
+    /// is already gone the writes throw and we swallow them. <paramref name="code"/> is a
+    /// stable identifier from <see cref="AssistantTurnErrorCodes"/> the chat panel keys off
+    /// to decide which affordances (Retry / Cancel) belong on the error banner.
     /// </summary>
-    private static async Task TryWriteErrorAndDoneAsync(HttpContext httpContext, string message)
+    private static async Task TryWriteErrorAndDoneAsync(HttpContext httpContext, string code, string message)
     {
         try
         {
-            var payload = JsonSerializer.Serialize(new { message }, JsonOptions);
+            var payload = JsonSerializer.Serialize(new { code, message }, JsonOptions);
             await WriteRawEventAsync(httpContext, "error", payload, CancellationToken.None);
             await WriteRawEventAsync(httpContext, "done", "{}", CancellationToken.None);
         }

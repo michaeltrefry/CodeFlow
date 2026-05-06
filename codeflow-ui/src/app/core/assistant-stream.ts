@@ -40,7 +40,14 @@ export type AssistantStreamEvent =
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
   | { kind: 'artifact-event'; event: ArtifactEvent; supersedesPriorByName: boolean }
   | { kind: 'done' }
-  | { kind: 'error'; message: string }
+  /**
+   * sc-806 — `code` is a stable string from `AssistantTurnErrorCodes` on the server. The
+   * chat panel branches on it: `turn-still-running` surfaces a Cancel affordance alongside
+   * Retry because retrying re-enters the same wait. Older servers that haven't deployed
+   * AR-4 yet may emit error frames without a code; consumers must treat null as "generic
+   * error, Retry only".
+   */
+  | { kind: 'error'; code: string | null; message: string }
   | { kind: 'preflight-refused'; payload: AssistantPreflightRefusal };
 
 /**
@@ -283,8 +290,14 @@ export function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStre
     }
     case 'done':
       return { kind: 'done' };
-    case 'error':
-      return { kind: 'error', message: (payload as { message: string }).message ?? 'Unknown error' };
+    case 'error': {
+      const errPayload = payload as { code?: string | null; message?: string };
+      return {
+        kind: 'error',
+        code: typeof errPayload.code === 'string' && errPayload.code.length > 0 ? errPayload.code : null,
+        message: errPayload.message ?? 'Unknown error',
+      };
+    }
     default:
       return null;
   }

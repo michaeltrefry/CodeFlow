@@ -212,6 +212,16 @@ interface PinnedMutationChip {
                 Retry
               </button>
             }
+            @if (canCancelTurnFromBanner()) {
+              <button
+                type="button"
+                class="chat-panel-error-cancel"
+                data-testid="chat-cancel-turn-from-banner"
+                (click)="cancelTurnFromBanner()"
+              >
+                Cancel
+              </button>
+            }
           </div>
         }
         @if (preflightError(); as pf) {
@@ -832,6 +842,21 @@ export class ChatPanelComponent implements OnDestroy {
   protected readonly loadFailed = signal<string | null>(null);
   protected readonly turnError = signal<string | null>(null);
   /**
+   * sc-806 — Companion to {@link turnError} carrying the server-side error code from the
+   * SSE `error` frame's payload. Drives the banner's affordance set: when the code is
+   * `turn-still-running` the banner surfaces both Retry and Cancel; otherwise (or when
+   * the code is null on older servers) Retry only. Reset alongside `turnError`.
+   */
+  protected readonly turnErrorCode = signal<string | null>(null);
+  /**
+   * sc-806 — When true, the banner renders a Cancel button next to Retry. Today this is
+   * driven solely by the `turn-still-running` error code: retrying that one re-enters the
+   * same 60s wait, so Cancel (clearing `activeIdempotencyKey` + `lastTurnContent`) is the
+   * only way for the user to start fresh without a page reload.
+   */
+  protected readonly canCancelTurnFromBanner = computed(() =>
+    this.turnErrorCode() === 'turn-still-running');
+  /**
    * sc-274 phase 2 — populated when the server returns a 422 preflight refusal before opening
    * the SSE stream. Drives the preflight banner (clarification questions + score/threshold +
    * lowest-dimension reason). Cleared on the next send attempt and on cancel — mutually
@@ -1231,6 +1256,7 @@ export class ChatPanelComponent implements OnDestroy {
 
   private runTurn(conversationId: string, content: string): void {
     this.turnError.set(null);
+    this.turnErrorCode.set(null);
     // sc-274 phase 2 — clear any prior preflight refusal so the banner doesn't linger over a
     // new (and presumably refined) attempt.
     this.preflightError.set(null);
@@ -1259,6 +1285,9 @@ export class ChatPanelComponent implements OnDestroy {
         this.streaming.set(false);
         this.streamSub = null;
         this.turnError.set(formatHttpError(err));
+        // sc-806 — HTTP-level errors don't carry the structured `code` field; clear any
+        // stale code so the banner doesn't surface a Cancel affordance for the wrong cause.
+        this.turnErrorCode.set(null);
         // Roll back: drop the in-flight assistant bubble, keep the user message visible so the
         // user can retry. Idempotency key intentionally preserved so retryLastTurn can reuse it.
         this.pending.set(null);
@@ -1298,6 +1327,18 @@ export class ChatPanelComponent implements OnDestroy {
   }
 
   /**
+   * sc-806 — Cancel from the error banner. Distinct from {@link cancelTurn} only in that
+   * it also clears the banner state (the error message + code) so the user gets a clean
+   * slate after deciding to abandon the in-flight turn rather than wait for it. Wraps the
+   * shared `cancelTurn` logic so the idempotency / streaming / pending state stays in sync.
+   */
+  protected cancelTurnFromBanner(): void {
+    this.cancelTurn();
+    this.turnError.set(null);
+    this.turnErrorCode.set(null);
+  }
+
+  /**
    * Forks the current conversation at the message the user clicked. Mirrors
    * {@link startNewConversation}: cancel any in-flight turn, swap in the forked thread, and
    * reflect the new id in the URL. The forked thread starts on a fresh server-assigned synthetic
@@ -1313,6 +1354,7 @@ export class ChatPanelComponent implements OnDestroy {
     this.loading.set(true);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.turnErrorCode.set(null);
     this.preflightError.set(null);
     this.history.set([]);
     this.conversationId.set(null);
@@ -1350,6 +1392,7 @@ export class ChatPanelComponent implements OnDestroy {
     this.loading.set(true);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.turnErrorCode.set(null);
     this.preflightError.set(null);
     this.history.set([]);
     this.conversationId.set(null);
@@ -1908,6 +1951,7 @@ export class ChatPanelComponent implements OnDestroy {
       }
       case 'error': {
         this.turnError.set(evt.message);
+        this.turnErrorCode.set(evt.code);
         this.pending.set(null);
         break;
       }
@@ -1934,6 +1978,7 @@ export class ChatPanelComponent implements OnDestroy {
     this.history.set([]);
     this.loadFailed.set(null);
     this.turnError.set(null);
+    this.turnErrorCode.set(null);
     this.preflightError.set(null);
     this.toolCalls.set([]);
     // sc-793: artifact events are per-conversation; clear on scope change so the next
