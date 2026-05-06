@@ -75,9 +75,21 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
                     return new AssistantTurnDispatchOutcome.HashMismatch(existing.Record);
                 }
 
-                return existing.Record.Status == AssistantTurnIdempotencyStatus.InFlight
-                    ? new AssistantTurnDispatchOutcome.WaitThenReplay(existing.Record)
-                    : new AssistantTurnDispatchOutcome.Replay(existing.Record);
+                if (existing.Record.Status != AssistantTurnIdempotencyStatus.InFlight)
+                {
+                    return new AssistantTurnDispatchOutcome.Replay(existing.Record);
+                }
+
+                // sc-804: prefer same-instance live-tail when the originating recorder is still
+                // publishing locally. TrySubscribe atomically captures the snapshot-so-far + a
+                // bounded live channel. A null return means either the producer is on a
+                // different instance or it just unregistered on Flush — either way fall back
+                // to the cross-instance WaitThenReplay path which the WaitForTerminalAsync
+                // poller will resolve into a terminal Replay.
+                var subscription = subscriptionRegistry.TrySubscribe(existing.Record.Id);
+                return subscription is not null
+                    ? new AssistantTurnDispatchOutcome.LiveTail(existing.Record, subscription)
+                    : new AssistantTurnDispatchOutcome.WaitThenReplay(existing.Record);
 
             default:
                 throw new InvalidOperationException($"Unknown claim outcome: {outcome}");

@@ -912,6 +912,48 @@ public static class AssistantEndpoints
                     await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
                     return;
 
+                case AssistantTurnDispatchOutcome.LiveTail liveTail:
+                    // sc-804: minimal arm so the endpoint compiles + tests pass with the new
+                    // dispatch outcome. AR-3 replaces this with the real reattach path that
+                    // replays the snapshot + live-tails until the producer terminates.
+                    // Until then we dispose the subscription and degrade to WaitThenReplay
+                    // semantics so the regression suite still proves "duplicate must not
+                    // re-invoke the LLM."
+                    await liveTail.Subscription.DisposeAsync();
+                    OpenSseResponse(httpContext);
+                    await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
+                    await httpContext.Response.Body.FlushAsync(cancellationToken);
+                    AssistantTurnIdempotencyRecord liveTerminal;
+                    try
+                    {
+                        liveTerminal = await idempotencyCoordinator.WaitForTerminalAsync(
+                            liveTail.Record.Id,
+                            idempotencyOptions.Value.WaitTimeout,
+                            cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+
+                    if (liveTerminal.Status == AssistantTurnIdempotencyStatus.InFlight)
+                    {
+                        await WriteRawEventAsync(
+                            httpContext,
+                            "error",
+                            JsonSerializer.Serialize(new { message = "Original request is still in progress; please retry." }, JsonOptions),
+                            cancellationToken);
+                        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                        return;
+                    }
+
+                    await idempotencyCoordinator.ReplayAsync(
+                        liveTerminal,
+                        (name, payload, ct) => WriteRawEventAsync(httpContext, name, payload, ct),
+                        cancellationToken);
+                    await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                    return;
+
                 case AssistantTurnDispatchOutcome.Claimed claimed:
                     recorder = claimed.Recorder;
                     break;

@@ -57,6 +57,17 @@ public abstract record AssistantTurnDispatchOutcome
 
     /// <summary>Duplicate, originating turn still in flight. Wait, then replay.</summary>
     public sealed record WaitThenReplay(AssistantTurnIdempotencyRecord Record) : AssistantTurnDispatchOutcome;
+
+    /// <summary>
+    /// sc-804 — Duplicate, originating turn still in flight, and a local producer is publishing
+    /// to the subscription registry. The endpoint replays the snapshot frames the original
+    /// already wrote, then live-tails until the producer terminates instead of polling for a
+    /// terminal record. Cross-instance retries fall back to <see cref="WaitThenReplay"/> until
+    /// phase 3 introduces a fanout backplane.
+    /// </summary>
+    public sealed record LiveTail(
+        AssistantTurnIdempotencyRecord Record,
+        IAssistantTurnSubscription Subscription) : AssistantTurnDispatchOutcome;
 }
 
 /// <summary>
