@@ -1502,11 +1502,14 @@ export class ChatPanelComponent implements OnDestroy {
     ).subscribe({
       next: preview => {
         if (!preview.canApply) {
-          this.updateConfirmation(toolCallId, c => ({
-            ...c,
-            state: 'error',
-            errorMessage: buildPackagePreviewFailureMessage(preview),
-          }));
+          // The tool's first preview said preview_ok and the chip rendered in apply mode,
+          // but the click-time re-preview surfaced conflicts (most often: an entity the
+          // user added to the library between the assistant's emit and the user's click).
+          // Pivot the chip to resolve mode so the user can hand off to the imports page
+          // instead of staring at a dead-end "save failed" banner — same shape
+          // buildSaveConfirmationView emits when the tool's first preview reports
+          // preview_conflicts. Fixes the bug reported on 2026-05-06.
+          this.pivotInlineChipToResolve(toolCallId, preview);
           return;
         }
 
@@ -1520,6 +1523,19 @@ export class ChatPanelComponent implements OnDestroy {
         }));
       },
     });
+  }
+
+  /**
+   * Mid-flight conflict surfaced on an apply-mode chip — rebuild the chip's confirmation as
+   * a resolve-mode view-model so the user gets the "Resolve in imports page" affordance
+   * instead of a flat error. Mirrors the resolve branch in
+   * <see cref="buildSaveConfirmationView"/> so the click-time pivot and the tool-result-driven
+   * path render identical chips. The cached `pkg` in `pendingSaves` is intentionally NOT
+   * cleared — the resolve handler reads it back when the user clicks Resolve.
+   */
+  private pivotInlineChipToResolve(toolCallId: string, preview: WorkflowPackageImportPreview): void {
+    const patch = buildResolvePivotPatch(preview);
+    this.updateConfirmation(toolCallId, c => ({ ...c, ...patch }));
   }
 
   /**
@@ -2633,6 +2649,39 @@ export function buildPinnedMutationChip(card: ChatToolCallView): PinnedMutationC
   }
 
   return null;
+}
+
+/**
+ * Click-time pivot from apply-mode to resolve-mode. Pure function so the inline-path's
+ * "preview surfaced conflicts after the fact" branch and its unit test share one shape.
+ * Returned patch is applied with object-spread on top of the existing confirmation, so
+ * fields the caller hasn't intentionally overridden (`packageSource`, `kind`, …) survive.
+ */
+export function buildResolvePivotPatch(
+  preview: WorkflowPackageImportPreview,
+): {
+  mode: 'resolve';
+  state: 'idle';
+  prompt: string;
+  confirmLabel: 'Resolve';
+  cancelLabel: 'Dismiss';
+  conflictCount: number;
+} {
+  const conflictCount = preview.conflictCount + preview.refusedCount;
+  const noun = conflictCount === 1 ? 'conflict' : 'conflicts';
+  const entryKey = preview.entryPoint?.key ?? '';
+  const entryVersion = preview.entryPoint?.version ?? 0;
+  const label = entryKey
+    ? `${entryKey} v${entryVersion} has ${conflictCount} ${noun} — Resolve in imports page?`
+    : `Workflow package has ${conflictCount} ${noun} — Resolve in imports page?`;
+  return {
+    mode: 'resolve',
+    state: 'idle',
+    prompt: label,
+    confirmLabel: 'Resolve',
+    cancelLabel: 'Dismiss',
+    conflictCount,
+  };
 }
 
 export function buildPackagePreviewFailureMessage(preview: WorkflowPackageImportPreview): string {
