@@ -174,8 +174,9 @@ export class ArtifactPreviewComponent implements AfterViewInit, OnDestroy {
 
     // Production auth is JwtBearer-only; a plain `fetch` bypasses Angular's authInterceptor
     // and lands at the server unauthenticated, which the artifact-download owner check 404s.
-    // Attach the bearer manually here — same posture as cancelLiveTurn in assistant-stream.
-    const accessToken = this.auth.getValidAccessToken();
+    // Attach the bearer manually here. NOTE: `getValidAccessToken()` returns a Promise — must
+    // be awaited or the header value stringifies to `Bearer [object Promise]` and still 401s.
+    const accessToken = await this.auth.getValidAccessToken();
     const headers: Record<string, string> = {};
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;

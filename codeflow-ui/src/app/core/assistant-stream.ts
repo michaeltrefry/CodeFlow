@@ -137,7 +137,9 @@ export async function cancelLiveTurn(
   idempotencyKey: string,
   auth: AuthService,
 ): Promise<void> {
-  const accessToken = auth.getValidAccessToken();
+  // NOTE: `getValidAccessToken()` returns a Promise — must be awaited or the header value
+  // stringifies to `Bearer [object Promise]` and the assistant endpoint owner check 404s.
+  const accessToken = await auth.getValidAccessToken();
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
