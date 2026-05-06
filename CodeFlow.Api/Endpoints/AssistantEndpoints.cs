@@ -40,6 +40,15 @@ public static class AssistantEndpoints
         group.MapPost("/conversations/{id:guid}/fork", ForkConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
 
+        // sc-809 (AR-7): explicit cancel for an in-flight assistant turn. After AR-6 the turn
+        // runs in a background Task that survives client disconnect; this is how the chat
+        // panel's Cancel button takes a turn down on the server when the user has decided not
+        // to wait for it. 204 in all "we did the right thing" cases (already terminal → no-op
+        // success); 404 hides existence from non-owners, same convention as the POST.
+        group.MapDelete(
+            "/conversations/{conversationId:guid}/turns/{idempotencyKey}",
+            CancelLiveTurnAsync);
+
         // sc-795 (AA-4): streams the bytes referenced by an artifact event so the chat
         // panel's Download / View actions can pull a workflow-package draft or snapshot
         // straight from the conversation workspace. Owner-scoped via the same resolver
@@ -739,6 +748,77 @@ public static class AssistantEndpoints
             Model: entity.Model,
             RecordedAtUtc: DateTime.SpecifyKind(entity.RecordedAtUtc, DateTimeKind.Utc),
             Usage: usageDocument.RootElement.Clone());
+    }
+
+    /// <summary>
+    /// sc-809 (AR-7) — DELETE the in-flight turn for <paramref name="conversationId"/> +
+    /// <paramref name="idempotencyKey"/>. Owner-scoped via <see cref="IAssistantUserResolver"/>:
+    /// a different caller sees 404 so we don't leak record existence (same convention as the
+    /// POST). 204 in the "we did the right thing" cases — InFlight cancelled, already terminal,
+    /// or task absent (likely on a different instance).
+    /// </summary>
+    private static async Task CancelLiveTurnAsync(
+        Guid conversationId,
+        string idempotencyKey,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantTurnIdempotencyRepository idempotencyRepository,
+        IAssistantTurnTaskRegistry turnTaskRegistry,
+        ILogger<AssistantEndpointsLogCategory> logger,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        var userId = userResolver.Resolve(httpContext, allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId) || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // Validate the key matches the same shape the POST expects so a bad cancel can't
+        // probe for record existence either.
+        if (string.IsNullOrWhiteSpace(idempotencyKey)
+            || idempotencyKey.Length < AssistantTurnIdempotencyKeys.MinKeyLength
+            || idempotencyKey.Length > AssistantTurnIdempotencyKeys.MaxKeyLength)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        var record = await idempotencyRepository.GetAsync(conversationId, idempotencyKey, cancellationToken);
+        if (record is null)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // Don't leak record existence to a different user even if the conversation owner
+        // matched (defensive — the conversation owner check above already covers this for
+        // the homepage-anon case, but a separate ownership check on the record protects
+        // against a future world where conversations and idempotency rows can drift).
+        if (!string.Equals(record.UserId, userId, StringComparison.Ordinal))
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        if (record.Status == AssistantTurnIdempotencyStatus.InFlight)
+        {
+            turnTaskRegistry.Cancel(record.Id);
+            logger.LogInformation(
+                "Assistant turn cancelled by user recordId={RecordId} conversationId={ConversationId} userId={UserId}",
+                record.Id, conversationId, userId);
+        }
+        // Else: already terminal — nothing to cancel, the row is already a complete event log.
+
+        httpContext.Response.StatusCode = StatusCodes.Status204NoContent;
     }
 
     private static async Task PostMessageAsync(

@@ -12,7 +12,7 @@ import {
   HydratedArtifactEvent,
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
-import { ArtifactEvent, AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
+import { ArtifactEvent, AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, cancelLiveTurn, streamAssistantTurn } from '../../core/assistant-stream';
 import { formatHttpError } from '../../core/format-error';
 import { IMPORT_HANDOFF_STORAGE_KEY, ImportHandoff } from '../../core/import-handoff';
 import { PageContext, pageContextToDto } from '../../core/page-context';
@@ -1305,6 +1305,16 @@ export class ChatPanelComponent implements OnDestroy {
   }
 
   protected cancelTurn(): void {
+    // sc-809 (AR-7) — the turn runs in a background task on the server that survives a
+    // client disconnect. Hitting Cancel locally only stops THIS browser from rendering the
+    // stream; we also need to tell the server to terminate the producer. Fire-and-forget
+    // because the lifetime ceiling will reap the task even if this DELETE is lost.
+    const conversationId = this.conversationId();
+    const idempotencyKey = this.activeIdempotencyKey();
+    if (conversationId && idempotencyKey) {
+      void cancelLiveTurn(conversationId, idempotencyKey, this.auth);
+    }
+
     if (this.streamSub) {
       this.streamSub.unsubscribe();
       this.streamSub = null;

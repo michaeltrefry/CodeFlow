@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using CodeFlow.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Assistant.Idempotency;
 
@@ -46,13 +47,19 @@ public sealed class AssistantTurnTaskRegistry : IAssistantTurnTaskRegistry
 {
     private readonly ConcurrentDictionary<Guid, RunningTurn> tasks = new();
     private readonly IServiceScopeFactory scopeFactory;
+    private readonly IOptions<AssistantTurnIdempotencyOptions> options;
+    private readonly TimeProvider timeProvider;
     private readonly ILogger<AssistantTurnTaskRegistry> logger;
 
     public AssistantTurnTaskRegistry(
         IServiceScopeFactory scopeFactory,
+        IOptions<AssistantTurnIdempotencyOptions> options,
+        TimeProvider timeProvider,
         ILogger<AssistantTurnTaskRegistry> logger)
     {
         this.scopeFactory = scopeFactory;
+        this.options = options;
+        this.timeProvider = timeProvider;
         this.logger = logger;
     }
 
@@ -64,7 +71,15 @@ public sealed class AssistantTurnTaskRegistry : IAssistantTurnTaskRegistry
         ArgumentNullException.ThrowIfNull(producerFactory);
         ArgumentNullException.ThrowIfNull(recorder);
 
-        var cts = new CancellationTokenSource();
+        // sc-809 (AR-7): hard ceiling on the turn task's lifetime. Default falls back to
+        // RecordTtl so the task can never outlive the idempotency row that the sweep will
+        // delete. When the ceiling fires, the producer sees a cancel and the recorder
+        // flushes terminal Failed.
+        var opts = options.Value;
+        var maxLifetime = opts.MaxTurnLifetime > TimeSpan.Zero
+            ? opts.MaxTurnLifetime
+            : opts.RecordTtl;
+        var cts = new CancellationTokenSource(maxLifetime, timeProvider);
         var task = Task.Run(() => RunProducerAsync(recordId, producerFactory, recorder, cts.Token));
 
         var running = new RunningTurn(task, cts);
