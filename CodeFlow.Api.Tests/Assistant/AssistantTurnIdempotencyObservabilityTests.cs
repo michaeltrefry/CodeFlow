@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Persistence;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Tests.Assistant;
@@ -77,14 +79,21 @@ public sealed class AssistantTurnIdempotencyObservabilityTests
             SubscriptionRegistry = new AssistantTurnSubscriptionRegistry(
                 Options,
                 BuildLogger<AssistantTurnSubscriptionRegistry>(RegistrySink));
+            var services = new ServiceCollection();
+            services.AddSingleton<IAssistantTurnIdempotencyRepository>(Repository);
+            ServiceProvider = services.BuildServiceProvider();
             Coordinator = new AssistantTurnIdempotencyCoordinator(
                 Repository,
+                ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
                 SignalRegistry,
                 SubscriptionRegistry,
                 Options,
                 BuildLogger<AssistantTurnIdempotencyCoordinator>(CoordinatorSink),
+                NullLoggerFactory.Instance,
                 TimeProvider.System);
         }
+
+        public ServiceProvider ServiceProvider { get; }
 
         public InMemoryRepo Repository { get; }
         public AssistantTurnSignalRegistry SignalRegistry { get; }

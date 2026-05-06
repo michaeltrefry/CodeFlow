@@ -469,6 +469,160 @@ public sealed class AssistantEndpointsIdempotencyTests
     }
 
     [Fact]
+    public async Task Originating_disconnect_lets_background_task_run_to_terminal_Completed()
+    {
+        // sc-808 (AR-6) — originating client cancels mid-stream. The background TurnTaskRegistry
+        // must keep the producer running until natural completion, then flush the recorder
+        // terminally as Completed. Today (Phase 1), client cancel propagates and the record
+        // ends up Failed — this test pins the new behaviour.
+        AssistantStub.Reset();
+        var midStreamGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("first"),
+            new AssistantTextDelta("second"),
+            new AssistantTextDelta("third"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        // Stream the first frame, pause, then continue once the originating client has
+        // already disconnected.
+        AssistantStub.SetMidStreamGate(1, midStreamGate.Task);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        // Fire the originating request with a cancellable token; abort once the first frame
+        // has been emitted.
+        using var origCts = new CancellationTokenSource();
+        var origRequest = new HttpRequestMessage(HttpMethod.Post,
+            $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "survive disconnect" })
+        };
+        origRequest.Headers.Add(AssistantTurnIdempotencyKeys.HeaderName, key);
+        var origTask = client.SendAsync(origRequest, HttpCompletionOption.ResponseHeadersRead, origCts.Token);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.YieldedCount < 1 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+        AssistantStub.YieldedCount.Should().BeGreaterThanOrEqualTo(1);
+
+        // Yank the originating client.
+        origCts.Cancel();
+        try
+        {
+            using var origResponse = await origTask;
+            await origResponse.Content.ReadAsStringAsync(origCts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpRequestException) { }
+
+        // Release the mid-stream gate; the background task continues to completion.
+        midStreamGate.SetResult(true);
+
+        // Poll the idempotency row until it reaches a terminal status. The background task is
+        // detached so we can't await it directly.
+        AssistantTurnIdempotencyRecord? final = null;
+        var pollDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < pollDeadline)
+        {
+            using var scope = factory.Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await dbContext.AssistantTurnIdempotency
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.ConversationId == conversation.Id);
+            if (entity is not null && entity.Status != AssistantTurnIdempotencyStatus.InFlight)
+            {
+                final = new AssistantTurnIdempotencyRecord(
+                    entity.Id, entity.ConversationId, entity.IdempotencyKey, entity.UserId,
+                    entity.RequestHash, entity.Status, entity.EventsJson,
+                    entity.CreatedAtUtc, entity.CompletedAtUtc, entity.ExpiresAtUtc);
+                break;
+            }
+            await Task.Delay(50);
+        }
+
+        final.Should().NotBeNull("the background task must flush the recorder terminally even after the originating client disconnects");
+        final!.Status.Should().Be(AssistantTurnIdempotencyStatus.Completed,
+            "AR-6 disconnect ≠ cancel: the producer ran to natural completion despite the client cancel");
+
+        // A retry replays the recorded stream — full coverage.
+        var (retryFrames, retryStatus) = await SendMessageAsync(client, conversation.Id, "survive disconnect", key);
+        retryStatus.Should().Be(HttpStatusCode.OK);
+        retryFrames.Count(f => f.Event == "text-delta").Should().Be(3,
+            "the retry must see every text-delta the producer emitted, even those after the originating disconnect");
+
+        // Single LLM call total — the disconnect didn't trigger a re-invocation either.
+        AssistantStub.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Originating_disconnect_followed_by_retry_sees_in_progress_frames_plus_remainder()
+    {
+        // sc-808 (AR-6) — originating disconnect happens first, retry attaches via LiveTail
+        // before the producer finishes, sees the snapshot of frames already produced + the
+        // rest live-tailed.
+        AssistantStub.Reset();
+        var midStreamGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("alpha"),
+            new AssistantTextDelta("beta"),
+            new AssistantTextDelta("gamma"),
+            new AssistantTextDelta("delta"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        AssistantStub.SetMidStreamGate(2, midStreamGate.Task);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        using var origCts = new CancellationTokenSource();
+        var origRequest = new HttpRequestMessage(HttpMethod.Post,
+            $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "drop and retry" })
+        };
+        origRequest.Headers.Add(AssistantTurnIdempotencyKeys.HeaderName, key);
+        var origTask = client.SendAsync(origRequest, HttpCompletionOption.ResponseHeadersRead, origCts.Token);
+
+        // Wait for the originating turn to actually emit the first 2 frames.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.YieldedCount < 2 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+        AssistantStub.YieldedCount.Should().BeGreaterThanOrEqualTo(2);
+
+        // Yank the originating client mid-stream — the producer must keep running.
+        origCts.Cancel();
+        try
+        {
+            using var origResponse = await origTask;
+            await origResponse.Content.ReadAsStringAsync(origCts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpRequestException) { }
+
+        // Retry attaches via LiveTail — should see snapshot (≥2 frames) + live tail of the rest.
+        var retryTask = SendMessageAsync(client, conversation.Id, "drop and retry", key);
+
+        // Briefly let the retry land, then release the gate so the producer finishes.
+        await Task.Delay(150);
+        midStreamGate.SetResult(true);
+
+        var (retryFrames, retryStatus) = await retryTask;
+        retryStatus.Should().Be(HttpStatusCode.OK);
+        retryFrames.Count(f => f.Event == "text-delta").Should().Be(4,
+            "the retry must see every text-delta the producer emitted");
+        AssistantStub.CallCount.Should().Be(1, "no re-invocation of the LLM");
+    }
+
+    [Fact]
     public async Task No_header_preserves_existing_behavior()
     {
         AssistantStub.Reset();

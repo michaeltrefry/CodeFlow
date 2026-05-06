@@ -158,6 +158,10 @@ public static class ApiServiceCollectionExtensions
         // when a retry hits an in-flight record so a same-instance retry can attach to the
         // live frame stream instead of waiting on the terminal-state poller.
         services.AddSingleton<AssistantTurnSubscriptionRegistry>();
+        // sc-808 (AR-6): per-process map of background turn-producer Tasks. The originating
+        // endpoint hands the producer to this registry so a client disconnect doesn't tear
+        // down the LLM/tool work — a retry within record TTL still gets the full stream.
+        services.AddSingleton<IAssistantTurnTaskRegistry, AssistantTurnTaskRegistry>();
         services.AddScoped<IAssistantTurnIdempotencyCoordinator, AssistantTurnIdempotencyCoordinator>();
         services.TryAddSingleton(TimeProvider.System);
         services.AddHostedService<AssistantTurnIdempotencySweepService>();

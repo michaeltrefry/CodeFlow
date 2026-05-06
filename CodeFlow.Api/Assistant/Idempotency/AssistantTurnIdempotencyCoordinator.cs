@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CodeFlow.Persistence;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -10,25 +11,31 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly IAssistantTurnIdempotencyRepository repository;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly AssistantTurnSignalRegistry signalRegistry;
     private readonly AssistantTurnSubscriptionRegistry subscriptionRegistry;
     private readonly IOptions<AssistantTurnIdempotencyOptions> options;
     private readonly ILogger<AssistantTurnIdempotencyCoordinator> logger;
+    private readonly ILoggerFactory loggerFactory;
     private readonly TimeProvider timeProvider;
 
     public AssistantTurnIdempotencyCoordinator(
         IAssistantTurnIdempotencyRepository repository,
+        IServiceScopeFactory scopeFactory,
         AssistantTurnSignalRegistry signalRegistry,
         AssistantTurnSubscriptionRegistry subscriptionRegistry,
         IOptions<AssistantTurnIdempotencyOptions> options,
         ILogger<AssistantTurnIdempotencyCoordinator> logger,
+        ILoggerFactory loggerFactory,
         TimeProvider timeProvider)
     {
         this.repository = repository;
+        this.scopeFactory = scopeFactory;
         this.signalRegistry = signalRegistry;
         this.subscriptionRegistry = subscriptionRegistry;
         this.options = options;
         this.logger = logger;
+        this.loggerFactory = loggerFactory;
         this.timeProvider = timeProvider;
     }
 
@@ -55,12 +62,17 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
         switch (outcome)
         {
             case AssistantTurnClaimOutcome.Claimed claimed:
+                // sc-808 (AR-6): the recorder's lifetime now extends past the request (the
+                // background TurnTaskRegistry owns it), so it can't capture this request's
+                // scoped repository. Instead it takes the root scope factory and resolves a
+                // fresh DbContext-backed repository at FlushAsync time.
                 var recorder = new BufferedAssistantTurnRecorder(
                     claimed.Record.Id,
-                    repository,
+                    scopeFactory,
                     signalRegistry,
                     subscriptionRegistry,
-                    timeProvider);
+                    timeProvider,
+                    loggerFactory.CreateLogger<BufferedAssistantTurnRecorder>());
                 dispatchOutcome = new AssistantTurnDispatchOutcome.Claimed(claimed.Record, recorder);
                 break;
 
@@ -230,24 +242,27 @@ internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder, IA
     private readonly object lockObj = new();
     private readonly List<RecordedFrame> snapshot = new();
     private readonly List<SubscriberSink> sinks = new();
-    private readonly IAssistantTurnIdempotencyRepository repository;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly AssistantTurnSignalRegistry signalRegistry;
     private readonly AssistantTurnSubscriptionRegistry subscriptionRegistry;
     private readonly TimeProvider timeProvider;
+    private readonly ILogger logger;
     private bool flushed;
 
     public BufferedAssistantTurnRecorder(
         Guid recordId,
-        IAssistantTurnIdempotencyRepository repository,
+        IServiceScopeFactory scopeFactory,
         AssistantTurnSignalRegistry signalRegistry,
         AssistantTurnSubscriptionRegistry subscriptionRegistry,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger logger)
     {
         RecordId = recordId;
-        this.repository = repository;
+        this.scopeFactory = scopeFactory;
         this.signalRegistry = signalRegistry;
         this.subscriptionRegistry = subscriptionRegistry;
         this.timeProvider = timeProvider;
+        this.logger = logger;
 
         // Register before returning so a retry that races the producer's first Record call
         // still finds a publisher and attaches with an empty snapshot.
@@ -327,12 +342,25 @@ internal sealed class BufferedAssistantTurnRecorder : IAssistantTurnRecorder, IA
 
         try
         {
+            // sc-808 (AR-6): persistence runs through a fresh DI scope so a background flush
+            // doesn't depend on the originating request's DbContext (which is disposed when
+            // the request ends — including when the client disconnects mid-turn).
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var repository = scope.ServiceProvider
+                .GetRequiredService<IAssistantTurnIdempotencyRepository>();
             await repository.MarkTerminalAsync(
                 RecordId,
                 terminalStatus,
                 json,
                 timeProvider.GetUtcNow().UtcDateTime,
                 cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Don't let a persistence failure leave subscribers hanging — log and move on.
+            logger.LogError(ex,
+                "Failed to flush idempotency record {RecordId} terminally; subscribers will still be released.",
+                RecordId);
         }
         finally
         {

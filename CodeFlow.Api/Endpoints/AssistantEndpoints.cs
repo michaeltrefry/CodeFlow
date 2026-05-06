@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
@@ -752,6 +753,8 @@ public static class AssistantEndpoints
         IOptions<PreflightOptions> preflightOptions,
         IAssistantTurnIdempotencyCoordinator idempotencyCoordinator,
         IOptions<AssistantTurnIdempotencyOptions> idempotencyOptions,
+        AssistantTurnSubscriptionRegistry subscriptionRegistry,
+        IAssistantTurnTaskRegistry turnTaskRegistry,
         ILogger<AssistantEndpointsLogCategory> logger,
         CancellationToken cancellationToken)
     {
@@ -836,7 +839,6 @@ public static class AssistantEndpoints
             }
         }
 
-        IAssistantTurnRecorder? recorder = null;
         if (keyValidation == AssistantTurnIdempotencyKeys.KeyValidation.Valid)
         {
             var requestHash = AssistantTurnIdempotencyKeys.ComputeRequestHash(request);
@@ -999,20 +1001,81 @@ public static class AssistantEndpoints
                     return;
 
                 case AssistantTurnDispatchOutcome.Claimed claimed:
-                    recorder = claimed.Recorder;
-                    break;
+                    // sc-808 (AR-6): hand the producer to the background TurnTaskRegistry,
+                    // attach as the first subscriber via the AR-1 subscription registry, and
+                    // drain frames as SSE. A client disconnect detaches the subscriber but
+                    // never cancels the task — the LLM/tool work runs to terminal status, the
+                    // recorder flushes, and a retry within record TTL replays the full stream.
+                    await StreamClaimedTurnAsync(
+                        claimed,
+                        id,
+                        request,
+                        httpContext,
+                        chatService,
+                        subscriptionRegistry,
+                        turnTaskRegistry,
+                        logger,
+                        cancellationToken);
+                    return;
             }
         }
 
+        // No idempotency key supplied: legacy passthrough. Run the producer inline against the
+        // request's cancellation token; no recorder, no reattach. Same shape as before AR-1
+        // landed since this path doesn't claim a row.
         OpenSseResponse(httpContext);
         await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
-
-        var terminalStatus = AssistantTurnIdempotencyStatus.Completed;
-        try
+        await foreach (var evt in chatService.SendMessageAsync(
+            id,
+            request.Content,
+            request.PageContext,
+            request.Provider,
+            request.Model,
+            request.WorkspaceOverride,
+            cancellationToken))
         {
+            var (eventName, payload) = AssistantTurnFrameMapper.Map(evt);
+            await WriteRawEventAsync(httpContext, eventName, payload, cancellationToken);
+        }
+        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+    }
+
+    /// <summary>
+    /// sc-808 (AR-6) — Originating-client streaming for a freshly Claimed turn. Subscribes to
+    /// the recorder before the producer starts so no frames are missed, hands the producer
+    /// factory to the task registry, then drains the subscription as SSE. Disconnect throws
+    /// <see cref="OperationCanceledException"/> from <see cref="IAssistantTurnSubscription.ReadAllAsync"/>;
+    /// we catch it, dispose the subscription, and return without touching the registered
+    /// task. The producer keeps running until completion or fault and flushes the recorder
+    /// itself.
+    /// </summary>
+    private static async Task StreamClaimedTurnAsync(
+        AssistantTurnDispatchOutcome.Claimed claimed,
+        Guid conversationId,
+        SendMessageRequest request,
+        HttpContext httpContext,
+        AssistantChatService chatService,
+        AssistantTurnSubscriptionRegistry subscriptionRegistry,
+        IAssistantTurnTaskRegistry turnTaskRegistry,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        // Subscribe BEFORE Start so the subscriber sink is registered atomically with the
+        // recorder's empty snapshot — every frame the producer emits will land on this sink.
+        var subscription = subscriptionRegistry.TrySubscribe(claimed.Record.Id);
+        if (subscription is null)
+        {
+            // Shouldn't happen — the recorder just registered itself in the coordinator. Fall
+            // back to inline passthrough so the user still gets a response if it does.
+            logger.LogError(
+                "TurnSubscriptionRegistry returned null for a freshly claimed record {RecordId}.",
+                claimed.Record.Id);
+            OpenSseResponse(httpContext);
+            await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
+            await httpContext.Response.Body.FlushAsync(cancellationToken);
             await foreach (var evt in chatService.SendMessageAsync(
-                id,
+                conversationId,
                 request.Content,
                 request.PageContext,
                 request.Provider,
@@ -1020,42 +1083,76 @@ public static class AssistantEndpoints
                 request.WorkspaceOverride,
                 cancellationToken))
             {
-                await WriteEventAsync(httpContext, evt, recorder, cancellationToken);
+                var (eventName, payload) = AssistantTurnFrameMapper.Map(evt);
+                claimed.Recorder.Record(eventName, payload);
+                await WriteRawEventAsync(httpContext, eventName, payload, cancellationToken);
             }
+            await claimed.Recorder.FlushAsync(AssistantTurnIdempotencyStatus.Completed, CancellationToken.None);
+            await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+            return;
         }
-        catch (OperationCanceledException)
+
+        try
         {
-            terminalStatus = AssistantTurnIdempotencyStatus.Failed;
-            throw;
-        }
-        catch (Exception)
-        {
-            terminalStatus = AssistantTurnIdempotencyStatus.Failed;
-            throw;
+            // Discard intentional: the registry tracks the task's lifetime and flushes the
+            // recorder itself; awaiting here would defeat the disconnect-survives-cancel goal.
+            // The chat service must be resolved from the task's fresh DI scope — its
+            // dependencies (DbContext, outbox bus, etc.) are scoped, and the originating
+            // request's scope disposes the moment the client disconnects.
+            _ = turnTaskRegistry.Start(
+                claimed.Record.Id,
+                (taskScope, taskCt) =>
+                {
+                    var scopedChat = taskScope.GetRequiredService<AssistantChatService>();
+                    return scopedChat.SendMessageAsync(
+                        conversationId,
+                        request.Content,
+                        request.PageContext,
+                        request.Provider,
+                        request.Model,
+                        request.WorkspaceOverride,
+                        taskCt);
+                },
+                claimed.Recorder);
+
+            OpenSseResponse(httpContext);
+            await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
+            await httpContext.Response.Body.FlushAsync(cancellationToken);
+            try
+            {
+                await foreach (var frame in subscription.ReadAllAsync(cancellationToken))
+                {
+                    await WriteRawEventAsync(httpContext, frame.Event, frame.Payload, cancellationToken);
+                }
+                await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Originating client disconnected. The producer keeps running; the recorder
+                // will flush terminal once the LLM finishes (or the lifetime ceiling fires
+                // in AR-7). Do NOT cancel the task here — that's the whole point of AR-6.
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("fell behind", StringComparison.Ordinal))
+            {
+                // The originating client's own subscription fell behind — surface the same
+                // error frame the LiveTail path uses so the client sees a clean terminal.
+                await TryWriteErrorAndDoneAsync(
+                    httpContext,
+                    AssistantTurnErrorCodes.LiveTailFellBehind,
+                    "Stream subscriber fell behind; please retry.");
+            }
+            catch (TimeoutException)
+            {
+                await TryWriteErrorAndDoneAsync(
+                    httpContext,
+                    AssistantTurnErrorCodes.LiveTailTimeout,
+                    "Stream subscriber timed out; please retry.");
+            }
         }
         finally
         {
-            if (recorder is not null)
-            {
-                try
-                {
-                    // CancellationToken.None: the request token may already be cancelled (network
-                    // drop), but we still want to persist what we recorded so the retry can
-                    // replay. The flush is bounded — a single MarkTerminalAsync DB call.
-                    await recorder.FlushAsync(terminalStatus, CancellationToken.None);
-                }
-                catch (Exception flushEx)
-                {
-                    logger.LogWarning(
-                        flushEx,
-                        "Failed to flush idempotency record {RecordId} for conversation {ConversationId}.",
-                        recorder.RecordId,
-                        id);
-                }
-            }
+            await subscription.DisposeAsync();
         }
-
-        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
     }
 
     private static void OpenSseResponse(HttpContext httpContext)
@@ -1122,66 +1219,6 @@ public static class AssistantEndpoints
                 .ToArray(),
             MissingFields: assessment.MissingFields,
             ClarificationQuestions: assessment.ClarificationQuestions);
-
-    private static async Task WriteEventAsync(
-        HttpContext httpContext,
-        AssistantTurnEvent evt,
-        IAssistantTurnRecorder? recorder,
-        CancellationToken ct)
-    {
-        var (eventName, payload) = evt switch
-        {
-            UserMessagePersisted m => ("user-message-persisted", JsonSerializer.Serialize(MapMessage(m.Message), JsonOptions)),
-            TextDelta t => ("text-delta", JsonSerializer.Serialize(new { delta = t.Delta }, JsonOptions)),
-            TokenUsageEmitted u => ("token-usage", JsonSerializer.Serialize(new
-            {
-                recordId = u.Record.Id,
-                provider = u.Record.Provider,
-                model = u.Record.Model,
-                usage = u.Record.Usage,
-                conversationInputTokensTotal = u.ConversationInputTokensTotal,
-                conversationOutputTokensTotal = u.ConversationOutputTokensTotal,
-            }, JsonOptions)),
-            AssistantMessagePersisted m => ("assistant-message-persisted", JsonSerializer.Serialize(MapMessage(m.Message), JsonOptions)),
-            ToolCallStarted tcs => ("tool-call", JsonSerializer.Serialize(new
-            {
-                id = tcs.Id,
-                name = tcs.Name,
-                arguments = tcs.Arguments
-            }, JsonOptions)),
-            ToolCallCompleted tcc => ("tool-result", JsonSerializer.Serialize(new
-            {
-                id = tcc.Id,
-                name = tcc.Name,
-                result = tcc.ResultJson,
-                isError = tcc.IsError
-            }, JsonOptions)),
-            // sc-793 (AA-2): live inline artifact pill. Carries the durable id (download
-            // endpoint will key off it in AA-4), kind for icon/label selection, name + summary
-            // for body text, and the supersession flag so prior pills with the same name can
-            // be marked stale without an extra round-trip.
-            ArtifactEventEmitted ae => ("artifact-event", JsonSerializer.Serialize(new
-            {
-                id = ae.Event.Id,
-                conversationId = ae.Event.ConversationId,
-                sequence = ae.Event.Sequence,
-                kind = ae.Event.Kind.ToString(),
-                name = ae.Event.Name,
-                snapshotId = ae.Event.SnapshotId,
-                summary = ae.Event.SummaryJson,
-                supersedesPriorByName = ae.SupersedesPriorByName,
-                createdAtUtc = ae.Event.CreatedAtUtc,
-            }, JsonOptions)),
-            TurnFailed f => ("error", JsonSerializer.Serialize(new { message = f.Message }, JsonOptions)),
-            _ => ("unknown", "{}")
-        };
-
-        // sc-525 — record before writing so a wire failure still leaves a complete event log
-        // for the retry to replay. The trailing `done` frame is intentionally NOT recorded;
-        // replay regenerates it after walking the captured events.
-        recorder?.Record(eventName, payload);
-        await WriteRawEventAsync(httpContext, eventName, payload, ct);
-    }
 
     private static async Task WriteRawEventAsync(HttpContext httpContext, string eventName, string payload, CancellationToken ct)
     {
