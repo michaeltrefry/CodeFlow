@@ -125,6 +125,11 @@ public sealed class AssistantTurnTaskRegistry : IAssistantTurnTaskRegistry
     {
         var terminalStatus = AssistantTurnIdempotencyStatus.Completed;
         Exception? unhandled = null;
+        // sc-811 (AR-8): the chat service catches producer exceptions and converts them to
+        // in-band TurnFailed events (mapped to `error` frames). Track whether the producer
+        // emitted one so we can classify the run as Failed even though its iterator exited
+        // normally — "fault still ends in Failed and surfaces the error frame" per the card.
+        var sawErrorFrame = false;
         // sc-808 (AR-6): every dependency the producer touches (chat service, repositories,
         // DbContext) is resolved from a fresh scope owned by the task. Disposing this scope
         // when the producer ends releases the DbContext + outbox bus + everything else
@@ -136,6 +141,14 @@ public sealed class AssistantTurnTaskRegistry : IAssistantTurnTaskRegistry
             {
                 var (eventName, payload) = AssistantTurnFrameMapper.Map(evt);
                 recorder.Record(eventName, payload);
+                if (eventName == "error")
+                {
+                    sawErrorFrame = true;
+                }
+            }
+            if (sawErrorFrame)
+            {
+                terminalStatus = AssistantTurnIdempotencyStatus.Failed;
             }
         }
         catch (OperationCanceledException) when (taskToken.IsCancellationRequested)

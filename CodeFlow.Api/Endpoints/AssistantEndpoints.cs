@@ -1091,7 +1091,6 @@ public static class AssistantEndpoints
                         id,
                         request,
                         httpContext,
-                        chatService,
                         subscriptionRegistry,
                         turnTaskRegistry,
                         logger,
@@ -1135,7 +1134,6 @@ public static class AssistantEndpoints
         Guid conversationId,
         SendMessageRequest request,
         HttpContext httpContext,
-        AssistantChatService chatService,
         AssistantTurnSubscriptionRegistry subscriptionRegistry,
         IAssistantTurnTaskRegistry turnTaskRegistry,
         ILogger logger,
@@ -1146,29 +1144,16 @@ public static class AssistantEndpoints
         var subscription = subscriptionRegistry.TrySubscribe(claimed.Record.Id);
         if (subscription is null)
         {
-            // Shouldn't happen — the recorder just registered itself in the coordinator. Fall
-            // back to inline passthrough so the user still gets a response if it does.
+            // Hard invariant: the recorder registers itself synchronously in its constructor
+            // before the coordinator returns Claimed, against the same singleton registry the
+            // dispatcher reads from here. Reaching this branch means someone broke that
+            // contract — bail loudly so we never silently fall back to a code path that ties
+            // producer lifetime to the request (which is exactly what AR-8 is here to prevent).
             logger.LogError(
-                "TurnSubscriptionRegistry returned null for a freshly claimed record {RecordId}.",
+                "TurnSubscriptionRegistry returned null for a freshly claimed record {RecordId}; this is a programmer error.",
                 claimed.Record.Id);
-            OpenSseResponse(httpContext);
-            await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
-            await httpContext.Response.Body.FlushAsync(cancellationToken);
-            await foreach (var evt in chatService.SendMessageAsync(
-                conversationId,
-                request.Content,
-                request.PageContext,
-                request.Provider,
-                request.Model,
-                request.WorkspaceOverride,
-                cancellationToken))
-            {
-                var (eventName, payload) = AssistantTurnFrameMapper.Map(evt);
-                claimed.Recorder.Record(eventName, payload);
-                await WriteRawEventAsync(httpContext, eventName, payload, cancellationToken);
-            }
-            await claimed.Recorder.FlushAsync(AssistantTurnIdempotencyStatus.Completed, CancellationToken.None);
-            await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+            await claimed.Recorder.FlushAsync(AssistantTurnIdempotencyStatus.Failed, CancellationToken.None);
+            httpContext.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
         }
 
