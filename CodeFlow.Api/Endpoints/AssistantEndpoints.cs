@@ -122,6 +122,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
+        IAssistantArtifactRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -148,11 +149,16 @@ public static class AssistantEndpoints
 
         var conversation = await repository.GetOrCreateAsync(userId, scope, cancellationToken);
         var messages = await repository.ListMessagesAsync(conversation.Id, cancellationToken);
+        // sc-794 (AA-3): hydrate the inline artifact pills on conversation load. Owner-scoped:
+        // the conversation lookup above already enforced ownership via GetOrCreate / scope key,
+        // so we can list events directly without a second auth pass.
+        var artifactEvents = await artifactRepository.ListByConversationAsync(conversation.Id, cancellationToken);
 
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = messages.Select(MapMessage).ToArray()
+            messages = messages.Select(MapMessage).ToArray(),
+            artifactEvents = artifactEvents.Select(MapArtifactEvent).ToArray(),
         });
     }
 
@@ -161,6 +167,7 @@ public static class AssistantEndpoints
         HttpContext httpContext,
         IAssistantUserResolver userResolver,
         IAssistantConversationRepository repository,
+        IAssistantArtifactRepository artifactRepository,
         CancellationToken cancellationToken)
     {
         // For reads we never want to mint a fresh anon cookie — that would lose the existing
@@ -178,10 +185,12 @@ public static class AssistantEndpoints
         }
 
         var messages = await repository.ListMessagesAsync(id, cancellationToken);
+        var artifactEvents = await artifactRepository.ListByConversationAsync(id, cancellationToken);
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = messages.Select(MapMessage).ToArray()
+            messages = messages.Select(MapMessage).ToArray(),
+            artifactEvents = artifactEvents.Select(MapArtifactEvent).ToArray(),
         });
     }
 
@@ -215,7 +224,11 @@ public static class AssistantEndpoints
         return Results.Ok(new
         {
             conversation = MapConversation(conversation),
-            messages = Array.Empty<object>()
+            messages = Array.Empty<object>(),
+            // sc-794 (AA-3): empty for shape parity with get / get-or-create. A fresh
+            // conversation has no artifact events; fork would too (the bytes live in the
+            // source conversation's workspace, not the fork's).
+            artifactEvents = Array.Empty<object>(),
         });
     }
 
@@ -262,7 +275,8 @@ public static class AssistantEndpoints
         return Results.Ok(new
         {
             conversation = MapConversation(fork.Conversation),
-            messages = fork.Messages.Select(MapMessage).ToArray()
+            messages = fork.Messages.Select(MapMessage).ToArray(),
+            artifactEvents = Array.Empty<object>()
         });
     }
 
@@ -798,6 +812,27 @@ public static class AssistantEndpoints
         updatedAtUtc = summary.UpdatedAtUtc,
         messageCount = summary.MessageCount,
         firstUserMessagePreview = summary.FirstUserMessagePreview
+    };
+
+    /// <summary>
+    /// sc-794 (AA-3) — projection used by conversation-load to hydrate the chat panel's
+    /// inline artifact pills. Mirrors the live SSE <c>artifact-event</c> payload shape so the
+    /// frontend can use one type for both paths, plus pre-computed <c>superseded</c> /
+    /// <c>expired</c> booleans so the panel can render the right state without re-walking
+    /// the list to find supersession links itself.
+    /// </summary>
+    private static object MapArtifactEvent(AssistantArtifactEvent evt) => new
+    {
+        id = evt.Id,
+        conversationId = evt.ConversationId,
+        sequence = evt.Sequence,
+        kind = evt.Kind.ToString(),
+        name = evt.Name,
+        snapshotId = evt.SnapshotId,
+        summary = evt.SummaryJson,
+        createdAtUtc = evt.CreatedAtUtc,
+        superseded = evt.SupersededByEventId is not null,
+        expired = evt.ExpiredAtUtc is not null,
     };
 
     private static object MapMessage(AssistantMessage message) => new

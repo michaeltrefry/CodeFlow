@@ -1,5 +1,6 @@
-import { applyArtifactEvent, ArtifactEventView } from './chat-panel.component';
+import { applyArtifactEvent, ArtifactEventView, hydrateArtifactEventViews } from './chat-panel.component';
 import { ArtifactEvent, parseSseFrame } from '../../core/assistant-stream';
+import { HydratedArtifactEvent } from '../../core/assistant.api';
 
 /**
  * sc-793 (AA-2) — pure-function tests for the artifact-event live append + supersession
@@ -168,5 +169,68 @@ describe('parseSseFrame artifact-event handling', () => {
       event: expect.objectContaining({ id: 'event-1', kind: 'WorkflowPackageSnapshot' }),
       supersedesPriorByName: false,
     });
+  });
+});
+
+describe('hydrateArtifactEventViews (AA-3 reload hydration)', () => {
+  function makeHydrated(overrides: Partial<HydratedArtifactEvent> = {}): HydratedArtifactEvent {
+    return {
+      id: overrides.id ?? '00000000-0000-0000-0000-000000000001',
+      conversationId: 'conv-1',
+      sequence: overrides.sequence ?? 1,
+      kind: overrides.kind ?? 'WorkflowPackageDraft',
+      name: overrides.name ?? 'draft.cf-workflow-package.json',
+      snapshotId: overrides.snapshotId ?? null,
+      summary: overrides.summary ?? null,
+      createdAtUtc: overrides.createdAtUtc ?? '2026-05-06T12:00:00Z',
+      superseded: overrides.superseded ?? false,
+      expired: overrides.expired ?? false,
+    };
+  }
+
+  it('returns an empty array when the server omits the field (back-compat)', () => {
+    expect(hydrateArtifactEventViews(undefined)).toEqual([]);
+  });
+
+  it('returns an empty array for an explicitly empty list', () => {
+    expect(hydrateArtifactEventViews([])).toEqual([]);
+  });
+
+  it('preserves server-computed superseded / expired flags', () => {
+    // Server walks the supersede chain and computes the booleans so the panel can render
+    // directly without re-walking. A reload after a Set→Patch sequence should land an
+    // active draft + a superseded prior draft.
+    const hydrated = hydrateArtifactEventViews([
+      makeHydrated({ id: 'd1', sequence: 1, superseded: true }),
+      makeHydrated({ id: 'd2', sequence: 2, superseded: false }),
+    ]);
+
+    expect(hydrated).toHaveLength(2);
+    const byId = new Map(hydrated.map(e => [e.id, e]));
+    expect(byId.get('d1')!.superseded).toBe(true);
+    expect(byId.get('d2')!.superseded).toBe(false);
+  });
+
+  it('renames `kind` to `artifactKind` to free the namespace from the discriminator', () => {
+    // The view-model uses `artifactKind` so `kind` stays free for the ThreadEntry
+    // discriminator. The hydration helper must do that rename or the thread builder breaks.
+    const [view] = hydrateArtifactEventViews([
+      makeHydrated({ kind: 'WorkflowPackageSnapshot' }),
+    ]);
+
+    expect(view.artifactKind).toBe('WorkflowPackageSnapshot');
+    expect((view as unknown as { kind?: string }).kind).toBeUndefined();
+  });
+
+  it('falls back to false on missing superseded / expired flags', () => {
+    // Belt-and-suspenders against a partial server payload (a future server bug or a stale
+    // cached response). Treat undefined as "active" rather than throwing.
+    const partial = { ...makeHydrated() } as Partial<HydratedArtifactEvent>;
+    delete partial.superseded;
+    delete partial.expired;
+    const [view] = hydrateArtifactEventViews([partial as HydratedArtifactEvent]);
+
+    expect(view.superseded).toBe(false);
+    expect(view.expired).toBe(false);
   });
 });

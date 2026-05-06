@@ -9,6 +9,7 @@ import {
   AssistantMessage,
   AssistantScope,
   ConversationResponse,
+  HydratedArtifactEvent,
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
 import { ArtifactEvent, AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
@@ -1861,6 +1862,11 @@ export class ChatPanelComponent implements OnDestroy {
     // the same numbers without waiting for the next streamed turn.
     this.conversationInputTokens.set(payload.conversation.inputTokensTotal ?? 0);
     this.conversationOutputTokens.set(payload.conversation.outputTokensTotal ?? 0);
+    // sc-794 (AA-3): hydrate inline artifact pills from the persisted events. Replace, not
+    // merge — the loaded set is authoritative; any in-memory drift from a prior conversation
+    // would only show stale rows. Defensive against pre-AA-3 server bodies (treat absent
+    // field as empty).
+    this.artifactEvents.set(hydrateArtifactEventViews(payload.artifactEvents));
     this.loading.set(false);
     // Initial-load scroll: the thread DOM isn't laid out yet when applyConversationPayload runs,
     // so a microtask fires before scrollHeight is meaningful. Defer to the next animation frame
@@ -1976,6 +1982,32 @@ export class ChatPanelComponent implements OnDestroy {
  * - The new event always lands as `superseded: false, expired: false` since the server has
  *   not yet given us any reason to think otherwise.
  */
+/**
+ * sc-794 (AA-3): project the conversation-load payload's persisted artifact events into the
+ * panel's view-model. Server pre-computes `superseded` / `expired` so we don't have to walk
+ * the supersede chain client-side. Defensive against absent / malformed server bodies — an
+ * older server (pre-AA-3) omits the field, which we treat as "no events".
+ */
+export function hydrateArtifactEventViews(
+  events: HydratedArtifactEvent[] | undefined,
+): ArtifactEventView[] {
+  if (!Array.isArray(events) || events.length === 0) {
+    return [];
+  }
+  return events.map(e => ({
+    id: e.id,
+    conversationId: e.conversationId,
+    sequence: e.sequence,
+    artifactKind: e.kind,
+    name: e.name,
+    snapshotId: e.snapshotId,
+    summary: e.summary,
+    createdAtUtc: e.createdAtUtc,
+    superseded: e.superseded === true,
+    expired: e.expired === true,
+  }));
+}
+
 export function applyArtifactEvent(
   prev: ArtifactEventView[],
   event: ArtifactEvent,

@@ -671,6 +671,122 @@ public sealed class AssistantEndpointsTests
         refusalCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task GetOrCreate_HydratesArtifactEvents_FromPersistedRows()
+    {
+        // sc-794 (AA-3): a Set→Patch sequence on the draft tools persists two artifact events
+        // (the second supersedes the first by name). A subsequent get-or-create on the same
+        // scope must return both events, with `superseded` pre-computed by the server so the
+        // chat panel can render directly without walking the chain.
+        AssistantStub.Reset();
+        using var client = CreateClientWithStub();
+
+        var convResp = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        // Drive the recorder directly — same path the workflow-package draft tools take when
+        // they fire mid-turn. Two events on the same name; the second supersedes the first.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: "{\"entryPoint\":{\"key\":\"demo\",\"version\":1}}",
+                supersedesPriorByName: true,
+                cancellationToken: default);
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: "{\"entryPoint\":{\"key\":\"demo\",\"version\":1}}",
+                supersedesPriorByName: true,
+                cancellationToken: default);
+        }
+
+        // Reload — the get-or-create response must carry both events with the right flags.
+        var reload = await client.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        reload.StatusCode.Should().Be(HttpStatusCode.OK);
+        var reloadPayload = await reload.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts);
+
+        reloadPayload!.ArtifactEvents.Should().NotBeNull();
+        reloadPayload.ArtifactEvents!.Should().HaveCount(2);
+
+        var ordered = reloadPayload.ArtifactEvents.OrderBy(e => e.Sequence).ToArray();
+        ordered[0].Superseded.Should().BeTrue("the first event was superseded by the second");
+        ordered[1].Superseded.Should().BeFalse("the second event is the active draft");
+        ordered.Should().AllSatisfy(e =>
+        {
+            e.Kind.Should().Be("WorkflowPackageDraft");
+            e.Name.Should().Be("draft.cf-workflow-package.json");
+            e.ConversationId.Should().Be(conversation.Id);
+            e.Expired.Should().BeFalse();
+        });
+    }
+
+    [Fact]
+    public async Task GetById_DoesNotLeakArtifactEvents_AcrossOwners()
+    {
+        // sc-794 (AA-3): the events list is owner-scoped. A non-owner who somehow learned a
+        // conversation id must get the same 404 the existing message-list path returns — the
+        // events list is a read-side surface that can leak draft content / lineage so the
+        // ownership check has to fire BEFORE we list events.
+        AssistantStub.Reset();
+
+        // Create the conversation as user A (the default test client mints an anonymous demo
+        // user via the user-resolver fallback). Add an event so the leak surface is non-empty.
+        using var ownerClient = CreateClientWithStub();
+        var convResp = await ownerClient.PostAsJsonAsync("/api/assistant/conversations", new
+        {
+            scope = new { kind = "homepage" }
+        });
+        var conversation = (await convResp.Content.ReadFromJsonAsync<ConversationResponse>(JsonOpts))!.Conversation;
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var recorder = scope.ServiceProvider.GetRequiredService<CodeFlow.Api.Assistant.Artifacts.IArtifactRecorder>();
+            await recorder.RecordAsync(
+                conversation.Id,
+                ArtifactEventKind.WorkflowPackageDraft,
+                "draft.cf-workflow-package.json",
+                "draft.cf-workflow-package.json",
+                snapshotId: null,
+                summaryJson: null,
+                supersedesPriorByName: false,
+                cancellationToken: default);
+        }
+
+        // Force the conversation to be owned by a real (non-demo) user so the demo-fallback
+        // shortcut in the user resolver doesn't hand the row back to a fresh client. The
+        // resolver falls back to a demo cookie for anon callers but only when the row's owner
+        // already IS a demo id — flipping it to a real user defeats that for cross-owner reads.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+            var entity = await db.AssistantConversations.SingleAsync(c => c.Id == conversation.Id);
+            entity.UserId = $"real-user-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        // A different client (fresh demo cookie) attempts to GET by id. The existing
+        // ownership check must 404; the artifact-events list rides through the same gate so
+        // no events leak in the response body either.
+        using var attackerClient = CreateClientWithStub();
+        var attackerResp = await attackerClient.GetAsync($"/api/assistant/conversations/{conversation.Id}");
+        attackerResp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
     private static List<SseFrame> ParseSse(string body)
     {
         var frames = new List<SseFrame>();
@@ -702,10 +818,26 @@ public sealed class AssistantEndpointsTests
 
     private sealed record SseFrame(string Event, string Data);
 
-    private sealed record ConversationResponse(ConversationDto Conversation, IReadOnlyList<MessageDto> Messages);
+    private sealed record ConversationResponse(
+        ConversationDto Conversation,
+        IReadOnlyList<MessageDto> Messages,
+        IReadOnlyList<ArtifactEventDto>? ArtifactEvents = null);
     private sealed record ConversationDto(Guid Id, ScopeDto Scope, Guid SyntheticTraceId);
     private sealed record ScopeDto(string Kind, string? EntityType, string? EntityId);
     private sealed record MessageDto(Guid Id, int Sequence, string Role, string Content, string? Provider, string? Model);
+    // sc-794 (AA-3) — artifact-event projection on conversation load. Server pre-computes
+    // superseded / expired so the frontend renders directly without re-walking the chain.
+    private sealed record ArtifactEventDto(
+        Guid Id,
+        Guid ConversationId,
+        int Sequence,
+        string Kind,
+        string Name,
+        Guid? SnapshotId,
+        string? Summary,
+        DateTime CreatedAtUtc,
+        bool Superseded,
+        bool Expired);
 
     // HAA-14 test DTOs.
     private sealed record ConversationListResponse(IReadOnlyList<ConversationSummaryDto> Conversations);
