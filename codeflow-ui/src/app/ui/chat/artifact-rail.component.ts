@@ -110,6 +110,14 @@ import { ArtifactEventView } from './chat-panel.component';
                       >Save to library</button>
                     }
                   }
+                  <button
+                    type="button"
+                    class="artifact-rail-dismiss"
+                    title="Hide from rail"
+                    aria-label="Dismiss artifact"
+                    data-testid="artifact-rail-dismiss"
+                    (click)="onDismiss(e)"
+                  >×</button>
                 </span>
               </li>
             }
@@ -122,7 +130,7 @@ import { ArtifactEventView } from './chat-panel.component';
     :host { display: block; }
     .artifact-rail {
       flex: 0 0 auto;
-      margin: 0 12px 6px;
+      margin: 8px 12px 0;
       padding: 6px 10px;
       border: 1px solid var(--border, rgba(255,255,255,0.12));
       border-radius: var(--radius-sm, 6px);
@@ -257,6 +265,20 @@ import { ArtifactEventView } from './chat-panel.component';
       color: var(--warn, #f5a623);
       padding: 2px 8px;
     }
+    .artifact-rail-dismiss {
+      appearance: none;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 4px;
+      margin-left: 2px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted, #9aa3b2);
+    }
+    .artifact-rail-dismiss:hover {
+      color: var(--text, #E7E9EE);
+    }
   `],
 })
 export class ArtifactRailComponent {
@@ -289,6 +311,13 @@ export class ArtifactRailComponent {
    * only — a plain link request comes in unauthenticated and the download endpoint 404s.
    */
   @Output() readonly downloadRequested = new EventEmitter<ArtifactEventView>();
+  /**
+   * Bubbles up "hide from rail" intent. Distinct from the inline pill's dismiss (which only
+   * affects the in-thread surface): rail dismiss is the user saying "I'm done with this
+   * artifact, stop pinning it." The chat panel keeps the dismissal in a per-conversation set
+   * so it survives re-renders but resets on conversation change.
+   */
+  @Output() readonly dismissRequested = new EventEmitter<ArtifactEventView>();
 
   protected readonly collapseThreshold = COLLAPSE_THRESHOLD;
   protected readonly showSuperseded = signal<boolean>(false);
@@ -334,6 +363,10 @@ export class ArtifactRailComponent {
 
   protected onDiff(view: ArtifactEventView): void {
     this.diffRequested.emit(view);
+  }
+
+  protected onDismiss(view: ArtifactEventView): void {
+    this.dismissRequested.emit(view);
   }
 
   /** sc-797 (AA-6): only package-kind artifacts are saveable today. AA-9 (Phase 3) widens this

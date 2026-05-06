@@ -135,6 +135,18 @@ interface PinnedMutationChip {
         </div>
       </header>
 
+      @if (railArtifactEvents().length > 0 && conversationId(); as convId) {
+        <cf-artifact-rail
+          [events]="railArtifactEvents()"
+          [conversationId]="convId"
+          (viewRequested)="openArtifactPreview($event)"
+          (saveRequested)="onArtifactSaveRequested($event)"
+          (diffRequested)="openArtifactDiff($event)"
+          (downloadRequested)="downloadArtifact($event)"
+          (dismissRequested)="dismissArtifactFromRail($event)"
+        />
+      }
+
       <div class="chat-panel-thread" #threadEl role="log" aria-live="polite">
         @if (loadFailed()) {
           <p class="chat-panel-error">{{ loadFailed() }}</p>
@@ -251,17 +263,6 @@ interface PinnedMutationChip {
           </div>
         }
       </div>
-
-      @if (artifactEvents().length > 0 && conversationId(); as convId) {
-        <cf-artifact-rail
-          [events]="artifactEvents()"
-          [conversationId]="convId"
-          (viewRequested)="openArtifactPreview($event)"
-          (saveRequested)="onArtifactSaveRequested($event)"
-          (diffRequested)="openArtifactDiff($event)"
-          (downloadRequested)="downloadArtifact($event)"
-        />
-      }
 
       @if (chips().length > 0) {
         <div class="chat-panel-chips" data-testid="suggestion-chips">
@@ -817,6 +818,24 @@ export class ChatPanelComponent implements OnDestroy {
    * scope change so a fresh conversation starts with no dismissals.
    */
   private readonly dismissedArtifactPillIds = signal<ReadonlySet<string>>(new Set<string>());
+
+  /**
+   * Per-conversation rail dismissal set. Distinct from inline-pill dismissals because the two
+   * surfaces have different intents: an inline-pill × means "stop showing this between
+   * messages, but keep it actionable in the rail," whereas a rail × means "I'm done with this
+   * artifact, hide it." Same lifecycle as the inline set: cleared on scope change.
+   */
+  private readonly dismissedRailArtifactIds = signal<ReadonlySet<string>>(new Set<string>());
+
+  /**
+   * Filtered artifact list passed to the rail. Excludes user-dismissed entries; the rail
+   * itself still applies its own superseded filter on top.
+   */
+  protected readonly railArtifactEvents = computed(() => {
+    const dismissed = this.dismissedRailArtifactIds();
+    if (dismissed.size === 0) return this.artifactEvents();
+    return this.artifactEvents().filter(a => !dismissed.has(a.id));
+  });
 
   /**
    * sc-795 (AA-4): currently-open artifact preview. Null when no sheet is showing. Setting
@@ -2045,6 +2064,8 @@ export class ChatPanelComponent implements OnDestroy {
     this.artifactEvents.set([]);
     // Inline-pill dismissals are also per-conversation — fresh thread, fresh feed.
     this.dismissedArtifactPillIds.set(new Set<string>());
+    // Rail dismissals are per-conversation as well — the next thread starts with all rows visible.
+    this.dismissedRailArtifactIds.set(new Set<string>());
     this.conversationInputTokens.set(0);
     this.conversationOutputTokens.set(0);
   }
@@ -2120,6 +2141,21 @@ export class ChatPanelComponent implements OnDestroy {
    */
   protected dismissArtifactPill(eventId: string): void {
     this.dismissedArtifactPillIds.update(prev => {
+      if (prev.has(eventId)) return prev;
+      const next = new Set(prev);
+      next.add(eventId);
+      return next;
+    });
+  }
+
+  /**
+   * Hide an artifact's row from the pinned rail. The inline pill (if not separately dismissed)
+   * still appears in the thread — the user can scroll up to the original tool-call moment.
+   * Per-conversation, cleared on scope change.
+   */
+  protected dismissArtifactFromRail(view: ArtifactEventView): void {
+    const eventId = view.id;
+    this.dismissedRailArtifactIds.update(prev => {
       if (prev.has(eventId)) return prev;
       const next = new Set(prev);
       next.add(eventId);
