@@ -154,6 +154,10 @@ public static class ApiServiceCollectionExtensions
             configuration.GetSection("Assistant:Idempotency"));
         services.AddScoped<IAssistantTurnIdempotencyRepository, AssistantTurnIdempotencyRepository>();
         services.AddSingleton<AssistantTurnSignalRegistry>();
+        // sc-803: per-process map of active multicast recorders; consulted by the dispatcher
+        // when a retry hits an in-flight record so a same-instance retry can attach to the
+        // live frame stream instead of waiting on the terminal-state poller.
+        services.AddSingleton<AssistantTurnSubscriptionRegistry>();
         services.AddScoped<IAssistantTurnIdempotencyCoordinator, AssistantTurnIdempotencyCoordinator>();
         services.TryAddSingleton(TimeProvider.System);
         services.AddHostedService<AssistantTurnIdempotencySweepService>();
