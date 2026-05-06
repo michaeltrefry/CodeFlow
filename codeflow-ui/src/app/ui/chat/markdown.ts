@@ -27,6 +27,12 @@ const WORKFLOW_PACKAGE_LANG = 'cf-workflow-package';
  * (workflow name, node count, agent count) and a collapsed JSON pretty-print. Falls back to
  * the default code-block render if the JSON is malformed or doesn't look like a package, so a
  * still-streaming partial block doesn't break the UI mid-turn.
+ *
+ * Download lives on the artifact pill emitted by `set_workflow_package_draft` /
+ * `save_workflow_package`, not inline — Angular's `[innerHTML]` sanitizer strips `<button>`
+ * elements, so any inline action button gets reduced to bare text. The pill is the only
+ * surface that survives the sanitizer because it's part of the Angular template, not
+ * injected HTML.
  */
 const renderer = new Renderer();
 const defaultCodeRenderer = renderer.code.bind(renderer);
@@ -58,7 +64,6 @@ renderer.code = function (this: Renderer, token) {
   const subflowChips = summary.subflowKeys.length
     ? ` · subflows: ${summary.subflowKeys.map(k => `<code>${escapeHtml(k)}</code>`).join(', ')}`
     : '';
-  const filename = workflowJsonFilename(summary.workflowName);
   return [
     '<div class="cf-workflow-package">',
     '<div class="cf-workflow-package-summary">',
@@ -67,25 +72,13 @@ renderer.code = function (this: Renderer, token) {
     `${summary.edgeCount} edge${summary.edgeCount === 1 ? '' : 's'}, `,
     `agents: ${agentChips}${subflowChips}`,
     '</div>',
-    '<div class="cf-workflow-package-actions">',
     '<details class="cf-workflow-package-detail">',
     '<summary>Show package JSON</summary>',
     `<pre><code class="language-json">${pretty}</code></pre>`,
     '</details>',
-    `<button type="button" class="cf-workflow-package-download" data-cf-filename="${escapeHtml(filename)}" title="Download workflow JSON">Download JSON</button>`,
-    '</div>',
     '</div>',
   ].join('');
 };
-
-function workflowJsonFilename(workflowName: string): string {
-  const safe = (workflowName || 'workflow')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'workflow';
-  return `${safe}.json`;
-}
 
 function escapeHtml(s: string): string {
   return s

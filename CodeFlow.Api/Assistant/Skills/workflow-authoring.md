@@ -693,24 +693,43 @@ more costly. Don't do it.
 
 ## Emission contract
 
-When the design is approved, emit the package as a fenced code block with
-the language hint `cf-workflow-package`:
+**Always go through the draft tools — never paste the full package into
+chat as a `cf-workflow-package` fenced block.** The draft tools record an
+artifact event for every write, which surfaces a downloadable pill (with
+Download / View / Diff buttons) in the chat thread AND a rail entry above
+the composer. That pill is the user's canonical handle on the bytes;
+inline JSON in chat is not a download surface (Angular's `[innerHTML]`
+sanitizer strips action buttons) and re-emitting the full package on
+every refinement turn burns 50–200 KB of input tokens for changes a
+2–3-op JSON Patch could express.
 
-````
-```cf-workflow-package
-{ "schemaVersion": "codeflow.workflow-package.v1", "metadata": { ... }, ... }
-```
-````
+The flow once the design is approved:
 
-The chat UI detects this language hint and renders a collapsible preview
-with a human-readable summary (workflow name, node count, agent keys). On
-refinement, re-emit the FULL package in a new fenced block — never deltas.
+1. Call `set_workflow_package_draft({ package })` ONCE to park the
+   assembled package on disk. The artifact pill appears immediately.
+2. For every subsequent edit, call `patch_workflow_package_draft({
+   operations: [...] })`. Re-calling `set_workflow_package_draft` is
+   the expensive path — only justified when the structure changes
+   wholesale.
+3. When the user asks to save / import / commit, call
+   `save_workflow_package` with NO arguments. It reads the draft from
+   disk, runs preview + validation, and surfaces a Save chip the user
+   clicks to apply.
 
-## Drafting and saving via the workspace (preferred)
+The `cf-workflow-package` fenced block is a fallback only — when the
+conversation has no writable workspace, the draft tools aren't wired up
+and pasting the JSON inline is the only option. In that case the chat
+renders a one-line summary (workflow name, node count, agent keys) above
+the JSON, but there is no inline download button. On refinement in that
+fallback path, re-emit the FULL package in a new fenced block (never deltas)
+because the inline path has no patch surface.
 
-The conversation has a private workspace. Use it as a scratchpad for the
-in-progress package so you don't have to re-emit the full payload on every
-refinement turn — the savings are real on long iterations.
+## Drafting via the workspace
+
+The conversation's private workspace is the scratchpad for the
+in-progress package. Use it so you don't re-emit the full payload on
+every refinement turn — the savings are real on long iterations and the
+artifact pill stays anchored to the chat for downloads.
 
 The four draft tools:
 - `set_workflow_package_draft({ package })` — write the package to disk.
@@ -747,23 +766,23 @@ user can keep iterating after they click Save (or instead of clicking
 it, if they decide to refine the draft further).
 
 When the user asks to save / import / add / commit the drafted package:
-- **Preferred (draft path):** call `save_workflow_package` with NO
-  arguments. The tool reads the draft from the workspace, runs preview +
-  validation, and surfaces a chip the user clicks to apply.
-- **Fallback (inline path):** if no workspace is available, call
+- **Default path:** call `save_workflow_package` with NO arguments. The
+  tool reads the draft from the workspace, runs preview + validation,
+  and surfaces a chip the user clicks to apply.
+- **Fallback only:** if the tool reports no workspace is available, call
   `save_workflow_package({ package: ... })` with the full payload.
 
-**The artifact rail is a parallel surface.** Every successful
+**Every draft + save write produces an artifact pill.** Successful
 `set_workflow_package_draft` / `patch_workflow_package_draft` /
-`save_workflow_package` (preview_ok path) emits an artifact event the
-chat panel renders as a downloadable pill inline AND in the pinned
-rail above the composer. If the user dismisses the chat-side Save
-chip, the rail still has a "Save to library" button keyed off the
-same artifact — the user is never stranded. You don't need to do
-anything special to surface the rail; recording the artifact happens
-automatically inside the tool. Just be aware that "Save chip" and
-"rail Save button" are equivalent paths and the user may choose
-either.
+`save_workflow_package` (preview_ok path) calls all emit an artifact
+event the chat panel renders as a pill in the chat thread (Download /
+View / Diff buttons) AND in the pinned rail above the composer. The
+pill is the user's only download surface — there is no inline Download
+button on the chat-rendered package summary, so you must go through the
+draft tool path for the user to be able to retrieve the bytes. If the
+user dismisses the chat-side Save chip, the rail still has a "Save to
+library" button keyed off the same artifact — the user is never
+stranded. Recording the artifact happens automatically inside the tool.
 
 Tool result branches (both paths):
 - `status: "preview_ok"` → STOP. The chip is in front of the user, AND
