@@ -22,6 +22,7 @@ import { summarizeWorkflowPackage } from '../../core/workflow-package.utils';
 import { TracesApi } from '../../core/traces.api';
 import { CreateTraceRequest, LlmProviderKey, LlmProviderModelOption, ReplayRequest } from '../../core/models';
 import { IconComponent } from '../icon.component';
+import { ArtifactPreviewComponent } from './artifact-preview.component';
 import { ChatComposerComponent } from './chat-composer.component';
 import { ChatMessageComponent, ChatMessageView } from './chat-message.component';
 import { ChatToolCallComponent, ChatToolCallView } from './chat-tool-call.component';
@@ -107,6 +108,7 @@ interface PinnedMutationChip {
     ChatToolCallComponent,
     ChatToolbarComponent,
     IconComponent,
+    ArtifactPreviewComponent,
   ],
   template: `
     <section class="chat-panel" [attr.data-scope-kind]="effectiveScope().kind">
@@ -165,18 +167,21 @@ interface PinnedMutationChip {
                     }
                   </span>
                   <span class="artifact-pill-actions">
-                    <button
-                      type="button"
-                      class="artifact-pill-action"
-                      [disabled]="true"
-                      title="Download (wired in AA-4)"
-                    >Download</button>
-                    <button
-                      type="button"
-                      class="artifact-pill-action"
-                      [disabled]="true"
-                      title="View (wired in AA-4)"
-                    >View</button>
+                    @if (entry.expired) {
+                      <span class="artifact-pill-status">Expired</span>
+                    } @else {
+                      <a
+                        class="artifact-pill-action"
+                        [attr.href]="artifactDownloadUrl(entry)"
+                        [attr.download]="entry.name"
+                        rel="noopener"
+                      >Download</a>
+                      <button
+                        type="button"
+                        class="artifact-pill-action"
+                        (click)="openArtifactPreview(entry)"
+                      >View</button>
+                    }
                   </span>
                 </div>
               }
@@ -330,6 +335,16 @@ interface PinnedMutationChip {
         />
       }
     </section>
+
+    @if (artifactPreview(); as preview) {
+      <cf-artifact-preview
+        [conversationId]="preview.conversationId"
+        [eventId]="preview.eventId"
+        [name]="preview.name"
+        (closed)="closeArtifactPreview()"
+        (expired)="onArtifactExpired(preview.eventId)"
+      />
+    }
   `,
   styles: [`
     :host {
@@ -565,10 +580,22 @@ interface PinnedMutationChip {
       border: 1px solid var(--border, rgba(255,255,255,0.16));
       background: transparent;
       color: var(--text, #E7E9EE);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      line-height: 1;
+    }
+    .artifact-pill-action:hover:not(:disabled) {
+      background: color-mix(in oklab, var(--accent, #5765ff) 12%, transparent);
     }
     .artifact-pill-action:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+    .artifact-pill-status {
+      font-size: 11px;
+      color: var(--warn, #f5a623);
+      padding: 2px 8px;
     }
     .ws-prompt {
       flex: 0 0 auto;
@@ -719,6 +746,16 @@ export class ChatPanelComponent implements OnDestroy {
    * seed this from `applyConversationPayload` so reload restores the same pills.
    */
   protected readonly artifactEvents = signal<ArtifactEventView[]>([]);
+
+  /**
+   * sc-795 (AA-4): currently-open artifact preview. Null when no sheet is showing. Setting
+   * triggers the embedded `<cf-artifact-preview>` to mount Monaco and fetch the bytes.
+   */
+  protected readonly artifactPreview = signal<{
+    eventId: string;
+    conversationId: string;
+    name: string;
+  } | null>(null);
 
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
@@ -1794,6 +1831,43 @@ export class ChatPanelComponent implements OnDestroy {
       case 'tool':    return 't:' + entry.id;
       case 'artifact': return 'a:' + entry.id;
     }
+  }
+
+  /**
+   * sc-795 (AA-4): browser-direct download URL for the pill's `<a download>`. The endpoint
+   * sends `Content-Disposition: attachment; filename=<name>` so the browser saves rather
+   * than navigates. Returns null when conversationId isn't loaded yet (defensive — the
+   * artifact event always carries one, but the load state could rev mid-render).
+   */
+  protected artifactDownloadUrl(view: ArtifactEventView): string | null {
+    if (!view.conversationId || !view.id) return null;
+    return `/api/assistant/conversations/${encodeURIComponent(view.conversationId)}/artifacts/${encodeURIComponent(view.id)}`;
+  }
+
+  /** Open the read-only Monaco preview side sheet for this artifact. */
+  protected openArtifactPreview(view: ArtifactEventView): void {
+    if (view.expired) return;
+    this.artifactPreview.set({
+      eventId: view.id,
+      conversationId: view.conversationId,
+      name: view.name,
+    });
+  }
+
+  protected closeArtifactPreview(): void {
+    this.artifactPreview.set(null);
+  }
+
+  /**
+   * sc-795 (AA-4): the preview sheet emits `expired` when the download endpoint returns
+   * 410 Gone. Flip the matching pill locally so the rail/inline view shows the expired
+   * state without a separate refetch. AA-3 hydration would deliver the same flag on the
+   * next reload.
+   */
+  protected onArtifactExpired(eventId: string): void {
+    this.artifactEvents.update(prev =>
+      prev.map(p => p.id === eventId ? { ...p, expired: true } : p),
+    );
   }
 
   /**

@@ -1,11 +1,14 @@
 using CodeFlow.Api.Assistant;
 using CodeFlow.Api.Assistant.Idempotency;
+using CodeFlow.Api.Assistant.Tools;
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.TokenTracking;
 using CodeFlow.Persistence;
+using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Preflight;
+using CodeFlow.Runtime.Workspace;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -34,6 +37,14 @@ public static class AssistantEndpoints
         group.MapGet("/conversations/{id:guid}", GetConversationAsync);
         group.MapPost("/conversations/{id:guid}/fork", ForkConversationAsync);
         group.MapPost("/conversations/{id:guid}/messages", PostMessageAsync);
+
+        // sc-795 (AA-4): streams the bytes referenced by an artifact event so the chat
+        // panel's Download / View actions can pull a workflow-package draft or snapshot
+        // straight from the conversation workspace. Owner-scoped via the same resolver
+        // pattern the message endpoints use.
+        group.MapGet(
+            "/conversations/{conversationId:guid}/artifacts/{eventId:guid}",
+            DownloadArtifactAsync);
 
         // HAA-14: aggregated token usage across the user's assistant conversations. Drives the
         // homepage rail's assistant-token chip; lives on the assistant prefix because it scopes
@@ -192,6 +203,128 @@ public static class AssistantEndpoints
             messages = messages.Select(MapMessage).ToArray(),
             artifactEvents = artifactEvents.Select(MapArtifactEvent).ToArray(),
         });
+    }
+
+    /// <summary>
+    /// sc-795 (AA-4): streams the bytes referenced by an artifact event. The chat panel's
+    /// Download / View actions hit this endpoint with the durable event id so the user can
+    /// retrieve a workflow-package draft (live bytes from the workspace draft file) or a
+    /// snapshot (immutable per-save bytes) at any point — even after dismissing the Save chip.
+    ///
+    /// Auth mirrors the rest of /api/assistant/conversations/{id}/...: the conversation must
+    /// exist AND be owned by the calling user. The events list is owner-scoped by AA-3, so a
+    /// non-owner can't even discover an event id; returning 404 here keeps that posture.
+    ///
+    /// Expired / superseded behavior:
+    ///  - Snapshot consumed by apply (AA-1's orphan-guard): the event row carries an
+    ///    `expired_at` timestamp + the file is gone. Return 410 Gone with a payload the
+    ///    chat panel can flip the pill to expired state on. No 200 + zero bytes.
+    ///  - File-on-disk missing for any other reason (workspace rotated, manual cleanup):
+    ///    same 410 Gone path. The pill becomes a tombstone.
+    ///
+    /// Content-Disposition uses `attachment; filename="..."` so the browser default is to
+    /// save rather than navigate. The chat panel's Download action can rely on a plain
+    /// `&lt;a download&gt;` (or fetch + Blob save); the View action does its own fetch and
+    /// renders the bytes in a Monaco side sheet.
+    /// </summary>
+    private static async Task<IResult> DownloadArtifactAsync(
+        Guid conversationId,
+        Guid eventId,
+        HttpContext httpContext,
+        IAssistantUserResolver userResolver,
+        IAssistantConversationRepository conversations,
+        IAssistantArtifactRepository artifactRepository,
+        IAssistantWorkspaceProvider workspaceProvider,
+        CancellationToken cancellationToken)
+    {
+        var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
+        if (conversation is null)
+        {
+            return Results.NotFound();
+        }
+
+        var userId = userResolver.Resolve(
+            httpContext,
+            allowAnonymous: userResolver.IsDemoUser(conversation.UserId));
+        if (string.IsNullOrEmpty(userId)
+            || !string.Equals(conversation.UserId, userId, StringComparison.Ordinal))
+        {
+            // Same posture as the message-list path: don't leak existence to non-owners.
+            return Results.NotFound();
+        }
+
+        var evt = await artifactRepository.GetAsync(eventId, cancellationToken);
+        if (evt is null || evt.ConversationId != conversationId)
+        {
+            return Results.NotFound();
+        }
+
+        if (evt.ExpiredAtUtc is not null)
+        {
+            // Snapshot already consumed by apply, or otherwise tombstoned — return 410 Gone
+            // so the chat panel can flip the pill to expired state. Carry a small JSON body
+            // for parity with the rest of the assistant endpoints' error shapes.
+            return Results.Json(
+                new { state = "expired", message = "This artifact has been consumed and is no longer downloadable." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        ToolWorkspaceContext workspace;
+        try
+        {
+            workspace = workspaceProvider.GetOrCreateConversationWorkspace(conversationId);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException)
+        {
+            return Results.Problem(
+                title: "Assistant workspace unavailable",
+                detail: $"Could not access the conversation's workspace: {ex.Message}",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        // Resolve the on-disk path. Snapshot kinds key off the snapshot id so the immutable
+        // bytes are addressable even if the live draft has been overwritten; everything else
+        // resolves through the event's relative path.
+        string filePath;
+        if (evt.SnapshotId is { } snapshotId && evt.Kind == ArtifactEventKind.WorkflowPackageSnapshot)
+        {
+            filePath = WorkflowPackageDraftStore.ResolveSnapshotPath(workspace, snapshotId);
+        }
+        else
+        {
+            // Defense in depth: refuse a relative path that escapes the workspace root via `..`
+            // or absolute components. The recorder writes simple file names (draft.cf-...,
+            // snapshot-{guid}.cf-...) so a normalized join must stay under workspace.RootPath.
+            var combined = Path.GetFullPath(Path.Combine(workspace.RootPath, evt.RelativePath));
+            var rootFull = Path.GetFullPath(workspace.RootPath);
+            if (!combined.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(combined, rootFull, StringComparison.Ordinal))
+            {
+                return Results.NotFound();
+            }
+            filePath = combined;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            // Same shape as expired — file is gone, the metadata row outlives the bytes.
+            return Results.Json(
+                new { state = "expired", message = "Artifact bytes are no longer available on disk." },
+                statusCode: StatusCodes.Status410Gone);
+        }
+
+        // Stream the file with attachment Content-Disposition so a plain `<a download>` saves
+        // rather than navigates. Content-type is application/json for package artifacts (the
+        // only kinds AA-1/AA-2 produce); future kinds can refine this.
+        var contentType = evt.Kind switch
+        {
+            ArtifactEventKind.WorkflowPackageDraft => "application/json",
+            ArtifactEventKind.WorkflowPackageSnapshot => "application/json",
+            _ => "application/octet-stream",
+        };
+
+        var stream = File.OpenRead(filePath);
+        return Results.File(stream, contentType: contentType, fileDownloadName: evt.Name);
     }
 
     private static async Task<IResult> CreateConversationAsync(
