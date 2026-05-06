@@ -303,6 +303,24 @@ export class WorkflowsApi {
     );
   }
 
+  /**
+   * Same endpoint as <see cref="getArtifactBytes"/>, but returns the raw blob + headers so
+   * the chat panel's Download chip can JS-drive a save-as. Critical: this MUST go through
+   * Angular HttpClient (not a plain `fetch` or `<a download>` link) so the auth interceptor
+   * attaches the Bearer token — production auth is JwtBearer-only and a header-less request
+   * comes in unauthenticated, which trips the download endpoint's owner check and returns
+   * 404. Bug found 2026-05-06: every artifact pill in prod was 404'ing for that reason.
+   */
+  downloadAssistantArtifact(
+    conversationId: string,
+    eventId: string,
+  ): Observable<HttpResponse<Blob>> {
+    return this.http.get(
+      `/api/assistant/conversations/${encodeURIComponent(conversationId)}/artifacts/${encodeURIComponent(eventId)}`,
+      { observe: 'response', responseType: 'blob' },
+    );
+  }
+
   /** sc-395: optional `resolutions` lets the imports page (CR-4) drive a per-Conflict
    *  preview re-run with user-chosen Bump / UseExisting / Copy choices. Wire shape is now
    *  `{ package, resolutions }` so the server can extend the body with future fields without

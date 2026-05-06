@@ -174,12 +174,11 @@ interface PinnedMutationChip {
                     @if (entry.expired) {
                       <span class="artifact-pill-status">Expired</span>
                     } @else {
-                      <a
+                      <button
+                        type="button"
                         class="artifact-pill-action"
-                        [attr.href]="artifactDownloadUrl(entry)"
-                        [attr.download]="entry.name"
-                        rel="noopener"
-                      >Download</a>
+                        (click)="downloadArtifact(entry)"
+                      >Download</button>
                       <button
                         type="button"
                         class="artifact-pill-action"
@@ -253,6 +252,7 @@ interface PinnedMutationChip {
           (viewRequested)="openArtifactPreview($event)"
           (saveRequested)="onArtifactSaveRequested($event)"
           (diffRequested)="openArtifactDiff($event)"
+          (downloadRequested)="downloadArtifact($event)"
         />
       }
 
@@ -2022,14 +2022,29 @@ export class ChatPanelComponent implements OnDestroy {
   }
 
   /**
-   * sc-795 (AA-4): browser-direct download URL for the pill's `<a download>`. The endpoint
-   * sends `Content-Disposition: attachment; filename=<name>` so the browser saves rather
-   * than navigates. Returns null when conversationId isn't loaded yet (defensive — the
-   * artifact event always carries one, but the load state could rev mid-render).
+   * sc-795 (AA-4): JS-driven save-as for the pill's Download action. Routes through Angular
+   * HttpClient so the auth interceptor attaches the production Bearer token — a plain
+   * `<a download>` link would bypass the interceptor and 404 on the owner check.
+   * Cancellation-safe via takeUntilDestroyed.
    */
-  protected artifactDownloadUrl(view: ArtifactEventView): string | null {
-    if (!view.conversationId || !view.id) return null;
-    return `/api/assistant/conversations/${encodeURIComponent(view.conversationId)}/artifacts/${encodeURIComponent(view.id)}`;
+  protected downloadArtifact(view: ArtifactEventView): void {
+    if (!view.conversationId || !view.id) return;
+    this.workflowsApi.downloadAssistantArtifact(view.conversationId, view.id).pipe(
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: response => {
+        const blob = response.body;
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = view.name;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      },
+      // Errors are silent today — the click was a one-shot, the user can re-click. If we
+      // see this in the wild we can promote to a toast.
+    });
   }
 
   /** Open the read-only Monaco preview side sheet for this artifact. */
