@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using CodeFlow.Api.Assistant.Idempotency;
 using CodeFlow.Persistence;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Tests.Assistant;
@@ -278,7 +279,9 @@ public sealed class AssistantTurnRecorderSubscriptionTests
                 LiveTailSubscriberCapacity = 256,
                 LiveTailSubscriberLifetime = SubscriberLifetime,
             });
-            SubscriptionRegistry = new AssistantTurnSubscriptionRegistry(options);
+            SubscriptionRegistry = new AssistantTurnSubscriptionRegistry(
+                options,
+                NullLogger<AssistantTurnSubscriptionRegistry>.Instance);
         }
 
         public TimeProvider TimeProvider { get; }

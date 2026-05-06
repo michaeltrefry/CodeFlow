@@ -927,6 +927,9 @@ public static class AssistantEndpoints
                     OpenSseResponse(httpContext);
                     await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
                     await httpContext.Response.Body.FlushAsync(cancellationToken);
+                    var snapshotFrames = liveTail.Subscription.Snapshot.Count;
+                    var liveFramesDelivered = 0;
+                    var detachReason = "completed";
                     try
                     {
                         foreach (var snapshotFrame in liveTail.Subscription.Snapshot)
@@ -946,6 +949,7 @@ public static class AssistantEndpoints
                                 liveFrame.Event,
                                 liveFrame.Payload,
                                 cancellationToken);
+                            liveFramesDelivered++;
                         }
 
                         await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
@@ -956,12 +960,14 @@ public static class AssistantEndpoints
                         // subscription via the finally block, do NOT propagate cancellation
                         // to the producer. The originating request keeps running and will
                         // flush its terminal record normally.
+                        detachReason = "client-disconnect";
                     }
                     catch (InvalidOperationException ex) when (ex.Message.Contains("fell behind", StringComparison.Ordinal))
                     {
                         // AR-1 slow-subscriber drop. Surface a single error frame + done so
                         // the client sees a clean terminal stream and can fall back to
                         // requesting a fresh turn instead of hanging.
+                        detachReason = "fell-behind";
                         await TryWriteErrorAndDoneAsync(
                             httpContext,
                             AssistantTurnErrorCodes.LiveTailFellBehind,
@@ -970,6 +976,7 @@ public static class AssistantEndpoints
                     catch (TimeoutException)
                     {
                         // AR-1 lifetime ceiling. Same shape as the fell-behind branch.
+                        detachReason = "timeout";
                         await TryWriteErrorAndDoneAsync(
                             httpContext,
                             AssistantTurnErrorCodes.LiveTailTimeout,
@@ -978,6 +985,16 @@ public static class AssistantEndpoints
                     finally
                     {
                         await liveTail.Subscription.DisposeAsync();
+                        // sc-807 detach log — pairs with the attach log emitted from the
+                        // subscription registry. snapshotFrames + liveFramesDelivered together
+                        // tell ops how much of the record's stream this retry actually saw.
+                        logger.LogInformation(
+                            "Live-tail subscriber detached recordId={RecordId} conversationId={ConversationId} reason={DetachReason} snapshotFrames={SnapshotFrames} liveFramesDelivered={LiveFramesDelivered}",
+                            liveTail.Record.Id,
+                            id,
+                            detachReason,
+                            snapshotFrames,
+                            liveFramesDelivered);
                     }
                     return;
 

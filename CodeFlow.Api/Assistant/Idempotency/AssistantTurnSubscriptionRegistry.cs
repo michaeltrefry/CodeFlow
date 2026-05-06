@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CodeFlow.Api.Assistant.Idempotency;
@@ -14,10 +15,14 @@ public sealed class AssistantTurnSubscriptionRegistry
 {
     private readonly ConcurrentDictionary<Guid, IAssistantTurnPublisher> publishers = new();
     private readonly IOptions<AssistantTurnIdempotencyOptions> options;
+    private readonly ILogger<AssistantTurnSubscriptionRegistry> logger;
 
-    public AssistantTurnSubscriptionRegistry(IOptions<AssistantTurnIdempotencyOptions> options)
+    public AssistantTurnSubscriptionRegistry(
+        IOptions<AssistantTurnIdempotencyOptions> options,
+        ILogger<AssistantTurnSubscriptionRegistry> logger)
     {
         this.options = options;
+        this.logger = logger;
     }
 
     /// <summary>
@@ -57,6 +62,16 @@ public sealed class AssistantTurnSubscriptionRegistry
         var lifetime = opts.LiveTailSubscriberLifetime > TimeSpan.Zero
             ? opts.LiveTailSubscriberLifetime
             : opts.WaitTimeout;
-        return publisher.Subscribe(opts.LiveTailSubscriberCapacity, lifetime);
+        var subscription = publisher.Subscribe(opts.LiveTailSubscriberCapacity, lifetime);
+        // sc-807: attach log — recordId + snapshot frame count at attach gives ops a way to
+        // tell a "joined late" subscriber (snapshot=N) from one that arrived before any
+        // frames were produced (snapshot=0). The detach companion log is emitted by the
+        // endpoint where the detach reason + frames-delivered counter live.
+        logger.LogInformation(
+            "Live-tail subscriber attached recordId={RecordId} snapshotFrames={SnapshotFrames} completedAtAttach={CompletedAtAttach}",
+            recordId,
+            subscription.Snapshot.Count,
+            subscription.Completed);
+        return subscription;
     }
 }

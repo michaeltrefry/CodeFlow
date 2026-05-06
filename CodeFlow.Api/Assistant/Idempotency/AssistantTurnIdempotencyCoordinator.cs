@@ -51,6 +51,7 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
             ttl,
             cancellationToken);
 
+        AssistantTurnDispatchOutcome dispatchOutcome;
         switch (outcome)
         {
             case AssistantTurnClaimOutcome.Claimed claimed:
@@ -60,24 +61,28 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
                     signalRegistry,
                     subscriptionRegistry,
                     timeProvider);
-                return new AssistantTurnDispatchOutcome.Claimed(claimed.Record, recorder);
+                dispatchOutcome = new AssistantTurnDispatchOutcome.Claimed(claimed.Record, recorder);
+                break;
 
             case AssistantTurnClaimOutcome.Existing existing:
                 if (!string.Equals(existing.Record.UserId, userId, StringComparison.Ordinal))
                 {
                     // Different caller reusing someone else's key — surface as not-found upstream
                     // so we don't confirm the row's existence to an unauthorized caller.
-                    return new AssistantTurnDispatchOutcome.UserMismatch(existing.Record);
+                    dispatchOutcome = new AssistantTurnDispatchOutcome.UserMismatch(existing.Record);
+                    break;
                 }
 
                 if (!string.Equals(existing.Record.RequestHash, requestHash, StringComparison.Ordinal))
                 {
-                    return new AssistantTurnDispatchOutcome.HashMismatch(existing.Record);
+                    dispatchOutcome = new AssistantTurnDispatchOutcome.HashMismatch(existing.Record);
+                    break;
                 }
 
                 if (existing.Record.Status != AssistantTurnIdempotencyStatus.InFlight)
                 {
-                    return new AssistantTurnDispatchOutcome.Replay(existing.Record);
+                    dispatchOutcome = new AssistantTurnDispatchOutcome.Replay(existing.Record);
+                    break;
                 }
 
                 // sc-804: prefer same-instance live-tail when the originating recorder is still
@@ -87,14 +92,36 @@ public sealed class AssistantTurnIdempotencyCoordinator : IAssistantTurnIdempote
                 // to the cross-instance WaitThenReplay path which the WaitForTerminalAsync
                 // poller will resolve into a terminal Replay.
                 var subscription = subscriptionRegistry.TrySubscribe(existing.Record.Id);
-                return subscription is not null
+                dispatchOutcome = subscription is not null
                     ? new AssistantTurnDispatchOutcome.LiveTail(existing.Record, subscription)
                     : new AssistantTurnDispatchOutcome.WaitThenReplay(existing.Record);
+                break;
 
             default:
                 throw new InvalidOperationException($"Unknown claim outcome: {outcome}");
         }
+
+        // sc-807: structured dispatch-outcome log so the new live-tail decision is visible
+        // alongside the legacy claim/replay/wait paths. Outcome name is the union member's
+        // type name (Claimed / Replay / WaitThenReplay / LiveTail / HashMismatch / UserMismatch).
+        logger.LogInformation(
+            "Assistant turn dispatch outcome={Outcome} recordId={RecordId} conversationId={ConversationId}",
+            dispatchOutcome.GetType().Name,
+            DispatchRecordId(dispatchOutcome),
+            conversationId);
+        return dispatchOutcome;
     }
+
+    private static Guid DispatchRecordId(AssistantTurnDispatchOutcome outcome) => outcome switch
+    {
+        AssistantTurnDispatchOutcome.Claimed c => c.Record.Id,
+        AssistantTurnDispatchOutcome.Replay r => r.Record.Id,
+        AssistantTurnDispatchOutcome.WaitThenReplay w => w.Record.Id,
+        AssistantTurnDispatchOutcome.LiveTail l => l.Record.Id,
+        AssistantTurnDispatchOutcome.HashMismatch h => h.Existing.Id,
+        AssistantTurnDispatchOutcome.UserMismatch u => u.Existing.Id,
+        _ => Guid.Empty,
+    };
 
     public async Task<AssistantTurnIdempotencyRecord> WaitForTerminalAsync(
         Guid recordId,
@@ -336,8 +363,15 @@ public sealed class AssistantTurnIdempotencyOptions
     /// </summary>
     public TimeSpan WaitPollInterval { get; set; } = TimeSpan.FromMilliseconds(250);
 
-    /// <summary>Maximum time to wait for an in-flight duplicate to terminate before giving up.</summary>
-    public TimeSpan WaitTimeout { get; set; } = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// Maximum time to wait for an in-flight duplicate to terminate before giving up.
+    /// sc-807: bumped from 60s → 120s. Long LLM/tool turns regularly outlive 60s and the
+    /// result was a false "still in progress" outcome on the WaitThenReplay path — the bug
+    /// epic 802 was opened against. The AR-1..AR-3 live-tail path makes this less common
+    /// (same-instance retries reattach and never hit this timeout) but cross-instance
+    /// retries and Phase 2's wait-beyond-lifetime path still rely on this.
+    /// </summary>
+    public TimeSpan WaitTimeout { get; set; } = TimeSpan.FromSeconds(120);
 
     /// <summary>How often the background sweep removes expired rows.</summary>
     public TimeSpan SweepInterval { get; set; } = TimeSpan.FromMinutes(5);
