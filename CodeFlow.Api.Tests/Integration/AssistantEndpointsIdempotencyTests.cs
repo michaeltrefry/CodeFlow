@@ -205,6 +205,189 @@ public sealed class AssistantEndpointsIdempotencyTests
     }
 
     [Fact]
+    public async Task Live_tail_duplicate_sees_snapshot_plus_remaining_frames_in_order()
+    {
+        // sc-805 — second request arrives WHILE the first is mid-stream. With AR-1+AR-2+AR-3
+        // wired up, the duplicate should reattach to the originating recorder's live frame
+        // stream: snapshot of frames already produced + live-tail of the rest. Both clients
+        // see the same payload events in the same order.
+        AssistantStub.Reset();
+        var midStreamGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("alpha"),
+            new AssistantTextDelta("beta"),
+            new AssistantTextDelta("gamma"),
+            new AssistantTextDelta("delta"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        // Yield the first 2 deltas, then pause until the duplicate has subscribed.
+        AssistantStub.SetMidStreamGate(2, midStreamGate.Task);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var firstTask = SendMessageAsync(client, conversation.Id, "stream me", key);
+
+        // Wait for the originating stub to actually emit the first 2 frames before firing
+        // the duplicate. That guarantees the LiveTail subscription sees a non-empty snapshot.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.YieldedCount < 2 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+        AssistantStub.YieldedCount.Should().BeGreaterThanOrEqualTo(2,
+            "originating stream must reach the mid-stream gate before the duplicate fires");
+
+        var secondTask = SendMessageAsync(client, conversation.Id, "stream me", key);
+
+        // Briefly let the duplicate land + register its subscription, then release the gate
+        // so the originating stub finishes emitting.
+        await Task.Delay(100);
+        midStreamGate.SetResult(true);
+
+        var (firstFrames, _) = await firstTask;
+        var (secondFrames, _) = await secondTask;
+
+        // Single LLM call — the duplicate live-tailed instead of starting a new turn.
+        AssistantStub.CallCount.Should().Be(1, "live-tail duplicate must not invoke the LLM a second time");
+
+        // Same payload events on both clients, same order. We compare the event sequence
+        // (text-delta x4, token-usage if any, assistant-message-persisted, etc.) — payload
+        // contents already match because they came from the same recorder.
+        var firstPayload = firstFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
+        var secondPayload = secondFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
+        secondPayload.Should().BeEquivalentTo(firstPayload, opts => opts.WithStrictOrdering(),
+            "live-tail duplicate must see the same payload events as the originating client");
+
+        // Both responses include all four text-delta frames produced by the stub.
+        firstPayload.Count(e => e == "text-delta").Should().Be(4);
+        secondPayload.Count(e => e == "text-delta").Should().Be(4);
+
+        // Only one user message persisted — the retry must NOT create a duplicate.
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        (await dbContext.AssistantMessages
+            .AsNoTracking()
+            .CountAsync(m => m.ConversationId == conversation.Id && m.Role == AssistantMessageRole.User))
+            .Should().Be(1, "live-tail retries must not duplicate the user message");
+    }
+
+    [Fact]
+    public async Task Live_tail_duplicate_disconnect_does_not_disturb_originating_stream()
+    {
+        // sc-805 — the retry client gives up mid-tail. Per the card: detach cleanly, do
+        // NOT propagate cancellation to the producer. The originating client keeps streaming
+        // and the record still reaches a terminal status normally.
+        AssistantStub.Reset();
+        var midStreamGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("frame-1"),
+            new AssistantTextDelta("frame-2"),
+            new AssistantTextDelta("frame-3"),
+            new AssistantTextDelta("frame-4"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+        AssistantStub.SetMidStreamGate(2, midStreamGate.Task);
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var firstTask = SendMessageAsync(client, conversation.Id, "long stream", key);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (AssistantStub.YieldedCount < 2 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Fire a duplicate with a cancellation token we'll trip mid-tail.
+        using var dupCts = new CancellationTokenSource();
+        var duplicateRequest = new HttpRequestMessage(HttpMethod.Post,
+            $"/api/assistant/conversations/{conversation.Id}/messages")
+        {
+            Content = JsonContent.Create(new { content = "long stream" })
+        };
+        duplicateRequest.Headers.Add(AssistantTurnIdempotencyKeys.HeaderName, key);
+        var duplicateTask = client.SendAsync(
+            duplicateRequest, HttpCompletionOption.ResponseHeadersRead, dupCts.Token);
+
+        // Let the duplicate get past dispatch + start reading, then abort it.
+        await Task.Delay(150);
+        dupCts.Cancel();
+        try
+        {
+            using var dupResponse = await duplicateTask;
+            // Some HTTP clients don't immediately observe cancellation; reading the body is
+            // what makes the cancel propagate. Either way, we don't care about the duplicate's
+            // response — we care that the originating stream survives.
+            await dupResponse.Content.ReadAsStringAsync(dupCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected — cancellation observed.
+        }
+        catch (HttpRequestException)
+        {
+            // Some platforms surface mid-stream cancellation as HttpRequestException.
+        }
+
+        // Now release the mid-stream gate; the originating turn finishes normally.
+        midStreamGate.SetResult(true);
+
+        var (firstFrames, firstStatus) = await firstTask;
+        firstStatus.Should().Be(HttpStatusCode.OK, "originating stream must complete normally");
+        firstFrames.Count(f => f.Event == "text-delta").Should().Be(4,
+            "originating stream must emit every text-delta despite the retry's disconnect");
+        firstFrames.Should().Contain(f => f.Event == "done");
+
+        // Record should be terminal (Completed) by now — the producer was not interrupted.
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<CodeFlowDbContext>();
+        var idempotencyRow = await dbContext.AssistantTurnIdempotency
+            .AsNoTracking()
+            .SingleAsync(e => e.ConversationId == conversation.Id);
+        idempotencyRow.Status.Should().Be(AssistantTurnIdempotencyStatus.Completed,
+            "originating turn must reach terminal status even when a retry detaches mid-tail");
+    }
+
+    [Fact]
+    public async Task Retry_after_producer_flush_falls_through_to_replay_path()
+    {
+        // sc-805 — the duplicate arrives AFTER the originating turn has flushed and the
+        // recorder has unregistered. TrySubscribe returns null → dispatcher falls back to
+        // Replay (status is now terminal). Same behaviour as sc-525 establishes; this test
+        // pins it down so AR-3 doesn't regress it.
+        AssistantStub.Reset();
+        AssistantStub.SetReply(new[]
+        {
+            (AssistantStreamItem)new AssistantTextDelta("done-1"),
+            new AssistantTextDelta("done-2"),
+            new AssistantTurnDone("anthropic", "claude-sonnet-4")
+        });
+
+        using var client = CreateClientWithStub();
+        var conversation = await CreateConversationAsync(client);
+        var key = NewKey();
+
+        var firstFrames = await PostMessageAsync(client, conversation.Id, "post-flush replay", key);
+        AssistantStub.CallCount.Should().Be(1);
+
+        // The originating recorder has flushed + unregistered by the time PostMessageAsync
+        // returns. A retry should hit the Replay arm, not LiveTail.
+        var secondFrames = await PostMessageAsync(client, conversation.Id, "post-flush replay", key);
+
+        AssistantStub.CallCount.Should().Be(1, "post-flush retry must replay, not invoke the LLM");
+
+        var firstPayload = firstFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
+        var secondPayload = secondFrames.Where(f => f.Event != "done").Select(f => f.Event).ToArray();
+        secondPayload.Should().BeEquivalentTo(firstPayload, opts => opts.WithStrictOrdering());
+    }
+
+    [Fact]
     public async Task No_header_preserves_existing_behavior()
     {
         AssistantStub.Reset();
@@ -324,14 +507,20 @@ public sealed class AssistantEndpointsIdempotencyTests
         private IReadOnlyList<AssistantStreamItem> reply = Array.Empty<AssistantStreamItem>();
         private int callCount;
         private int gateEntered;
+        private int yieldedCount;
         private Task? gate;
+        private Task? midStreamGate;
+        private int midStreamGateAfter;
 
         public void Reset()
         {
             reply = Array.Empty<AssistantStreamItem>();
             Interlocked.Exchange(ref callCount, 0);
             Interlocked.Exchange(ref gateEntered, 0);
+            Interlocked.Exchange(ref yieldedCount, 0);
             gate = null;
+            midStreamGate = null;
+            midStreamGateAfter = 0;
         }
 
         public void SetReply(IReadOnlyList<AssistantStreamItem> items) => reply = items;
@@ -343,8 +532,21 @@ public sealed class AssistantEndpointsIdempotencyTests
         /// </summary>
         public void SetGate(Task gateTask) => gate = gateTask;
 
+        /// <summary>
+        /// sc-805 — when set, the stub yields <paramref name="afterIndex"/> items, then awaits
+        /// <paramref name="gateTask"/>, then yields the remainder. Drives the "duplicate
+        /// arrives mid-stream" case where the live-tail subscriber must see a non-empty
+        /// snapshot + remaining live frames.
+        /// </summary>
+        public void SetMidStreamGate(int afterIndex, Task gateTask)
+        {
+            midStreamGateAfter = afterIndex;
+            midStreamGate = gateTask;
+        }
+
         public int CallCount => Volatile.Read(ref callCount);
         public int GateEntered => Volatile.Read(ref gateEntered);
+        public int YieldedCount => Volatile.Read(ref yieldedCount);
 
         public async IAsyncEnumerable<AssistantStreamItem> AskAsync(
             string userMessage,
@@ -365,9 +567,16 @@ public sealed class AssistantEndpointsIdempotencyTests
                 await pendingGate.WaitAsync(cancellationToken);
             }
 
-            foreach (var item in reply)
+            var midGate = midStreamGate;
+            var midAfter = midStreamGateAfter;
+            for (var i = 0; i < reply.Count; i++)
             {
-                yield return item;
+                if (midGate is not null && i == midAfter)
+                {
+                    await midGate.WaitAsync(cancellationToken);
+                }
+                yield return reply[i];
+                Interlocked.Increment(ref yieldedCount);
                 await Task.Yield();
             }
         }

@@ -913,45 +913,62 @@ public static class AssistantEndpoints
                     return;
 
                 case AssistantTurnDispatchOutcome.LiveTail liveTail:
-                    // sc-804: minimal arm so the endpoint compiles + tests pass with the new
-                    // dispatch outcome. AR-3 replaces this with the real reattach path that
-                    // replays the snapshot + live-tails until the producer terminates.
-                    // Until then we dispose the subscription and degrade to WaitThenReplay
-                    // semantics so the regression suite still proves "duplicate must not
-                    // re-invoke the LLM."
-                    await liveTail.Subscription.DisposeAsync();
+                    // sc-805 (AR-3): retry attaches to the originating recorder's live frame
+                    // stream — replay the snapshot of frames already produced, then live-tail
+                    // until the producer terminates.
                     OpenSseResponse(httpContext);
                     await httpContext.Response.WriteAsync(": connected\n\n", cancellationToken);
                     await httpContext.Response.Body.FlushAsync(cancellationToken);
-                    AssistantTurnIdempotencyRecord liveTerminal;
                     try
                     {
-                        liveTerminal = await idempotencyCoordinator.WaitForTerminalAsync(
-                            liveTail.Record.Id,
-                            idempotencyOptions.Value.WaitTimeout,
-                            cancellationToken);
+                        foreach (var snapshotFrame in liveTail.Subscription.Snapshot)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            await WriteRawEventAsync(
+                                httpContext,
+                                snapshotFrame.Event,
+                                snapshotFrame.Payload,
+                                cancellationToken);
+                        }
+
+                        await foreach (var liveFrame in liveTail.Subscription.ReadAllAsync(cancellationToken))
+                        {
+                            await WriteRawEventAsync(
+                                httpContext,
+                                liveFrame.Event,
+                                liveFrame.Payload,
+                                cancellationToken);
+                        }
+
+                        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
                     }
                     catch (OperationCanceledException)
                     {
-                        return;
+                        // Retry client disconnected mid-tail. Detach cleanly — dispose the
+                        // subscription via the finally block, do NOT propagate cancellation
+                        // to the producer. The originating request keeps running and will
+                        // flush its terminal record normally.
                     }
-
-                    if (liveTerminal.Status == AssistantTurnIdempotencyStatus.InFlight)
+                    catch (InvalidOperationException ex) when (ex.Message.Contains("fell behind", StringComparison.Ordinal))
                     {
-                        await WriteRawEventAsync(
+                        // AR-1 slow-subscriber drop. Surface a single error frame + done so
+                        // the client sees a clean terminal stream and can fall back to
+                        // requesting a fresh turn instead of hanging.
+                        await TryWriteErrorAndDoneAsync(
                             httpContext,
-                            "error",
-                            JsonSerializer.Serialize(new { message = "Original request is still in progress; please retry." }, JsonOptions),
-                            cancellationToken);
-                        await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
-                        return;
+                            "Live-tail subscriber fell behind; please retry.");
                     }
-
-                    await idempotencyCoordinator.ReplayAsync(
-                        liveTerminal,
-                        (name, payload, ct) => WriteRawEventAsync(httpContext, name, payload, ct),
-                        cancellationToken);
-                    await WriteRawEventAsync(httpContext, "done", "{}", cancellationToken);
+                    catch (TimeoutException)
+                    {
+                        // AR-1 lifetime ceiling. Same shape as the fell-behind branch.
+                        await TryWriteErrorAndDoneAsync(
+                            httpContext,
+                            "Live-tail subscriber timed out; please retry.");
+                    }
+                    finally
+                    {
+                        await liveTail.Subscription.DisposeAsync();
+                    }
                     return;
 
                 case AssistantTurnDispatchOutcome.Claimed claimed:
@@ -1144,6 +1161,26 @@ public static class AssistantEndpoints
         var frame = $"event: {eventName}\ndata: {payload}\n\n";
         await httpContext.Response.WriteAsync(frame, ct);
         await httpContext.Response.Body.FlushAsync(ct);
+    }
+
+    /// <summary>
+    /// sc-805 — best-effort terminal frame pair for the live-tail error paths. Uses
+    /// <see cref="CancellationToken.None"/> so a closed-but-still-flushable response can
+    /// receive the closing handshake even if the request token has fired; if the client
+    /// is already gone the writes throw and we swallow them.
+    /// </summary>
+    private static async Task TryWriteErrorAndDoneAsync(HttpContext httpContext, string message)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { message }, JsonOptions);
+            await WriteRawEventAsync(httpContext, "error", payload, CancellationToken.None);
+            await WriteRawEventAsync(httpContext, "done", "{}", CancellationToken.None);
+        }
+        catch
+        {
+            // Client already disconnected — nothing more to do.
+        }
     }
 
     private static AssistantConversationScope ParseScope(ConversationScopeRequest request)
