@@ -298,6 +298,10 @@ For replay-with-edit, the assistant proposes substitution edits keyed by `(agent
 
 `diagnose_trace` composes saga + decisions + logic evaluations + token usage into a structured verdict with anomaly heuristics applied server-side (`long_duration`, `token_spike`, `logic_failure`). The output names the failing node, cites evidence by anomaly id, and suggests next actions as deep-linked URLs (trace inspector, agent editor, replay-with-edit candidates). Works on completed traces too — those report empty `failingNodes` but may still surface anomalies.
 
+#### Artifacts
+
+Every tool that produces a downloadable file (workflow-package draft / snapshot, trace diagnostic, evidence bundle) registers an **artifact event** that the chat panel renders inline as a pill plus in a pinned **rail** above the composer. Artifacts persist across reload, expose Download / View / Diff / Save-to-library actions (where applicable), and survive even after the chat-side Save chip is dismissed — the rail is the recovery path for "I closed the chip, where did my draft go?". See [docs/assistant-artifacts.md](./docs/assistant-artifacts.md) for the full design, the producer contract (`IArtifactRecorder`), and the kind taxonomy.
+
 #### Page-aware context
 
 When the sidebar opens on a trace, workflow, or node, the chat backend injects a `<current-page-context>` system message describing the active entity (`{ kind, route, entityType, entityId, selectedNodeId, selectedScriptSlot }`). The assistant resolves "this trace", "this node", "this script" implicitly without asking — say "why did this fail?" on a trace page and `diagnose_trace` runs against the active id.

@@ -200,55 +200,59 @@ The chat panel renders pills + rail rows automatically — no UI
 changes needed for a new kind, unless the kind needs custom actions
 beyond Download / View.
 
-## Implementation plan (10 slices)
+## Implementation plan (10 slices) — all shipped 2026-05-06
 
 ### Phase 1 — inline artifact pills, persistence-grade
 
-- **AA-1** Persistence + recorder hooks. New `assistant_artifact_events`
+- **AA-1** ✅ Persistence + recorder. `assistant_artifact_events`
   table (EF migration), `IAssistantArtifactRepository`,
-  `IArtifactRecorder` (Phase 1 scope: invoked from
-  `WorkflowPackageDraftTools` + `WorkflowPackageTools` snapshot
-  emit). Unit-tested.
-- **AA-2** Live SSE + inline pill render. New `artifact-event`
+  `IArtifactRecorder`. Producers: `WorkflowPackageDraftTools` +
+  `WorkflowPackageTools` snapshot emit. Apply-from-draft orphan-
+  guard.
+- **AA-2** ✅ Live SSE + inline pill render. New `artifact-event`
   stream item; chat-panel ingests and renders a pill anchored to
-  the in-flight assistant message. No persistence read yet — pills
-  appear during the turn.
-- **AA-3** Conversation-load hydration. Extend
-  `ConversationResponse` with `artifactEvents`; chat-panel seeds
-  pills on load. Pills survive reload + thread switch.
-- **AA-4** Download + read-only preview. New endpoint streams
-  bytes. Chat-panel pill's Download triggers a blob save; View
-  opens a Monaco-readonly side sheet.
+  the in-flight assistant message.
+- **AA-3** ✅ Conversation-load hydration. `ConversationResponse`
+  carries `artifactEvents`; chat-panel seeds pills on load. Pills
+  survive reload + thread switch.
+- **AA-4** ✅ Download + read-only Monaco preview side sheet. The
+  endpoint streams bytes with `Content-Disposition: attachment`;
+  410 Gone on expired events.
 
 ### Phase 2 — pinned rail + recovery affordance
 
-- **AA-5** Artifact rail. Pinned strip above composer shows all
-  non-superseded artifacts, ordered newest-first. Same Download /
-  View actions as the inline pill.
-- **AA-6** Save-to-library from rail. New
-  `POST .../artifacts/{id}/save` endpoint mirrors
-  `save_workflow_package` semantics for package-kind artifacts;
-  rail mini-chip mirrors the chat chip's apply / resolve outcomes.
-  Closes the dismissed-chip recovery loop (the original motivating
-  scenario).
-- **AA-7** Diff viewer. From any package-kind pill or rail entry,
-  open a Monaco side-by-side diff against (a) the prior snapshot
-  for that name, or (b) the current library version. Read-only.
+- **AA-5** ✅ Artifact rail. Pinned strip above composer shows all
+  non-superseded artifacts newest-first. Toggle reveals
+  superseded; collapse-to-chip threshold at 4 entries.
+- **AA-6** ✅ Save-to-library from rail. `POST
+  /api/assistant/conversations/{id}/artifacts/{eventId}/save`
+  preview + `POST /api/workflows/package/apply-from-artifact`
+  apply. Mini-chip reuses the chat chip's view-model via
+  `buildSaveConfirmationView`; resolve path stashes a new
+  `'artifact'` import-handoff variant. **Closes the dismissed-
+  chip recovery loop (the original motivating scenario).**
+- **AA-7** ✅ Diff viewer. From any package-kind pill or rail
+  entry, side-by-side Monaco diff against (a) prior superseded
+  same-name event, or (b) current library version of the entry-
+  point workflow.
 
 ### Phase 3 — generalize the artifact contract
 
-- **AA-8** `ArtifactEventKind` taxonomy + `IArtifactRecorder`
-  abstraction shipped as the canonical write path; migrate all
-  existing package-draft producers off direct repo writes.
-- **AA-9** Trace-diagnostic + evidence-bundle producers emit
-  artifact events. `diagnose_trace` writes a JSON summary as an
-  artifact; `export_evidence_bundle` writes the zipped bundle as
-  an artifact. (Existing trace evidence-bundle endpoint stays —
-  this is the conversation-scoped surface.)
-- **AA-10** Documentation + skill prompt update. Add producer
-  guidance to `Assistant/Skills/workflow-authoring.md` and any
-  new producer skill so future tools naturally write artifact
-  events.
+- **AA-8** ✅ Lock the recorder contract. Split
+  `IAssistantArtifactRepository` into a public read interface +
+  inheriting write interface (only the recorder takes the
+  writer). `ArtifactEventKind` enum extended with `TraceDiagnostic`
+  + `EvidenceBundle` (numeric values pinned). Documented
+  `relativePath` conventions per kind.
+- **AA-9** ✅ `diagnose_trace` writes a JSON summary as a
+  `TraceDiagnostic` artifact; new `export_evidence_bundle` tool
+  writes the zipped bundle as an `EvidenceBundle` artifact.
+  Existing trace evidence-bundle endpoint stays untouched — this
+  is the homepage-assistant surface for the same artifact.
+- **AA-10** ✅ Documentation + skill-prompt update.
+  `Assistant/Skills/workflow-authoring.md` mentions the rail as a
+  parallel save surface; README has a §Artifacts subsection
+  linking back to this doc.
 
 ## Risks and follow-ups
 
