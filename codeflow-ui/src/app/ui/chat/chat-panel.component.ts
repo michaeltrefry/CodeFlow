@@ -11,7 +11,7 @@ import {
   ConversationResponse,
 } from '../../core/assistant.api';
 import { AssistantPreferencesService } from '../../core/assistant-preferences.service';
-import { AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
+import { ArtifactEvent, AssistantPreflightRefusal, AssistantStreamEvent, AssistantWorkspaceTargetDto, streamAssistantTurn } from '../../core/assistant-stream';
 import { formatHttpError } from '../../core/format-error';
 import { IMPORT_HANDOFF_STORAGE_KEY, ImportHandoff } from '../../core/import-handoff';
 import { PageContext, pageContextToDto } from '../../core/page-context';
@@ -46,13 +46,36 @@ interface PendingAssistantTurn {
 }
 
 /**
- * One row in the rendered thread. `kind` discriminates between a chat message bubble and a
- * tool-call card so the template can render the right component for each entry without losing
- * insertion order — tool calls land between the user prompt and the final assistant answer.
+ * One row in the rendered thread. `kind` discriminates between a chat message bubble, a
+ * tool-call card, and (sc-793) an artifact pill — so the template can render the right
+ * component for each entry without losing insertion order. Tool calls land between the user
+ * prompt and the final assistant answer; artifact pills land right alongside, anchored to
+ * the in-flight assistant message.
  */
 type ThreadEntry =
   | ({ kind: 'message' } & ChatMessageView)
-  | ({ kind: 'tool' } & ChatToolCallView);
+  | ({ kind: 'tool' } & ChatToolCallView)
+  | ({ kind: 'artifact' } & ArtifactEventView);
+
+/**
+ * sc-793 (AA-2) view-model for an inline artifact pill. Hydrated either from the SSE
+ * `artifact-event` stream during a live turn or (AA-3) from the conversation-load payload.
+ * `superseded` is set when a later event for the same name replaces this one; the pill
+ * still renders but in a muted state so the user can see lineage without acting on stale
+ * bytes. `expired` is reserved for AA-4 (snapshot consumed by apply).
+ */
+export interface ArtifactEventView {
+  id: string;
+  conversationId: string;
+  sequence: number;
+  artifactKind: string;
+  name: string;
+  snapshotId: string | null;
+  summary: string | null;
+  createdAtUtc: string;
+  superseded: boolean;
+  expired: boolean;
+}
 
 interface PinnedMutationChip {
   id: string;
@@ -111,7 +134,7 @@ interface PinnedMutationChip {
         } @else if (thread().length === 0 && !loading()) {
           <p class="chat-panel-empty">No messages yet — say hello.</p>
         } @else {
-          @for (entry of thread(); track entry.kind === 'message' ? 'm:' + (entry.id ?? entry.role + entry.content.length) : 't:' + entry.id) {
+          @for (entry of thread(); track threadTrackBy(entry)) {
             @switch (entry.kind) {
               @case ('message') {
                 <cf-chat-message
@@ -125,6 +148,36 @@ interface PinnedMutationChip {
                   (confirmConfirmation)="onConfirmToolCall($event)"
                   (cancelConfirmation)="onCancelToolCall($event)"
                 />
+              }
+              @case ('artifact') {
+                <div
+                  class="artifact-pill"
+                  [attr.data-state]="entry.superseded ? 'superseded' : (entry.expired ? 'expired' : 'active')"
+                  [attr.data-artifact-id]="entry.id"
+                  data-testid="artifact-pill"
+                >
+                  <span class="artifact-pill-icon" aria-hidden="true">⎘</span>
+                  <span class="artifact-pill-body">
+                    <span class="artifact-pill-name">{{ entry.name }}</span>
+                    @if (artifactSummaryLine(entry); as line) {
+                      <span class="artifact-pill-summary">{{ line }}</span>
+                    }
+                  </span>
+                  <span class="artifact-pill-actions">
+                    <button
+                      type="button"
+                      class="artifact-pill-action"
+                      [disabled]="true"
+                      title="Download (wired in AA-4)"
+                    >Download</button>
+                    <button
+                      type="button"
+                      class="artifact-pill-action"
+                      [disabled]="true"
+                      title="View (wired in AA-4)"
+                    >View</button>
+                  </span>
+                </div>
               }
             }
           }
@@ -448,6 +501,74 @@ interface PinnedMutationChip {
       padding: 8px 12px 4px;
       border-top: 1px solid var(--border, rgba(255,255,255,0.06));
     }
+    /* sc-793 (AA-2): inline artifact pill anchored to the assistant turn that produced it.
+       Tight visual treatment so it reads as a sibling of the tool-call card without competing
+       for attention with the chat bubbles. AA-4 will wire the action buttons. */
+    .artifact-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 12px;
+      padding: 6px 10px;
+      border: 1px solid var(--border, rgba(255,255,255,0.12));
+      border-radius: var(--radius-sm, 6px);
+      background: color-mix(in oklab, var(--accent, #5765ff) 4%, var(--surface, #131519));
+      font-size: var(--fs-sm, 12px);
+      color: var(--text, #E7E9EE);
+    }
+    .artifact-pill[data-state='superseded'] {
+      opacity: 0.55;
+      text-decoration: line-through;
+      text-decoration-color: var(--text-muted, #9aa3b2);
+    }
+    .artifact-pill[data-state='expired'] {
+      opacity: 0.4;
+      filter: grayscale(0.4);
+    }
+    .artifact-pill-icon {
+      font-size: 13px;
+      color: var(--accent, #5765ff);
+    }
+    .artifact-pill-body {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .artifact-pill-name {
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .artifact-pill-summary {
+      font-size: 11px;
+      color: var(--text-muted, #9aa3b2);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .artifact-pill-actions {
+      display: flex;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .artifact-pill-action {
+      appearance: none;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--border, rgba(255,255,255,0.16));
+      background: transparent;
+      color: var(--text, #E7E9EE);
+    }
+    .artifact-pill-action:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .ws-prompt {
       flex: 0 0 auto;
       display: flex;
@@ -589,6 +710,14 @@ export class ChatPanelComponent implements OnDestroy {
    * `ReplayRequest` body the chat-panel POSTs to /api/traces/{id}/replay on confirm.
    */
   private readonly pendingReplays = new Map<string, { originalTraceId: string; request: ReplayRequest }>();
+
+  /**
+   * sc-793 (AA-2): live + (AA-3) hydrated artifact events for the current conversation. Each
+   * `artifact-event` SSE frame appends here in arrival order; supersession is applied locally
+   * so prior pills with the same name flip to muted without a separate round-trip. AA-3 will
+   * seed this from `applyConversationPayload` so reload restores the same pills.
+   */
+  protected readonly artifactEvents = signal<ArtifactEventView[]>([]);
 
   /** The conversation scope. Changing it re-resolves the conversation. */
   readonly scope = input.required<AssistantScope>();
@@ -766,6 +895,7 @@ export class ChatPanelComponent implements OnDestroy {
     const tools = this.toolCalls();
     const pending = this.pending();
     const optimistic = this.optimisticUser();
+    const artifacts = this.artifactEvents();
 
     // Find the last persisted assistant message — only relevant when there's no streaming
     // bubble, since otherwise the streaming bubble is the destination.
@@ -779,6 +909,10 @@ export class ChatPanelComponent implements OnDestroy {
     for (let i = 0; i < messages.length; i++) {
       if (i === toolInsertIdx) {
         for (const tc of tools) out.push({ kind: 'tool', ...tc });
+        // sc-793: artifact pills land right after the tool block, anchored to the same
+        // assistant turn the tool calls belong to. AA-3 will scope this by message-id once
+        // hydrated events carry one.
+        for (const a of artifacts) out.push({ kind: 'artifact', ...a });
       }
       const m = messages[i];
       out.push({
@@ -795,9 +929,11 @@ export class ChatPanelComponent implements OnDestroy {
       out.push({ kind: 'message', id: null, role: 'user', content: optimistic });
     }
 
-    // In-flight: tool cards render between the user message and the streaming reply text.
+    // In-flight: tool cards render between the user message and the streaming reply text;
+    // artifact pills follow the tool block in arrival order.
     if (pending !== null) {
       for (const tc of tools) out.push({ kind: 'tool', ...tc });
+      for (const a of artifacts) out.push({ kind: 'artifact', ...a });
       out.push({
         kind: 'message',
         id: pending.serverId,
@@ -1594,6 +1730,11 @@ export class ChatPanelComponent implements OnDestroy {
         this.scrollToBottom();
         break;
       }
+      case 'artifact-event': {
+        this.appendArtifactEvent(evt.event, evt.supersedesPriorByName);
+        this.scrollToBottom();
+        break;
+      }
       case 'error': {
         this.turnError.set(evt.message);
         this.pending.set(null);
@@ -1624,8 +1765,62 @@ export class ChatPanelComponent implements OnDestroy {
     this.turnError.set(null);
     this.preflightError.set(null);
     this.toolCalls.set([]);
+    // sc-793: artifact events are per-conversation; clear on scope change so the next
+    // conversation's pills don't bleed in.
+    this.artifactEvents.set([]);
     this.conversationInputTokens.set(0);
     this.conversationOutputTokens.set(0);
+  }
+
+  /**
+   * sc-793 (AA-2): append a freshly-streamed artifact event to the inline pill list. When
+   * `supersedesPriorByName` is true (typical for drafts), every active prior pill with the
+   * same `name` is marked superseded — the recorder's repository-side supersession is mirrored
+   * locally so the UI doesn't need to refetch the list. Idempotent: a re-arriving frame for
+   * the same id is dropped.
+   */
+  private appendArtifactEvent(event: ArtifactEvent, supersedesPriorByName: boolean): void {
+    this.artifactEvents.update(prev => applyArtifactEvent(prev, event, supersedesPriorByName));
+  }
+
+  /**
+   * Stable track-by for the thread `@for`. Message ids can be null while streaming, so we
+   * fall back to role + content length (same as the prior inline track expression).
+   */
+  protected threadTrackBy(entry: ThreadEntry): string {
+    switch (entry.kind) {
+      case 'message': return 'm:' + (entry.id ?? entry.role + entry.content.length);
+      case 'tool':    return 't:' + entry.id;
+      case 'artifact': return 'a:' + entry.id;
+    }
+  }
+
+  /**
+   * Render a one-line summary string from the recorder's `summary_json` for the pill. The
+   * summary is free-form; we only try a couple of common shapes (entry-point + node count
+   * for workflow packages) and fall back to null so the pill body collapses to just the name.
+   */
+  protected artifactSummaryLine(view: ArtifactEventView): string | null {
+    if (!view.summary) return null;
+    try {
+      const parsed = JSON.parse(view.summary) as {
+        entryPoint?: { key?: string; version?: number };
+        workflows?: Array<{ nodeCount?: number; edgeCount?: number }>;
+        agentCount?: number;
+      };
+      const parts: string[] = [];
+      if (parsed.entryPoint?.key) {
+        parts.push(parsed.entryPoint.version != null
+          ? `${parsed.entryPoint.key} v${parsed.entryPoint.version}`
+          : parsed.entryPoint.key);
+      }
+      const totalNodes = (parsed.workflows ?? []).reduce((acc, w) => acc + (w.nodeCount ?? 0), 0);
+      if (totalNodes > 0) parts.push(`${totalNodes} node${totalNodes === 1 ? '' : 's'}`);
+      if (parsed.agentCount) parts.push(`${parsed.agentCount} agent${parsed.agentCount === 1 ? '' : 's'}`);
+      return parts.length > 0 ? parts.join(' · ') : null;
+    } catch {
+      return null;
+    }
   }
 
   ngOnDestroy(): void {
@@ -1768,6 +1963,45 @@ export class ChatPanelComponent implements OnDestroy {
  * The cached package payload is held separately on the panel via `pendingSaves`; this helper
  * just produces the view-model the chip renders.
  */
+/**
+ * sc-793 (AA-2): pure helper that applies a freshly-streamed artifact event to the in-memory
+ * pill list. Exported so unit tests can exercise the supersession / dedupe semantics without
+ * spinning up TestBed.
+ *
+ * - Re-arrival of the same `id` is a no-op (the SSE stream is at-least-once on retry; we
+ *   don't want a duplicate pill if the recorder fires twice).
+ * - When `supersedesPriorByName` is true, every active prior pill with the same `name` flips
+ *   to `superseded: true`. This mirrors the recorder's repository-side
+ *   `MarkActiveSupersededByNameAsync` so the UI doesn't need to refetch the list.
+ * - The new event always lands as `superseded: false, expired: false` since the server has
+ *   not yet given us any reason to think otherwise.
+ */
+export function applyArtifactEvent(
+  prev: ArtifactEventView[],
+  event: ArtifactEvent,
+  supersedesPriorByName: boolean,
+): ArtifactEventView[] {
+  if (prev.some(p => p.id === event.id)) {
+    return prev;
+  }
+  const next: ArtifactEventView[] = supersedesPriorByName
+    ? prev.map(p => p.name === event.name && !p.superseded ? { ...p, superseded: true } : p)
+    : prev.slice();
+  next.push({
+    id: event.id,
+    conversationId: event.conversationId,
+    sequence: event.sequence,
+    artifactKind: event.kind,
+    name: event.name,
+    snapshotId: event.snapshotId,
+    summary: event.summary,
+    createdAtUtc: event.createdAtUtc,
+    superseded: false,
+    expired: false,
+  });
+  return next;
+}
+
 export function buildSaveConfirmationView(
   resultJson: string,
   pkg: unknown,

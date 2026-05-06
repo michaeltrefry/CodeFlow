@@ -38,9 +38,35 @@ export type AssistantStreamEvent =
   | { kind: 'tool-call'; id: string; name: string; arguments: unknown }
   | { kind: 'tool-result'; id: string; name: string; result: string; isError: boolean }
   | { kind: 'assistant-message-persisted'; message: AssistantMessage }
+  | { kind: 'artifact-event'; event: ArtifactEvent; supersedesPriorByName: boolean }
   | { kind: 'done' }
   | { kind: 'error'; message: string }
   | { kind: 'preflight-refused'; payload: AssistantPreflightRefusal };
+
+/**
+ * sc-793 (AA-2): one persisted artifact-event row, projected to the SSE payload shape. The
+ * full event model lives server-side in `assistant_artifact_events`; the chat panel only
+ * needs the fields below to render a pill, anchor it by `id`, and (in AA-3) re-hydrate from
+ * conversation load. AA-4 wires the Download / View actions against the durable `id`.
+ */
+export interface ArtifactEvent {
+  /** Stable per-event id; the AA-4 download endpoint keys off this. */
+  id: string;
+  /** The conversation that owns this event. */
+  conversationId: string;
+  /** Monotonic per-conversation sequence — drives inline-pill ordering. */
+  sequence: number;
+  /** Server enum name (e.g. 'WorkflowPackageDraft'). */
+  kind: string;
+  /** Display name (e.g. 'draft.cf-workflow-package.json'). */
+  name: string;
+  /** Non-null only for immutable per-save snapshots. */
+  snapshotId: string | null;
+  /** Tool-supplied summary, JSON-stringified. Free-form; renderer is resilient to missing keys. */
+  summary: string | null;
+  /** ISO timestamp the row was created. */
+  createdAtUtc: string;
+}
 
 /**
  * sc-274 phase 2 — parsed body of a preflight 422 from the assistant chat endpoint. Mirrors
@@ -179,7 +205,7 @@ async function handlePreflightRefusal(response: Response): Promise<AssistantStre
   };
 }
 
-function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStreamEvent | null {
+export function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStreamEvent | null {
   if (!eventName) {
     return null;
   }
@@ -227,6 +253,33 @@ function parseSseFrame({ eventName, dataLines }: SseFrame): AssistantStreamEvent
     case 'tool-result': {
       const r = payload as { id: string; name: string; result: string; isError: boolean };
       return { kind: 'tool-result', id: r.id, name: r.name, result: r.result, isError: r.isError ?? false };
+    }
+    case 'artifact-event': {
+      const a = payload as {
+        id: string;
+        conversationId: string;
+        sequence: number;
+        kind: string;
+        name: string;
+        snapshotId: string | null;
+        summary: string | null;
+        createdAtUtc: string;
+        supersedesPriorByName: boolean;
+      };
+      return {
+        kind: 'artifact-event',
+        event: {
+          id: a.id,
+          conversationId: a.conversationId,
+          sequence: a.sequence,
+          kind: a.kind,
+          name: a.name,
+          snapshotId: a.snapshotId ?? null,
+          summary: a.summary ?? null,
+          createdAtUtc: a.createdAtUtc,
+        },
+        supersedesPriorByName: a.supersedesPriorByName ?? false,
+      };
     }
     case 'done':
       return { kind: 'done' };

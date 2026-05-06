@@ -134,6 +134,9 @@ public static class ApiServiceCollectionExtensions
         services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient());
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IAssistantArtifactRepository, AssistantArtifactRepository>();
+        // sc-793 (AA-2): collector is scoped — same scope as the recorder and the assistant —
+        // so the recorder's appends and the assistant's drains share one buffer per request.
+        services.AddScoped<IArtifactEventCollector, ArtifactEventCollector>();
         services.AddScoped<IArtifactRecorder, ArtifactRecorder>();
         services.AddScoped<IAssistantSettingsResolver, AssistantSettingsResolver>();
 
