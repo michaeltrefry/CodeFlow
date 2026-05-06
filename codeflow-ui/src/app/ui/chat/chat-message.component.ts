@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, HostListener, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 import { IconComponent } from '../icon.component';
 import { renderMarkdown } from './markdown';
 
@@ -235,17 +235,6 @@ export interface ChatMessageView {
     .chat-msg-body--markdown .cf-workflow-package-summary code {
       background: color-mix(in oklab, var(--text, #E7E9EE) 10%, transparent);
     }
-    /* Actions row: keep "Show package JSON" disclosure on the left and the download button on
-       the right so the download stays visible without expanding the JSON. */
-    .chat-msg-body--markdown .cf-workflow-package-actions {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-    }
-    .chat-msg-body--markdown .cf-workflow-package-detail {
-      flex: 1 1 auto;
-      min-width: 0;
-    }
     .chat-msg-body--markdown .cf-workflow-package-detail summary {
       cursor: pointer;
       font-size: 11px;
@@ -259,28 +248,9 @@ export interface ChatMessageView {
     .chat-msg-body--markdown .cf-workflow-package-detail pre {
       margin: 6px 0 0 0;
     }
-    .chat-msg-body--markdown .cf-workflow-package-download {
-      flex: 0 0 auto;
-      appearance: none;
-      cursor: pointer;
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      border: 1px solid var(--border, rgba(255,255,255,0.16));
-      background: transparent;
-      color: var(--text-muted, #9aa3b2);
-      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-    }
-    .chat-msg-body--markdown .cf-workflow-package-download:hover {
-      background: var(--surface-2, rgba(255,255,255,0.06));
-      border-color: var(--border-2, rgba(255,255,255,0.24));
-      color: var(--text, #E7E9EE);
-    }
   `],
 })
 export class ChatMessageComponent {
-  private readonly host = inject(ElementRef<HTMLElement>);
-
   readonly message = input.required<ChatMessageView>();
   readonly forkRequested = output<string>();
 
@@ -322,27 +292,6 @@ export class ChatMessageComponent {
     if (!id) return;
     this.forkRequested.emit(id);
   }
-
-  /**
-   * Workflow-package render emits a button with class `.cf-workflow-package-download` whose JSON
-   * lives inside the sibling `<details><pre><code>`. Angular can't bind events to innerHTML, so
-   * we delegate from the host: read the JSON out of the DOM and trigger a download.
-   */
-  @HostListener('click', ['$event'])
-  protected onHostClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement | null;
-    const button = target?.closest('.cf-workflow-package-download') as HTMLButtonElement | null;
-    if (!button || !this.host.nativeElement.contains(button)) {
-      return;
-    }
-    event.preventDefault();
-    const container = button.closest('.cf-workflow-package');
-    const code = container?.querySelector('.cf-workflow-package-detail pre code') as HTMLElement | null;
-    const json = code?.textContent ?? '';
-    if (!json) return;
-    const filename = button.dataset['cfFilename'] || 'workflow.json';
-    triggerJsonDownload(json, filename);
-  }
 }
 
 async function writeToClipboard(text: string): Promise<boolean> {
@@ -370,15 +319,3 @@ async function writeToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function triggerJsonDownload(json: string, filename: string): void {
-  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
