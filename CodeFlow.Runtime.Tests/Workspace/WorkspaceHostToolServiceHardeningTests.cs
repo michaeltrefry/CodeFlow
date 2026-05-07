@@ -381,7 +381,7 @@ public sealed class WorkspaceHostToolServiceHardeningTests : IDisposable
 
         result.IsError.Should().BeFalse();
         var stdout = JsonNode.Parse(result.Content)!["stdout"]!.GetValue<string>();
-        stdout.Should().Contain("GIT_CONFIG_COUNT=3");
+        stdout.Should().Contain("GIT_CONFIG_COUNT=2");
         stdout.Should().Contain("GIT_CONFIG_KEY_0=credential.helper");
         // VALUE_0 is intentionally empty — resets inherited helper chain. `env` prints
         // empty-valued vars as `KEY=` so the line is present but truncated; assert presence
@@ -390,8 +390,7 @@ public sealed class WorkspaceHostToolServiceHardeningTests : IDisposable
         stdout.Should().Contain("GIT_CONFIG_VALUE_1=store --file=");
         stdout.Should().Contain($"{ctx.Workspace!.CorrelationId:N}",
             "per-trace cred file path is keyed by the trace's CorrelationId");
-        stdout.Should().Contain("GIT_CONFIG_KEY_2=credential.useHttpPath");
-        stdout.Should().Contain("GIT_CONFIG_VALUE_2=true");
+        stdout.Should().NotContain("credential.useHttpPath");
     }
 
     private WorkspaceHostToolService NewService(

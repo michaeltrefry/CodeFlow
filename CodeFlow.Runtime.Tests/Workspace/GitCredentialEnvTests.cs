@@ -21,18 +21,20 @@ public sealed class GitCredentialEnvTests
 
         var env = GitCredentialEnv.Build(root, traceId);
 
-        // Three entries: empty `credential.helper` to reset any inherited helper chain
-        // (osxkeychain on macOS, libsecret/wincred elsewhere), then our store helper, then
-        // useHttpPath. Order matters — the reset must come before the store entry.
-        env.Should().ContainKey("GIT_CONFIG_COUNT").WhoseValue.Should().Be("3");
+        // Two entries: empty `credential.helper` to reset any inherited helper chain
+        // (osxkeychain on macOS, libsecret/wincred elsewhere), then our store helper. Order
+        // matters — the reset must come before the store entry. credential.useHttpPath is
+        // deliberately NOT set: stored entries are host-only and useHttpPath=true makes
+        // them un-matchable against requests that carry a path (e.g. push to github.com/user/repo).
+        env.Should().ContainKey("GIT_CONFIG_COUNT").WhoseValue.Should().Be("2");
         env.Should().ContainKey("GIT_CONFIG_KEY_0").WhoseValue.Should().Be("credential.helper");
         env.Should().ContainKey("GIT_CONFIG_VALUE_0")
             .WhoseValue.Should().BeEmpty("an empty helper string clears the inherited helper list");
         env.Should().ContainKey("GIT_CONFIG_KEY_1").WhoseValue.Should().Be("credential.helper");
         env.Should().ContainKey("GIT_CONFIG_VALUE_1")
             .WhoseValue.Should().Be("store --file=\"/var/lib/codeflow/git-creds/11111111222233334444555555555555\"");
-        env.Should().ContainKey("GIT_CONFIG_KEY_2").WhoseValue.Should().Be("credential.useHttpPath");
-        env.Should().ContainKey("GIT_CONFIG_VALUE_2").WhoseValue.Should().Be("true");
+        env.Should().NotContainKey("GIT_CONFIG_KEY_2");
+        env.Should().NotContainKey("GIT_CONFIG_VALUE_2");
     }
 
     [Fact]

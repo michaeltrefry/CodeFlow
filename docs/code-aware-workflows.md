@@ -273,8 +273,10 @@ automatically. The plumbing:
    `setup_workspace` again to add a repo (the idempotent-merge flow) updates the file in
    place if a new host appears.
 3. **`git` is pointed at the file** via `GIT_CONFIG_*` env vars set on every spawned `git`
-   process by both `run_command` and `IGitCli`. Specifically:
-   `credential.helper = store --file=…/{traceId-N}` and `credential.useHttpPath = true`.
+   process by both `run_command` and `IGitCli`. Specifically: an empty `credential.helper`
+   to reset any inherited helper chain (osxkeychain etc.) followed by
+   `credential.helper = store --file=…/{traceId-N}`. `credential.useHttpPath` is left at its
+   default of `false` so host-only stored entries match push requests that include a path.
    No global gitconfig mutation, so concurrent traces in the same worker never collide.
 4. **Cleanup** runs on the same paths that remove the per-trace workdir: trace-delete,
    happy-path completion, and the periodic `GitCredentialSweepService` (TTL = same
