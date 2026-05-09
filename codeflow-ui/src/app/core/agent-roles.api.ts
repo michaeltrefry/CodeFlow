@@ -8,6 +8,34 @@ import {
   AgentRoleUpdateRequest,
 } from './models';
 
+/**
+ * sc-828 / AR-4: response from PUT /api/agents/{key}/roles. Bump-on-write produces a new
+ * agent version with the supplied assignment slot; the response surfaces the new version
+ * so the admin UI can redirect/refresh and so workflows can rebind by republishing.
+ */
+export interface AgentAssignmentsResponse {
+  agentKey: string;
+  agentVersion: number;
+  assignedRoles: AgentRole[];
+}
+
+/**
+ * sc-828 / AR-4: 409 body returned when the bump previewed against `expectedFromVersion`
+ * but the agent's latest moved on to `actualLatestVersion`. The UI catches this, refreshes
+ * its view of the agent, and offers to retry with `acknowledgeDrift: true`.
+ */
+export interface AgentAssignmentsDriftResponse {
+  agentKey: string;
+  expectedFromVersion: number;
+  actualLatestVersion: number;
+  message: string;
+}
+
+export interface ReplaceAssignmentsOptions {
+  expectedFromVersion?: number;
+  acknowledgeDrift?: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class AgentRolesApi {
   private readonly http = inject(HttpClient);
@@ -60,10 +88,18 @@ export class AgentRolesApi {
     return this.http.get<AgentRole[]>(`/api/agents/${encodeURIComponent(agentKey)}/roles`);
   }
 
-  replaceAssignments(agentKey: string, roleIds: number[]): Observable<AgentRole[]> {
-    return this.http.put<AgentRole[]>(
+  replaceAssignments(
+    agentKey: string,
+    roleIds: number[],
+    options: ReplaceAssignmentsOptions = {}
+  ): Observable<AgentAssignmentsResponse> {
+    return this.http.put<AgentAssignmentsResponse>(
       `/api/agents/${encodeURIComponent(agentKey)}/roles`,
-      { roleIds }
+      {
+        roleIds,
+        expectedFromVersion: options.expectedFromVersion,
+        acknowledgeDrift: options.acknowledgeDrift ?? false,
+      }
     );
   }
 }

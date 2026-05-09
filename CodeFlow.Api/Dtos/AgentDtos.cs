@@ -38,7 +38,17 @@ public sealed record BulkRetireKeysResponse(
     IReadOnlyList<string> RetiredKeys,
     IReadOnlyList<string> MissingKeys);
 
-public sealed record CreateAgentRequest(string? Key, JsonElement? Config, IReadOnlyList<string>? Tags);
+/// <summary>
+/// POST /api/agents body. <see cref="RoleIds"/> (sc-828 / AR-4) is optional — when
+/// supplied, the new agent's v1 row lands with the assignment slot atomically, no
+/// follow-up bump needed. Supports library seeders + the agent-package importer's
+/// create-with-roles paths and keeps the AP-10 round-trip green without a second PUT.
+/// </summary>
+public sealed record CreateAgentRequest(
+    string? Key,
+    JsonElement? Config,
+    IReadOnlyList<string>? Tags,
+    IReadOnlyList<long>? RoleIds = null);
 
 public sealed record UpdateAgentRequest(JsonElement? Config, IReadOnlyList<string>? Tags);
 

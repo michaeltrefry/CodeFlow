@@ -57,7 +57,43 @@ public interface IAgentRoleRepository
     /// </summary>
     Task<IReadOnlyList<AgentRole>> GetRolesForAgentLatestAsync(string agentKey, CancellationToken cancellationToken = default);
 
-    Task ReplaceAssignmentsAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Replaces the role-assignment slot for the given (agent_key, agent_version). Use this
+    /// when the caller knows exactly which version to write at — package importers writing
+    /// per imported agent, validation rules seeding fixtures at a known version, etc. Bump-
+    /// on-write semantics for admin edits live on
+    /// <see cref="BumpAgentForRoleAssignmentChangeAsync"/> instead.
+    /// </summary>
+    Task ReplaceAssignmentsAsync(
+        string agentKey,
+        int agentVersion,
+        IReadOnlyList<long> roleIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces the role-assignment slot for the latest agent version. Use only from paths
+    /// that explicitly want "edit the current version's assignment in place" without
+    /// bumping (template materializers, tests). Falls back to <c>agent_version = 0</c> for
+    /// orphan keys with no <c>agents</c> row.
+    /// </summary>
+    Task ReplaceAssignmentsForLatestAsync(
+        string agentKey,
+        IReadOnlyList<long> roleIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// sc-828 / AR-4: bump the agent to a new version with the same body and the supplied
+    /// role assignment. Returns the new version. Throws
+    /// <see cref="AgentConfigVersionDriftException"/> when <paramref name="expectedFromVersion"/>
+    /// is supplied and disagrees with the actual latest version (admin UI surfaces this as a
+    /// 409 + refresh affordance).
+    /// </summary>
+    Task<int> BumpAgentForRoleAssignmentChangeAsync(
+        string agentKey,
+        IReadOnlyList<long> roleIds,
+        int? expectedFromVersion,
+        string? createdBy,
+        CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<long>> GetSkillGrantsAsync(long id, CancellationToken cancellationToken = default);
 

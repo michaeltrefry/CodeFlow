@@ -1685,7 +1685,7 @@ public sealed class WorkflowsEndpointsTests
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, "mcp:secret-search:query")
         });
 
-        await roleRepository.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepository.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
     }
 
     private static string RewritePackageKeys(

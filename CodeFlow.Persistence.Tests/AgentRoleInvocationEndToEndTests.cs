@@ -475,7 +475,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
             new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:read"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
     }
 
     private CodeFlowDbContext CreateDbContext()

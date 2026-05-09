@@ -62,7 +62,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
             new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
             new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -104,7 +104,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:read"),
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:write"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -144,7 +144,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
             new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
         });
 
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -186,7 +186,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:removed"),
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, "mcp:ghost-server:anything"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -220,7 +220,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         {
             new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { activeRole, archivedRole });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { activeRole, archivedRole });
         await roleRepo.ArchiveAsync(archivedRole);
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
@@ -245,7 +245,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
 
         var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
         await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillA, skillB, skillArchived });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -270,7 +270,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         var roleB = await roleRepo.CreateAsync(new AgentRoleCreate($"b-{Guid.NewGuid():N}", "B", null, null));
         await roleRepo.ReplaceSkillGrantsAsync(roleA, new[] { skillId });
         await roleRepo.ReplaceSkillGrantsAsync(roleB, new[] { skillId });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -290,7 +290,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         var skillId = await skillRepo.CreateAsync(new SkillCreate($"s-{Guid.NewGuid():N}", "body", null));
         var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
         await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillId });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
         await roleRepo.ArchiveAsync(roleId);
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
@@ -335,7 +335,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         {
             new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{serverKey}:read"),
         });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
@@ -357,7 +357,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         var skillId = await skillRepo.CreateAsync(new SkillCreate($"s-{Guid.NewGuid():N}", "body", null));
         var roleId = await roleRepo.CreateAsync(new AgentRoleCreate($"r-{Guid.NewGuid():N}", "R", null, null));
         await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillId });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
