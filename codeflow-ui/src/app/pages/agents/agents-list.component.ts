@@ -92,6 +92,10 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
         <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ retireError() }}</cf-chip></div></div>
       }
 
+      @if (exportError()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ exportError() }}</cf-chip></div></div>
+      }
+
       @if (loading()) {
         <div class="card"><div class="card-body muted">Loading agents…</div></div>
       } @else if (error()) {
@@ -145,6 +149,17 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
                   <span>·</span>
                   <span class="mono">&#64;{{ agent.latestCreatedBy }}</span>
                 }
+              </div>
+              <div class="agent-card-actions" (click)="$event.stopPropagation()">
+                <button
+                  type="button"
+                  cf-button
+                  size="sm"
+                  variant="ghost"
+                  [disabled]="exportingKey() === agent.key"
+                  (click)="downloadPackage($event, agent)">
+                  {{ exportingKey() === agent.key ? 'Exporting…' : 'Export' }}
+                </button>
               </div>
             </a>
           }
@@ -227,6 +242,11 @@ export class AgentsListComponent {
   readonly selectedKeys = signal<Set<string>>(new Set());
   readonly retiring = signal(false);
   readonly retireError = signal<string | null>(null);
+  // AP-6 (sc-837): per-row export state. `exportingKey` is the agent currently exporting
+  // (so we disable just that row's button). Errors are surfaced through a top-of-page
+  // banner mirroring `retireError` — no global toast yet.
+  readonly exportingKey = signal<string | null>(null);
+  readonly exportError = signal<string | null>(null);
   readonly selectedCount = computed(() => this.selectedKeys().size);
 
   readonly visibleAgents = computed(() => {
@@ -342,6 +362,58 @@ export class AgentsListComponent {
       }
     });
   }
+
+  /** AP-6 (sc-837): fetch the canonical agent-package JSON and trigger a browser save.
+   *  The card itself is a `<a routerLink>`, so the click handler must `preventDefault` +
+   *  `stopPropagation` to avoid navigating to the agent detail page. */
+  downloadPackage(event: Event, agent: AgentSummary): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.exportingKey() === agent.key) return;
+    this.exportError.set(null);
+    this.exportingKey.set(agent.key);
+
+    this.agentsApi.downloadPackage(agent.key, agent.latestVersion).subscribe({
+      next: response => {
+        this.exportingKey.set(null);
+        const blob = response.body;
+        if (!blob) {
+          this.exportError.set('Server returned an empty package body.');
+          return;
+        }
+        const fileName = fileNameFromContentDisposition(response.headers.get('content-disposition'))
+          ?? `${agent.key}-v${agent.latestVersion}-agent-package.json`;
+        saveBlobToDisk(blob, fileName);
+      },
+      error: err => {
+        this.exportingKey.set(null);
+        this.exportError.set(formatHttpError(err, `Failed to export agent '${agent.key}'.`));
+      }
+    });
+  }
+}
+
+/** Trigger the browser's save-as flow for `blob` under `fileName`. Lifted out of the
+ *  component so component tests can spy on it via the module export. */
+export function saveBlobToDisk(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+/** Parse a `Content-Disposition` header for the suggested filename. Handles both the
+ *  bare `filename=name.json` form and the quoted `filename="name with spaces.json"`
+ *  form; returns null when the header is missing or unparseable. */
+export function fileNameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const match = /filename\*?=(?:UTF-8'')?(?:"([^"]+)"|([^;]+))/i.exec(header);
+  if (!match) return null;
+  return (match[1] ?? match[2] ?? '').trim() || null;
 }
 
 function parseTagInput(value: string): string[] {
