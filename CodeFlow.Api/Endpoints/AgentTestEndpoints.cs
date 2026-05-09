@@ -75,7 +75,7 @@ public static class AgentTestEndpoints
             return;
         }
 
-        var resolvedTools = await roleResolution.ResolveAsync(agentKey, cancellationToken);
+        var resolvedTools = await roleResolution.ResolveAsync(agentKey, agentConfig.Version, cancellationToken);
 
         var invocationConfig = MergeVariables(agentConfig.Configuration, request.Variables);
 

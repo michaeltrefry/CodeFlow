@@ -206,12 +206,15 @@ public sealed class AgentRoleRepositoryTests : IAsyncLifetime
 
         await repo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
 
-        var afterFirst = await repo.GetRolesForAgentAsync(agentKey);
+        // Latest reads the highest agent_version row — agent_role_assignments has no real
+        // agent rows here so the writer lands at agent_version=0 (the orphan placeholder).
+        // Latest correctly returns those rows. AR-4 reshapes the writer for real agents.
+        var afterFirst = await repo.GetRolesForAgentLatestAsync(agentKey);
         afterFirst.Select(r => r.Id).Should().BeEquivalentTo(new[] { roleA, roleB });
 
         await repo.ReplaceAssignmentsAsync(agentKey, new[] { roleB, roleC });
 
-        var afterSecond = await repo.GetRolesForAgentAsync(agentKey);
+        var afterSecond = await repo.GetRolesForAgentLatestAsync(agentKey);
         afterSecond.Select(r => r.Id).Should().BeEquivalentTo(new[] { roleB, roleC });
     }
 
@@ -280,6 +283,59 @@ public sealed class AgentRoleRepositoryTests : IAsyncLifetime
         var act = () => repo.UpdateAsync(99999, new AgentRoleUpdate("x", null, null));
 
         await act.Should().ThrowAsync<AgentRoleNotFoundException>();
+    }
+
+    [Fact]
+    public async Task GetRolesForAgentAsync_filters_by_specific_agent_version()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var repo = new AgentRoleRepository(ctx);
+
+        var roleA = await repo.CreateAsync(new AgentRoleCreate($"role-a-{Guid.NewGuid():N}", "A", null, null));
+        var roleB = await repo.CreateAsync(new AgentRoleCreate($"role-b-{Guid.NewGuid():N}", "B", null, null));
+
+        // Seed assignment rows directly so we control the agent_version values. AR-1 backfill
+        // produces equivalent rows naturally; we replicate that shape here without leaning on
+        // AR-4's eventual bump-on-write writer.
+        var nowUtc = DateTime.UtcNow;
+        ctx.AgentRoleAssignments.AddRange(
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 1, RoleId = roleA, CreatedAtUtc = nowUtc },
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 2, RoleId = roleB, CreatedAtUtc = nowUtc });
+        await ctx.SaveChangesAsync();
+
+        (await repo.GetRolesForAgentAsync(agentKey, agentVersion: 1))
+            .Select(r => r.Id).Should().Equal(roleA);
+        (await repo.GetRolesForAgentAsync(agentKey, agentVersion: 2))
+            .Select(r => r.Id).Should().Equal(roleB);
+        (await repo.GetRolesForAgentAsync(agentKey, agentVersion: 99))
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRolesForAgentLatestAsync_returns_max_version_assignments()
+    {
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var repo = new AgentRoleRepository(ctx);
+
+        var roleA = await repo.CreateAsync(new AgentRoleCreate($"role-a-{Guid.NewGuid():N}", "A", null, null));
+        var roleB = await repo.CreateAsync(new AgentRoleCreate($"role-b-{Guid.NewGuid():N}", "B", null, null));
+
+        var nowUtc = DateTime.UtcNow;
+        ctx.AgentRoleAssignments.AddRange(
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 1, RoleId = roleA, CreatedAtUtc = nowUtc },
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 3, RoleId = roleB, CreatedAtUtc = nowUtc });
+        await ctx.SaveChangesAsync();
+
+        var latest = await repo.GetRolesForAgentLatestAsync(agentKey);
+        latest.Select(r => r.Id).Should().Equal(roleB);
+
+        // No rows for an unrelated key → empty list, not exception.
+        (await repo.GetRolesForAgentLatestAsync($"missing-{Guid.NewGuid():N}"))
+            .Should().BeEmpty();
     }
 
     private CodeFlowDbContext CreateDbContext()

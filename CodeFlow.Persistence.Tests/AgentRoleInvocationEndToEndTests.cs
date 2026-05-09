@@ -78,7 +78,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
         await using var ctx = CreateDbContext();
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var tools = await resolver.ResolveAsync(agentKey);
+        var tools = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(Provider: "test", Model: "m"),
@@ -129,7 +129,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
         await using var ctx = CreateDbContext();
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var tools = await resolver.ResolveAsync(agentKey);
+        var tools = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(Provider: "test", Model: "m"),
@@ -151,7 +151,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
         await using var ctx1 = CreateDbContext();
         var resolver1 = new RoleResolutionService(ctx1, NullLogger<RoleResolutionService>.Instance);
-        var beforeEdit = await resolver1.ResolveAsync(agentKey);
+        var beforeEdit = await resolver1.ResolveAsync(agentKey, agentVersion: 0);
         beforeEdit.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo" });
 
         await using (var ctx2 = CreateDbContext())
@@ -166,7 +166,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
         await using var ctx3 = CreateDbContext();
         var resolver3 = new RoleResolutionService(ctx3, NullLogger<RoleResolutionService>.Instance);
-        var afterEdit = await resolver3.ResolveAsync(agentKey);
+        var afterEdit = await resolver3.ResolveAsync(agentKey, agentVersion: 0);
 
         afterEdit.AllowedToolNames.Should().BeEquivalentTo(new[] { "now" });
     }
@@ -233,7 +233,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
         await using var ctx = CreateDbContext();
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var tools = await resolver.ResolveAsync(agentKey);
+        var tools = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         var result = await agent.InvokeAsync(
             new AgentInvocationConfiguration(
@@ -353,7 +353,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
             await using var ctx = CreateDbContext();
             var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-            var tools = await resolver.ResolveAsync(agentKey);
+            var tools = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
             var result = await agent.InvokeAsync(
                 new AgentInvocationConfiguration(Provider: "test", Model: "m"),
@@ -427,7 +427,7 @@ public sealed class AgentRoleInvocationEndToEndTests : IAsyncLifetime
 
             await using var ctx = CreateDbContext();
             var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-            var tools = await resolver.ResolveAsync(agentKey);
+            var tools = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
             var result = await agent.InvokeAsync(
                 new AgentInvocationConfiguration(Provider: "test", Model: "m"),

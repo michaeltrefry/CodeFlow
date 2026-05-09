@@ -67,6 +67,7 @@ public sealed class AuthoritySnapshotRecorderTests : IAsyncLifetime
             AgentKey: "dev",
             TraceId: traceId,
             RoundId: roundId,
+            AgentVersion: 1,
             WorkflowKey: "scaffold",
             WorkflowVersion: 1));
 
@@ -124,7 +125,8 @@ public sealed class AuthoritySnapshotRecorderTests : IAsyncLifetime
         await recorder.ResolveAndRecordAsync(new AuthoritySnapshotInput(
             AgentKey: "dev",
             TraceId: traceId,
-            RoundId: roundId));
+            RoundId: roundId,
+            AgentVersion: 1));
 
         sink.Recorded.Should().HaveCount(2);
         sink.Recorded.Should().OnlyContain(r =>
@@ -155,7 +157,8 @@ public sealed class AuthoritySnapshotRecorderTests : IAsyncLifetime
         await recorder.ResolveAndRecordAsync(new AuthoritySnapshotInput(
             AgentKey: "dev",
             TraceId: Guid.NewGuid(),
-            RoundId: Guid.NewGuid()));
+            RoundId: Guid.NewGuid(),
+            AgentVersion: 1));
 
         sink.Recorded.Should().BeEmpty();
     }
@@ -186,7 +189,8 @@ public sealed class AuthoritySnapshotRecorderTests : IAsyncLifetime
             await recorder.ResolveAndRecordAsync(new AuthoritySnapshotInput(
                 AgentKey: $"agent-{i}",
                 TraceId: traceId,
-                RoundId: Guid.NewGuid()));
+                RoundId: Guid.NewGuid(),
+                AgentVersion: 1));
         }
 
         await using var verify = CreateDbContext();

@@ -43,7 +43,7 @@ public sealed class AuthorityResolver : IAuthorityResolver
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var resolved = await roleResolution.ResolveAsync(request.AgentKey, cancellationToken);
+        var resolved = await roleResolution.ResolveAsync(request.AgentKey, request.AgentVersion, cancellationToken);
 
         var tiers = new List<EnvelopeTier>
         {

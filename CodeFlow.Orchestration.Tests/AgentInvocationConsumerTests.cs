@@ -1626,7 +1626,7 @@ public sealed class AgentInvocationConsumerTests
 
     private sealed class FakeRoleResolutionService : IRoleResolutionService
     {
-        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
+        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, int agentVersion, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(ResolvedAgentTools.Empty);
         }

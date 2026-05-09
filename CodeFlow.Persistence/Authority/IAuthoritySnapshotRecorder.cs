@@ -19,7 +19,7 @@ public sealed record AuthoritySnapshotInput(
     string AgentKey,
     Guid TraceId,
     Guid RoundId,
-    int? AgentVersion = null,
+    int AgentVersion,
     string? WorkflowKey = null,
     int? WorkflowVersion = null,
     WorkflowExecutionEnvelope? ContextTier = null);

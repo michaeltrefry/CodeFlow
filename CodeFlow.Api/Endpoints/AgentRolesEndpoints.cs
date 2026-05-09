@@ -345,7 +345,7 @@ public static class AgentRolesEndpoints
         CancellationToken cancellationToken)
     {
         var normalized = key.Trim();
-        var roles = await repository.GetRolesForAgentAsync(normalized, cancellationToken);
+        var roles = await repository.GetRolesForAgentLatestAsync(normalized, cancellationToken);
         return Results.Ok(roles.Select(Map).ToArray());
     }
 
@@ -377,7 +377,7 @@ public static class AgentRolesEndpoints
             });
         }
 
-        var roles = await repository.GetRolesForAgentAsync(normalized, cancellationToken);
+        var roles = await repository.GetRolesForAgentLatestAsync(normalized, cancellationToken);
         return Results.Ok(roles.Select(Map).ToArray());
     }
 

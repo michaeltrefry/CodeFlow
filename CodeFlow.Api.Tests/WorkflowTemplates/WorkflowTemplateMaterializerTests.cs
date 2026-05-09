@@ -695,14 +695,14 @@ public sealed class WorkflowTemplateMaterializerTests : IClassFixture<WorkflowTe
         await using var verifyCtx = CreateDbContext();
         var roleRepo = new AgentRoleRepository(verifyCtx);
 
-        var mechanicalGateRoles = await roleRepo.GetRolesForAgentAsync($"{prefix}-mechanical-gate");
+        var mechanicalGateRoles = await roleRepo.GetRolesForAgentLatestAsync($"{prefix}-mechanical-gate");
         mechanicalGateRoles.Should().ContainSingle()
             .Which.Key.Should().Be(SystemAgentRoles.CodeWorkerKey);
 
         // Other agents in the template have no role assignments — they're LLM-only.
-        var developerRoles = await roleRepo.GetRolesForAgentAsync($"{prefix}-developer");
+        var developerRoles = await roleRepo.GetRolesForAgentLatestAsync($"{prefix}-developer");
         developerRoles.Should().BeEmpty();
-        var reviewerRoles = await roleRepo.GetRolesForAgentAsync($"{prefix}-reviewer");
+        var reviewerRoles = await roleRepo.GetRolesForAgentLatestAsync($"{prefix}-reviewer");
         reviewerRoles.Should().BeEmpty();
     }
 
@@ -729,7 +729,7 @@ public sealed class WorkflowTemplateMaterializerTests : IClassFixture<WorkflowTe
 
         await using var verifyCtx = CreateDbContext();
         var roleRepo = new AgentRoleRepository(verifyCtx);
-        var mechanicalGateRoles = await roleRepo.GetRolesForAgentAsync($"{prefix}-mechanical-gate");
+        var mechanicalGateRoles = await roleRepo.GetRolesForAgentLatestAsync($"{prefix}-mechanical-gate");
         mechanicalGateRoles.Should().BeEmpty(
             "no system role to assign when the seeder hasn't run");
     }

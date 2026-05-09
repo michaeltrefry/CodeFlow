@@ -33,7 +33,7 @@ public sealed class AgentPackageResolver(
         var agent = await agentConfigRepository.GetAsync(normalizedKey, agentVersion, cancellationToken);
         state.Agents[new AgentIdentity(normalizedKey, agentVersion)] = MapAgent(agent);
 
-        await AddRoleAssignmentClosureAsync(normalizedKey, state, cancellationToken);
+        await AddRoleAssignmentClosureAsync(normalizedKey, agentVersion, state, cancellationToken);
 
         if (state.MissingReferences.Count > 0)
         {
@@ -106,10 +106,11 @@ public sealed class AgentPackageResolver(
 
     private async Task AddRoleAssignmentClosureAsync(
         string agentKey,
+        int agentVersion,
         ResolutionState state,
         CancellationToken cancellationToken)
     {
-        var roles = await agentRoleRepository.GetRolesForAgentAsync(agentKey, cancellationToken);
+        var roles = await agentRoleRepository.GetRolesForAgentAsync(agentKey, agentVersion, cancellationToken);
         var roleKeys = roles
             .Select(role => role.Key)
             .Distinct(StringComparer.Ordinal)

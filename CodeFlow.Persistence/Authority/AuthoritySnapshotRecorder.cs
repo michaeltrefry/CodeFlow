@@ -39,6 +39,7 @@ public sealed class AuthoritySnapshotRecorder : IAuthoritySnapshotRecorder
         var resolution = await resolver.ResolveAsync(
             new ResolveAuthorityRequest(
                 AgentKey: input.AgentKey,
+                AgentVersion: input.AgentVersion,
                 TraceId: input.TraceId,
                 WorkflowKey: input.WorkflowKey,
                 WorkflowVersion: input.WorkflowVersion,

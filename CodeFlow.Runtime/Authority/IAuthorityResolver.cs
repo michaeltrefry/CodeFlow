@@ -22,6 +22,10 @@ public interface IAuthorityResolver
 /// resolved by the implementation from its own data sources.
 /// </summary>
 /// <param name="AgentKey">Agent invocation target; drives role grant lookup.</param>
+/// <param name="AgentVersion">
+/// Pinned agent version for the invocation. Threaded into the role-tier lookup so
+/// role grants resolve at the version the trace pinned, not whatever is current.
+/// </param>
 /// <param name="TraceId">Workflow trace id, when known. Surfaces on emitted refusal evidence.</param>
 /// <param name="WorkflowKey">Workflow key, when known. Reserved for sourcing the workflow tier in a future PR.</param>
 /// <param name="WorkflowVersion">Workflow version pin, when known.</param>
@@ -31,6 +35,7 @@ public interface IAuthorityResolver
 /// </param>
 public sealed record ResolveAuthorityRequest(
     string AgentKey,
+    int AgentVersion,
     Guid? TraceId = null,
     string? WorkflowKey = null,
     int? WorkflowVersion = null,

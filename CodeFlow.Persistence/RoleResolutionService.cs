@@ -22,7 +22,10 @@ public sealed class RoleResolutionService : IRoleResolutionService
         this.logger = logger;
     }
 
-    public async Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
+    public async Task<ResolvedAgentTools> ResolveAsync(
+        string agentKey,
+        int agentVersion,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(agentKey);
         var normalized = agentKey.Trim();
@@ -32,11 +35,12 @@ public sealed class RoleResolutionService : IRoleResolutionService
             join grant in dbContext.AgentRoleToolGrants.AsNoTracking()
                 on assignment.RoleId equals grant.RoleId
             where assignment.AgentKey == normalized
+                && assignment.AgentVersion == agentVersion
                 && !assignment.Role.IsArchived
             select new GrantView(assignment.Role.Key, grant.Category, grant.ToolIdentifier))
             .ToListAsync(cancellationToken);
 
-        var skills = await ResolveSkillsAsync(normalized, cancellationToken);
+        var skills = await ResolveSkillsAsync(normalized, agentVersion, cancellationToken);
         return await BuildResolvedToolsAsync(grants, skills, cancellationToken);
     }
 
@@ -200,13 +204,17 @@ public sealed class RoleResolutionService : IRoleResolutionService
         return new ResolvedAgentTools(allowedNames, mcpTools, enableHostTools, skills);
     }
 
-    private async Task<IReadOnlyList<ResolvedSkill>> ResolveSkillsAsync(string normalizedAgentKey, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<ResolvedSkill>> ResolveSkillsAsync(
+        string normalizedAgentKey,
+        int agentVersion,
+        CancellationToken cancellationToken)
     {
         var skills = await (
             from assignment in dbContext.AgentRoleAssignments.AsNoTracking()
             join grant in dbContext.AgentRoleSkillGrants.AsNoTracking()
                 on assignment.RoleId equals grant.RoleId
             where assignment.AgentKey == normalizedAgentKey
+                && assignment.AgentVersion == agentVersion
                 && !assignment.Role.IsArchived
                 && !grant.Skill.IsArchived
             select new { grant.Skill.Id, grant.Skill.Name, grant.Skill.Body })

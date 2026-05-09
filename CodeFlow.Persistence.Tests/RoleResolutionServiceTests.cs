@@ -43,7 +43,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await using var ctx = CreateDbContext();
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.Should().BeSameAs(ResolvedAgentTools.Empty);
     }
@@ -65,7 +65,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.EnableHostTools.Should().BeTrue();
         result.McpTools.Should().BeEmpty();
@@ -107,7 +107,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.EnableHostTools.Should().BeFalse();
         result.McpTools.Should().HaveCount(2);
@@ -147,7 +147,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo", "now" });
     }
@@ -189,7 +189,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.EnableHostTools.Should().BeTrue();
         result.AllowedToolNames.Should().BeEquivalentTo(new[]
@@ -224,7 +224,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ArchiveAsync(archivedRole);
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo" });
     }
@@ -248,7 +248,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.GrantedSkills.Select(s => s.Body).Should().ContainInOrder("body-a", "body-b");
         result.GrantedSkills.Should().HaveCount(2);
@@ -273,7 +273,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.GrantedSkills.Should().ContainSingle();
     }
@@ -294,7 +294,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ArchiveAsync(roleId);
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.GrantedSkills.Should().BeEmpty();
     }
@@ -338,7 +338,7 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleA, roleB });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.McpTools.Should().ContainSingle(
             "overlapping MCP grants from multiple roles must be deduplicated by full name");
@@ -360,12 +360,58 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var result = await resolver.ResolveAsync(agentKey);
+        var result = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         result.Should().NotBeSameAs(ResolvedAgentTools.Empty);
         result.EnableHostTools.Should().BeFalse();
         result.AllowedToolNames.Should().BeEmpty();
         result.GrantedSkills.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_respects_agent_version_when_assignments_differ()
+    {
+        // sc-826 / AR-2: the runtime resolution path must scope role lookups by the agent
+        // version pinned in the invocation message, not pull whatever is current. Backfilled
+        // post-AR-1 data has identical rows per version, so this test seeds two version-
+        // specific assignment rows by hand to prove version filtering bites at the LINQ.
+        var agentKey = $"agent-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        var roleRepo = new AgentRoleRepository(ctx);
+
+        var roleAId = await roleRepo.CreateAsync(new AgentRoleCreate($"role-a-{Guid.NewGuid():N}", "A", null, null));
+        var roleBId = await roleRepo.CreateAsync(new AgentRoleCreate($"role-b-{Guid.NewGuid():N}", "B", null, null));
+        await roleRepo.ReplaceGrantsAsync(roleAId,
+        [
+            new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
+        ]);
+        await roleRepo.ReplaceGrantsAsync(roleBId,
+        [
+            new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
+        ]);
+
+        // Seed two distinct assignment rows for the same agent_key at different versions.
+        // The unchanged AR-2 writer would write at version=0; we bypass it here so we can
+        // assert the reader scopes by version regardless of how rows got there.
+        var nowUtc = DateTime.UtcNow;
+        ctx.AgentRoleAssignments.AddRange(
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 1, RoleId = roleAId, CreatedAtUtc = nowUtc },
+            new AgentRoleAssignmentEntity { AgentKey = agentKey, AgentVersion = 2, RoleId = roleBId, CreatedAtUtc = nowUtc });
+        await ctx.SaveChangesAsync();
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+
+        var resolvedV1 = await resolver.ResolveAsync(agentKey, agentVersion: 1);
+        resolvedV1.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo" });
+
+        var resolvedV2 = await resolver.ResolveAsync(agentKey, agentVersion: 2);
+        resolvedV2.AllowedToolNames.Should().BeEquivalentTo(new[] { "now" });
+
+        // A version with no rows resolves to Empty — confirms the LINQ doesn't accidentally
+        // collapse to all-versions when the version filter has no match.
+        var resolvedV3 = await resolver.ResolveAsync(agentKey, agentVersion: 3);
+        resolvedV3.Should().BeSameAs(ResolvedAgentTools.Empty);
     }
 
     private CodeFlowDbContext CreateDbContext()

@@ -571,7 +571,12 @@ public sealed class WorkflowPackageResolverTests
         public Task ReplaceGrantsAsync(long id, IReadOnlyList<AgentRoleToolGrant> grants, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, int agentVersion, CancellationToken cancellationToken = default) =>
+            Task.FromResult(assignments.TryGetValue(agentKey, out var roles)
+                ? roles
+                : (IReadOnlyList<AgentRole>)Array.Empty<AgentRole>());
+
+        public Task<IReadOnlyList<AgentRole>> GetRolesForAgentLatestAsync(string agentKey, CancellationToken cancellationToken = default) =>
             Task.FromResult(assignments.TryGetValue(agentKey, out var roles)
                 ? roles
                 : (IReadOnlyList<AgentRole>)Array.Empty<AgentRole>());

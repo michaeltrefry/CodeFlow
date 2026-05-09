@@ -69,8 +69,26 @@ public sealed class RoleAssignmentRule : IWorkflowValidationRule
 
             if (!rolesByAgent.TryGetValue(agentKey, out var roles))
             {
-                roles = await context.AgentRoleRepository
-                    .GetRolesForAgentAsync(agentKey, cancellationToken);
+                // Resolve the agent version under validation. node.AgentVersion is set when
+                // the workflow pins a specific version; otherwise read the latest from the
+                // agent repository. If the agent doesn't exist at all, surface zero roles —
+                // the downstream agent-not-found check is handled by other rules.
+                int? agentVersion = null;
+                try
+                {
+                    agentVersion = node.AgentVersion ?? await context.AgentRepository
+                        .GetLatestVersionAsync(agentKey, cancellationToken);
+                }
+                catch (AgentConfigNotFoundException)
+                {
+                    // No agent rows for this key. Fall through with zero-role finding so the
+                    // missing-role finding still surfaces. The Latest overload returns empty
+                    // for keys with no assignments at all.
+                }
+
+                roles = agentVersion is { } resolvedVersion
+                    ? await context.AgentRoleRepository.GetRolesForAgentAsync(agentKey, resolvedVersion, cancellationToken)
+                    : await context.AgentRoleRepository.GetRolesForAgentLatestAsync(agentKey, cancellationToken);
                 rolesByAgent[agentKey] = roles;
             }
 

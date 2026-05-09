@@ -167,7 +167,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                 activity?.SetTag(CodeFlowActivity.TagNames.RetryAttempt, retryContext.AttemptNumber);
             }
 
-            var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, context.CancellationToken);
+            var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, message.AgentVersion, context.CancellationToken);
 
             // sc-269 PR3: resolve and persist the per-invocation authority envelope, then thread
             // the resolved envelope into the tool layer so workspace command/repo/network checks
