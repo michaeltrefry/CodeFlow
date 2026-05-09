@@ -324,7 +324,7 @@ public sealed class WorkflowPackageResolver(
                 Tags: agent.TagsOrEmpty.ToArray());
         }
 
-        var roles = await agentRoleRepository.GetRolesForAgentAsync(normalizedAgentKey, cancellationToken);
+        var roles = await agentRoleRepository.GetRolesForAgentAsync(normalizedAgentKey, agentVersion, cancellationToken);
         var roleKeys = roles
             .Select(role => role.Key)
             .Distinct(StringComparer.Ordinal)

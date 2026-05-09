@@ -661,16 +661,21 @@ public sealed class TracesEndpointsTests
             var codeWorker = await db.AgentRoles.SingleAsync(r => r.Key == SystemAgentRoles.CodeWorkerKey);
             var readOnly = await db.AgentRoles.SingleAsync(r => r.Key == SystemAgentRoles.ReadOnlyShellKey);
 
+            // AR-2: assignments are pinned to (AgentKey, AgentVersion). Each saga decision
+            // below references the agent at version 1, so seed assignments at the same
+            // version — the verdict-source resolver scopes its lookup by both columns.
             db.AgentRoleAssignments.AddRange(
                 new AgentRoleAssignmentEntity
                 {
                     AgentKey = "sc273-mechanical-agent",
+                    AgentVersion = 1,
                     RoleId = codeWorker.Id,
                     CreatedAtUtc = DateTime.UtcNow,
                 },
                 new AgentRoleAssignmentEntity
                 {
                     AgentKey = "sc273-inspector-agent",
+                    AgentVersion = 1,
                     RoleId = readOnly.Id,
                     CreatedAtUtc = DateTime.UtcNow,
                 });

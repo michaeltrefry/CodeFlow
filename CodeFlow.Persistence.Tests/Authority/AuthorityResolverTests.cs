@@ -25,7 +25,7 @@ public sealed class AuthorityResolverTests
             },
             EnableHostTools: true)));
 
-        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev"));
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev", AgentVersion: 1));
 
         result.Envelope.ToolGrants.Should().BeEquivalentTo(new[]
         {
@@ -42,7 +42,7 @@ public sealed class AuthorityResolverTests
     {
         var resolver = new AuthorityResolver(new StubRoleResolution(ResolvedAgentTools.Empty));
 
-        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev"));
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev", AgentVersion: 1));
 
         result.Envelope.Should().Be(WorkflowExecutionEnvelope.NoOpinion);
         result.BlockedAxes.Should().BeEmpty();
@@ -69,6 +69,7 @@ public sealed class AuthorityResolverTests
 
         var result = await resolver.ResolveAsync(new ResolveAuthorityRequest(
             "dev",
+            AgentVersion: 1,
             ContextTier: contextEnvelope));
 
         result.Envelope.RepoScopes.Should().HaveCount(1);
@@ -86,7 +87,7 @@ public sealed class AuthorityResolverTests
             Array.Empty<McpToolDefinition>(),
             EnableHostTools: true)));
 
-        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev"));
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev", AgentVersion: 1));
 
         result.BlockedAxes.Should().BeEmpty(
             "tenant and workflow tiers contribute NoOpinion in PR2; nothing is removed.");
@@ -101,7 +102,7 @@ public sealed class AuthorityResolverTests
 
         public StubRoleResolution(ResolvedAgentTools result) => this.result = result;
 
-        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, CancellationToken cancellationToken = default)
+        public Task<ResolvedAgentTools> ResolveAsync(string agentKey, int agentVersion, CancellationToken cancellationToken = default)
             => Task.FromResult(result);
 
         public Task<ResolvedAgentTools> ResolveByRoleAsync(long roleId, CancellationToken cancellationToken = default)

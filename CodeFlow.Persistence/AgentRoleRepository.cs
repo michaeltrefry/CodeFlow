@@ -231,18 +231,46 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
         });
     }
 
-    public async Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(
+        string agentKey,
+        int agentVersion,
+        CancellationToken cancellationToken = default)
     {
         var normalized = NormalizeKey(agentKey);
 
         var roles = await dbContext.AgentRoleAssignments
             .AsNoTracking()
-            .Where(assignment => assignment.AgentKey == normalized)
+            .Where(assignment =>
+                assignment.AgentKey == normalized
+                && assignment.AgentVersion == agentVersion)
             .Select(assignment => assignment.Role)
             .OrderBy(role => role.Key)
             .ToListAsync(cancellationToken);
 
         return roles.Select(Map).ToArray();
+    }
+
+    public async Task<IReadOnlyList<AgentRole>> GetRolesForAgentLatestAsync(
+        string agentKey,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeKey(agentKey);
+
+        // "Latest" = the assignment row with the highest agent_version for this key. Works
+        // whether the writes are pinned per-version (post-AR-4) or replicated across every
+        // version (post-AR-1 backfill). Returns empty when no rows exist for the key.
+        var latestVersion = await dbContext.AgentRoleAssignments
+            .AsNoTracking()
+            .Where(assignment => assignment.AgentKey == normalized)
+            .Select(assignment => (int?)assignment.AgentVersion)
+            .MaxAsync(cancellationToken);
+
+        if (latestVersion is null)
+        {
+            return Array.Empty<AgentRole>();
+        }
+
+        return await GetRolesForAgentAsync(normalized, latestVersion.Value, cancellationToken);
     }
 
     public async Task ReplaceAssignmentsAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default)
@@ -275,6 +303,23 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
                 IsolationLevel.Serializable,
                 cancellationToken);
 
+            // sc-826 / AR-2 bridge: writes go to every existing agent_version for this key,
+            // so version-aware readers (RoleResolutionService, package resolvers, validation
+            // rules) find the assignment regardless of which version they pin to. This
+            // preserves the per-version replication that the AR-1 backfill established for
+            // existing rows. Falls back to a single agent_version=0 placeholder when no
+            // agents row exists (orphan key — matches pre-migration semantics for keys that
+            // would never be invoked). AR-4 replaces this with bump-on-write.
+            var agentVersions = await dbContext.Agents
+                .AsNoTracking()
+                .Where(agent => agent.Key == normalized)
+                .Select(agent => agent.Version)
+                .ToListAsync(cancellationToken);
+            if (agentVersions.Count == 0)
+            {
+                agentVersions = new List<int> { 0 };
+            }
+
             var existing = await dbContext.AgentRoleAssignments
                 .Where(assignment => assignment.AgentKey == normalized)
                 .ToListAsync(cancellationToken);
@@ -282,14 +327,18 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
             dbContext.AgentRoleAssignments.RemoveRange(existing);
 
             var now = DateTime.UtcNow;
-            foreach (var roleId in distinctRoleIds)
+            foreach (var version in agentVersions)
             {
-                dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+                foreach (var roleId in distinctRoleIds)
                 {
-                    AgentKey = normalized,
-                    RoleId = roleId,
-                    CreatedAtUtc = now,
-                });
+                    dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+                    {
+                        AgentKey = normalized,
+                        AgentVersion = version,
+                        RoleId = roleId,
+                        CreatedAtUtc = now,
+                    });
+                }
             }
 
             await dbContext.SaveChangesAsync(cancellationToken);

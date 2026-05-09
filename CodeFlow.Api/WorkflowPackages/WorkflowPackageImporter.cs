@@ -1392,7 +1392,12 @@ public sealed class WorkflowPackageImporter(
         WorkflowPackageAgentRoleAssignment assignment,
         CancellationToken cancellationToken)
     {
-        var existingRoles = await agentRoleRepository.GetRolesForAgentAsync(assignment.AgentKey, cancellationToken);
+        // Provisional: importer preview compares the package's role assignment against the
+        // current "live" state — which the admin UI today represents as the latest version's
+        // assignment. AR-3 deletes this code path entirely (equivalence folds into the agent
+        // comparison instead of producing a standalone AgentRoleAssignment preview row), so
+        // there's no point threading per-version semantics through here.
+        var existingRoles = await agentRoleRepository.GetRolesForAgentLatestAsync(assignment.AgentKey, cancellationToken);
         var existingRoleKeys = existingRoles
             .Select(role => role.Key)
             .OrderBy(key => key, StringComparer.Ordinal)

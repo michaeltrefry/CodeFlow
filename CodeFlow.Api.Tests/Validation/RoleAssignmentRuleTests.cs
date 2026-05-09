@@ -269,7 +269,7 @@ public sealed class RoleAssignmentRuleTests
             await db.SaveChangesAsync();
         }
 
-        public async Task AssignRoleAsync(string agentKey, string roleKey)
+        public async Task AssignRoleAsync(string agentKey, string roleKey, int agentVersion = 1)
         {
             // Seed directly: AgentRoleRepository writes use a transaction, which the in-memory
             // provider doesn't support.
@@ -285,6 +285,7 @@ public sealed class RoleAssignmentRuleTests
             db.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
             {
                 AgentKey = agentKey,
+                AgentVersion = agentVersion,
                 RoleId = role.Id,
                 Role = role,
                 CreatedAtUtc = DateTime.UtcNow,

@@ -68,7 +68,7 @@ public sealed class SkillEndToEndTests : IAsyncLifetime
         await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
-        var resolved = await resolver.ResolveAsync(agentKey);
+        var resolved = await resolver.ResolveAsync(agentKey, agentVersion: 0);
 
         resolved.GrantedSkills.Should().ContainSingle();
         resolved.GrantedSkills[0].Name.Should().Be(skillName);

@@ -43,7 +43,19 @@ public interface IAgentRoleRepository
 
     Task ReplaceGrantsAsync(long id, IReadOnlyList<AgentRoleToolGrant> grants, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Returns the roles assigned to the given (agent_key, agent_version) tuple. Use this
+    /// from the runtime resolution path, validation rules, and package resolvers — anywhere
+    /// the caller knows exactly which version of the agent it cares about.
+    /// </summary>
+    Task<IReadOnlyList<AgentRole>> GetRolesForAgentAsync(string agentKey, int agentVersion, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the roles assigned to the highest <c>agent_version</c> row for the given key.
+    /// Use this from admin UI surfaces that default to "the current assignment" without
+    /// pinning to a specific version. Returns an empty list when no assignment rows exist.
+    /// </summary>
+    Task<IReadOnlyList<AgentRole>> GetRolesForAgentLatestAsync(string agentKey, CancellationToken cancellationToken = default);
 
     Task ReplaceAssignmentsAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default);
 

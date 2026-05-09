@@ -167,7 +167,9 @@ public static class TracesEndpoints
             .ToListAsync(cancellationToken);
 
         var verdictSources = await ResolveVerdictSourcesAsync(
-            dbContext, decisions.Select(d => d.AgentKey), cancellationToken);
+            dbContext,
+            decisions.Select(d => new AgentVersionKey(d.AgentKey, d.AgentVersion)),
+            cancellationToken);
 
         var detail = MapDetail(
             saga,
@@ -239,7 +241,9 @@ public static class TracesEndpoints
             .ToDictionary(group => group.Key, group => (IReadOnlyList<HitlTaskEntity>)group.ToArray());
 
         var verdictSources = await ResolveVerdictSourcesAsync(
-            dbContext, decisions.Select(d => d.AgentKey), cancellationToken);
+            dbContext,
+            decisions.Select(d => new AgentVersionKey(d.AgentKey, d.AgentVersion)),
+            cancellationToken);
 
         var response = descendants
             .Select(descendant => new TraceDescendantDto(
@@ -548,54 +552,65 @@ public static class TracesEndpoints
     ///   <c>null</c> — the timeline omits the badge for those.</description></item>
     /// </list>
     /// </summary>
-    private static async Task<IReadOnlyDictionary<string, string?>> ResolveVerdictSourcesAsync(
+    private static async Task<IReadOnlyDictionary<AgentVersionKey, string?>> ResolveVerdictSourcesAsync(
         CodeFlowDbContext dbContext,
-        IEnumerable<string> agentKeys,
+        IEnumerable<AgentVersionKey> agentKeys,
         CancellationToken cancellationToken)
     {
-        var distinctKeys = agentKeys
-            .Where(k => !string.IsNullOrWhiteSpace(k))
+        var distinctPairs = agentKeys
+            .Where(k => !string.IsNullOrWhiteSpace(k.AgentKey))
+            .Distinct()
+            .ToArray();
+        if (distinctPairs.Length == 0)
+        {
+            return new Dictionary<AgentVersionKey, string?>();
+        }
+
+        // EF/MariaDB doesn't translate `Contains` over a tuple list; flatten to two parallel
+        // arrays and filter+match in-memory after a key-only DB query. The per-saga decision
+        // count is small (decisions of a single saga / subtree), so this is cheap.
+        var distinctAgentKeys = distinctPairs
+            .Select(p => p.AgentKey)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        if (distinctKeys.Length == 0)
-        {
-            return new Dictionary<string, string?>(StringComparer.Ordinal);
-        }
+        var allowedPairs = new HashSet<AgentVersionKey>(distinctPairs);
 
         var hostGrantsByAgent = await (
             from assignment in dbContext.AgentRoleAssignments.AsNoTracking()
             join grant in dbContext.AgentRoleToolGrants.AsNoTracking()
                 on assignment.RoleId equals grant.RoleId
-            where distinctKeys.Contains(assignment.AgentKey)
+            where distinctAgentKeys.Contains(assignment.AgentKey)
                 && !assignment.Role.IsArchived
                 && grant.Category == AgentRoleToolCategory.Host
-            select new { assignment.AgentKey, grant.ToolIdentifier })
+            select new { assignment.AgentKey, assignment.AgentVersion, grant.ToolIdentifier })
             .ToListAsync(cancellationToken);
 
         var grantsByAgent = hostGrantsByAgent
-            .GroupBy(g => g.AgentKey, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Select(x => x.ToolIdentifier).ToHashSet(StringComparer.OrdinalIgnoreCase),
-                StringComparer.Ordinal);
+            .Where(g => allowedPairs.Contains(new AgentVersionKey(g.AgentKey, g.AgentVersion)))
+            .GroupBy(g => new AgentVersionKey(g.AgentKey, g.AgentVersion))
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.ToolIdentifier).ToHashSet(StringComparer.OrdinalIgnoreCase));
 
-        var result = new Dictionary<string, string?>(distinctKeys.Length, StringComparer.Ordinal);
-        foreach (var key in distinctKeys)
+        var result = new Dictionary<AgentVersionKey, string?>(distinctPairs.Length);
+        foreach (var pair in distinctPairs)
         {
-            if (!grantsByAgent.TryGetValue(key, out var grants))
+            if (!grantsByAgent.TryGetValue(pair, out var grants))
             {
                 // No host-tool grants at all → pure LLM agent → "model".
-                result[key] = "model";
+                result[pair] = "model";
                 continue;
             }
 
             if (grants.Contains("run_command") || grants.Contains("apply_patch"))
             {
-                result[key] = "mechanical";
+                result[pair] = "mechanical";
             }
             else
             {
                 // Has some host grants (e.g. read_file-only inspector) but nothing exec-class
                 // → don't claim either bucket; UI omits the badge.
-                result[key] = null;
+                result[pair] = null;
             }
         }
 
@@ -640,7 +655,7 @@ public static class TracesEndpoints
         IReadOnlyList<WorkflowSagaLogicEvaluationEntity> logicEvaluations,
         IReadOnlyList<HitlTaskEntity> pendingHitl,
         IReadOnlyDictionary<Guid, IReadOnlyList<string>> subflowPaths,
-        IReadOnlyDictionary<string, string?> verdictSources) => new(
+        IReadOnlyDictionary<AgentVersionKey, string?> verdictSources) => new(
         TraceId: saga.TraceId,
         WorkflowKey: saga.WorkflowKey,
         WorkflowVersion: saga.WorkflowVersion,
@@ -665,7 +680,7 @@ public static class TracesEndpoints
                 NodeEnteredAtUtc: entity.NodeEnteredAtUtc.HasValue
                     ? DateTime.SpecifyKind(entity.NodeEnteredAtUtc.Value, DateTimeKind.Utc)
                     : null,
-                VerdictSource: verdictSources.GetValueOrDefault(entity.AgentKey)))
+                VerdictSource: verdictSources.GetValueOrDefault(new AgentVersionKey(entity.AgentKey, entity.AgentVersion))))
             .ToArray(),
         LogicEvaluations: logicEvaluations
             .Select(entity => new TraceLogicEvaluationDto(
@@ -895,6 +910,7 @@ public static class TracesEndpoints
         }
     }
 
+    private readonly record struct AgentVersionKey(string AgentKey, int AgentVersion);
 }
 
 internal static class TraceEventJson
