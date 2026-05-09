@@ -3,6 +3,7 @@ import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowsListComponent } from './workflows-list.component';
+import { AgentsApi } from '../../core/agents.api';
 import {
   WorkflowPackageImportApplyResult,
   WorkflowPackageImportItem,
@@ -10,6 +11,31 @@ import {
   WorkflowPackageImportResolution,
   WorkflowsApi,
 } from '../../core/workflows.api';
+
+/** AP-7 (sc-838): the imports page now also dispatches to AgentsApi when the uploaded
+ *  package's schemaVersion is `codeflow.agent-package.v1`. The workflow-side tests don't
+ *  need agent calls but the DI graph must still resolve, so we provide a stub.
+ *  `makeAgentsApiStub` returns a fresh fake per test. */
+function makeAgentsApiStub() {
+  return {
+    list: vi.fn(() => of([])),
+    versions: vi.fn(() => of([])),
+    getVersion: vi.fn(() => of({})),
+    getLatest: vi.fn(() => of({})),
+    create: vi.fn(),
+    addVersion: vi.fn(),
+    retire: vi.fn(),
+    retireMany: vi.fn(),
+    fork: vi.fn(),
+    getPublishStatus: vi.fn(),
+    publish: vi.fn(),
+    renderDecisionOutputTemplate: vi.fn(),
+    renderPromptTemplate: vi.fn(),
+    downloadPackage: vi.fn(),
+    previewPackageImport: vi.fn(() => of(makeEmptyPreview())),
+    applyPackageImport: vi.fn(() => of(makeApplyResult())),
+  };
+}
 
 /**
  * sc-396: per-conflict resolution flow on the imports page. Covers the resolutions signal →
@@ -44,6 +70,7 @@ describe('WorkflowsListComponent (sc-396 resolutions)', () => {
       providers: [
         provideRouter([]),
         { provide: WorkflowsApi, useValue: api },
+        { provide: AgentsApi, useValue: makeAgentsApiStub() },
       ],
     }).compileComponents();
   });
@@ -365,6 +392,7 @@ describe('WorkflowsListComponent (sc-397 chat-chip handoff hydration)', () => {
       providers: [
         provideRouter([]),
         { provide: WorkflowsApi, useValue: api },
+        { provide: AgentsApi, useValue: makeAgentsApiStub() },
       ],
     }).compileComponents();
   });
@@ -459,6 +487,202 @@ describe('WorkflowsListComponent (sc-397 chat-chip handoff hydration)', () => {
     sessionStorage.setItem('cf.import.handoff', JSON.stringify({ v: 99, packageSource: 'inline' }));
     TestBed.createComponent(WorkflowsListComponent);
     expect(api.previewPackageImport).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * AP-7 (sc-838): the imports page now dispatches on `schemaVersion` so an uploaded /
+ * handoff'd `codeflow.agent-package.v1` runs preview + apply through `AgentsApi` instead
+ * of `WorkflowsApi`. The per-row resolution UI, drift gate, and conflict-resolution modal
+ * are all schema-agnostic — these tests cover only the dispatch + the apply request body.
+ */
+describe('WorkflowsListComponent (AP-7 agent-package dispatch)', () => {
+  let workflowsApi: ReturnType<typeof makeWorkflowsApiStub>;
+  let agentsApi: ReturnType<typeof makeAgentsApiStub>;
+
+  function makeWorkflowsApiStub() {
+    return {
+      list: vi.fn(() => of([])),
+      previewPackageImport: vi.fn(() => of(makeEmptyPreview())),
+      applyPackageImport: vi.fn(() => of(makeApplyResult())),
+      getPackageDraft: vi.fn(() => of({})),
+    };
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    sessionStorage.clear();
+    workflowsApi = makeWorkflowsApiStub();
+    agentsApi = makeAgentsApiStub();
+
+    await TestBed.configureTestingModule({
+      imports: [WorkflowsListComponent],
+      providers: [
+        provideRouter([]),
+        { provide: WorkflowsApi, useValue: workflowsApi },
+        { provide: AgentsApi, useValue: agentsApi },
+      ],
+    }).compileComponents();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+  });
+
+  function seedAgentImport(component: WorkflowsListComponent, items: WorkflowPackageImportItem[]): void {
+    component.importPreview.set({
+      entryPoint: { key: 'demo-writer', version: 1 },
+      items,
+      warnings: [],
+      createCount: items.filter(i => i.action === 'Create').length,
+      reuseCount: items.filter(i => i.action === 'Reuse').length,
+      conflictCount: items.filter(i => i.action === 'Conflict').length,
+      refusedCount: items.filter(i => i.action === 'Refused').length,
+      warningCount: 0,
+      canApply: items.every(i => i.action !== 'Conflict' && i.action !== 'Refused'),
+    });
+    (component as unknown as {
+      pendingImportPackage: unknown;
+      importPackageKind: 'workflow' | 'agent';
+    }).pendingImportPackage = {
+      schemaVersion: 'codeflow.agent-package.v1',
+      entryPoint: { key: 'demo-writer', version: 1 },
+      agents: [{ key: 'demo-writer', version: 1 }],
+    };
+    (component as unknown as { importPackageKind: 'workflow' | 'agent' }).importPackageKind = 'agent';
+  }
+
+  it('hydrates from an inline agent-package handoff and routes preview through AgentsApi', () => {
+    const stashedPackage = {
+      schemaVersion: 'codeflow.agent-package.v1',
+      entryPoint: { key: 'demo-writer', version: 1 },
+      agents: [{ key: 'demo-writer', version: 1 }],
+    };
+    sessionStorage.setItem('cf.import.handoff', JSON.stringify({
+      v: 1,
+      stashedAtMs: Date.now(),
+      packageSource: 'inline',
+      conversationId: null,
+      package: stashedPackage,
+    }));
+
+    TestBed.createComponent(WorkflowsListComponent);
+
+    expect(agentsApi.previewPackageImport).toHaveBeenCalledTimes(1);
+    // The dispatcher always threads `resolutions` (undefined on first preview); we just
+    // assert the package is the one we stashed.
+    const seedCall = agentsApi.previewPackageImport.mock.calls[0] as unknown as [unknown, unknown];
+    expect(seedCall[0]).toEqual(stashedPackage);
+    expect(workflowsApi.previewPackageImport).not.toHaveBeenCalled();
+  });
+
+  it('re-previews an agent package on resolution change through AgentsApi', () => {
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+    const component = fixture.componentInstance;
+    const conflictItem: WorkflowPackageImportItem = {
+      kind: 'Agent',
+      key: 'demo-writer',
+      version: 1,
+      action: 'Conflict',
+      message: 'Stale package version',
+      sourceVersion: 1,
+      existingMaxVersion: 2,
+    };
+    seedAgentImport(component, [conflictItem]);
+
+    component.onResolutionChange(conflictItem, 'Bump');
+    vi.runOnlyPendingTimers();
+
+    expect(agentsApi.previewPackageImport).toHaveBeenCalledTimes(1);
+    const previewCall = agentsApi.previewPackageImport.mock.calls[0] as unknown as [unknown, unknown];
+    const [pkg, resolutions] = previewCall;
+    expect((pkg as { schemaVersion: string }).schemaVersion).toBe('codeflow.agent-package.v1');
+    expect(resolutions).toEqual([
+      expect.objectContaining({
+        kind: 'Agent',
+        key: 'demo-writer',
+        sourceVersion: 1,
+        mode: 'Bump',
+        expectedExistingMaxVersion: 2,
+      }),
+    ]);
+    expect(workflowsApi.previewPackageImport).not.toHaveBeenCalled();
+  });
+
+  it('apply hits AgentsApi.applyPackageImport with the agent-package body', () => {
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+    const component = fixture.componentInstance;
+    seedAgentImport(component, [{
+      kind: 'Agent',
+      key: 'demo-writer',
+      version: 1,
+      action: 'Create',
+      message: 'New agent',
+      sourceVersion: 1,
+    }]);
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    component.applyPackageImport();
+
+    expect(agentsApi.applyPackageImport).toHaveBeenCalledTimes(1);
+    const applyCall = agentsApi.applyPackageImport.mock.calls[0] as unknown as [unknown];
+    const [pkg] = applyCall;
+    expect((pkg as { schemaVersion: string }).schemaVersion).toBe('codeflow.agent-package.v1');
+    expect(workflowsApi.applyPackageImport).not.toHaveBeenCalled();
+  });
+
+  it('apply confirmation noun reflects the active package kind', () => {
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+    const component = fixture.componentInstance;
+    seedAgentImport(component, [{
+      kind: 'Agent',
+      key: 'demo-writer',
+      version: 1,
+      action: 'Create',
+      message: 'New agent',
+      sourceVersion: 1,
+    }]);
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    component.applyPackageImport();
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('agent package import'));
+  });
+
+  it('drift retry on agent-package apply re-submits with acknowledgeDrift=true through AgentsApi', () => {
+    const fixture = TestBed.createComponent(WorkflowsListComponent);
+    const component = fixture.componentInstance;
+    seedAgentImport(component, [{
+      kind: 'Agent',
+      key: 'demo-writer',
+      version: 1,
+      action: 'Create',
+      message: 'New agent',
+      sourceVersion: 1,
+    }]);
+
+    // First apply: 409 drift response.
+    agentsApi.applyPackageImport.mockReturnValueOnce(throwError(() => ({
+      status: 409,
+      error: {
+        error: 'Library has moved',
+        movedEntities: [{ kind: 'Agent', key: 'demo-writer', sourceVersion: null, expectedExistingMaxVersion: 2, currentExistingMaxVersion: 3 }],
+      },
+    })));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    component.applyPackageImport();
+    expect(component.driftConflict()).not.toBeNull();
+    expect(agentsApi.applyPackageImport).toHaveBeenCalledTimes(1);
+
+    // Retry resolves; the second call carries acknowledgeDrift=true.
+    component.applyAcknowledgingDrift();
+    expect(agentsApi.applyPackageImport).toHaveBeenCalledTimes(2);
+    const retryCall = agentsApi.applyPackageImport.mock.calls[1] as unknown as [unknown, unknown, boolean | undefined];
+    expect(retryCall[2]).toBe(true);
+    expect(workflowsApi.applyPackageImport).not.toHaveBeenCalled();
   });
 });
 

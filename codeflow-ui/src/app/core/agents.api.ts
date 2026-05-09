@@ -11,6 +11,11 @@ import {
   PromptTemplatePreviewRequest,
   PromptTemplatePreviewResponse
 } from './models';
+import {
+  WorkflowPackageImportApplyResult,
+  WorkflowPackageImportPreview,
+  WorkflowPackageImportResolution,
+} from './workflows.api';
 
 @Injectable({ providedIn: 'root' })
 export class AgentsApi {
@@ -61,6 +66,33 @@ export class AgentsApi {
       observe: 'response',
       responseType: 'blob'
     });
+  }
+
+  /** AP-7 (sc-838): preview an agent-package import. Mirrors `WorkflowsApi.previewPackageImport`
+   *  exactly — same request body (`{ package, resolutions }`) and response shape
+   *  (`WorkflowPackageImportPreview`) — so the imports page can dispatch on `schemaVersion`
+   *  without re-modeling the per-row preview surface. */
+  previewPackageImport(
+    agentPackage: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+  ): Observable<WorkflowPackageImportPreview> {
+    return this.http.post<WorkflowPackageImportPreview>(
+      '/api/agents/package/preview',
+      { package: agentPackage, resolutions },
+    );
+  }
+
+  /** AP-7 (sc-838): apply an agent-package import. Same drift-ack contract as the workflow
+   *  apply: a 409 `WorkflowPackageImportDriftConflict` retries with `acknowledgeDrift: true`. */
+  applyPackageImport(
+    agentPackage: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+    acknowledgeDrift?: boolean,
+  ): Observable<WorkflowPackageImportApplyResult> {
+    return this.http.post<WorkflowPackageImportApplyResult>(
+      '/api/agents/package/apply',
+      { package: agentPackage, resolutions, acknowledgeDrift },
+    );
   }
 
   retire(key: string): Observable<{ key: string; isRetired: boolean }> {
