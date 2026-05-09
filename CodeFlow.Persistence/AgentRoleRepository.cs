@@ -256,43 +256,38 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
     {
         var normalized = NormalizeKey(agentKey);
 
-        // "Latest" = the assignment row with the highest agent_version for this key. Works
-        // whether the writes are pinned per-version (post-AR-4) or replicated across every
-        // version (post-AR-1 backfill). Returns empty when no rows exist for the key.
-        var latestVersion = await dbContext.AgentRoleAssignments
+        // "Latest" = assignments at the highest existing agents.version for this key. After
+        // AR-4 a bump-on-write that clears the assignment lands at v_N+1 with NO assignment
+        // rows; reading max(agent_version) off agent_role_assignments would return v_N's
+        // (now-stale) row instead. Anchor on the agents table — the authoritative version
+        // source — so a freshly-cleared assignment surfaces as an empty list.
+        var latestAgentVersion = await dbContext.Agents
             .AsNoTracking()
-            .Where(assignment => assignment.AgentKey == normalized)
-            .Select(assignment => (int?)assignment.AgentVersion)
+            .Where(agent => agent.Key == normalized)
+            .Select(agent => (int?)agent.Version)
             .MaxAsync(cancellationToken);
 
-        if (latestVersion is null)
+        if (latestAgentVersion is null)
         {
-            return Array.Empty<AgentRole>();
+            // No agents row → orphan key. Fall back to whatever placeholder rows exist in
+            // assignments at v=0; matches pre-AR-4 fixture seeding for tests that exercise
+            // the run-time resolution path on orphan keys.
+            return await GetRolesForAgentAsync(normalized, agentVersion: 0, cancellationToken);
         }
 
-        return await GetRolesForAgentAsync(normalized, latestVersion.Value, cancellationToken);
+        return await GetRolesForAgentAsync(normalized, latestAgentVersion.Value, cancellationToken);
     }
 
-    public async Task ReplaceAssignmentsAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default)
+    public async Task ReplaceAssignmentsAsync(
+        string agentKey,
+        int agentVersion,
+        IReadOnlyList<long> roleIds,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleIds);
 
         var normalized = NormalizeKey(agentKey);
-        var distinctRoleIds = roleIds.Distinct().ToArray();
-
-        if (distinctRoleIds.Length > 0)
-        {
-            var validIds = await dbContext.AgentRoles
-                .Where(role => distinctRoleIds.Contains(role.Id) && !role.IsArchived && !role.IsRetired)
-                .Select(role => role.Id)
-                .ToListAsync(cancellationToken);
-
-            var missing = distinctRoleIds.Except(validIds).ToArray();
-            if (missing.Length > 0)
-            {
-                throw new AgentRoleNotFoundException(missing[0]);
-            }
-        }
+        var distinctRoleIds = await ValidateRoleIdsAsync(roleIds, cancellationToken);
 
         var strategy = dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
@@ -303,47 +298,200 @@ public sealed class AgentRoleRepository(CodeFlowDbContext dbContext) : IAgentRol
                 IsolationLevel.Serializable,
                 cancellationToken);
 
-            // sc-826 / AR-2 bridge: writes go to every existing agent_version for this key,
-            // so version-aware readers (RoleResolutionService, package resolvers, validation
-            // rules) find the assignment regardless of which version they pin to. This
-            // preserves the per-version replication that the AR-1 backfill established for
-            // existing rows. Falls back to a single agent_version=0 placeholder when no
-            // agents row exists (orphan key — matches pre-migration semantics for keys that
-            // would never be invoked). AR-4 replaces this with bump-on-write.
-            var agentVersions = await dbContext.Agents
-                .AsNoTracking()
-                .Where(agent => agent.Key == normalized)
-                .Select(agent => agent.Version)
-                .ToListAsync(cancellationToken);
-            if (agentVersions.Count == 0)
-            {
-                agentVersions = new List<int> { 0 };
-            }
-
-            var existing = await dbContext.AgentRoleAssignments
-                .Where(assignment => assignment.AgentKey == normalized)
-                .ToListAsync(cancellationToken);
-
-            dbContext.AgentRoleAssignments.RemoveRange(existing);
-
-            var now = DateTime.UtcNow;
-            foreach (var version in agentVersions)
-            {
-                foreach (var roleId in distinctRoleIds)
-                {
-                    dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
-                    {
-                        AgentKey = normalized,
-                        AgentVersion = version,
-                        RoleId = roleId,
-                        CreatedAtUtc = now,
-                    });
-                }
-            }
+            await ReplaceAssignmentsInTransactionAsync(
+                normalized,
+                agentVersion,
+                distinctRoleIds,
+                cancellationToken);
 
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         });
+    }
+
+    public async Task ReplaceAssignmentsForLatestAsync(
+        string agentKey,
+        IReadOnlyList<long> roleIds,
+        CancellationToken cancellationToken = default)
+    {
+        // sc-828 / AR-4: explicit "edit the current version's assignment in place" path.
+        // Bumping is the default (BumpAgentForRoleAssignmentChangeAsync); callers reach for
+        // this only when they want the existing latest agent row to keep its identity (e.g.
+        // template materializers seeding both the agent and its assignment at v1, or tests
+        // that don't care which version the row lands at). Falls back to agent_version=0 for
+        // orphan keys with no agents row — matches the legacy placeholder shape so the
+        // standard test fixtures keep behaving the same.
+        ArgumentNullException.ThrowIfNull(roleIds);
+
+        var normalized = NormalizeKey(agentKey);
+        var distinctRoleIds = await ValidateRoleIdsAsync(roleIds, cancellationToken);
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var latestVersion = await dbContext.Agents
+                .AsNoTracking()
+                .Where(agent => agent.Key == normalized)
+                .Select(agent => (int?)agent.Version)
+                .MaxAsync(cancellationToken);
+
+            await ReplaceAssignmentsInTransactionAsync(
+                normalized,
+                latestVersion ?? 0,
+                distinctRoleIds,
+                cancellationToken);
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
+    }
+
+    public async Task<int> BumpAgentForRoleAssignmentChangeAsync(
+        string agentKey,
+        IReadOnlyList<long> roleIds,
+        int? expectedFromVersion,
+        string? createdBy,
+        CancellationToken cancellationToken = default)
+    {
+        // sc-828 / AR-4: edits to an agent's role assignment produce a new agent version.
+        // Body matches the latest existing row; only the assignment slot moves. Workflows
+        // pinning the older version retain their old assignment until they're republished
+        // against the new version — same model as any other agent edit.
+        ArgumentNullException.ThrowIfNull(roleIds);
+
+        var normalized = NormalizeKey(agentKey);
+        var normalizedCreatedBy = string.IsNullOrWhiteSpace(createdBy) ? null : createdBy.Trim();
+        var distinctRoleIds = await ValidateRoleIdsAsync(roleIds, cancellationToken);
+
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            dbContext.ChangeTracker.Clear();
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+            var existingConfigs = await dbContext.Agents
+                .Where(agent => agent.Key == normalized)
+                .OrderBy(agent => agent.Version)
+                .ToListAsync(cancellationToken);
+
+            if (existingConfigs.Count == 0)
+            {
+                throw new AgentConfigNotFoundException(normalized);
+            }
+
+            var latestConfig = existingConfigs[^1];
+
+            // Drift gate: if the caller previewed against vN and the latest already moved on
+            // (someone else edited the agent), 409 the request so the admin UI can refresh
+            // and re-confirm. AR-4 mirror of in-place agent edit's publish-back drift gate.
+            if (expectedFromVersion is int expected && expected != latestConfig.Version)
+            {
+                throw new AgentConfigVersionDriftException(
+                    normalized,
+                    expectedVersion: expected,
+                    actualVersion: latestConfig.Version);
+            }
+
+            if (latestConfig.IsRetired)
+            {
+                throw new InvalidOperationException(
+                    $"Agent '{normalized}' is retired; bump-on-write rejected.");
+            }
+
+            var newVersion = latestConfig.Version + 1;
+
+            foreach (var config in existingConfigs.Where(c => c.IsActive))
+            {
+                config.IsActive = false;
+            }
+
+            var bumped = new AgentConfigEntity
+            {
+                Key = normalized,
+                Version = newVersion,
+                ConfigJson = latestConfig.ConfigJson,
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedBy = normalizedCreatedBy ?? latestConfig.CreatedBy,
+                IsActive = true,
+                IsRetired = false,
+                OwningWorkflowKey = latestConfig.OwningWorkflowKey,
+                ForkedFromKey = latestConfig.ForkedFromKey,
+                ForkedFromVersion = latestConfig.ForkedFromVersion,
+                TagsJson = latestConfig.TagsJson,
+            };
+            dbContext.Agents.Add(bumped);
+
+            await ReplaceAssignmentsInTransactionAsync(
+                normalized,
+                newVersion,
+                distinctRoleIds,
+                cancellationToken);
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            return newVersion;
+        });
+    }
+
+    private async Task<long[]> ValidateRoleIdsAsync(
+        IReadOnlyList<long> roleIds,
+        CancellationToken cancellationToken)
+    {
+        var distinctRoleIds = roleIds.Distinct().ToArray();
+        if (distinctRoleIds.Length == 0)
+        {
+            return distinctRoleIds;
+        }
+
+        var validIds = await dbContext.AgentRoles
+            .Where(role => distinctRoleIds.Contains(role.Id) && !role.IsArchived && !role.IsRetired)
+            .Select(role => role.Id)
+            .ToListAsync(cancellationToken);
+
+        var missing = distinctRoleIds.Except(validIds).ToArray();
+        if (missing.Length > 0)
+        {
+            throw new AgentRoleNotFoundException(missing[0]);
+        }
+
+        return distinctRoleIds;
+    }
+
+    private async Task ReplaceAssignmentsInTransactionAsync(
+        string normalizedAgentKey,
+        int agentVersion,
+        IReadOnlyList<long> distinctRoleIds,
+        CancellationToken cancellationToken)
+    {
+        var existing = await dbContext.AgentRoleAssignments
+            .Where(assignment =>
+                assignment.AgentKey == normalizedAgentKey
+                && assignment.AgentVersion == agentVersion)
+            .ToListAsync(cancellationToken);
+
+        dbContext.AgentRoleAssignments.RemoveRange(existing);
+
+        var now = DateTime.UtcNow;
+        foreach (var roleId in distinctRoleIds)
+        {
+            dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+            {
+                AgentKey = normalizedAgentKey,
+                AgentVersion = agentVersion,
+                RoleId = roleId,
+                CreatedAtUtc = now,
+            });
+        }
     }
 
     public async Task<IReadOnlyList<long>> GetSkillGrantsAsync(long id, CancellationToken cancellationToken = default)

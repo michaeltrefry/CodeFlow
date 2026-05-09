@@ -353,6 +353,9 @@ interface ReadOnlyFallbackRow {
             @if (assignmentsSaving()) {
               <p class="muted small">Saving assignments…</p>
             }
+            @if (lastBumpedToVersion(); as bumped) {
+              <cf-chip variant="ok" dot>Saved as v{{ bumped }} (bump-on-write)</cf-chip>
+            }
             @if (assignError()) {
               <cf-chip variant="err" dot>{{ assignError() }}</cf-chip>
             }
@@ -506,6 +509,9 @@ export class AgentDetailComponent implements OnInit {
   protected readonly assignedRoles = signal<AgentRole[]>([]);
   protected readonly assignmentsSaving = signal(false);
   protected readonly assignError = signal<string | null>(null);
+  /** sc-828 / AR-4: surfaces the new version after a bump-on-write so the UI can render
+   *  a "saved as v{N}" affordance next to the role checklist without polling versions. */
+  protected readonly lastBumpedToVersion = signal<number | null>(null);
 
   protected readonly hostTools = signal<HostTool[]>([]);
   protected readonly mcpCatalogs = signal<McpServerToolCatalog[]>([]);
@@ -714,19 +720,61 @@ export class AgentDetailComponent implements OnInit {
       ? [...current.map(r => r.id), role.id]
       : current.map(r => r.id).filter(id => id !== role.id);
 
+    // sc-828 / AR-4: editing the assignment bumps the agent to a new version. Pass the
+    // version we're currently viewing as the drift gate's `expectedFromVersion`; the
+    // server 409s if someone else moved on, and we offer a re-confirm.
+    const expectedFromVersion = this.viewing()?.version ?? null;
+    this.bumpRoleAssignment(nextIds, expectedFromVersion ?? undefined, /*acknowledgeDrift*/ false);
+  }
+
+  private bumpRoleAssignment(roleIds: number[], expectedFromVersion: number | undefined, acknowledgeDrift: boolean): void {
     this.assignmentsSaving.set(true);
     this.assignError.set(null);
-    this.rolesApi.replaceAssignments(this.key(), nextIds).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: next => {
-        this.assignedRoles.set(next);
-        this.loadGrantsForRoles(next);
-        this.assignmentsSaving.set(false);
-      },
-      error: err => {
-        this.assignError.set(err?.error?.error ?? err?.message ?? 'Failed to update roles');
-        this.assignmentsSaving.set(false);
-      }
-    });
+    this.lastBumpedToVersion.set(null);
+    this.rolesApi.replaceAssignments(this.key(), roleIds, { expectedFromVersion, acknowledgeDrift })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: response => {
+          this.assignedRoles.set(response.assignedRoles);
+          this.loadGrantsForRoles(response.assignedRoles);
+          this.assignmentsSaving.set(false);
+          this.lastBumpedToVersion.set(response.agentVersion);
+
+          // Surface the bump in the version history dropdown by reloading the version
+          // list, then jump the inspector to the new version so the URL/badge reflects
+          // what the user just edited.
+          this.api.versions(this.key())
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe(summaries => {
+              this.versions.set(summaries);
+              this.select(response.agentVersion);
+            });
+        },
+        error: err => {
+          if (err?.status === 409 && err?.error?.actualLatestVersion != null) {
+            // Drift: the latest moved between when we loaded and when we tried to save.
+            // Confirm with the user, then retry with acknowledgeDrift=true. Refresh the
+            // versions list first so the new latest is visible.
+            const drift = err.error;
+            const proceed = window.confirm(
+              `Another edit landed at v${drift.actualLatestVersion} since you started. ` +
+              `Save your changes on top of that? (Your assignment will bump to v${drift.actualLatestVersion + 1}.)`
+            );
+            this.assignmentsSaving.set(false);
+            if (proceed) {
+              this.api.versions(this.key())
+                .pipe(takeUntilDestroyed(this.destroyRef))
+                .subscribe(summaries => {
+                  this.versions.set(summaries);
+                  this.bumpRoleAssignment(roleIds, drift.actualLatestVersion, true);
+                });
+            }
+            return;
+          }
+          this.assignError.set(err?.error?.error ?? err?.message ?? 'Failed to update roles');
+          this.assignmentsSaving.set(false);
+        }
+      });
   }
 
   select(version: number): void {

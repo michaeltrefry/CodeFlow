@@ -95,7 +95,7 @@ internal static class MechanicalReviewLoopTemplate
             SystemAgentRoles.CodeWorkerKey, context.CancellationToken);
         if (codeWorkerRole is not null)
         {
-            await context.RoleRepository.ReplaceAssignmentsAsync(
+            await context.RoleRepository.ReplaceAssignmentsForLatestAsync(
                 mechanicalGateKey,
                 new[] { codeWorkerRole.Id },
                 context.CancellationToken);

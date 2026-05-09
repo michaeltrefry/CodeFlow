@@ -353,6 +353,7 @@ public static class AgentRolesEndpoints
         string key,
         AgentAssignmentsRequest request,
         IAgentRoleRepository repository,
+        ICurrentUser currentUser,
         CancellationToken cancellationToken)
     {
         if (request?.RoleIds is null)
@@ -365,9 +366,21 @@ public static class AgentRolesEndpoints
 
         var normalized = key.Trim();
 
+        // sc-828 / AR-4: editing an agent's role assignment produces a new agent version.
+        // The drift gate fires when the caller previewed against vN but vN+M already exists
+        // (someone else edited the agent in the meantime). The admin UI catches the 409 and
+        // retries with `acknowledgeDrift: true` after refreshing.
+        var expectedFromVersion = request.AcknowledgeDrift ? null : request.ExpectedFromVersion;
+
+        int newVersion;
         try
         {
-            await repository.ReplaceAssignmentsAsync(normalized, request.RoleIds, cancellationToken);
+            newVersion = await repository.BumpAgentForRoleAssignmentChangeAsync(
+                normalized,
+                request.RoleIds,
+                expectedFromVersion,
+                currentUser.Id,
+                cancellationToken);
         }
         catch (AgentRoleNotFoundException ex)
         {
@@ -376,9 +389,26 @@ public static class AgentRolesEndpoints
                 ["roleIds"] = [ex.Message]
             });
         }
+        catch (AgentConfigNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (AgentConfigVersionDriftException drift)
+        {
+            return Results.Json(
+                new AgentAssignmentsDriftResponse(
+                    AgentKey: drift.Key,
+                    ExpectedFromVersion: drift.ExpectedVersion,
+                    ActualLatestVersion: drift.ActualVersion,
+                    Message: drift.Message),
+                statusCode: StatusCodes.Status409Conflict);
+        }
 
-        var roles = await repository.GetRolesForAgentLatestAsync(normalized, cancellationToken);
-        return Results.Ok(roles.Select(Map).ToArray());
+        var roles = await repository.GetRolesForAgentAsync(normalized, newVersion, cancellationToken);
+        return Results.Ok(new AgentAssignmentsResponse(
+            AgentKey: normalized,
+            AgentVersion: newVersion,
+            AssignedRoles: roles.Select(Map).ToArray()));
     }
 
     private static AgentRoleResponse Map(AgentRole role) => new(

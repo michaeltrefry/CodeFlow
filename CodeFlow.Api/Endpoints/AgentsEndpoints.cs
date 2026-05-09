@@ -505,6 +505,7 @@ public static class AgentsEndpoints
     private static async Task<IResult> CreateAgentAsync(
         CreateAgentRequest request,
         IAgentConfigRepository repository,
+        IAgentRoleRepository roleRepository,
         CodeFlowDbContext dbContext,
         ICurrentUser currentUser,
         CancellationToken cancellationToken)
@@ -544,6 +545,30 @@ public static class AgentsEndpoints
             currentUser.Id,
             request.Tags,
             cancellationToken);
+
+        // sc-828 / AR-4: optional atomic create-with-roles. After AR-4, the standalone
+        // PUT /api/agents/{key}/roles is bump-on-write — calling it on a freshly-created
+        // v1 produces a v2 with the assignment, leaving v1 with no roles. Seeders and the
+        // agent-package importer's create-then-assign flows want v1 to land with roles
+        // already attached; this branch writes the assignment slot at v1 directly.
+        if (request.RoleIds is { Count: > 0 } roleIds)
+        {
+            try
+            {
+                await roleRepository.ReplaceAssignmentsAsync(
+                    normalizedKey,
+                    version,
+                    roleIds,
+                    cancellationToken);
+            }
+            catch (AgentRoleNotFoundException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["roleIds"] = new[] { ex.Message }
+                });
+            }
+        }
 
         return Results.Created($"/api/agents/{normalizedKey}/{version}", new { key = normalizedKey, version });
     }

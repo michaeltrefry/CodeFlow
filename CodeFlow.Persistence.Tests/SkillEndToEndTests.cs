@@ -65,7 +65,7 @@ public sealed class SkillEndToEndTests : IAsyncLifetime
         var roleId = await roleRepo.CreateAsync(new AgentRoleCreate(roleKey, "Interviewer", null, null));
         var skillId = await skillRepo.CreateAsync(new SkillCreate(skillName, socraticBody, null));
         await roleRepo.ReplaceSkillGrantsAsync(roleId, new[] { skillId });
-        await roleRepo.ReplaceAssignmentsAsync(agentKey, new[] { roleId });
+        await roleRepo.ReplaceAssignmentsForLatestAsync(agentKey, new[] { roleId });
 
         var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
         var resolved = await resolver.ResolveAsync(agentKey, agentVersion: 0);

@@ -404,7 +404,13 @@ public sealed class AgentPackageResolverTests
                 ? roles
                 : (IReadOnlyList<AgentRole>)Array.Empty<AgentRole>());
 
-        public Task ReplaceAssignmentsAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default) =>
+        public Task ReplaceAssignmentsAsync(string agentKey, int agentVersion, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ReplaceAssignmentsForLatestAsync(string agentKey, IReadOnlyList<long> roleIds, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> BumpAgentForRoleAssignmentChangeAsync(string agentKey, IReadOnlyList<long> roleIds, int? expectedFromVersion, string? createdBy, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<IReadOnlyList<long>> GetSkillGrantsAsync(long id, CancellationToken cancellationToken = default) =>

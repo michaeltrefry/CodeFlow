@@ -110,7 +110,10 @@ public sealed class AgentPackageRoundTripTests
         });
         skillsReplace.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // Agent.
+        // Agent. sc-828 / AR-4: pass `roleIds` on the create request so the v1 row lands
+        // with the assignment slot atomically. Standalone PUT /api/agents/{key}/roles is
+        // bump-on-write after AR-4, so a follow-up call would produce a v2 row and leave
+        // v1 with no roles — breaking the GET /1/package self-containment assertion.
         var agentCreate = await client.PostAsJsonAsync("/api/agents", new
         {
             key = sourceAgentKey,
@@ -121,15 +124,9 @@ public sealed class AgentPackageRoundTripTests
                 model = "gpt-5",
                 systemPrompt = "Round-trip me.",
             },
-        });
-        agentCreate.StatusCode.Should().Be(HttpStatusCode.Created);
-
-        // Role assignment.
-        var assign = await client.PutAsJsonAsync($"/api/agents/{sourceAgentKey}/roles", new
-        {
             roleIds = new[] { roleId },
         });
-        assign.StatusCode.Should().Be(HttpStatusCode.OK);
+        agentCreate.StatusCode.Should().Be(HttpStatusCode.Created);
 
         // ----- Export: GET /package returns a self-contained bundle.
         var packageJson = await client.GetStringAsync($"/api/agents/{sourceAgentKey}/1/package");
