@@ -369,11 +369,10 @@ export class ArtifactRailComponent {
     this.dismissRequested.emit(view);
   }
 
-  /** sc-797 (AA-6): only package-kind artifacts are saveable today. AA-9 (Phase 3) widens this
-   *  for trace-diagnostic + evidence-bundle producers (which have nothing to save). */
+  /** sc-797 (AA-6): only package-kind artifacts are saveable today. AA-9 (Phase 3) widens
+   *  this for trace-diagnostic + evidence-bundle producers (which have nothing to save). */
   protected isPackageKind(view: ArtifactEventView): boolean {
-    return view.artifactKind === 'WorkflowPackageDraft'
-      || view.artifactKind === 'WorkflowPackageSnapshot';
+    return isPackageArtifactKind(view.artifactKind);
   }
 
   protected formatArtifactAge(iso: string, now: number): string {
@@ -383,6 +382,19 @@ export class ArtifactRailComponent {
 
 /** Default collapse threshold — exported so the chat panel + tests can reference it. */
 export const COLLAPSE_THRESHOLD = 4;
+
+/** AP-8 (sc-839): which artifact kinds get the rail's Diff + Save buttons. Workflow
+ *  package kinds (sc-797 AA-6) and agent-package kinds (AP-3) qualify; trace-diagnostic
+ *  and evidence-bundle kinds don't (AA-9 reserved them but they have nothing to save).
+ *  Pure function so the rail spec can exercise the predicate without mounting the
+ *  component. The Save-from-rail handoff routes through the imports page, which dispatches
+ *  on `schemaVersion` (AP-7) — both kinds end up on the right backend automatically. */
+export function isPackageArtifactKind(kind: string): boolean {
+  return kind === 'WorkflowPackageDraft'
+    || kind === 'WorkflowPackageSnapshot'
+    || kind === 'AgentPackageDraft'
+    || kind === 'AgentPackageSnapshot';
+}
 
 /**
  * sc-796 (AA-5): pure filter for the rail's visible events. Newest-first by sequence,

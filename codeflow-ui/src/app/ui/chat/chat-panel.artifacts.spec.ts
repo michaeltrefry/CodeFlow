@@ -246,6 +246,119 @@ describe('buildSaveConfirmationView for artifact source (AA-6)', () => {
   });
 });
 
+describe('buildSaveConfirmationView for save_agent_package (AP-8)', () => {
+  // The agent-package chip shares the workflow chip's view-model shape and click flow;
+  // the discriminator is the chip `kind` and the noun in prompt wording. Until the
+  // agent-side bridge endpoints land (deferred from AP-2), every apply path routes through
+  // the imports-page handoff — the confirm label reflects that.
+
+  it('emits kind=save_agent_package when the tool name flags an agent package', () => {
+    const result = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_ok',
+        entryPoint: { key: 'demo-writer', version: 1 },
+      }),
+      { schemaVersion: 'codeflow.agent-package.v1', entryPoint: { key: 'demo-writer', version: 1 } },
+      'save_agent_package',
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.kind).toBe('save_agent_package');
+    expect(result!.packageSource).toBe('inline');
+  });
+
+  it("agent apply confirm label is 'Open in imports' (no inline POST endpoint yet)", () => {
+    const result = buildSaveConfirmationView(
+      JSON.stringify({ status: 'preview_ok', entryPoint: { key: 'demo-writer', version: 1 } }),
+      { schemaVersion: 'codeflow.agent-package.v1', entryPoint: { key: 'demo-writer', version: 1 } },
+      'save_agent_package',
+    );
+
+    expect(result!.confirmLabel).toBe('Open in imports');
+  });
+
+  it("agent resolve chip prompt names 'Agent package' instead of workflow", () => {
+    // Inline source: pkg is present but lacks an entryPoint, so the prompt falls back to
+    // the noun. The pkg satisfies `buildSaveConfirmationView`'s "inline-needs-a-package"
+    // guard without smuggling an entry-point key into the prompt.
+    const result = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_conflicts',
+        conflictCount: 1,
+        refusedCount: 0,
+      }),
+      { schemaVersion: 'codeflow.agent-package.v1' },
+      'save_agent_package',
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.kind).toBe('save_agent_package');
+    expect(result!.mode).toBe('resolve');
+    expect(result!.prompt).toContain('Agent package');
+    expect(result!.confirmLabel).toBe('Resolve');
+  });
+
+  it('agent artifact-source apply chip carries packageSource + eventId through to the chip', () => {
+    const result = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_ok',
+        packageSource: 'artifact',
+        conversationId: 'conv-1',
+        eventId: 'evt-7',
+        artifactName: 'draft.cf-agent-package.json',
+        entryPoint: { key: 'demo-writer', version: 1 },
+      }),
+      null,
+      'save_agent_package',
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.kind).toBe('save_agent_package');
+    expect(result!.packageSource).toBe('artifact');
+    expect(result!.artifactEventId).toBe('evt-7');
+    expect(result!.artifactName).toBe('draft.cf-agent-package.json');
+  });
+
+  it("agent draft-source apply chip requires snapshotId to render (same guard as workflow)", () => {
+    // Defense in depth: if save_agent_package's draft path returns preview_ok without a
+    // snapshotId, the chip refuses to render — same invariant as workflows.
+    const noSnapshot = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_ok',
+        packageSource: 'draft',
+        entryPoint: { key: 'demo-writer', version: 1 },
+        // snapshotId missing
+      }),
+      null,
+      'save_agent_package',
+    );
+    expect(noSnapshot).toBeUndefined();
+
+    const withSnapshot = buildSaveConfirmationView(
+      JSON.stringify({
+        status: 'preview_ok',
+        packageSource: 'draft',
+        snapshotId: '00000000-0000-0000-0000-000000000001',
+        entryPoint: { key: 'demo-writer', version: 1 },
+      }),
+      null,
+      'save_agent_package',
+    );
+    expect(withSnapshot).toBeDefined();
+    expect(withSnapshot!.kind).toBe('save_agent_package');
+    expect(withSnapshot!.snapshotId).toBe('00000000-0000-0000-0000-000000000001');
+  });
+
+  it('default tool name (omitted) still produces a workflow chip — backward compat', () => {
+    const result = buildSaveConfirmationView(
+      JSON.stringify({ status: 'preview_ok', entryPoint: { key: 'wf', version: 1 } }),
+      { schemaVersion: 'codeflow.workflow-package.v1', entryPoint: { key: 'wf', version: 1 } },
+    );
+
+    expect(result!.kind).toBe('save_workflow_package');
+  });
+});
+
 describe('hydrateArtifactEventViews (AA-3 reload hydration)', () => {
   function makeHydrated(overrides: Partial<HydratedArtifactEvent> = {}): HydratedArtifactEvent {
     return {

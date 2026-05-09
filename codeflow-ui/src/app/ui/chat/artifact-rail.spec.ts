@@ -1,4 +1,4 @@
-import { COLLAPSE_THRESHOLD, filterRailEvents, formatArtifactAge } from './artifact-rail.component';
+import { COLLAPSE_THRESHOLD, filterRailEvents, formatArtifactAge, isPackageArtifactKind } from './artifact-rail.component';
 import { ArtifactEventView } from './chat-panel.component';
 
 /**
@@ -121,5 +121,29 @@ describe('COLLAPSE_THRESHOLD (AA-5)', () => {
     // Pin the contract — changing it without updating the rail's collapsed-state UX would
     // surprise users who saw the rail expanded yesterday.
     expect(COLLAPSE_THRESHOLD).toBe(4);
+  });
+});
+
+describe('isPackageArtifactKind (AP-8 rail save eligibility)', () => {
+  it('matches both workflow-package kinds (saveable since AA-6)', () => {
+    expect(isPackageArtifactKind('WorkflowPackageDraft')).toBe(true);
+    expect(isPackageArtifactKind('WorkflowPackageSnapshot')).toBe(true);
+  });
+
+  it('matches both agent-package kinds (added in AP-8)', () => {
+    expect(isPackageArtifactKind('AgentPackageDraft')).toBe(true);
+    expect(isPackageArtifactKind('AgentPackageSnapshot')).toBe(true);
+  });
+
+  it('does not match the AA-9 reserved trace kinds', () => {
+    // TraceDiagnostic + EvidenceBundle are downloadable but have nothing to "Save" — the
+    // rail must not surface a Save button on them.
+    expect(isPackageArtifactKind('TraceDiagnostic')).toBe(false);
+    expect(isPackageArtifactKind('EvidenceBundle')).toBe(false);
+  });
+
+  it('rejects unknown / future kinds defensively', () => {
+    expect(isPackageArtifactKind('SomeFutureKind')).toBe(false);
+    expect(isPackageArtifactKind('')).toBe(false);
   });
 });
