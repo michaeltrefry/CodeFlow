@@ -42,20 +42,21 @@ public static class GitCredentialEnv
         // and we'd rather have a deterministic single-helper chain. See git-config(1) under
         // "Specifying an empty helper string will reset the helper list to empty."
         //
-        // We deliberately do NOT set credential.useHttpPath. CodeFlow stores one credential per
-        // host (e.g. `https://x-access-token:TOKEN@github.com`), with no path component. With
+        // Force host-only matching even if the worker image/user has a global
+        // credential.useHttpPath=true. CodeFlow stores one credential per host (e.g.
+        // `https://x-access-token:TOKEN@github.com`), with no path component. With
         // useHttpPath=true, git's matcher requires the path on the request to equal the path
-        // on the stored entry — and a null stored path against a non-null request path is a
-        // mismatch, so push fails with "could not read Username … No such device or address"
-        // (TTY fallback in a process with no TTY). Default-false matches by host, which is the
-        // shape the credential file is written in.
+        // on the stored entry; a null stored path against a non-null request path is a
+        // mismatch, so push falls through to a TTY prompt and fails headlessly.
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["GIT_CONFIG_COUNT"] = "2",
+            ["GIT_CONFIG_COUNT"] = "3",
             ["GIT_CONFIG_KEY_0"] = "credential.helper",
             ["GIT_CONFIG_VALUE_0"] = string.Empty,
             ["GIT_CONFIG_KEY_1"] = "credential.helper",
             ["GIT_CONFIG_VALUE_1"] = helperValue,
+            ["GIT_CONFIG_KEY_2"] = "credential.useHttpPath",
+            ["GIT_CONFIG_VALUE_2"] = "false",
         };
     }
 
