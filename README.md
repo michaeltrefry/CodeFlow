@@ -32,6 +32,9 @@ The current tree includes:
 - `docs` — feature, design, and operator references
 - `starter_workflows` — packaged starter workflow definitions
 - `workflows` — first-party workflow library packages
+- `workflows/agents` — first-party agent library packages (single-agent
+  bundles importable through the same `/workflows` imports page; see
+  [docs/features/agent-packages.md](./docs/features/agent-packages.md))
 
 ## Prerequisites
 
@@ -285,6 +288,7 @@ The trace inspector tools share the same aggregation code path that powers the p
 | Tool | Confirmation chip → action |
 |---|---|
 | `save_workflow_package` | "Save to library" → POST `/api/workflows/package/apply` |
+| `save_agent_package` | "Open in imports" → handoff to `/workflows` imports page (schema-dispatched to `/api/agents/package/apply`). See [docs/features/agent-packages.md](./docs/features/agent-packages.md). |
 | `run_workflow` | "Run" → POST `/api/traces` |
 | `propose_replay_with_edit` | "Replay" → POST `/api/traces/{id}/replay` (DryRunExecutor v4) |
 
