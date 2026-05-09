@@ -2,6 +2,8 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { Observable } from 'rxjs';
+import { AgentsApi } from '../../core/agents.api';
 import { useAsyncList } from '../../core/async-state';
 import { formatHttpError } from '../../core/format-error';
 import {
@@ -12,6 +14,7 @@ import {
 import {
   WorkflowPackageDocument,
   WorkflowPackageImportAction,
+  WorkflowPackageImportApplyResult,
   WorkflowPackageImportDriftConflict,
   WorkflowPackageImportItem,
   WorkflowPackageImportPreview,
@@ -27,6 +30,17 @@ import { ChipComponent, ChipVariant } from '../../ui/chip.component';
 import { TagInputComponent } from '../../ui/tag-input.component';
 
 type SortDirection = 'asc' | 'desc';
+
+/** AP-7 (sc-838): determine which API surface owns a parsed package by inspecting its
+ *  `schemaVersion`. Workflow packages route to `WorkflowsApi`; agent packages route to
+ *  `AgentsApi`. Anything unrecognised falls back to the workflow path so a malformed
+ *  upload bounces off the workflow admission validator (which carries the most-tested
+ *  error reporting) rather than a less-explored code path. */
+function detectPackageKind(pkg: unknown): 'workflow' | 'agent' {
+  if (!pkg || typeof pkg !== 'object') return 'workflow';
+  const schemaVersion = (pkg as { schemaVersion?: unknown }).schemaVersion;
+  return schemaVersion === 'codeflow.agent-package.v1' ? 'agent' : 'workflow';
+}
 type SortKey = 'category' | 'name' | 'key' | 'latestVersion' | 'createdAtUtc';
 
 /**
@@ -762,6 +776,11 @@ function byteLengthOfJson(value: unknown): number {
 })
 export class WorkflowsListComponent {
   private readonly api = inject(WorkflowsApi);
+  // AP-7 (sc-838): the imports page now dispatches on the uploaded package's
+  // `schemaVersion` — agent packages route to AgentsApi instead of WorkflowsApi. The
+  // per-row preview / resolution / drift surface is identical between the two so we
+  // route only the API calls; everything else remains schema-agnostic.
+  private readonly agentsApi = inject(AgentsApi);
   private readonly router = inject(Router);
   private readonly workflowsList = useAsyncList(
     () => this.api.list(),
@@ -780,6 +799,10 @@ export class WorkflowsListComponent {
   readonly importSuccess = signal<string | null>(null);
   readonly importPreview = signal<WorkflowPackageImportPreview | null>(null);
   private pendingImportPackage: unknown = null;
+  /** AP-7: which API surface owns the active import. Set by `setImportPackageKind` when
+   *  a package is parsed; null between imports / on reset. Used by `previewWith` and
+   *  `applyWith` to route preview/apply requests to the correct backend. */
+  private importPackageKind: 'workflow' | 'agent' = 'workflow';
 
   /** sc-396: per-row resolution state. Keyed by `rowKey(item)`. Persists across re-previews
    *  so the user's choice survives even after the underlying Conflict row collapses to a
@@ -1104,7 +1127,11 @@ export class WorkflowsListComponent {
     this.useExistingWarned.set(false);
     this.importLoading.set(true);
 
-    this.api.previewPackageImport(pkg).subscribe({
+    // AP-7: route to the API surface that owns this package's schema. Workflow handoffs
+    // hit `/api/workflows/package/preview`; agent-package handoffs hit
+    // `/api/agents/package/preview`. The preview shape is identical between the two.
+    this.importPackageKind = detectPackageKind(pkg);
+    this.previewWith(pkg).subscribe({
       next: preview => {
         this.importPreview.set(preview);
         this.pendingImportPackage = pkg;
@@ -1112,7 +1139,7 @@ export class WorkflowsListComponent {
         void this.precomputeCopySuffixesAsync(preview, pkg);
       },
       error: err => {
-        this.importError.set(this.errorMessage(err, 'Failed to preview workflow package.'));
+        this.importError.set(this.errorMessage(err, this.previewErrorMessage()));
         this.importLoading.set(false);
       },
     });
@@ -1150,7 +1177,13 @@ export class WorkflowsListComponent {
           return;
         }
 
-        this.api.previewPackageImport(parsed).subscribe({
+        // AP-7: dispatch on the parsed package's schema. Workflow uploads land on
+        // `WorkflowsApi`; agent-package uploads land on `AgentsApi`. Stored on the
+        // component so re-previews (after user picks a resolution) and the eventual
+        // apply hit the same backend.
+        this.importPackageKind = detectPackageKind(parsed);
+
+        this.previewWith(parsed).subscribe({
           next: preview => {
             this.importPreview.set(preview);
             this.pendingImportPackage = parsed;
@@ -1160,7 +1193,7 @@ export class WorkflowsListComponent {
             void this.precomputeCopySuffixesAsync(preview, parsed);
           },
           error: err => {
-            this.importError.set(this.errorMessage(err, 'Failed to preview workflow package.'));
+            this.importError.set(this.errorMessage(err, this.previewErrorMessage()));
             this.importLoading.set(false);
           }
         });
@@ -1328,9 +1361,11 @@ export class WorkflowsListComponent {
     this.importError.set(null);
     this.driftConflict.set(null);
     // Re-preview never blocks the apply button — we just refresh the rendered state.
-    this.api.previewPackageImport(pkg, resolutions.length > 0 ? resolutions : undefined).subscribe({
+    // AP-7: route to the same API surface the initial preview / pending package was bound
+    // to; switching kinds mid-flight would mismatch the schema admission validator.
+    this.previewWith(pkg, resolutions.length > 0 ? resolutions : undefined).subscribe({
       next: preview => this.importPreview.set(preview),
-      error: err => this.importError.set(this.errorMessage(err, 'Failed to re-preview workflow package.')),
+      error: err => this.importError.set(this.errorMessage(err, this.rePreviewErrorMessage())),
     });
   }
 
@@ -1407,7 +1442,8 @@ export class WorkflowsListComponent {
       return;
     }
 
-    if (!window.confirm('Apply this workflow package import?')) {
+    const noun = this.importPackageKind === 'agent' ? 'agent' : 'workflow';
+    if (!window.confirm(`Apply this ${noun} package import?`)) {
       return;
     }
 
@@ -1428,7 +1464,7 @@ export class WorkflowsListComponent {
     this.importApplyLoading.set(true);
 
     const resolutions = this.buildResolutionList();
-    this.api.applyPackageImport(
+    this.applyWith(
       this.pendingImportPackage,
       resolutions.length > 0 ? resolutions : undefined,
       acknowledgeDrift || undefined,
@@ -1451,11 +1487,50 @@ export class WorkflowsListComponent {
           // Don't set importError — the banner is enough and surfaces "Apply anyway" inline.
           this.driftConflict.set(drift);
         } else {
-          this.importError.set(this.errorMessage(err, 'Failed to apply workflow package.'));
+          this.importError.set(this.errorMessage(err, this.applyErrorMessage()));
         }
         this.importApplyLoading.set(false);
       }
     });
+  }
+
+  /** AP-7: route the preview to the API surface that owns the active import's schema. */
+  private previewWith(
+    pkg: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+  ): Observable<WorkflowPackageImportPreview> {
+    return this.importPackageKind === 'agent'
+      ? this.agentsApi.previewPackageImport(pkg, resolutions)
+      : this.api.previewPackageImport(pkg, resolutions);
+  }
+
+  /** AP-7: route the apply to the API surface that owns the active import's schema. */
+  private applyWith(
+    pkg: unknown,
+    resolutions?: WorkflowPackageImportResolution[],
+    acknowledgeDrift?: boolean,
+  ): Observable<WorkflowPackageImportApplyResult> {
+    return this.importPackageKind === 'agent'
+      ? this.agentsApi.applyPackageImport(pkg, resolutions, acknowledgeDrift)
+      : this.api.applyPackageImport(pkg, resolutions, acknowledgeDrift);
+  }
+
+  private previewErrorMessage(): string {
+    return this.importPackageKind === 'agent'
+      ? 'Failed to preview agent package.'
+      : 'Failed to preview workflow package.';
+  }
+
+  private rePreviewErrorMessage(): string {
+    return this.importPackageKind === 'agent'
+      ? 'Failed to re-preview agent package.'
+      : 'Failed to re-preview workflow package.';
+  }
+
+  private applyErrorMessage(): string {
+    return this.importPackageKind === 'agent'
+      ? 'Failed to apply agent package.'
+      : 'Failed to apply workflow package.';
   }
 
   private extractDriftConflict(err: unknown): WorkflowPackageImportDriftConflict | null {
