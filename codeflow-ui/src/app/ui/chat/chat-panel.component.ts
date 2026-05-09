@@ -34,6 +34,15 @@ import { extractWorkflowPackagesFromMarkdown } from './markdown';
 /** HAA-10: name of the assistant tool whose preview-ok result triggers a Save confirmation chip. */
 const SAVE_WORKFLOW_PACKAGE_TOOL = 'save_workflow_package';
 
+/** AP-8 (sc-839): agent-package sibling of `save_workflow_package`. Same chip shape; the
+ *  click flow always routes through the imports-page handoff because the agent-side
+ *  apply-from-draft / apply-from-artifact endpoints are deferred from AP-2. */
+const SAVE_AGENT_PACKAGE_TOOL = 'save_agent_package';
+
+/** Either save tool — the chat-panel branches inside on the tool name to set the chip
+ *  kind / wording, but the upstream "is this a save tool?" check only needs membership. */
+const SAVE_PACKAGE_TOOLS = new Set([SAVE_WORKFLOW_PACKAGE_TOOL, SAVE_AGENT_PACKAGE_TOOL]);
+
 /** HAA-11: name of the assistant tool whose preview-ok result triggers a Run confirmation chip. */
 const RUN_WORKFLOW_TOOL = 'run_workflow';
 
@@ -1488,7 +1497,7 @@ export class ChatPanelComponent implements OnDestroy {
   protected onConfirmToolCall(toolCallId: string): void {
     const card = this.toolCalls().find(c => c.id === toolCallId);
     const kind = card?.confirmation?.kind;
-    if (kind === 'save_workflow_package') {
+    if (kind === 'save_workflow_package' || kind === 'save_agent_package') {
       this.applySaveConfirmation(toolCallId);
     } else if (kind === 'run_workflow') {
       this.applyRunConfirmation(toolCallId);
@@ -1525,6 +1534,17 @@ export class ChatPanelComponent implements OnDestroy {
     // sc-397: resolve-mode chip routes the user to the imports page where they pick per-row
     // resolutions; the apply-mode chips below run their respective POST flows.
     if (conf?.mode === 'resolve') {
+      this.handleResolveSaveConfirmation(toolCallId, isDraftSource, isArtifactSource);
+      return;
+    }
+
+    // AP-8 (sc-839): agent-package chips route every apply path through the imports-page
+    // handoff. The agent-side bridge endpoints (apply-from-draft, apply-from-artifact) are
+    // deferred from AP-2; the imports page already dispatches on `schemaVersion` (AP-7) so
+    // the handoff lands on /workflows where the inline / draft / artifact source variants
+    // get the right backend on the user's confirm. Once the bridge endpoints ship, this
+    // branch can split per-source like the workflow flow below.
+    if (conf?.kind === 'save_agent_package') {
       this.handleResolveSaveConfirmation(toolCallId, isDraftSource, isArtifactSource);
       return;
     }
@@ -1962,7 +1982,7 @@ export class ChatPanelComponent implements OnDestroy {
         // HAA-10/HAA-11: stash structured args for mutating tools so we can POST them to the
         // matching mutation endpoint when the user confirms via the chip.
         if (evt.arguments && typeof evt.arguments === 'object') {
-          if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL) {
+          if (SAVE_PACKAGE_TOOLS.has(evt.name)) {
             const pkg = (evt.arguments as Record<string, unknown>)['package'];
             if (pkg) {
               this.pendingSaves.set(evt.id, pkg);
@@ -1993,8 +2013,8 @@ export class ChatPanelComponent implements OnDestroy {
         // a prior call (shouldn't happen, but server bugs are server bugs), drop it on the floor.
         let confirmation: ChatToolCallView['confirmation'] | undefined;
         if (!evt.isError) {
-          if (evt.name === SAVE_WORKFLOW_PACKAGE_TOOL) {
-            confirmation = buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id));
+          if (SAVE_PACKAGE_TOOLS.has(evt.name)) {
+            confirmation = buildSaveConfirmationView(evt.result, this.pendingSaves.get(evt.id), evt.name);
           } else if (evt.name === RUN_WORKFLOW_TOOL) {
             confirmation = buildRunConfirmationView(evt.result, this.pendingRuns.get(evt.id));
           } else if (evt.name === PROPOSE_REPLAY_WITH_EDIT_TOOL) {
@@ -2371,8 +2391,9 @@ export class ChatPanelComponent implements OnDestroy {
     // Match only chips that are still actionable (idle, applying, or terminally succeeded/failed
     // with a payload the user might want to retry).
     const hasActiveSaveToolCall = this.toolCalls().some(card => {
-      const isSaveCard = card.name === SAVE_WORKFLOW_PACKAGE_TOOL
-        || card.confirmation?.kind === 'save_workflow_package';
+      const isSaveCard = SAVE_PACKAGE_TOOLS.has(card.name)
+        || card.confirmation?.kind === 'save_workflow_package'
+        || card.confirmation?.kind === 'save_agent_package';
       if (!isSaveCard) return false;
       return card.confirmation?.state !== 'cancelled';
     });
@@ -2539,6 +2560,10 @@ export function applyArtifactEvent(
 export function buildSaveConfirmationView(
   resultJson: string,
   pkg: unknown,
+  /** AP-8: emitting tool name. Used to discriminate the chip's `kind` and to swap "agent
+   *  package" / "workflow package" wording. Defaults to the workflow tool for backward
+   *  compatibility with existing callers + `buildDraftSaveConfirmationView`. */
+  toolName: string = SAVE_WORKFLOW_PACKAGE_TOOL,
 ): ChatToolCallView['confirmation'] | undefined {
   let parsed:
     | {
@@ -2615,17 +2640,27 @@ export function buildSaveConfirmationView(
       ? 'draft' as const
       : 'inline' as const;
 
+  // AP-8: discriminate on the emitting tool name — workflow chips and agent chips share the
+  // exact same view-model shape and click flow until the agent-side bridge endpoints land.
+  // `chipKind` drives the typed discriminator; `noun` flips the prompt wording.
+  const isAgentPackage = toolName === SAVE_AGENT_PACKAGE_TOOL;
+  const chipKind: 'save_workflow_package' | 'save_agent_package' = isAgentPackage
+    ? 'save_agent_package'
+    : 'save_workflow_package';
+  const noun = isAgentPackage ? 'Agent package' : 'Workflow package';
+  const summaryName = isAgentPackage ? entryKey : (summary?.workflowName ?? entryKey);
+
   if (isResolveMode) {
     const conflictCount =
       (typeof parsed.conflictCount === 'number' ? parsed.conflictCount : 0)
       + (typeof parsed.refusedCount === 'number' ? parsed.refusedCount : 0);
-    const noun = conflictCount === 1 ? 'conflict' : 'conflicts';
+    const conflictNoun = conflictCount === 1 ? 'conflict' : 'conflicts';
     const label = entryKey
-      ? `${entryKey} v${entryVersion} has ${conflictCount} ${noun} — Resolve in imports page?`
-      : `Workflow package has ${conflictCount} ${noun} — Resolve in imports page?`;
+      ? `${entryKey} v${entryVersion} has ${conflictCount} ${conflictNoun} — Resolve in imports page?`
+      : `${noun} has ${conflictCount} ${conflictNoun} — Resolve in imports page?`;
 
     return {
-      kind: 'save_workflow_package',
+      kind: chipKind,
       prompt: label,
       confirmLabel: 'Resolve',
       cancelLabel: 'Dismiss',
@@ -2638,16 +2673,21 @@ export function buildSaveConfirmationView(
     };
   }
 
+  // AP-8: agent chips always route through the imports-page handoff (the agent-side
+  // bridge endpoints aren't shipped yet). Surface that fact in the chip's confirm label
+  // so the user knows the click takes them out of chat to /workflows where the imports
+  // page picks the right backend by `schemaVersion`.
+  const confirmLabel = isAgentPackage ? 'Open in imports' : 'Save';
   const label = isArtifactSource && artifactName
     ? `Save ${entryKey ? entryKey + ' v' + entryVersion : artifactName} to the library?`
     : entryKey
-      ? `Save ${summary?.workflowName ?? entryKey} (${entryKey} v${entryVersion}) to the library?`
-      : 'Save this workflow package to the library?';
+      ? `Save ${summaryName} (${entryKey} v${entryVersion}) to the library?`
+      : `Save this ${noun.toLowerCase()} to the library?`;
 
   return {
-    kind: 'save_workflow_package',
+    kind: chipKind,
     prompt: label,
-    confirmLabel: 'Save',
+    confirmLabel,
     cancelLabel: 'Cancel',
     packageSource: sourceLabel,
     mode: 'apply',
@@ -2726,6 +2766,18 @@ export function buildPinnedMutationChip(card: ChatToolCallView): PinnedMutationC
       };
     }
 
+    if (conf.applied.kind === 'agent') {
+      return {
+        ...base,
+        title: `Saved ${conf.applied.key} v${conf.applied.version} to the library.`,
+        message: 'The agent is ready to load from the agent library.',
+        canConfirm: false,
+        canCancel: false,
+        linkUrl: `/agents/${encodeURIComponent(conf.applied.key)}`,
+        linkLabel: 'Open agent',
+      };
+    }
+
     if (conf.applied.kind === 'trace') {
       return {
         ...base,
@@ -2800,6 +2852,7 @@ export function buildPackagePreviewFailureMessage(preview: WorkflowPackageImport
 function applyingTitle(kind: NonNullable<ChatToolCallView['confirmation']>['kind']): string {
   switch (kind) {
     case 'save_workflow_package': return 'Saving workflow...';
+    case 'save_agent_package': return 'Opening imports page...';
     case 'run_workflow': return 'Starting workflow run...';
     case 'propose_replay_with_edit': return 'Starting replay...';
   }
@@ -2808,6 +2861,7 @@ function applyingTitle(kind: NonNullable<ChatToolCallView['confirmation']>['kind
 function failedTitle(kind: NonNullable<ChatToolCallView['confirmation']>['kind']): string {
   switch (kind) {
     case 'save_workflow_package': return 'Workflow save failed.';
+    case 'save_agent_package': return 'Agent save failed.';
     case 'run_workflow': return 'Workflow run failed to start.';
     case 'propose_replay_with_edit': return 'Replay failed to start.';
   }

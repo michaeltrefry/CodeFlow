@@ -14,7 +14,15 @@ export type ChatToolCallStatus = 'pending' | 'success' | 'error';
  * domain into the chip primitive.
  */
 export interface ChatToolCallConfirmation {
-  kind: 'save_workflow_package' | 'run_workflow' | 'propose_replay_with_edit';
+  /**
+   * AP-8 (sc-839): `save_agent_package` is a sibling of `save_workflow_package`. The chip
+   * surface is identical (same prompt / mode / packageSource / state machine), but the
+   * click flow always routes through the imports-page handoff because the agent-side
+   * apply-from-draft / apply-from-artifact endpoints aren't shipped yet (deferred from
+   * AP-2). The discriminator lets the chat panel know which apply path to take and lets
+   * the chip render the right noun ("agent package" vs "workflow package").
+   */
+  kind: 'save_workflow_package' | 'save_agent_package' | 'run_workflow' | 'propose_replay_with_edit';
   prompt: string;
   confirmLabel?: string;
   cancelLabel?: string;
@@ -74,6 +82,7 @@ export interface ChatToolCallConfirmation {
    */
   applied?:
     | { kind: 'workflow'; key: string; version: number }
+    | { kind: 'agent'; key: string; version: number }
     | { kind: 'trace'; traceId: string }
     | { kind: 'replay'; originalTraceId: string; replayState: string; replayTerminalPort?: string | null };
   /** When state === 'error', a human-readable error message. */
