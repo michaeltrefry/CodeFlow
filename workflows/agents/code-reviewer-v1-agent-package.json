@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "codeflow.agent-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-05-09T00:00:00Z"
+  },
+  "entryPoint": {
+    "key": "code-reviewer",
+    "version": 1
+  },
+  "agents": [
+    {
+      "key": "code-reviewer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Code Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a senior code reviewer.\n\nWrite your full critique as the message body BEFORE calling submit. Approve when the diff meets the brief; reject with concrete actionable feedback otherwise.\n\n{{ include \"@codeflow/reviewer-base\" }}",
+        "promptTemplate": "{{ include \"@codeflow/reviewer-base\" }}\n\n## Round {{ round }} of {{ maxRounds }}{{ if isLastRound }} (final round){{ end }}\n\n## Brief\n{{ workflow.brief }}\n\n## Diff under review\n{{ input }}",
+        "partialPins": [
+          { "key": "@codeflow/reviewer-base", "version": 1 }
+        ],
+        "maxTokens": 4000,
+        "temperature": 0.2,
+        "budget": {
+          "maxToolCalls": 32,
+          "maxLoopDuration": "00:10:00"
+        },
+        "outputs": [
+          { "kind": "Approved", "description": "Diff meets the brief; no further changes requested." },
+          { "kind": "Rejected", "description": "Concrete actionable feedback for the next round." }
+        ]
+      },
+      "createdAtUtc": "2026-05-09T00:00:00Z",
+      "createdBy": "library",
+      "tags": ["dev", "review", "code"],
+      "outputs": [
+        { "kind": "Approved", "description": "Diff meets the brief; no further changes requested." },
+        { "kind": "Rejected", "description": "Concrete actionable feedback for the next round." }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "code-reviewer", "roleKeys": ["code-reviewer-tools"] }
+  ],
+  "roles": [
+    {
+      "key": "code-reviewer-tools",
+      "displayName": "Code Reviewer Tools",
+      "description": "Read access to the working tree plus a docs search MCP for cross-referencing API contracts. Includes the redact-pii skill so any quoted snippets in the critique are sanitized first.",
+      "isArchived": false,
+      "tags": ["dev", "review"],
+      "toolGrants": [
+        { "category": "Host", "toolIdentifier": "read_file" },
+        { "category": "Host", "toolIdentifier": "list_directory" },
+        { "category": "Mcp", "toolIdentifier": "mcp:codeflow-docs:search" }
+      ],
+      "skillNames": ["redact-pii"]
+    }
+  ],
+  "skills": [
+    {
+      "name": "redact-pii",
+      "body": "Redact personally identifiable information (full names not already public, email addresses, phone numbers, physical addresses) from any text you quote in your critique. Replace with the placeholder `[redacted]`. This applies to inline diff context AND any external references you pull in via search.",
+      "isArchived": false,
+      "createdAtUtc": "2026-05-09T00:00:00Z",
+      "createdBy": "library",
+      "updatedAtUtc": "2026-05-09T00:00:00Z",
+      "updatedBy": "library"
+    }
+  ],
+  "mcpServers": [
+    {
+      "key": "codeflow-docs",
+      "displayName": "CodeFlow Docs",
+      "transport": "HttpSse",
+      "endpointUrl": "https://example.invalid/mcp/codeflow-docs",
+      "hasBearerToken": false,
+      "healthStatus": "Unverified",
+      "lastVerifiedAtUtc": null,
+      "lastVerificationError": null,
+      "isArchived": false,
+      "tools": [
+        {
+          "toolName": "search",
+          "description": "Full-text search across the CodeFlow docs corpus (README + docs/features/*.md).",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "q": { "type": "string", "description": "The search query." },
+              "topK": { "type": "integer", "description": "Number of hits to return.", "default": 5 }
+            },
+            "required": ["q"]
+          },
+          "isMutating": false,
+          "syncedAtUtc": "2026-05-09T00:00:00Z"
+        }
+      ]
+    }
+  ],
+  "manifest": {
+    "agent": { "key": "code-reviewer", "version": 1 },
+    "roles": ["code-reviewer-tools"],
+    "skills": ["redact-pii"],
+    "mcpServers": ["codeflow-docs"]
+  }
+}
