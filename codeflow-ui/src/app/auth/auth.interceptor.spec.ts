@@ -7,10 +7,16 @@ import { authInterceptor } from './auth.interceptor';
 describe('authInterceptor', () => {
   let httpMock: HttpTestingController;
   let http: HttpClient;
-  let auth: { getValidAccessToken: ReturnType<typeof vi.fn> };
+  let auth: {
+    getValidAccessToken: ReturnType<typeof vi.fn>;
+    handleApiUnauthorized: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
-    auth = { getValidAccessToken: vi.fn().mockResolvedValue('api-token') };
+    auth = {
+      getValidAccessToken: vi.fn().mockResolvedValue('api-token'),
+      handleApiUnauthorized: vi.fn(),
+    };
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(withInterceptors([authInterceptor])),
@@ -67,5 +73,18 @@ describe('authInterceptor', () => {
     const req = httpMock.expectOne('/api/me');
     expect(req.request.headers.has('Authorization')).toBe(false);
     req.flush({});
+  });
+
+  it('notifies auth when an API request returns unauthorized', async () => {
+    http.get('/api/traces').subscribe({ error: () => undefined });
+    await Promise.resolve();
+
+    const req = httpMock.expectOne('/api/traces');
+    req.flush({ message: 'Unauthorized' }, {
+      status: 401,
+      statusText: 'Unauthorized',
+    });
+
+    expect(auth.handleApiUnauthorized).toHaveBeenCalledTimes(1);
   });
 });

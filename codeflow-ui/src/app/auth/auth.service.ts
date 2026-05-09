@@ -47,6 +47,7 @@ export class AuthService {
   // an instant-resolve return that misses the still-loading state.
   private loadPromise: Promise<void> | null = null;
   private refreshPromise: Promise<string | null> | null = null;
+  private apiUnauthorizedLoginStarted = false;
 
   /** Awaitable: resolves once the initial bootstrap (OIDC discovery + /api/me) is complete. */
   ready(): Promise<void> {
@@ -171,12 +172,30 @@ export class AuthService {
     this.currentUser.set(null);
   }
 
+  handleApiUnauthorized(): void {
+    const hadAcceptedSession = this.currentUser() !== null || this.tokenAcceptedByApi();
+    this.markTokenUnavailable();
+
+    if (!hadAcceptedSession) {
+      return;
+    }
+
+    this.error.set('Your session has expired. Please sign in again.');
+    if (!hasAuthConfigured() || this.apiUnauthorizedLoginStarted) {
+      return;
+    }
+
+    this.apiUnauthorizedLoginStarted = true;
+    this.oauth.logOut(true);
+    this.login();
+  }
+
   login(): void {
     this.oauth.initCodeFlow();
   }
 
   logout(): void {
     this.oauth.logOut();
-    this.currentUser.set(null);
+    this.markTokenUnavailable();
   }
 }

@@ -103,6 +103,35 @@ describe('AuthService', () => {
     expect(auth.tokenAcceptedByApi()).toBe(false);
     expect(auth.currentUser()).toBeNull();
   });
+
+  it('clears a previously accepted session and starts login when an API call returns unauthorized', async () => {
+    oauth.validAccessToken = true;
+    oauth.accessToken = 'bearer';
+    const auth = TestBed.inject(AuthService);
+
+    const loadPromise = auth.load();
+    const req = await expectOneEventually(httpMock, '/api/me');
+    req.flush(currentUser());
+    await loadPromise;
+
+    auth.handleApiUnauthorized();
+
+    expect(auth.currentUser()).toBeNull();
+    expect(auth.hasToken()).toBe(false);
+    expect(auth.tokenAcceptedByApi()).toBe(false);
+    expect(auth.error()).toContain('session has expired');
+    expect(oauth.logOut).toHaveBeenCalledWith(true);
+    expect(oauth.initCodeFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start login for a token the API never accepted', () => {
+    const auth = TestBed.inject(AuthService);
+
+    auth.handleApiUnauthorized();
+
+    expect(oauth.logOut).not.toHaveBeenCalled();
+    expect(oauth.initCodeFlow).not.toHaveBeenCalled();
+  });
 });
 
 class FakeOAuthService {
