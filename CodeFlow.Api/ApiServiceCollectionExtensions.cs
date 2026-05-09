@@ -220,6 +220,14 @@ public static class ApiServiceCollectionExtensions
         // so the workspace-aware version replaces the DI fallback for the LLM's view.
         services.AddScoped<WorkflowDraftAssistantToolFactory>();
 
+        // sc-835 (AP-4): agent-package authoring surface mirrors the workflow one — a
+        // workspace-blind SaveAgentPackageTool fallback registered in DI plus a per-turn
+        // factory that produces a workspace-aware Save tool + the four draft tools when a
+        // conversation workspace is available. CodeFlowAssistant merges them into the
+        // dispatcher the same way as the workflow factory.
+        services.AddScoped<IAssistantTool, SaveAgentPackageTool>();
+        services.AddScoped<AgentDraftAssistantToolFactory>();
+
         // HAA-11: confirmation-gated workflow run. Same split — the tool validates the run
         // request against the workflow's declared input schema; the UI POSTs to /api/traces
         // when the user clicks the chip.

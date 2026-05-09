@@ -59,6 +59,7 @@ public sealed class CodeFlowAssistant(
     IRoleResolutionService roleResolution,
     AgentRoleToolFactory roleToolFactory,
     WorkflowDraftAssistantToolFactory workflowDraftToolFactory,
+    AgentDraftAssistantToolFactory agentDraftToolFactory,
     TraceProducerToolFactory traceProducerToolFactory,
     IAssistantWorkspaceProvider workspaceProvider,
     IAssistantConversationRepository conversations,
@@ -220,6 +221,16 @@ public sealed class CodeFlowAssistant(
         if (draftTools.Count > 0)
         {
             dispatcher = MergeDispatcherWithOverride(dispatcher, draftTools);
+        }
+
+        // sc-835 (AP-4): agent-package authoring tools land through the same per-turn
+        // factory pattern. The factory's SaveAgentPackageTool replaces the DI fallback in
+        // the dispatcher when a workspace resolves; the four draft tools register only when
+        // the conversation has a writable workspace.
+        var agentDraftTools = agentDraftToolFactory.Build(conversationDraftWorkspace);
+        if (agentDraftTools.Count > 0)
+        {
+            dispatcher = MergeDispatcherWithOverride(dispatcher, agentDraftTools);
         }
 
         // sc-800 (AA-9): trace producers (diagnose_trace, export_evidence_bundle) build per

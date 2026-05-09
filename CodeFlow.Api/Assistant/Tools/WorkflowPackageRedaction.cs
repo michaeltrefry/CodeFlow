@@ -38,12 +38,20 @@ internal static class WorkflowPackageRedaction
     {
         "set_workflow_package_draft",
         "save_workflow_package",
+        // sc-835 (AP-4): agent-package authoring tools share the same redaction surface.
+        // The redactor's summary builder reads workflow-shaped fields opportunistically and
+        // ignores missing ones, so an agent package gets a sha256 + agentCount/roleCount
+        // summary without per-shape branching here.
+        "set_agent_package_draft",
+        "save_agent_package",
     };
 
     private static readonly HashSet<string> RedactableResultTools = new(StringComparer.Ordinal)
     {
         "get_workflow_package_draft",
         "get_workflow_package",
+        // sc-835 (AP-4): agent-package result reader.
+        "get_agent_package_draft",
     };
 
     /// <summary>
@@ -205,14 +213,16 @@ internal static class WorkflowPackageRedaction
             using var doc = JsonDocument.Parse(resultJson);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return false;
-            if (toolName == "get_workflow_package_draft")
+            if (toolName == "get_workflow_package_draft" || toolName == "get_agent_package_draft")
             {
                 return root.TryGetProperty("package", out var pkg)
                     && pkg.ValueKind == JsonValueKind.Object
                     && !IsRedactionPlaceholder(pkg);
             }
             return !IsRedactionPlaceholder(root)
-                && (root.TryGetProperty("schemaVersion", out _) || root.TryGetProperty("workflows", out _));
+                && (root.TryGetProperty("schemaVersion", out _)
+                    || root.TryGetProperty("workflows", out _)
+                    || root.TryGetProperty("agents", out _));
         }
         catch (JsonException)
         {
@@ -242,7 +252,7 @@ internal static class WorkflowPackageRedaction
         catch (JsonException) { return originalResultJson; }
         if (root is not JsonObject obj) return originalResultJson;
 
-        if (toolName == "get_workflow_package_draft")
+        if (toolName == "get_workflow_package_draft" || toolName == "get_agent_package_draft")
         {
             // Wrapper shape: replace only the package field. Preserve status/message/etc.
             if (obj["package"] is not JsonObject packageObj) return originalResultJson;
@@ -268,7 +278,7 @@ internal static class WorkflowPackageRedaction
             using var doc = JsonDocument.Parse(resultJson);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return false;
-            if (toolName == "get_workflow_package_draft")
+            if (toolName == "get_workflow_package_draft" || toolName == "get_agent_package_draft")
             {
                 return root.TryGetProperty("package", out var pkg) && IsRedactionPlaceholder(pkg);
             }
