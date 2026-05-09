@@ -358,11 +358,13 @@ public static class AssistantEndpoints
 
         // Stream the file with attachment Content-Disposition so a plain `<a download>` saves
         // rather than navigates. Content-type is application/json for package artifacts (the
-        // only kinds AA-1/AA-2 produce); future kinds can refine this.
+        // only kinds AA-1/AA-2/AP-3 produce); future kinds can refine this.
         var contentType = evt.Kind switch
         {
             ArtifactEventKind.WorkflowPackageDraft => "application/json",
             ArtifactEventKind.WorkflowPackageSnapshot => "application/json",
+            ArtifactEventKind.AgentPackageDraft => "application/json",
+            ArtifactEventKind.AgentPackageSnapshot => "application/json",
             _ => "application/octet-stream",
         };
 
