@@ -180,6 +180,15 @@ public enum WorkflowPackageImportResourceKind
 {
     Workflow,
     Agent,
+    /// <summary>
+    /// sc-827 / AR-3: <b>Deprecated.</b> Role-assignment differences are folded into the
+    /// agent's equivalence check (see <c>WorkflowPackageImporter.AgentEquivalentAsync</c>),
+    /// so this kind never appears in a fresh import preview and is no longer a
+    /// separately-resolvable conflict. The enum value is retained for wire-format
+    /// compatibility with older clients that may still emit it; <c>ValidateResolutionInput</c>
+    /// rejects any resolution pointed at this kind with a message telling the caller to
+    /// resolve the agent itself instead.
+    /// </summary>
     AgentRoleAssignment,
     Role,
     Skill,

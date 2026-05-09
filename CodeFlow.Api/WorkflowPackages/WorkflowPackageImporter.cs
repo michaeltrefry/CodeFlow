@@ -343,10 +343,11 @@ public sealed class WorkflowPackageImporter(
         // and keeps lineage robust in the corner where it does fire.
         var finalAgentLineage = ProjectLineage(resolved.AgentLineage, agentPlan.VersionMap);
 
-        foreach (var assignment in remappedPackage.AgentRoleAssignments)
-        {
-            items.Add(await PreviewAgentRoleAssignmentAsync(assignment, cancellationToken));
-        }
+        // sc-827 / AR-3: AgentRoleAssignment is no longer a standalone preview kind — it's
+        // folded into the agent's equivalence check above (different role assignment ⇒ not
+        // equivalent ⇒ auto-bump through CreateVersionBump). The package's
+        // AgentRoleAssignments collection is still carried through; ImportRoleAssignmentsAsync
+        // writes it per (agent_key, agent_version) at apply time.
 
         foreach (var role in remappedPackage.Roles)
         {
@@ -541,9 +542,10 @@ public sealed class WorkflowPackageImporter(
                                 ?? throw NewResolutionException(target,
                                     "UseExisting requires the library to already contain an agent with this key.");
                             agentRewrites[origin] = new PackageVersionKey(target.Key, existingMax);
-                            // The library's existing role assignment for this agent stays —
-                            // drop the package's assignment so PreviewAgentRoleAssignmentAsync
-                            // doesn't compare it against unrelated existing rows.
+                            // sc-827 / AR-3: the library's existing role assignment for this
+                            // agent stays — drop the package's assignment so it doesn't pollute
+                            // ImportRoleAssignmentsAsync's per-version writes for the existing
+                            // (key, libraryMax) row.
                             droppedAssignments.Add(target.Key);
                             break;
                         }
@@ -568,9 +570,10 @@ public sealed class WorkflowPackageImporter(
                         case WorkflowPackageImportResourceKind.McpServer:
                             droppedMcpServers.Add(target.Key);
                             break;
-                        case WorkflowPackageImportResourceKind.AgentRoleAssignment:
-                            droppedAssignments.Add(target.Key);
-                            break;
+                        // sc-827 / AR-3: AgentRoleAssignment is no longer a standalone
+                        // resolution kind — equivalence folds into the agent comparison.
+                        // Older clients that send a resolution for this kind get a hard
+                        // error from ValidateResolutionInput, signalling they must upgrade.
                     }
                     break;
 
@@ -875,12 +878,16 @@ public sealed class WorkflowPackageImporter(
                     }
                     break;
                 case WorkflowPackageImportResourceKind.AgentRoleAssignment:
-                    if (!packageAssignmentAgentKeys.Contains(target.Key))
-                    {
-                        throw NewResolutionException(target,
-                            "Resolution target does not exist in the package's AgentRoleAssignments collection.");
-                    }
-                    break;
+                    // sc-827 / AR-3: AgentRoleAssignment is no longer a separately-resolvable
+                    // kind — equivalence folds into the agent comparison and there is no
+                    // standalone preview row for callers to resolve. Reject any resolution
+                    // pointed at this kind so older clients fail fast instead of silently
+                    // skipping work.
+                    throw NewResolutionException(target,
+                        "AgentRoleAssignment is no longer a separately-resolvable conflict kind. "
+                            + "Role-assignment differences fold into the agent's equivalence check; "
+                            + "if the agent's role assignment differs, choose Bump on the agent itself "
+                            + "(or omit a resolution and let the importer auto-bump).");
             }
         }
     }
@@ -1017,7 +1024,7 @@ public sealed class WorkflowPackageImporter(
                         sourceVersion: agent.Version,
                         existingMaxVersion: maxExistingVersion));
                 }
-                else if (Equivalent(agent, existing))
+                else if (await AgentEquivalentAsync(agent, existing, package, cancellationToken))
                 {
                     versionMap[key] = agent.Version;
                     items.Add(Reuse(
@@ -1036,7 +1043,7 @@ public sealed class WorkflowPackageImporter(
                         agent.Key,
                         agent.Version,
                         targetVersion,
-                        "configuration or outputs",
+                        "configuration, outputs, or role assignment",
                         existingMaxVersion: maxExistingVersion));
                 }
             }
@@ -1388,38 +1395,6 @@ public sealed class WorkflowPackageImporter(
         left.Count == right.Count &&
         left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
 
-    private async Task<WorkflowPackageImportItem> PreviewAgentRoleAssignmentAsync(
-        WorkflowPackageAgentRoleAssignment assignment,
-        CancellationToken cancellationToken)
-    {
-        // Provisional: importer preview compares the package's role assignment against the
-        // current "live" state — which the admin UI today represents as the latest version's
-        // assignment. AR-3 deletes this code path entirely (equivalence folds into the agent
-        // comparison instead of producing a standalone AgentRoleAssignment preview row), so
-        // there's no point threading per-version semantics through here.
-        var existingRoles = await agentRoleRepository.GetRolesForAgentLatestAsync(assignment.AgentKey, cancellationToken);
-        var existingRoleKeys = existingRoles
-            .Select(role => role.Key)
-            .OrderBy(key => key, StringComparer.Ordinal)
-            .ToArray();
-        var packageRoleKeys = assignment.RoleKeys
-            .OrderBy(key => key, StringComparer.Ordinal)
-            .ToArray();
-
-        if (existingRoleKeys.Length == 0 && packageRoleKeys.Length > 0)
-        {
-            return Create(WorkflowPackageImportResourceKind.AgentRoleAssignment, assignment.AgentKey, null);
-        }
-
-        return existingRoleKeys.SequenceEqual(packageRoleKeys, StringComparer.Ordinal)
-            ? Reuse(WorkflowPackageImportResourceKind.AgentRoleAssignment, assignment.AgentKey, null)
-            : Conflict(
-                WorkflowPackageImportResourceKind.AgentRoleAssignment,
-                assignment.AgentKey,
-                null,
-                "This agent already has a different role assignment set.");
-    }
-
     private async Task<WorkflowPackageImportItem> PreviewRoleAsync(
         WorkflowPackageRole packageRole,
         CancellationToken cancellationToken)
@@ -1719,26 +1694,45 @@ public sealed class WorkflowPackageImporter(
             .Select(role => new { role.Key, role.Id })
             .ToDictionaryAsync(role => role.Key, role => role.Id, StringComparer.Ordinal, cancellationToken);
 
-        foreach (var assignment in package.AgentRoleAssignments)
+        // sc-827 / AR-3: write per (agent_key, agent_version). Every imported agent gets its
+        // assignment slot at its own version, so version-aware readers find the same assignment
+        // the package authored regardless of which other versions the library may carry.
+        var assignmentsByKey = package.AgentRoleAssignments
+            .ToDictionary(assignment => assignment.AgentKey, assignment => assignment.RoleKeys, StringComparer.Ordinal);
+
+        foreach (var agent in package.Agents)
         {
-            if (await dbContext.AgentRoleAssignments.AnyAsync(
-                    existing => existing.AgentKey == assignment.AgentKey,
-                    cancellationToken))
+            if (!assignmentsByKey.TryGetValue(agent.Key, out var roleKeys))
             {
                 continue;
             }
 
-            foreach (var roleKey in assignment.RoleKeys.Distinct(StringComparer.Ordinal))
+            var normalizedAgentKey = agent.Key.Trim();
+            foreach (var roleKey in roleKeys.Distinct(StringComparer.Ordinal))
             {
                 if (!roleIds.TryGetValue(roleKey, out var roleId))
                 {
                     throw new WorkflowPackageResolutionException(
-                        $"Workflow package import could not resolve role '{roleKey}' for agent '{assignment.AgentKey}'.");
+                        $"Workflow package import could not resolve role '{roleKey}' for agent '{agent.Key}' v{agent.Version}.");
+                }
+
+                // Skip the precise (agent_key, agent_version, role_id) tuple if it already
+                // exists in the library — preserves idempotent re-imports without clobbering
+                // unrelated assignment rows for the same agent_key at other versions.
+                var alreadyAssigned = await dbContext.AgentRoleAssignments.AnyAsync(
+                    existing => existing.AgentKey == normalizedAgentKey
+                        && existing.AgentVersion == agent.Version
+                        && existing.RoleId == roleId,
+                    cancellationToken);
+                if (alreadyAssigned)
+                {
+                    continue;
                 }
 
                 dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
                 {
-                    AgentKey = assignment.AgentKey.Trim(),
+                    AgentKey = normalizedAgentKey,
+                    AgentVersion = agent.Version,
                     RoleId = roleId,
                     CreatedAtUtc = now,
                 });
@@ -2002,6 +1996,41 @@ public sealed class WorkflowPackageImporter(
             output.Kind,
             output.Description,
             output.PayloadExample is JsonElement payload ? JsonNode.Parse(payload.GetRawText()) : null)));
+
+    /// <summary>
+    /// AR-3: agent equivalence folds in role-assignment comparison so a package whose only
+    /// diff is the agent's role assignment auto-bumps the agent through the existing
+    /// CreateVersionBump path. The standalone <c>AgentRoleAssignment</c> preview row goes
+    /// away — there's no longer any preview state for the user to resolve separately.
+    /// </summary>
+    private async Task<bool> AgentEquivalentAsync(
+        WorkflowPackageAgent packageAgent,
+        AgentConfig existing,
+        WorkflowPackage package,
+        CancellationToken cancellationToken)
+    {
+        if (!Equivalent(packageAgent, existing))
+        {
+            return false;
+        }
+
+        var packageRoleKeys = package.AgentRoleAssignments
+            .FirstOrDefault(assignment => string.Equals(assignment.AgentKey, packageAgent.Key, StringComparison.Ordinal))
+            ?.RoleKeys
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray() ?? Array.Empty<string>();
+
+        var existingRoles = await agentRoleRepository.GetRolesForAgentAsync(
+            packageAgent.Key,
+            existing.Version,
+            cancellationToken);
+        var existingRoleKeys = existingRoles
+            .Select(role => role.Key)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        return packageRoleKeys.SequenceEqual(existingRoleKeys, StringComparer.Ordinal);
+    }
 
     private static bool Equivalent(
         WorkflowPackageRole packageRole,

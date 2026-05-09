@@ -39,6 +39,9 @@ export type WorkflowPackageImportAction = 'Create' | 'Reuse' | 'Conflict' | 'Ref
 export type WorkflowPackageImportResourceKind =
   | 'Workflow'
   | 'Agent'
+  /** sc-827 / AR-3: deprecated — role-assignment differences fold into the agent's
+   *  equivalence check. This kind is retained only for wire-format compatibility with
+   *  older clients; fresh import previews never emit it. */
   | 'AgentRoleAssignment'
   | 'Role'
   | 'Skill'
@@ -55,7 +58,7 @@ export type WorkflowPackageImportResolutionMode = 'UseExisting' | 'Bump' | 'Copy
 export interface WorkflowPackageImportResolution {
   kind: WorkflowPackageImportResourceKind;
   key: string;
-  /** Required for Workflow / Agent (the versioned kinds). Null for Role / Skill / McpServer / AgentRoleAssignment. */
+  /** Required for Workflow / Agent (the versioned kinds). Null for Role / Skill / McpServer. */
   sourceVersion: number | null;
   mode: WorkflowPackageImportResolutionMode;
   /** Required when `mode === 'Copy'`. Must be unique per kind across the resolutions list. */
@@ -95,7 +98,7 @@ export interface WorkflowPackageImportItem {
   message: string;
   /** sc-393: the version the package itself carries, before any importer rewrite. Equals
    *  `version` for plain Create / Reuse rows. Differs from `version` for the auto-bump path.
-   *  Null on non-versioned kinds (Role, Skill, McpServer, AgentRoleAssignment). */
+   *  Null on non-versioned kinds (Role, Skill, McpServer). */
   sourceVersion?: number | null;
   /** sc-393: the highest version present in the local library for this key, or null when none
    *  exists yet (or for non-versioned kinds). For a stale-package Conflict, this is the value
