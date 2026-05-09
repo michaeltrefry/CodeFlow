@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 namespace CodeFlow.Api.Tests.Integration;
 
@@ -143,6 +144,54 @@ public sealed class AgentsEndpointsTests
 
         var list = await client.GetFromJsonAsync<IReadOnlyList<SummaryDto>>("/api/agents");
         list!.Select(a => a.Key).Should().NotContain(new[] { keyA, keyB });
+    }
+
+    [Fact]
+    public async Task ExportPackage_ReturnsJsonDownloadForSelectedAgentVersion()
+    {
+        using var client = factory.CreateClient();
+
+        var key = $"export-agent-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            tags = new[] { "portable" },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Export me." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var response = await client.GetAsync($"/api/agents/{key}/1/package");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+        response.Content.Headers.ContentDisposition?.FileName.Should().Be($"{key}-v1-agent-package.json");
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        root.GetProperty("schemaVersion").GetString().Should().Be("codeflow.agent-package.v1");
+        root.GetProperty("entryPoint").GetProperty("key").GetString().Should().Be(key);
+        root.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(1);
+
+        var agent = root.GetProperty("agents").EnumerateArray().Single();
+        agent.GetProperty("key").GetString().Should().Be(key);
+        agent.GetProperty("version").GetInt32().Should().Be(1);
+        agent.GetProperty("tags").EnumerateArray().Select(t => t.GetString()).Should().Equal("portable");
+
+        // No roles assigned to a freshly-seeded agent — closure collections empty, manifest reflects it.
+        root.GetProperty("roles").EnumerateArray().Should().BeEmpty();
+        root.GetProperty("skills").EnumerateArray().Should().BeEmpty();
+        root.GetProperty("mcpServers").EnumerateArray().Should().BeEmpty();
+        root.GetProperty("manifest").GetProperty("agent").GetProperty("key").GetString().Should().Be(key);
+    }
+
+    [Fact]
+    public async Task ExportPackage_UnknownAgent_Returns404()
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/agents/never-existed-{Guid.NewGuid():N}/1/package");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]

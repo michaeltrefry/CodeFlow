@@ -1,13 +1,17 @@
 using CodeFlow.Api.Auth;
 using CodeFlow.Api.Dtos;
 using CodeFlow.Api.Validation;
+using CodeFlow.Api.WorkflowPackages;
 using CodeFlow.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace CodeFlow.Api.Endpoints;
 
@@ -26,6 +30,9 @@ public static class AgentsEndpoints
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
         group.MapGet("/{key}/{version:int}", GetAgentVersionAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+
+        group.MapGet("/{key}/{version:int}/package", ExportPackageAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
         group.MapGet("/{key}", GetLatestAgentVersionAsync)
@@ -311,6 +318,53 @@ public static class AgentsEndpoints
             .ToArray();
 
         return Results.Ok(versions);
+    }
+
+    private static readonly Regex PackageFileNameUnsafeChars = new("[^A-Za-z0-9_.-]+", RegexOptions.Compiled);
+
+    private static async Task<IResult> ExportPackageAsync(
+        string key,
+        int version,
+        IAgentPackageResolver resolver,
+        HttpResponse response,
+        IOptions<JsonOptions> jsonOptions,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var package = await resolver.ResolveAsync(key, version, cancellationToken);
+            response.Headers.ContentDisposition = $"attachment; filename=\"{PackageFileName(package.EntryPoint)}\"";
+            return Results.Json(package, jsonOptions.Value.SerializerOptions, contentType: "application/json");
+        }
+        catch (AgentConfigNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            var extensions = exception.MissingReferences.Count == 0
+                ? null
+                : new Dictionary<string, object?>
+                {
+                    ["missingReferences"] = exception.MissingReferences,
+                };
+            return Results.Problem(
+                title: "Agent package export failed",
+                detail: exception.Message,
+                statusCode: StatusCodes.Status422UnprocessableEntity,
+                extensions: extensions);
+        }
+    }
+
+    private static string PackageFileName(WorkflowPackageReference entryPoint)
+    {
+        var safeKey = PackageFileNameUnsafeChars.Replace(entryPoint.Key.Trim(), "-").Trim('-');
+        if (string.IsNullOrWhiteSpace(safeKey))
+        {
+            safeKey = "agent";
+        }
+
+        return $"{safeKey}-v{entryPoint.Version}-agent-package.json";
     }
 
     private static async Task<IResult> GetAgentVersionAsync(
