@@ -185,6 +185,110 @@ public sealed class AssistantArtifactRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MarkActiveSupersededByNameAsync_supersedes_agent_drafts()
+    {
+        // sc-834 (AP-3): agent drafts are kind 5 but the recorder/repository are kind-agnostic;
+        // supersession keys on (conversation, name) so the existing infrastructure handles
+        // agent kinds without code changes. Verify that empirically.
+        var (conversationId, _) = await SeedConversationAsync();
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantArtifactRepository(context);
+
+        var draft1 = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.AgentPackageDraft,
+            "draft.cf-agent-package.json",
+            "draft.cf-agent-package.json",
+            snapshotId: null,
+            summaryJson: null);
+        var draft2 = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.AgentPackageDraft,
+            "draft.cf-agent-package.json",
+            "draft.cf-agent-package.json",
+            snapshotId: null,
+            summaryJson: null);
+
+        var rowsUpdated = await repo.MarkActiveSupersededByNameAsync(
+            conversationId,
+            "draft.cf-agent-package.json",
+            draft2.Id);
+
+        rowsUpdated.Should().Be(1);
+        var events = await repo.ListByConversationAsync(conversationId);
+        events.Single(e => e.Id == draft1.Id).SupersededByEventId.Should().Be(draft2.Id);
+    }
+
+    [Fact]
+    public async Task MarkExpiredBySnapshotIdAsync_works_for_agent_snapshots()
+    {
+        // sc-834 (AP-3): expiration keys on snapshotId, not kind, so AgentPackageSnapshot
+        // (kind 6) gets the same treatment as the workflow snapshot.
+        var (conversationId, _) = await SeedConversationAsync();
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantArtifactRepository(context);
+
+        var snapshotId = Guid.NewGuid();
+        var snapshot = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.AgentPackageSnapshot,
+            $"snapshot-{snapshotId:N}",
+            $"snapshot-{snapshotId:N}.cf-agent-package.json",
+            snapshotId,
+            summaryJson: null);
+
+        var rows = await repo.MarkExpiredBySnapshotIdAsync(snapshotId, DateTime.UtcNow);
+        rows.Should().Be(1);
+        var afterExpire = await repo.GetAsync(snapshot.Id);
+        afterExpire!.ExpiredAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task AgentDraftAndWorkflowDraft_coexist_by_distinct_name()
+    {
+        // sc-834 (AP-3): agent and workflow drafts share a conversation but live under
+        // different canonical names, so superseding one must not touch the other.
+        var (conversationId, _) = await SeedConversationAsync();
+
+        await using var context = CreateDbContext();
+        var repo = new AssistantArtifactRepository(context);
+
+        var workflowDraft = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.WorkflowPackageDraft,
+            "draft.cf-workflow-package.json",
+            "draft.cf-workflow-package.json",
+            snapshotId: null,
+            summaryJson: null);
+        var agentDraft1 = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.AgentPackageDraft,
+            "draft.cf-agent-package.json",
+            "draft.cf-agent-package.json",
+            snapshotId: null,
+            summaryJson: null);
+        var agentDraft2 = await repo.AddAsync(
+            conversationId,
+            ArtifactEventKind.AgentPackageDraft,
+            "draft.cf-agent-package.json",
+            "draft.cf-agent-package.json",
+            snapshotId: null,
+            summaryJson: null);
+
+        await repo.MarkActiveSupersededByNameAsync(
+            conversationId,
+            "draft.cf-agent-package.json",
+            agentDraft2.Id);
+
+        var events = await repo.ListByConversationAsync(conversationId);
+        events.Single(e => e.Id == workflowDraft.Id).SupersededByEventId
+            .Should().BeNull("the workflow draft has a different name and must not be touched.");
+        events.Single(e => e.Id == agentDraft1.Id).SupersededByEventId.Should().Be(agentDraft2.Id);
+    }
+
+    [Fact]
     public async Task AddAsync_throws_for_missing_conversation()
     {
         await using var context = CreateDbContext();

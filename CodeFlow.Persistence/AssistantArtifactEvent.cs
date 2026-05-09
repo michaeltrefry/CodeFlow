@@ -8,6 +8,11 @@ namespace CodeFlow.Persistence;
 /// <para/>
 /// sc-799 (AA-8): values 3 and 4 are reserved for AA-9's producers so the contract is
 /// locked here, even though the producers haven't shipped yet.
+/// <para/>
+/// sc-834 (AP-3): values 5 and 6 are agent-package siblings of values 1 and 2. The
+/// recorder + repository are kind-agnostic (supersession keys on (conversation, name);
+/// expiration keys on snapshotId), so the existing infrastructure handles agent kinds
+/// without code changes — the AP-4 producer tools and AP-8 rail UI consume them by enum.
 /// <list type="bullet">
 ///   <item><c>WorkflowPackageDraft = 1</c> — live draft of a workflow package; one active
 ///     row per (conversation, name). Set / patch replace via supersession.
@@ -21,6 +26,14 @@ namespace CodeFlow.Persistence;
 ///   <item><c>EvidenceBundle = 4</c> — zipped trace evidence bundle exported by AA-9.
 ///     Live; no supersession.
 ///     <c>relativePath</c> convention: <c>evidence-{traceId:N}-{utcTimestamp}.zip</c>.</item>
+///   <item><c>AgentPackageDraft = 5</c> — live draft of an agent package; one active row
+///     per (conversation, name). Set / patch replace via supersession. Agent and workflow
+///     drafts coexist on a conversation by using distinct names.
+///     <c>relativePath</c> convention: <c>draft.cf-agent-package.json</c>.</item>
+///   <item><c>AgentPackageSnapshot = 6</c> — immutable per-save snapshot of an agent
+///     package draft; <c>name</c> uses a GUID suffix so multiple coexist. Apply marks the
+///     row expired.
+///     <c>relativePath</c> convention: <c>snapshot-{guid:N}.cf-agent-package.json</c>.</item>
 /// </list>
 /// </summary>
 public enum ArtifactEventKind
@@ -31,6 +44,12 @@ public enum ArtifactEventKind
     TraceDiagnostic = 3,
     /// <summary>sc-799 (AA-8): reserved for AA-9's evidence-bundle producer.</summary>
     EvidenceBundle = 4,
+    /// <summary>sc-834 (AP-3): live draft of an agent package. Reserved for AP-4's
+    /// <c>set_agent_package_draft</c> / <c>patch_agent_package_draft</c> producers.</summary>
+    AgentPackageDraft = 5,
+    /// <summary>sc-834 (AP-3): immutable per-save snapshot of an agent package draft.
+    /// Reserved for AP-4's <c>save_agent_package</c> producer.</summary>
+    AgentPackageSnapshot = 6,
 }
 
 /// <summary>
