@@ -1,6 +1,6 @@
-import { HttpInterceptorFn } from '@angular/common/http';
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
-import { from, switchMap } from 'rxjs';
+import { catchError, from, switchMap, throwError } from 'rxjs';
 import { AuthService } from './auth.service';
 
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
@@ -23,7 +23,14 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
           Authorization: `Bearer ${token}`
         }
       }));
-    })
+    }),
+    catchError(err => {
+      if (err instanceof HttpErrorResponse && err.status === 401) {
+        auth.handleApiUnauthorized();
+      }
+
+      return throwError(() => err);
+    }),
   );
 };
 
