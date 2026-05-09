@@ -821,6 +821,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .agent-name { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 .agent-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
 .agent-stamp { font-size: var(--fs-xs); color: var(--faint); display: flex; gap: 6px; align-items: center; }
+.agent-card-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .agent-type-ico {
   width: 28px; height: 28px; border-radius: var(--radius-sm);
   background: var(--surface-2);

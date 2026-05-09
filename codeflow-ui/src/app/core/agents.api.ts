@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
@@ -50,6 +50,17 @@ export class AgentsApi {
       `/api/agents/${encodeURIComponent(key)}`,
       tags === undefined ? { config } : { config, tags }
     );
+  }
+
+  /** AP-6 (sc-837): download the canonical agent-package JSON for (key, version). The
+   *  endpoint streams `application/json` with a Content-Disposition attachment header that
+   *  the caller uses for the saved filename. Routes through HttpClient (not an `<a download>`)
+   *  so the auth interceptor attaches the bearer token — anchor downloads bypass it and 401. */
+  downloadPackage(key: string, version: number): Observable<HttpResponse<Blob>> {
+    return this.http.get(`/api/agents/${encodeURIComponent(key)}/${version}/package`, {
+      observe: 'response',
+      responseType: 'blob'
+    });
   }
 
   retire(key: string): Observable<{ key: string; isRetired: boolean }> {
