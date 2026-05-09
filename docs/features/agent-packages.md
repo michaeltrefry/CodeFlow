@@ -179,12 +179,12 @@ chip directly.
 # (requires AgentsRead + AgentsWrite + AgentRolesWrite + SkillsWrite + McpServersWrite).
 $ open http://localhost:5174/workflows
 # Drag workflows/agents/code-reviewer-v1-agent-package.json onto the
-# "Import JSON" drop zone. The preview lists 5 rows:
+# "Import JSON" drop zone. The preview lists 4 rows:
 #   Agent  code-reviewer            v1   Create
 #   Role   code-reviewer-tools           Create
 #   Skill  redact-pii                    Create
 #   McpServer codeflow-docs              Create
-#   AgentRoleAssignment code-reviewer    Create
+# (Role assignments fold into the agent's equivalence — no standalone preview row.)
 # Click Apply (no resolutions needed on a clean DB).
 ```
 

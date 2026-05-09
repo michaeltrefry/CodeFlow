@@ -331,14 +331,16 @@ describe('WorkflowsListComponent (sc-396 resolutions)', () => {
   });
 
   it('unversioned-kind Conflict rows offer UseExisting even though existingMaxVersion is null', () => {
-    // sc-396 follow-up: importer doesn't fill `existingMaxVersion` on Role/Skill/McpServer/
-    // AgentRoleAssignment conflicts, so the original gate (existingMaxVersion != null) yielded
-    // an empty dropdown. The conflict itself signals the library row exists, so UseExisting
-    // is the natural resolution.
+    // sc-396 follow-up: importer doesn't fill `existingMaxVersion` on Role/Skill/McpServer
+    // conflicts, so the original gate (existingMaxVersion != null) yielded an empty dropdown.
+    // The conflict itself signals the library row exists, so UseExisting is the natural
+    // resolution. (sc-827 / AR-3 retired AgentRoleAssignment from this list — role
+    // differences now fold into the agent's equivalence check and never produce a
+    // standalone conflict row.)
     const fixture = TestBed.createComponent(WorkflowsListComponent);
     const component = fixture.componentInstance;
 
-    for (const kind of ['Role', 'Skill', 'McpServer', 'AgentRoleAssignment'] as const) {
+    for (const kind of ['Role', 'Skill', 'McpServer'] as const) {
       const conflict: WorkflowPackageImportItem = {
         kind,
         key: 'thing',

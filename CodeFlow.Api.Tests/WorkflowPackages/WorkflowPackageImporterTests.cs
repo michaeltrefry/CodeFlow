@@ -12,6 +12,22 @@ namespace CodeFlow.Api.Tests.WorkflowPackages;
 
 public sealed class WorkflowPackageImporterTests
 {
+    public WorkflowPackageImporterTests()
+    {
+        // sc-827 / AR-3 follow-up: AgentConfigRepository keeps a process-static cache to
+        // amortize per-version lookups in the runtime path. The cache is keyed by
+        // (agent_key, agent_version) and survives across test instances — a sibling test's
+        // DB write can populate the cache, then this test's TryGetAsync hits the cache and
+        // returns an entity that doesn't actually exist in this test's in-memory DB. That
+        // would have been benign before AR-3 (the static Equivalent check was structural and
+        // matches across siblings since they share fixtures), but AgentEquivalentAsync now
+        // also reads role assignments from this test's DB — so a cache hit for a sibling's
+        // entity flips equivalence to false and bumps the agent. Clearing the cache per
+        // test restores the isolation the GUID-named in-memory DB already provides for
+        // every other piece of state.
+        AgentConfigRepository.ClearCache();
+    }
+
     [Fact]
     public async Task PreviewAsync_ReturnsConflict_WhenMcpEndpointPolicyRejectsPackageServer()
     {
@@ -509,6 +525,162 @@ public sealed class WorkflowPackageImporterTests
         preview.CanApply.Should().BeTrue();
         preview.RefusedCount.Should().Be(0);
         preview.Items.Should().NotContain(item => item.Action == WorkflowPackageImportAction.Refused);
+    }
+
+    /// <summary>
+    /// sc-827 / AR-3: a package whose only diff against the library is the agent's role
+    /// assignment auto-bumps the agent through <c>CreateVersionBump</c>. The standalone
+    /// <c>AgentRoleAssignment</c> preview row is gone; equivalence folds the comparison
+    /// into the agent itself.
+    /// </summary>
+    [Fact]
+    public async Task PreviewAsync_AgentSameBodyDifferentRoleAssignment_EmitsAutoBump()
+    {
+        await using var dbContext = CreateDbContext();
+        SeedAgent(dbContext, "writer", version: 1, isActive: true);
+
+        // Seed library role + assignment at the agent's version. Library has role-a; package
+        // will assign role-b to the same (writer, v1). DisplayName matches the package's
+        // role record (the test helper uses `roleKey` as the DisplayName) so PreviewRoleAsync
+        // doesn't emit a Conflict on role-b that would gate CanApply.
+        var roleA = new AgentRoleEntity
+        {
+            Key = "role-a",
+            DisplayName = "role-a",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        var roleB = new AgentRoleEntity
+        {
+            Key = "role-b",
+            DisplayName = "role-b",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        dbContext.AgentRoles.AddRange(roleA, roleB);
+        await dbContext.SaveChangesAsync();
+        dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+        {
+            AgentKey = "writer",
+            AgentVersion = 1,
+            RoleId = roleA.Id,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await dbContext.SaveChangesAsync();
+
+        var importer = NewImporter(dbContext);
+        var package = CreatePackageWithAgentRoleAssignment("writer", agentVersion: 1, roleKey: "role-b");
+
+        var preview = await importer.PreviewAsync(package);
+
+        preview.CanApply.Should().BeTrue("auto-bump via Equivalent → not equivalent → CreateVersionBump is a Create row, not a Conflict");
+        preview.Items.Should().Contain(item =>
+            item.Kind == WorkflowPackageImportResourceKind.Agent
+            && item.Key == "writer"
+            && item.Action == WorkflowPackageImportAction.Create
+            && item.SourceVersion == 1
+            && item.Version == 2);
+        preview.Items.Should().NotContain(item =>
+            item.Kind == WorkflowPackageImportResourceKind.AgentRoleAssignment,
+            "AR-3 retired the standalone AgentRoleAssignment preview row");
+    }
+
+    /// <summary>
+    /// sc-827 / AR-3: a package with the same agent body AND the same role assignment as the
+    /// library reuses the existing version — no bump, no conflict.
+    /// </summary>
+    [Fact]
+    public async Task PreviewAsync_AgentSameBodySameRoleAssignment_ReusesExisting()
+    {
+        await using var dbContext = CreateDbContext();
+        SeedAgent(dbContext, "writer", version: 1, isActive: true);
+
+        var role = new AgentRoleEntity
+        {
+            Key = "role-a",
+            DisplayName = "role-a",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        dbContext.AgentRoles.Add(role);
+        await dbContext.SaveChangesAsync();
+        dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+        {
+            AgentKey = "writer",
+            AgentVersion = 1,
+            RoleId = role.Id,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await dbContext.SaveChangesAsync();
+
+        var importer = NewImporter(dbContext);
+        var package = CreatePackageWithAgentRoleAssignment("writer", agentVersion: 1, roleKey: "role-a");
+
+        var preview = await importer.PreviewAsync(package);
+
+        preview.CanApply.Should().BeTrue();
+        preview.Items.Should().Contain(item =>
+            item.Kind == WorkflowPackageImportResourceKind.Agent
+            && item.Key == "writer"
+            && item.Action == WorkflowPackageImportAction.Reuse
+            && item.SourceVersion == 1
+            && item.Version == 1);
+        preview.Items.Should().Contain(item =>
+            item.Kind == WorkflowPackageImportResourceKind.Role
+            && item.Key == "role-a"
+            && item.Action == WorkflowPackageImportAction.Reuse,
+            "library and package role match exactly — Reuse, not Conflict");
+        preview.Items.Should().NotContain(item =>
+            item.Kind == WorkflowPackageImportResourceKind.AgentRoleAssignment);
+    }
+
+    /// <summary>
+    /// sc-827 / AR-3: <c>ImportRoleAssignmentsAsync</c> writes per <c>(agent_key, agent_version)</c>.
+    /// Importing an agent at v2 lands its role assignment at v2 specifically; an existing
+    /// assignment at v1 for the same key is left untouched.
+    /// </summary>
+    [Fact]
+    public async Task ApplyAsync_ImportRoleAssignmentsWritesPerAgentVersion()
+    {
+        await using var dbContext = CreateDbContext();
+        SeedAgent(dbContext, "writer", version: 1, isActive: false);
+        var roleA = new AgentRoleEntity
+        {
+            Key = "role-a",
+            DisplayName = "role-a",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        dbContext.AgentRoles.Add(roleA);
+        await dbContext.SaveChangesAsync();
+        dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+        {
+            AgentKey = "writer",
+            AgentVersion = 1,
+            RoleId = roleA.Id,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await dbContext.SaveChangesAsync();
+
+        var importer = NewImporter(dbContext);
+        // Package brings a NEW agent v2 with assignment to role-b.
+        var package = CreatePackageWithAgentRoleAssignment("writer", agentVersion: 2, roleKey: "role-b");
+
+        await importer.ApplyAsync(package);
+
+        var assignments = await dbContext.AgentRoleAssignments
+            .OrderBy(a => a.AgentVersion)
+            .ToListAsync();
+        assignments.Should().HaveCount(2, "v1 assignment is preserved; v2 lands as a fresh row");
+        assignments[0].AgentVersion.Should().Be(1);
+        assignments[0].RoleId.Should().Be(roleA.Id);
+        assignments[1].AgentVersion.Should().Be(2);
+        var roleB = await dbContext.AgentRoles.SingleAsync(r => r.Key == "role-b");
+        assignments[1].RoleId.Should().Be(roleB.Id);
     }
 
     [Fact]

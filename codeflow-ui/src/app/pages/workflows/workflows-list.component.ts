@@ -85,10 +85,11 @@ interface MissingExportReference {
 
 /** sc-396: per-row resolution choice the user has made on the imports page. The signal is
  *  keyed by `${kind}:${key}:${sourceVersion ?? ''}` so a single Map covers Agent, Workflow,
- *  Skill, Role, McpServer, and AgentRoleAssignment rows; the Bump/Copy modes only ever apply
- *  to the versioned kinds. `expectedExistingMaxVersion` is captured from the row's
- *  `existingMaxVersion` at the time the user picked the resolution and rides through to the
- *  apply request so the server's drift gate can fire on a stale choice. */
+ *  Skill, Role, and McpServer rows; the Bump/Copy modes only ever apply to the versioned
+ *  kinds. `expectedExistingMaxVersion` is captured from the row's `existingMaxVersion` at
+ *  the time the user picked the resolution and rides through to the apply request so the
+ *  server's drift gate can fire on a stale choice. (sc-827 / AR-3 retired the
+ *  AgentRoleAssignment row — role differences fold into the agent's equivalence check.) */
 interface RowResolutionChoice {
   mode: WorkflowPackageImportResolutionMode;
   newKey?: string;
@@ -1211,8 +1212,8 @@ export class WorkflowsListComponent {
   // ----------------------------------------------------------------------------------------
 
   /** Stable identity for a preview row: `kind:key:sourceVersion`. SourceVersion is null on
-   *  unversioned kinds (Skill / Role / McpServer / AgentRoleAssignment) so the empty trail
-   *  still makes a unique key for them. */
+   *  unversioned kinds (Skill / Role / McpServer) so the empty trail still makes a unique
+   *  key for them. */
   rowKey(item: WorkflowPackageImportItem): string {
     return `${item.kind}:${item.key}:${item.sourceVersion ?? ''}`;
   }
@@ -1229,9 +1230,9 @@ export class WorkflowsListComponent {
   }
 
   /** Choices for a row's dropdown. Three modes are wired today; UseExisting is offered for any
-   *  unversioned-kind Conflict (Role/Skill/McpServer/AgentRoleAssignment) since the conflict by
-   *  definition means the library has the entity, plus for versioned kinds when the importer
-   *  carried `existingMaxVersion`. Bump/Copy require both a sourceVersion and a versioned kind. */
+   *  unversioned-kind Conflict (Role/Skill/McpServer) since the conflict by definition means
+   *  the library has the entity, plus for versioned kinds when the importer carried
+   *  `existingMaxVersion`. Bump/Copy require both a sourceVersion and a versioned kind. */
   resolutionOptions(item: WorkflowPackageImportItem): Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> {
     const versionedKind = item.kind === 'Agent' || item.kind === 'Workflow';
     const out: Array<{ id: WorkflowPackageImportResolutionMode; label: string; disabled?: boolean }> = [];
@@ -1291,9 +1292,9 @@ export class WorkflowsListComponent {
     }
 
     // The modal warns about node refs being rewritten to the library's higher version — only
-    // meaningful for versioned kinds. Unversioned kinds (Role/Skill/McpServer/AssignmentMap)
-    // just drop the package's row; nothing in the workflow nodes pins them by version, so
-    // there's no surprise to flag.
+    // meaningful for versioned kinds. Unversioned kinds (Role/Skill/McpServer) just drop the
+    // package's row; nothing in the workflow nodes pins them by version, so there's no
+    // surprise to flag.
     const versionedKind = item.kind === 'Agent' || item.kind === 'Workflow';
     if (mode === 'UseExisting' && versionedKind && !this.useExistingWarned()) {
       this.useExistingPrompt.set({
