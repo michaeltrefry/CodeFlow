@@ -67,6 +67,7 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<IWorkflowPackageResolver, WorkflowPackageResolver>();
         services.AddScoped<IWorkflowPackageImporter, WorkflowPackageImporter>();
         services.AddScoped<IAgentPackageResolver, AgentPackageResolver>();
+        services.AddScoped<IAgentPackageImporter, AgentPackageImporter>();
 
         // sc-272 PR3: replay-with-edit admission. Singleton because it's a stateless pure
         // validator; the endpoint resolves it per request via Minimal API DI.

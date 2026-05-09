@@ -35,6 +35,12 @@ public static class AgentsEndpoints
         group.MapGet("/{key}/{version:int}/package", ExportPackageAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
+        group.MapPost("/package/preview", PreviewPackageImportAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
+
+        group.MapPost("/package/apply", ApplyPackageImportAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
+
         group.MapGet("/{key}", GetLatestAgentVersionAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
@@ -366,6 +372,94 @@ public static class AgentsEndpoints
 
         return $"{safeKey}-v{entryPoint.Version}-agent-package.json";
     }
+
+    private static async Task<IResult> PreviewPackageImportAsync(
+        PreviewAgentPackageImportRequest request,
+        IAgentPackageImporter importer,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.Package is null)
+        {
+            return ApiResults.BadRequest("Request body must include a `package` field.");
+        }
+
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
+        try
+        {
+            resolutions = PackageImportEndpointHelpers.ConvertResolutions(request.Resolutions, out _);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return PackageImportEndpointHelpers.ImportValidationProblem(exception);
+        }
+
+        try
+        {
+            var preview = await importer.PreviewAsync(request.Package, resolutions, cancellationToken);
+            return Results.Ok(preview);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return PackageImportEndpointHelpers.ImportValidationProblem(exception);
+        }
+    }
+
+    private static async Task<IResult> ApplyPackageImportAsync(
+        ApplyAgentPackageImportRequest request,
+        IAgentPackageImporter importer,
+        CodeFlowDbContext dbContext,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.Package is null)
+        {
+            return ApiResults.BadRequest("Request body must include a `package` field.");
+        }
+
+        IReadOnlyDictionary<WorkflowPackageImportResolutionKey, WorkflowPackageImportResolution>? resolutions;
+        Dictionary<WorkflowPackageImportResolutionKey, int> expectedMaxVersions;
+        try
+        {
+            resolutions = PackageImportEndpointHelpers.ConvertResolutions(request.Resolutions, out expectedMaxVersions);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return PackageImportEndpointHelpers.ImportValidationProblem(exception);
+        }
+
+        // Mirrors the workflow-side drift gate. Re-read each Agent / Workflow expected max
+        // and 409 if it moved between preview and apply unless the client acknowledges drift.
+        var driftEntries = await PackageImportEndpointHelpers.DetectResolutionDriftAsync(dbContext, expectedMaxVersions, cancellationToken);
+        if (driftEntries.Count > 0 && request.AcknowledgeDrift != true)
+        {
+            return Results.Conflict(PackageImportEndpointHelpers.BuildDriftResponse(driftEntries));
+        }
+
+        try
+        {
+            var result = await importer.ApplyAsync(request.Package, resolutions, cancellationToken);
+            return Results.Ok(result);
+        }
+        catch (WorkflowPackageResolutionException exception)
+        {
+            return PackageImportEndpointHelpers.ImportValidationProblem(exception);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            loggerFactory.CreateLogger("CodeFlow.Api.Endpoints.AgentsEndpoints")
+                .LogError(exception, "Unhandled exception in apply-agent-package-import.");
+            return PackageImportEndpointHelpers.UnhandledImportProblem(exception);
+        }
+    }
+
+    public sealed record PreviewAgentPackageImportRequest(
+        AgentPackage Package,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null);
+
+    public sealed record ApplyAgentPackageImportRequest(
+        AgentPackage Package,
+        IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
+        bool? AcknowledgeDrift = null);
 
     private static async Task<IResult> GetAgentVersionAsync(
         string key,
