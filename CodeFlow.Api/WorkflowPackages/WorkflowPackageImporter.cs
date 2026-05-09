@@ -22,10 +22,11 @@ public sealed class WorkflowPackageImporter(
     IMcpEndpointPolicy mcpEndpointPolicy,
     WorkflowValidationPipeline? validationPipeline = null,
     IAuthoringTelemetry? telemetry = null,
-    WorkflowPackageImportValidator? admissionValidator = null) : IWorkflowPackageImporter
+    IAdmissionValidator<WorkflowPackage, AdmittedPackageImport>? admissionValidator = null) : IWorkflowPackageImporter
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly WorkflowPackageImportValidator admissionValidator = admissionValidator ?? new WorkflowPackageImportValidator();
+    private readonly IAdmissionValidator<WorkflowPackage, AdmittedPackageImport> admissionValidator =
+        admissionValidator ?? new WorkflowPackageImportValidator();
 
     public Task<WorkflowPackageImportPreview> PreviewAsync(
         WorkflowPackage package,
@@ -660,16 +661,27 @@ public sealed class WorkflowPackageImporter(
         // Rewrite EntryPoint. UseExisting on the entry point is invalid (admission would
         // reject the dropped state); ValidateResolutionInput catches this, but a defensive
         // re-check here keeps the code symmetric.
+        // sc-833 (AP-2): the entry point of an agent package is an agent ref, not a workflow.
+        // Consult agentRewrites in addition to workflowRewrites so Bump / Copy / UseExisting on
+        // an entry-point agent produces the right post-resolution EntryPoint. For workflow
+        // packages the entry point is always a workflow, so agentRewrites can never have a
+        // matching entry — these branches are no-ops on the workflow-import path.
         var entryPvk = new PackageVersionKey(package.EntryPoint.Key, package.EntryPoint.Version);
-        if (droppedWorkflows.Contains(entryPvk))
+        if (droppedWorkflows.Contains(entryPvk) || droppedAgents.Contains(entryPvk))
         {
             throw new WorkflowPackageResolutionException(
-                $"Resolution would drop the entry-point workflow '{package.EntryPoint.Key}' v{package.EntryPoint.Version}. "
+                $"Resolution would drop the entry-point '{package.EntryPoint.Key}' v{package.EntryPoint.Version}. "
                 + "UseExisting is not valid for the entry point because the package's entry-point reference would no longer resolve.");
         }
-        var newEntryPoint = workflowRewrites.TryGetValue(entryPvk, out var entryResolved)
-            ? new WorkflowPackageReference(entryResolved.Key, entryResolved.Version)
-            : package.EntryPoint;
+        WorkflowPackageReference newEntryPoint = package.EntryPoint;
+        if (workflowRewrites.TryGetValue(entryPvk, out var entryResolved))
+        {
+            newEntryPoint = new WorkflowPackageReference(entryResolved.Key, entryResolved.Version);
+        }
+        else if (agentRewrites.TryGetValue(entryPvk, out var agentEntryResolved))
+        {
+            newEntryPoint = new WorkflowPackageReference(agentEntryResolved.Key, agentEntryResolved.Version);
+        }
 
         // Rewrite role assignments. UseExisting on an agent dropped its assignment up-front.
         // Copy renames the AgentKey on any matching assignment so the new copy inherits the

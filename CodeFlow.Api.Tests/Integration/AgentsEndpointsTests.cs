@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeFlow.Api.Tests.Integration;
 
@@ -951,4 +952,181 @@ public sealed class AgentsEndpointsTests
     private sealed record PromptPreviewAutoInjection(string Key, string RenderedBody, string Reason);
 
     private sealed record PromptPreviewMissingPartial(string Key, int Version);
+
+    [Fact]
+    public async Task PreviewPackageImport_ReusesMatchingExportedPackage()
+    {
+        using var client = factory.CreateClient();
+
+        var key = $"ap-preview-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Reuse me." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Round-trip the exported package back through preview — same agent, same version.
+        // Equivalence holds, so the only row should be a Reuse.
+        var packageJson = await client.GetStringAsync($"/api/agents/{key}/1/package");
+        var packageNode = JsonNode.Parse(packageJson)!;
+        var previewBody = new JsonObject
+        {
+            ["package"] = packageNode.DeepClone(),
+        };
+
+        var response = await client.PostAsync(
+            "/api/agents/package/preview",
+            new StringContent(previewBody.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        root.GetProperty("entryPoint").GetProperty("key").GetString().Should().Be(key);
+        var items = root.GetProperty("items").EnumerateArray().ToArray();
+        items.Should().Contain(item =>
+            item.GetProperty("kind").GetString() == "Agent"
+            && item.GetProperty("key").GetString() == key
+            && item.GetProperty("action").GetString() == "Reuse");
+        root.GetProperty("conflictCount").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_OnFreshAgent_CreatesAgentFromExportedPackage()
+    {
+        using var client = factory.CreateClient();
+
+        var seedKey = $"ap-apply-seed-{Guid.NewGuid():N}";
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key = seedKey,
+            tags = new[] { "ops" },
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Round-trip me." }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Pull the exported package, rewrite the entry-point + agent key to a fresh value so
+        // import lands a brand-new (key, v1) row — exercises the apply path on a Create row
+        // without colliding with the seeded record.
+        var packageJson = await client.GetStringAsync($"/api/agents/{seedKey}/1/package");
+        var packageNode = JsonNode.Parse(packageJson)!.AsObject();
+        var importKey = $"ap-apply-target-{Guid.NewGuid():N}";
+        packageNode["entryPoint"]!.AsObject()["key"] = importKey;
+        foreach (var agentNode in packageNode["agents"]!.AsArray())
+        {
+            agentNode!.AsObject()["key"] = importKey;
+        }
+        if (packageNode["manifest"] is JsonObject manifest && manifest["agent"] is JsonObject manifestAgent)
+        {
+            manifestAgent["key"] = importKey;
+        }
+
+        var applyBody = new JsonObject
+        {
+            ["package"] = packageNode.DeepClone(),
+        };
+
+        var response = await client.PostAsync(
+            "/api/agents/package/apply",
+            new StringContent(applyBody.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        var items = root.GetProperty("items").EnumerateArray().ToArray();
+        items.Should().Contain(item =>
+            item.GetProperty("kind").GetString() == "Agent"
+            && item.GetProperty("key").GetString() == importKey
+            && item.GetProperty("action").GetString() == "Create");
+
+        // Confirm the agent landed in the registry at v1 with the same config + tags.
+        var detail = await client.GetFromJsonAsync<TaggedVersionDetailDto>($"/api/agents/{importKey}/1");
+        detail.Should().NotBeNull();
+        detail!.Version.Should().Be(1);
+        detail.Tags.Should().Equal("ops");
+    }
+
+    [Fact]
+    public async Task ApplyPackageImport_BumpResolutionOnEntryPointAgent_LandsNewVersion()
+    {
+        // Exercises the entry-point rewrite path I added in WorkflowPackageImporter:
+        // the entry point of an agent package is an agent ref, so a Bump resolution on
+        // the entry-point agent must rewrite the EntryPoint reference to the new version
+        // (the workflow path consults workflowRewrites; the new code also consults
+        // agentRewrites for this case).
+        using var client = factory.CreateClient();
+
+        var key = $"ap-bump-{Guid.NewGuid():N}";
+        (await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "v1 prompt" }
+        })).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Build a v1 package with a *different* config so the importer flags a conflict —
+        // then the user resolves it with Bump, landing a new version above the existing v1.
+        var packageJson = await client.GetStringAsync($"/api/agents/{key}/1/package");
+        var packageNode = JsonNode.Parse(packageJson)!.AsObject();
+        // Swap the systemPrompt in the embedded agent config so the importer detects drift
+        // against the seeded v1 row and would auto-bump or conflict.
+        var agentNode = packageNode["agents"]!.AsArray()[0]!.AsObject();
+        var configNode = agentNode["config"]!.AsObject();
+        configNode["systemPrompt"] = "different v1 prompt";
+
+        var applyBody = new JsonObject
+        {
+            ["package"] = packageNode.DeepClone(),
+            ["resolutions"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["kind"] = "Agent",
+                    ["key"] = key,
+                    ["sourceVersion"] = 1,
+                    ["mode"] = "Bump",
+                    ["expectedExistingMaxVersion"] = 1,
+                },
+            },
+        };
+
+        var response = await client.PostAsync(
+            "/api/agents/package/apply",
+            new StringContent(applyBody.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        // EntryPoint must reflect the bumped version (v2), not the source v1.
+        root.GetProperty("entryPoint").GetProperty("key").GetString().Should().Be(key);
+        root.GetProperty("entryPoint").GetProperty("version").GetInt32().Should().Be(2);
+
+        var versions = await client.GetFromJsonAsync<IReadOnlyList<VersionDto>>($"/api/agents/{key}/versions");
+        versions!.Select(v => v.Version).Should().BeEquivalentTo(new[] { 2, 1 }, options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public async Task PreviewPackageImport_RejectsWorkflowSchemaPackage()
+    {
+        using var client = factory.CreateClient();
+
+        // A workflow-schema package posted to the agent endpoint must fail admission — the
+        // agent admission validator only accepts codeflow.agent-package.v1.
+        var package = new
+        {
+            schemaVersion = "codeflow.workflow-package.v1",
+            metadata = new { exportedFrom = "test", exportedAtUtc = DateTime.UtcNow },
+            entryPoint = new { key = "any", version = 1 },
+            workflows = Array.Empty<object>(),
+            agents = Array.Empty<object>(),
+            agentRoleAssignments = Array.Empty<object>(),
+            roles = Array.Empty<object>(),
+            skills = Array.Empty<object>(),
+            mcpServers = Array.Empty<object>(),
+        };
+
+        var response = await client.PostAsJsonAsync("/api/agents/package/preview", new { package });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("not supported");
+    }
 }
