@@ -2,9 +2,9 @@ namespace CodeFlow.Persistence;
 
 public sealed class AgentRoleAssignmentEntity
 {
-    public long Id { get; set; }
-
     public string AgentKey { get; set; } = null!;
+
+    public int AgentVersion { get; set; }
 
     public long RoleId { get; set; }
 

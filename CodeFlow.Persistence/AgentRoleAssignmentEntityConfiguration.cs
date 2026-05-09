@@ -9,15 +9,15 @@ public sealed class AgentRoleAssignmentEntityConfiguration : IEntityTypeConfigur
     {
         builder.ToTable("agent_role_assignments");
 
-        builder.HasKey(assignment => assignment.Id);
-
-        builder.Property(assignment => assignment.Id)
-            .HasColumnName("id")
-            .ValueGeneratedOnAdd();
+        builder.HasKey(assignment => new { assignment.AgentKey, assignment.AgentVersion, assignment.RoleId });
 
         builder.Property(assignment => assignment.AgentKey)
             .HasColumnName("agent_key")
             .HasMaxLength(128)
+            .IsRequired();
+
+        builder.Property(assignment => assignment.AgentVersion)
+            .HasColumnName("agent_version")
             .IsRequired();
 
         builder.Property(assignment => assignment.RoleId)
@@ -34,7 +34,6 @@ public sealed class AgentRoleAssignmentEntityConfiguration : IEntityTypeConfigur
             .HasForeignKey(assignment => assignment.RoleId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasIndex(assignment => new { assignment.AgentKey, assignment.RoleId }).IsUnique();
-        builder.HasIndex(assignment => assignment.AgentKey);
+        builder.HasIndex(assignment => assignment.RoleId);
     }
 }
