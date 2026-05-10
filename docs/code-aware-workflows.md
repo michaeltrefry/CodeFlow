@@ -213,8 +213,10 @@ What the tool does for you per repo, atomically:
   workflow targets `master` / `develop` / `trunk` correctly without the author having to know.
 - **Clones** into `{traceWorkDir}/<repo-basename>`. Path-confined so escapes fail with
   `path_confined`.
-- **Creates the feature branch** as `<featureBranchPrefix>/<traceId-short>` off the resolved
-  base.
+- **Creates the feature branch** as `<featureBranchPrefix>-<traceId-short>/<repo-basename>`
+  off the resolved base. The trace-id suffix is always appended — even when you supply your
+  own `featureBranchPrefix` — so concurrent traces can't collide on the same remote branch
+  name. Default prefix is `codeflow/trace`.
 - **Pushes once with `-u`**, which exercises the credential helper at task 1 instead of after
   hours of LLM work. Any auth failure surfaces immediately as `auth_unavailable` /
   `push_failed` rather than stranding development on a local branch.

@@ -134,12 +134,14 @@ public sealed class SetupWorkspaceHostToolService
 
         var credentialEnv = GitCredentialEnv.Build(workspaceOptions.GitCredentialRoot, workspace.CorrelationId);
 
-        // Synthesize a feature-branch prefix when the caller didn't supply one. We use the
-        // first 8 chars of the trace id so two concurrent traces in the same repo can't
-        // accidentally collide on branch names.
-        var featureBranchPrefix = string.IsNullOrWhiteSpace(request.FeatureBranchPrefix)
-            ? $"codeflow/trace-{workspace.CorrelationId.ToString("N")[..8]}"
+        // Always append the 8-char trace id to ensure branch names are unique across
+        // concurrent traces, even if the caller supplied a custom prefix. This prevents
+        // collisions on the remote when two traces reach the same repo with the same prefix.
+        var traceIdSuffix = workspace.CorrelationId.ToString("N")[..8];
+        var basePrefixPart = string.IsNullOrWhiteSpace(request.FeatureBranchPrefix)
+            ? "codeflow/trace"
             : request.FeatureBranchPrefix.Trim();
+        var featureBranchPrefix = $"{basePrefixPart}-{traceIdSuffix}";
 
         // sc-X (2026-05-06): one canonical bag key for repository state. The framework's
         // saga-state-machine lift only reads `{url, branch}` from each entry but ignores

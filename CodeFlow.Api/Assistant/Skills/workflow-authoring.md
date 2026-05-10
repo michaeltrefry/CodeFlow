@@ -330,10 +330,13 @@ What the tool does for you, atomically per repo:
   origin HEAD` (so the workflow doesn't silently target `main` when the
   repo uses `master` / `develop` / `trunk`).
 - Clones into the trace workspace under `traceWorkDir`.
-- Creates `<featureBranchPrefix>/<traceId-short>` off the resolved base
-  and pushes it once with `-u`, which exercises the credential helper
-  boundary at task 1 (instead of after hours of LLM work) so any auth
-  failure surfaces before the dev cycle starts.
+- Creates `<featureBranchPrefix>-<traceId-short>/<repo-basename>` off the
+  resolved base and pushes it once with `-u`, which exercises the
+  credential helper boundary at task 1 (instead of after hours of LLM
+  work) so any auth failure surfaces before the dev cycle starts. The
+  trace-id suffix is *always* appended — even when you supply your own
+  `featureBranchPrefix` — so concurrent traces can't collide on the same
+  remote branch name. Default prefix is `codeflow/trace`.
 - Captures the base SHA so reviewers can diff against the exact starting
   point.
 - Stages a `setWorkflow("repositories", […])` update so subsequent

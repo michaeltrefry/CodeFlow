@@ -303,8 +303,9 @@ public sealed class HostToolProvider : IToolProvider
                         ["featureBranchPrefix"] = new JsonObject
                         {
                             ["type"] = "string",
-                            ["description"] = "Optional. Synthesized as `codeflow/trace-<traceId-prefix>` when "
-                                + "omitted. The per-repo branch name becomes `<prefix>/<repo-name>`.",
+                            ["description"] = "Optional. Defaults to `codeflow/trace` when omitted. "
+                                + "The per-repo branch name becomes `<prefix>-<traceId>/<repo-name>`. "
+                                + "The trace ID suffix is always appended to ensure uniqueness across concurrent traces.",
                         },
                     },
                     ["required"] = new JsonArray("repositories"),
