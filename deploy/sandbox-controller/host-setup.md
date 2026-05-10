@@ -139,23 +139,30 @@ sudo chmod 0640 /opt/codeflow/cfsc-client/worker/client.key
 
 See [`cert-rotation.md`](cert-rotation.md) for the rotation procedure (90-day default lifetime).
 
-## 5. Place the controller config
+## 5. Controller config (automatic, no sudo)
+
+The controller config follows the same pattern as the seccomp profile: the deploy workflow scps `sandbox-controller/deploy/controller-config.toml` from the repo to `/opt/codeflow/cfsc/config/config.toml` on every release. **Do not hand-edit on the host** — edits are overwritten on the next deploy. Make config changes in the repo and let CI re-deploy.
+
+CI validates the file parses + passes `config.validate()` before the deploy job runs (see [`canonical_config_test.go`](../../sandbox-controller/internal/config/canonical_config_test.go)). A bad config exit-2's the controller on startup, so the gate runs early.
+
+If you're standing the host up by hand before the first deploy, copy the canonical file into place:
 
 ```bash
-sudo cp sandbox-controller/deploy/controller-config.example.toml \
-        /opt/codeflow/cfsc/config/config.toml
-sudo "${EDITOR:-vi}" /opt/codeflow/cfsc/config/config.toml
+sudo install -d -m 0755 /opt/codeflow/cfsc/config
+sudo install -m 0644 sandbox-controller/deploy/controller-config.toml \
+                     /opt/codeflow/cfsc/config/config.toml
+sudo chown -R "$(id -u):$(id -g)" /opt/codeflow/cfsc/config
 ```
 
-Edit:
+The shipped file already has:
 
-- `[server] listen` → `0.0.0.0:8443`.
-- `[tls]` block → point at `/etc/cfsc-tls/server.{pem,key}` and `/etc/cfsc-tls/ca.pem` (the prod compose mounts the host TLS dir at `/etc/cfsc-tls`, un-nested from `/etc/cfsc`).
-- `[tls.allowed_client_subjects]` → confirm `codeflow-api` and `codeflow-worker` entries match what `bootstrap-ca.sh` issued.
-- `[runner] docker_socket_path` → `/var/run/docker.sock`.
-- `[workspace] workdir_root` → `/workspace` (the in-container path the host workdir is bind-mounted at; the host directory itself is `${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}` per `.env.release`, mounted at `/workspace` inside the controller). Must match the api/worker `WorkspaceOptions.WorkingDirectoryRoot`.
-- `[images.allowed]` → at least the images your agent workflows are expected to use. Default is empty; empty allowlists every `/run` to fail with `image_not_allowed`. See [`image-whitelist-updates.md`](image-whitelist-updates.md) for the SIGHUP reload story.
-- `[telemetry] otlp_endpoint` → match the existing CodeFlow `Observability__OtlpEndpoint`.
+- `[server] listen = "0.0.0.0:8443"`
+- `[tls]` paths under `/etc/cfsc-tls/` (matches the un-nested prod compose mount + `bootstrap-ca.sh`).
+- `[tls.allowed_client_subjects]` for `codeflow-api` / `codeflow-worker` (matches what `bootstrap-ca.sh` issues).
+- `[runner] docker_socket_path = "/var/run/docker.sock"`.
+- `[workspace] workdir_root = "/workspace"` (matches the api/worker `WorkspaceOptions.WorkingDirectoryRoot`).
+- `[images.allowed]` covering `ghcr.io/trefry/*`, `mcr.microsoft.com/dotnet/*`, `docker.io/library/*` at any tag (mirrors the api/worker `ContainerTools__AllowedImageRegistries` set). Add new entries to the in-repo file via PR — see [`image-whitelist-updates.md`](image-whitelist-updates.md).
+- `[telemetry] otlp_endpoint = ""` (disabled by default). The deploy workflow rewrites this line to the value of the GitHub Actions `CODEFLOW_OTLP_ENDPOINT` var when non-empty.
 
 ## 6. Capture the host's docker GID into `.env.release`
 

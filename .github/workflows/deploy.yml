@@ -61,6 +61,19 @@ jobs:
         working-directory: codeflow-ui
         run: npm run build
 
+      # Validate the canonical sandbox-controller config in repo. Catches
+      # parse / config.validate() failures before they exit-2 the controller
+      # on the host. Also runs the rest of the controller's unit tests as a
+      # cheap regression guard.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Validate sandbox-controller config + unit tests
+        working-directory: sandbox-controller
+        run: go test ./...
+
   images:
     name: Build + push GHCR images
     needs: test
@@ -365,12 +378,13 @@ jobs:
           LINODE_USER: ${{ vars.LINODE_USER || secrets.LINODE_USER }}
           LINODE_SSH_PORT: ${{ vars.LINODE_SSH_PORT || secrets.LINODE_SSH_PORT || '22' }}
           DEPLOY_DIR: ${{ vars.CODEFLOW_DEPLOY_DIR || '/opt/codeflow' }}
+          CODEFLOW_OTLP_ENDPOINT: ${{ vars.CODEFLOW_OTLP_ENDPOINT || '' }}
         run: |
           set -eu
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
               "${LINODE_USER}@${LINODE_HOST}" \
               "set -eu; \
-               mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant' '${DEPLOY_DIR}/cfsc/seccomp'"
+               mkdir -p '${DEPLOY_DIR}/deploy' '${DEPLOY_DIR}/artifacts' '${DEPLOY_DIR}/workdirs' '${DEPLOY_DIR}/assistant' '${DEPLOY_DIR}/cfsc/seccomp' '${DEPLOY_DIR}/cfsc/config'"
           # Ownership/perms on the bind-mount targets are fixed up on every `docker compose up` by
           # the codeflow-init service in deploy/docker-compose.prod.yml — it runs as root inside
           # Docker and chowns /target/{assistant,workdir,artifacts} to uid 1654 (the api/worker app
@@ -389,6 +403,15 @@ jobs:
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
               sandbox-controller/deploy/seccomp/controller-seccomp.json \
               "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/cfsc/seccomp/cfsc.json"
+          # Ship the canonical controller config. Same pattern as the seccomp
+          # profile above — the file in repo IS the deployed file. CI validates
+          # it parses + passes config.validate() before the deploy job runs
+          # (see sandbox-controller/internal/config/canonical_config_test.go).
+          # Operators must NOT hand-edit on the host; edits will be overwritten
+          # on the next deploy.
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$LINODE_SSH_PORT" \
+              sandbox-controller/deploy/controller-config.toml \
+              "${LINODE_USER}@${LINODE_HOST}:${DEPLOY_DIR}/cfsc/config/config.toml"
           # sc-535: append DOCKER_GID at deploy time. The host's docker group's gid varies
           # per VM, and the sandbox-controller container needs supplementary membership in
           # it (group_add) to write to /var/run/docker.sock. We pull the gid from the host
@@ -404,6 +427,20 @@ jobs:
                echo \"DOCKER_GID='\$gid'\" >> '${DEPLOY_DIR}/.env.release.tmp'; \
                mv '${DEPLOY_DIR}/.env.release.tmp' '${DEPLOY_DIR}/.env.release'; \
                chmod 600 '${DEPLOY_DIR}/.env.release'"
+          # Per-host OTLP endpoint substitution. The shipped controller-config.toml has
+          # `otlp_endpoint   = ""` (disabled). When CODEFLOW_OTLP_ENDPOINT is non-empty,
+          # rewrite that exact line on the host. Empty stays empty (CI validates the
+          # shipped file in that state). `|` is the sed delimiter so URLs with `/` pass
+          # through unescaped; we still reject literal `|` in the value as a guard.
+          if [ -n "${CODEFLOW_OTLP_ENDPOINT}" ]; then
+            case "${CODEFLOW_OTLP_ENDPOINT}" in
+              *'|'*) echo "CODEFLOW_OTLP_ENDPOINT contains '|' which conflicts with the sed delimiter" >&2; exit 1 ;;
+            esac
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$LINODE_SSH_PORT" \
+                "${LINODE_USER}@${LINODE_HOST}" \
+                "set -eu; \
+                 sed -i 's|^otlp_endpoint   = \"\"|otlp_endpoint   = \"${CODEFLOW_OTLP_ENDPOINT}\"|' '${DEPLOY_DIR}/cfsc/config/config.toml'"
+          fi
 
       - name: Ensure trefry-network and (re)start the stack
         env:

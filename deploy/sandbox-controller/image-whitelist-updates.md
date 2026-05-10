@@ -1,12 +1,14 @@
 # Image whitelist updates (sc-535)
 
-The controller's allowed-images list is enforced by the layer-2 validator (sc-530, default-deny). Updating it is a config-edit + SIGHUP — no restart required.
+The controller's allowed-images list is enforced by the layer-2 validator (sc-530, default-deny).
 
-## File location
+## Where to edit
 
-```
-/opt/codeflow/cfsc/config/config.toml
-```
+The canonical source is in the repo at [`sandbox-controller/deploy/controller-config.toml`](../../sandbox-controller/deploy/controller-config.toml). The deploy workflow scps that file to `/opt/codeflow/cfsc/config/config.toml` on every release, so any hand-edit on the host is overwritten on the next deploy.
+
+**Standard flow (preferred):** open a PR adding entries to the in-repo file; CI validates the file parses + passes `config.validate()`; merge to `main` re-deploys. The controller restarts as part of the deploy and picks the new allowlist up immediately.
+
+**Hot-fix flow (use sparingly):** if you need to widen the allowlist without waiting for a deploy — e.g. to unblock an in-flight job — edit `/opt/codeflow/cfsc/config/config.toml` on the host directly and SIGHUP the controller. This is hot-reloadable (TLS / listen address are NOT). **Land the same change in the repo immediately afterward** so the next deploy doesn't roll back your edit.
 
 The relevant section:
 
@@ -25,23 +27,34 @@ repository = "library/alpine"
 tag        = "3"
 ```
 
-## Procedure
+## Standard procedure (in-repo edit + redeploy)
 
 ```bash
-# 1. Edit the config.
+# 1. Edit the canonical file in the repo.
+$EDITOR sandbox-controller/deploy/controller-config.toml
+
+# 2. Validate locally before pushing (the same test CI runs).
+(cd sandbox-controller && go test ./internal/config/...)
+
+# 3. Open a PR; merge to main re-deploys.
+```
+
+The deploy workflow ships the new file and `docker compose up -d` restarts the controller, which reads the updated allowlist on startup.
+
+## Hot-fix procedure (host SIGHUP)
+
+Use only when you can't wait for a deploy. Land the matching repo PR immediately after.
+
+```bash
+# 1. Edit the deployed file on the host (will be overwritten on next deploy).
 sudo "${EDITOR:-vi}" /opt/codeflow/cfsc/config/config.toml
 
-# 2. Validate that the file still parses (the controller does this on
-#    SIGHUP and rolls back on parse failure, but it's better to catch
-#    typos before applying them).
-docker run --rm -v /opt/codeflow/cfsc/config:/cfg:ro \
-  ghcr.io/michaeltrefry/codeflow-sandbox-controller:latest \
-  /usr/local/bin/sandbox-controller -config /cfg/config.toml -version-only
-
-# 3. Send SIGHUP to the running controller.
+# 2. Send SIGHUP to the running controller. On parse failure, the controller
+#    keeps the previous allowlist and logs an error; the running process is
+#    never left half-loaded.
 docker kill --signal=HUP codeflow-sandbox-controller
 
-# 4. Verify the reload was picked up. The /version endpoint surfaces a
+# 3. Verify the reload was picked up. The /version endpoint surfaces a
 #    SHA-256 hash of the raw config file — it changes only when the file
 #    actually does. Use the deploy ops client cert to query.
 curl --cacert /opt/codeflow/cfsc-client/api/server-ca.pem \
@@ -51,6 +64,9 @@ curl --cacert /opt/codeflow/cfsc-client/api/server-ca.pem \
      https://codeflow-sandbox-controller:8443/version
 
 # Expect: {"commit":"sha-...","buildTime":"...","configHash":"<new sha>"}
+
+# 4. Mirror the edit in the repo and ship a PR so the next deploy doesn't
+#    overwrite the hot-fix.
 ```
 
 The controller logs:
@@ -81,9 +97,6 @@ So the running controller is never left in a half-loaded state. Fix the file and
 
 ## Audit trail
 
-Every image-whitelist update should land in version control alongside a short rationale. Suggested workflow:
+The standard flow already gives you an audit trail for free: the in-repo edit + PR captures rationale + reviewer + timestamp, and the deploy workflow's run is the link between the merged commit and the running config.
 
-1. Open a change in the config repo (or the `deploy/sandbox-controller/` subtree if you keep it there).
-2. Get a second pair of eyes on the rule before applying.
-3. Apply on the host, capture the new `configHash` from `/version` in the change record.
-4. The hash is the single source of truth for "what config is actually running" — confirm it matches what you reviewed before declaring the change applied.
+For hot-fixes, capture the new `configHash` from `/version` in the incident record, then ship the matching PR. The hash is the single source of truth for "what config is actually running" — confirm it matches the merged commit's file once the follow-up deploy lands.

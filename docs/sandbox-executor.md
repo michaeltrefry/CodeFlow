@@ -623,8 +623,8 @@ Each of these gets a full runbook in the relevant deploy slice. This section cap
 
 ### 13.2 Image whitelist updates
 
-- Edit `controller-config.toml` on the host (or in the IM config repo).
-- `docker compose kill -s HUP codeflow-sandbox-controller` to trigger reload.
+- Edit `sandbox-controller/deploy/controller-config.toml` in the repo and ship a PR. The deploy workflow scps the file to `/opt/codeflow/cfsc/config/config.toml` and the controller reloads it on next start.
+- For hot-fixes, edit `/opt/codeflow/cfsc/config/config.toml` on the host and `docker compose kill -s HUP codeflow-sandbox-controller`. Mirror the edit in the repo immediately so the next deploy doesn't roll the hot-fix back. Full procedure: [`deploy/sandbox-controller/image-whitelist-updates.md`](../deploy/sandbox-controller/image-whitelist-updates.md).
 - Verify via `GET /version` showing the new config hash.
 
 ### 13.3 NFS provisioning (Phase 2)
