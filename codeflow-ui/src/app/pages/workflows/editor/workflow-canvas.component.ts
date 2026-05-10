@@ -19,6 +19,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PageContextService } from '../../../core/page-context.service';
+import { formatHttpError } from '../../../core/format-error';
 import { ClassicPreset, NodeEditor } from 'rete';
 import { AreaExtensions, AreaPlugin } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
@@ -3196,7 +3197,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       },
       error: err => {
         this.saving.set(false);
-        this.error.set(err?.error?.errors?.workflow?.[0] ?? err?.error?.title ?? err.message ?? 'Save failed');
+        this.error.set(formatHttpError(err, 'Save failed'));
       }
     });
   }
