@@ -39,11 +39,14 @@ public static class SystemAgentRoles
                 + "branch to validate auth before any LLM work runs. Idempotent for mid-flow "
                 + "repo addition. (sc-683: vcs.clone is no longer granted — setup_workspace "
                 + "supersedes it; the tool is kept registered for back-compat with imported "
-                + "workflow packages but is marked deprecated in the role editor.)",
+                + "workflow packages but is marked deprecated in the role editor.) "
+                + "bulk_replace handles mechanical N-file renames in one tool call so per-turn "
+                + "tool budgets aren't exhausted on broad refactors.",
             Grants: new[]
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "bulk_replace"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "setup_workspace"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),
@@ -68,6 +71,7 @@ public static class SystemAgentRoles
             {
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "bulk_replace"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "setup_workspace"),
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "vcs.get_repo"),

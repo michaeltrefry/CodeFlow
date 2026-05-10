@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using CodeFlow.Runtime.Authority;
 using CodeFlow.Runtime.Authority.Admission;
 
@@ -133,6 +134,215 @@ public sealed class WorkspaceHostToolService
                     .Select(static path => (JsonNode?)JsonValue.Create(path))
                     .ToArray())
             }.ToJsonString());
+    }
+
+    public async Task<ToolResult> BulkReplaceAsync(
+        ToolCall toolCall,
+        ToolExecutionContext? context,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(toolCall);
+
+        var workspace = RequireWorkspace(context);
+        var pattern = GetRequiredString(toolCall.Arguments, "pattern");
+        var replacement = GetOptionalRawString(toolCall.Arguments, "replacement") ?? string.Empty;
+        var explicitPaths = GetOptionalStringArray(toolCall.Arguments, "paths");
+        var pathGlob = GetOptionalString(toolCall.Arguments, "pathGlob");
+        var useRegex = GetOptionalBool(toolCall.Arguments, "regex") ?? false;
+        var dryRun = GetOptionalBool(toolCall.Arguments, "dryRun") ?? false;
+
+        if (explicitPaths.Count == 0 && string.IsNullOrWhiteSpace(pathGlob))
+        {
+            return RefusalResult(toolCall.Id, new WorkspaceMutationRefusal(
+                code: "scope-required",
+                reason: "Provide at least one of 'paths' or 'pathGlob' to scope the replacement; "
+                    + "workspace-wide unscoped scans are not allowed.",
+                path: null));
+        }
+
+        Regex? regex = null;
+        if (useRegex)
+        {
+            try
+            {
+                regex = new Regex(
+                    pattern,
+                    RegexOptions.NonBacktracking | RegexOptions.Multiline,
+                    options.BulkReplaceRegexTimeout);
+            }
+            catch (ArgumentException ex)
+            {
+                return RefusalResult(toolCall.Id, new WorkspaceMutationRefusal(
+                    code: "pattern-invalid",
+                    reason: $"Regex pattern did not compile: {ex.Message}",
+                    path: null));
+            }
+        }
+
+        Regex? globRegex = null;
+        if (!string.IsNullOrWhiteSpace(pathGlob))
+        {
+            globRegex = TryCompileGlob(pathGlob);
+            if (globRegex is null)
+            {
+                return RefusalResult(toolCall.Id, new WorkspaceMutationRefusal(
+                    code: "pattern-invalid",
+                    reason: $"Glob '{pathGlob}' is not a supported pattern. Use *, **, ?, or literal segments.",
+                    path: null));
+            }
+        }
+
+        var enumeration = EnumerateBulkReplaceCandidates(
+            workspace.RootPath,
+            explicitPaths,
+            globRegex,
+            options.BulkReplaceMaxFiles,
+            cancellationToken);
+
+        if (enumeration.Refusal is { } enumRefusal)
+        {
+            return RefusalResult(toolCall.Id, enumRefusal);
+        }
+
+        var changes = new List<(string Path, int Count)>();
+        var skipped = new List<(string Path, string Reason)>();
+        var totalReplacements = 0;
+
+        foreach (var (relativePath, absolutePath) in enumeration.Files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (options.SymlinkPolicy != WorkspaceSymlinkPolicy.AllowAll
+                && PathConfinement.ContainsSymlink(workspace.RootPath, relativePath))
+            {
+                skipped.Add((relativePath, "symlink"));
+                continue;
+            }
+
+            FileInfo info;
+            try
+            {
+                info = new FileInfo(absolutePath);
+            }
+            catch
+            {
+                skipped.Add((relativePath, "stat_failed"));
+                continue;
+            }
+
+            if (!info.Exists)
+            {
+                skipped.Add((relativePath, "missing"));
+                continue;
+            }
+
+            if (info.Length > options.ReadMaxBytes)
+            {
+                skipped.Add((relativePath, "file_too_large"));
+                continue;
+            }
+
+            byte[] originalBytes;
+            try
+            {
+                originalBytes = await File.ReadAllBytesAsync(absolutePath, cancellationToken);
+            }
+            catch (IOException)
+            {
+                skipped.Add((relativePath, "read_failed"));
+                continue;
+            }
+
+            if (LooksLikeBinary(originalBytes))
+            {
+                skipped.Add((relativePath, "binary"));
+                continue;
+            }
+
+            string originalContent;
+            try
+            {
+                originalContent = Encoding.UTF8.GetString(originalBytes);
+            }
+            catch
+            {
+                skipped.Add((relativePath, "decode_failed"));
+                continue;
+            }
+
+            int replacementCount;
+            string newContent;
+            try
+            {
+                if (regex is not null)
+                {
+                    var localCount = 0;
+                    newContent = regex.Replace(
+                        originalContent,
+                        match =>
+                        {
+                            localCount += 1;
+                            return match.Result(replacement);
+                        });
+                    replacementCount = localCount;
+                }
+                else
+                {
+                    newContent = ReplaceLiteralCounted(originalContent, pattern, replacement, out replacementCount);
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                skipped.Add((relativePath, "regex_timeout"));
+                continue;
+            }
+
+            if (replacementCount == 0)
+            {
+                continue;
+            }
+
+            if (!dryRun)
+            {
+                try
+                {
+                    await File.WriteAllBytesAsync(absolutePath, Encoding.UTF8.GetBytes(newContent), cancellationToken);
+                }
+                catch (IOException)
+                {
+                    skipped.Add((relativePath, "write_failed"));
+                    continue;
+                }
+            }
+
+            changes.Add((relativePath, replacementCount));
+            totalReplacements += replacementCount;
+        }
+
+        var payload = new JsonObject
+        {
+            ["ok"] = true,
+            ["dryRun"] = dryRun,
+            ["filesScanned"] = enumeration.Files.Count,
+            ["filesChanged"] = changes.Count,
+            ["totalReplacements"] = totalReplacements,
+            ["changes"] = new JsonArray(changes
+                .Select(c => (JsonNode?)new JsonObject
+                {
+                    ["path"] = c.Path,
+                    ["count"] = c.Count
+                })
+                .ToArray()),
+            ["skipped"] = new JsonArray(skipped
+                .Select(s => (JsonNode?)new JsonObject
+                {
+                    ["path"] = s.Path,
+                    ["reason"] = s.Reason
+                })
+                .ToArray())
+        };
+
+        return new ToolResult(toolCall.Id, payload.ToJsonString());
     }
 
     public async Task<ToolResult> RunCommandAsync(
@@ -781,6 +991,22 @@ public sealed class WorkspaceHostToolService
             .ToArray();
     }
 
+    private static string? GetOptionalRawString(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName] is JsonValue value
+            && value.TryGetValue<string>(out var result)
+            ? result
+            : null;
+    }
+
+    private static bool? GetOptionalBool(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName] is JsonValue value
+            && value.TryGetValue<bool>(out var result)
+            ? result
+            : null;
+    }
+
     private static int? GetOptionalPositiveInt(JsonNode? node, string propertyName)
     {
         if (node?[propertyName] is JsonValue value && value.TryGetValue<int>(out var result))
@@ -861,4 +1087,295 @@ public sealed class WorkspaceHostToolService
         string StandardError,
         bool OutputTruncated,
         bool TimedOut);
+
+    private static readonly HashSet<string> BulkReplaceExcludedDirs = new(StringComparer.Ordinal)
+    {
+        ".git",
+        "node_modules",
+        "bin",
+        "obj",
+        "target",
+        "dist",
+        "__pycache__",
+        ".venv",
+        "venv"
+    };
+
+    private static BulkReplaceEnumeration EnumerateBulkReplaceCandidates(
+        string workspaceRoot,
+        IReadOnlyList<string> explicitPaths,
+        Regex? globRegex,
+        int maxFiles,
+        CancellationToken cancellationToken)
+    {
+        var roots = new List<string>();
+        if (explicitPaths.Count == 0)
+        {
+            roots.Add(workspaceRoot);
+        }
+        else
+        {
+            foreach (var declared in explicitPaths)
+            {
+                string resolved;
+                try
+                {
+                    resolved = PathConfinement.Resolve(workspaceRoot, declared);
+                }
+                catch (PathConfinementException ex)
+                {
+                    return BulkReplaceEnumeration.OfRefusal(new WorkspaceMutationRefusal(
+                        code: "path-confinement",
+                        reason: ex.Message,
+                        path: declared));
+                }
+
+                if (!File.Exists(resolved) && !Directory.Exists(resolved))
+                {
+                    return BulkReplaceEnumeration.OfRefusal(new WorkspaceMutationRefusal(
+                        code: "source-missing",
+                        reason: $"Path '{declared}' does not exist in the active workspace.",
+                        path: declared));
+                }
+
+                roots.Add(resolved);
+            }
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var files = new List<(string Relative, string Absolute)>();
+
+        foreach (var root in roots)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (File.Exists(root))
+            {
+                AddCandidate(workspaceRoot, root, globRegex, files, seen);
+                if (files.Count > maxFiles)
+                {
+                    return BulkReplaceEnumeration.OfRefusal(TooManyFilesRefusal(maxFiles));
+                }
+
+                continue;
+            }
+
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            foreach (var path in EnumerateFilesRespectingExclusions(root, cancellationToken))
+            {
+                AddCandidate(workspaceRoot, path, globRegex, files, seen);
+                if (files.Count > maxFiles)
+                {
+                    return BulkReplaceEnumeration.OfRefusal(TooManyFilesRefusal(maxFiles));
+                }
+            }
+        }
+
+        return BulkReplaceEnumeration.OfFiles(files);
+    }
+
+    private static void AddCandidate(
+        string workspaceRoot,
+        string absolutePath,
+        Regex? globRegex,
+        List<(string Relative, string Absolute)> files,
+        HashSet<string> seen)
+    {
+        if (!seen.Add(absolutePath))
+        {
+            return;
+        }
+
+        var relative = MakeWorkspaceRelativePath(workspaceRoot, absolutePath);
+        if (globRegex is not null && !globRegex.IsMatch(relative))
+        {
+            return;
+        }
+
+        files.Add((relative, absolutePath));
+    }
+
+    private static IEnumerable<string> EnumerateFilesRespectingExclusions(
+        string root,
+        CancellationToken cancellationToken)
+    {
+        var stack = new Stack<string>();
+        stack.Push(root);
+
+        while (stack.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = stack.Pop();
+
+            IEnumerable<string> subdirs;
+            IEnumerable<string> entries;
+            try
+            {
+                subdirs = Directory.EnumerateDirectories(current);
+                entries = Directory.EnumerateFiles(current);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            foreach (var subdir in subdirs)
+            {
+                var name = Path.GetFileName(subdir);
+                if (BulkReplaceExcludedDirs.Contains(name))
+                {
+                    continue;
+                }
+
+                stack.Push(subdir);
+            }
+
+            foreach (var entry in entries)
+            {
+                yield return entry;
+            }
+        }
+    }
+
+    private static WorkspaceMutationRefusal TooManyFilesRefusal(int maxFiles) =>
+        new(
+            code: "too_many_files",
+            reason: $"bulk_replace would scan more than {maxFiles} files; tighten 'paths' or 'pathGlob' or raise WorkspaceOptions.BulkReplaceMaxFiles.",
+            path: null);
+
+    private static bool LooksLikeBinary(byte[] bytes)
+    {
+        var sample = Math.Min(bytes.Length, 8 * 1024);
+        for (var i = 0; i < sample; i++)
+        {
+            if (bytes[i] == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ReplaceLiteralCounted(string input, string pattern, string replacement, out int count)
+    {
+        if (pattern.Length == 0)
+        {
+            count = 0;
+            return input;
+        }
+
+        count = 0;
+        var builder = new StringBuilder(input.Length);
+        var index = 0;
+        while (index < input.Length)
+        {
+            var hit = input.IndexOf(pattern, index, StringComparison.Ordinal);
+            if (hit < 0)
+            {
+                builder.Append(input, index, input.Length - index);
+                break;
+            }
+
+            builder.Append(input, index, hit - index);
+            builder.Append(replacement);
+            count += 1;
+            index = hit + pattern.Length;
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Translates a minimal glob pattern into a regex anchored against workspace-relative paths
+    /// (forward-slash separators). Supports: <c>*</c> matches any chars except <c>/</c>;
+    /// <c>**</c> matches any chars including <c>/</c>; <c>?</c> matches one non-<c>/</c> char;
+    /// other characters are matched literally. Returns null on a malformed pattern.
+    /// </summary>
+    private static Regex? TryCompileGlob(string pattern)
+    {
+        var normalized = pattern.Replace('\\', '/');
+        var sb = new StringBuilder("^");
+        var i = 0;
+        while (i < normalized.Length)
+        {
+            var c = normalized[i];
+            switch (c)
+            {
+                case '*':
+                    if (i + 1 < normalized.Length && normalized[i + 1] == '*')
+                    {
+                        if (i + 2 < normalized.Length && normalized[i + 2] == '/')
+                        {
+                            sb.Append("(?:.*/)?");
+                            i += 3;
+                        }
+                        else
+                        {
+                            sb.Append(".*");
+                            i += 2;
+                        }
+                    }
+                    else
+                    {
+                        sb.Append("[^/]*");
+                        i += 1;
+                    }
+                    break;
+                case '?':
+                    sb.Append("[^/]");
+                    i += 1;
+                    break;
+                case '.':
+                case '+':
+                case '(':
+                case ')':
+                case '{':
+                case '}':
+                case '[':
+                case ']':
+                case '^':
+                case '$':
+                case '|':
+                case '\\':
+                    sb.Append('\\').Append(c);
+                    i += 1;
+                    break;
+                default:
+                    sb.Append(c);
+                    i += 1;
+                    break;
+            }
+        }
+
+        sb.Append('$');
+
+        try
+        {
+            return new Regex(sb.ToString(), RegexOptions.CultureInvariant);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private readonly record struct BulkReplaceEnumeration(
+        IReadOnlyList<(string Relative, string Absolute)> Files,
+        WorkspaceMutationRefusal? Refusal)
+    {
+        public static BulkReplaceEnumeration OfFiles(IReadOnlyList<(string Relative, string Absolute)> files) =>
+            new(files, null);
+
+        public static BulkReplaceEnumeration OfRefusal(WorkspaceMutationRefusal refusal) =>
+            new(Array.Empty<(string Relative, string Absolute)>(), refusal);
+    }
 }

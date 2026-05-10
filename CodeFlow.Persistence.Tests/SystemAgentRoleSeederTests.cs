@@ -60,6 +60,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Should().BeEquivalentTo(
                 "read_file",
                 "apply_patch",
+                "bulk_replace",
                 "run_command",
                 "setup_workspace",
                 "vcs.get_repo",
@@ -107,6 +108,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
             .Should().BeEquivalentTo(
                 "read_file",
                 "apply_patch",
+                "bulk_replace",
                 "run_command",
                 "setup_workspace",
                 "vcs.get_repo",
@@ -218,6 +220,7 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
         grantsAfter.Should().BeEquivalentTo(
             "read_file",
             "apply_patch",
+            "bulk_replace",
             "run_command",
             "setup_workspace",
             "vcs.get_repo",

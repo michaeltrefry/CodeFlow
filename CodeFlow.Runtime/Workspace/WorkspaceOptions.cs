@@ -86,6 +86,20 @@ public sealed class WorkspaceOptions
     /// </summary>
     public WorkspaceSymlinkPolicy SymlinkPolicy { get; set; } = WorkspaceSymlinkPolicy.RefuseForMutation;
 
+    /// <summary>
+    /// Hard ceiling on the number of files <c>bulk_replace</c> may scan in a single call.
+    /// Refuses with <c>too_many_files</c> rather than half-applying. Defends against an agent
+    /// pointing the tool at the entire workspace tree by accident.
+    /// </summary>
+    public int BulkReplaceMaxFiles { get; set; } = 500;
+
+    /// <summary>
+    /// Per-file regex match timeout for <c>bulk_replace</c> when <c>regex: true</c>. The tool
+    /// also pins <c>RegexOptions.NonBacktracking</c> so the timeout is mostly defense-in-depth
+    /// against pathological replacement patterns.
+    /// </summary>
+    public TimeSpan BulkReplaceRegexTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     public string CachePath => Path.Combine(Root, CacheDirectoryName);
 
     public string WorkPath => Path.Combine(Root, WorkDirectoryName);
