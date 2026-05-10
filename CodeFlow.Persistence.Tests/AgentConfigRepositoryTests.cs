@@ -329,6 +329,141 @@ public sealed class AgentConfigRepositoryTests : IAsyncLifetime
         fetched.IsFork.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldCarryForwardRoleAssignmentsFromPriorVersion()
+    {
+        // Regression: agent role assignments are keyed (agent_key, agent_version, role_id) since
+        // sc-825. Before this fix, a body edit landed at v_N+1 with no assignment rows, so the
+        // agent appeared roleless and the user had to re-assign through the role-only endpoint
+        // — which itself bumps the version, leaving v_N+1 stranded as an empty intermediate.
+        var agentKey = $"writer-{Guid.NewGuid():N}";
+        var v1Json = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "Original.",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+        var v2Json = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "Edited.",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+
+        await using var writeContext = CreateDbContext();
+        var role = new AgentRoleEntity
+        {
+            Key = $"role-{Guid.NewGuid():N}",
+            DisplayName = "Carry-Forward Test Role",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        writeContext.AgentRoles.Add(role);
+        writeContext.Agents.Add(new AgentConfigEntity
+        {
+            Key = agentKey,
+            Version = 1,
+            ConfigJson = v1Json,
+            TagsJson = "[]",
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedBy = "tester",
+            IsActive = true,
+        });
+        await writeContext.SaveChangesAsync();
+
+        writeContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+        {
+            AgentKey = agentKey,
+            AgentVersion = 1,
+            RoleId = role.Id,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await writeContext.SaveChangesAsync();
+
+        var repository = new AgentConfigRepository(writeContext);
+        var version = await repository.CreateNewVersionAsync(agentKey, v2Json, "tester");
+
+        version.Should().Be(2);
+
+        await using var readContext = CreateDbContext();
+        var assignments = await readContext.AgentRoleAssignments
+            .AsNoTracking()
+            .Where(a => a.AgentKey == agentKey)
+            .OrderBy(a => a.AgentVersion)
+            .ToListAsync();
+
+        assignments.Should().HaveCount(2, "the prior version's row plus a copy at the new version");
+        assignments[0].AgentVersion.Should().Be(1);
+        assignments[1].AgentVersion.Should().Be(2);
+        assignments.Should().OnlyContain(a => a.RoleId == role.Id);
+    }
+
+    [Fact]
+    public async Task CreatePublishedVersionAsync_ShouldCarryForwardRoleAssignmentsFromPriorTargetVersion()
+    {
+        // Same regression as the edit-save path, applied to the publish-back-from-fork path.
+        // The fork's source key has its own assignment story; the *target* of the publish keeps
+        // its own role assignments and they should ride along to the bumped version.
+        var targetKey = $"target-{Guid.NewGuid():N}";
+        var configJson = JsonSerializer.Serialize(new AgentInvocationConfiguration(
+            Provider: "openai",
+            Model: "gpt-5.4",
+            SystemPrompt: "test",
+            PromptTemplate: "{{input}}"), SerializerOptions);
+
+        await using var writeContext = CreateDbContext();
+        var role = new AgentRoleEntity
+        {
+            Key = $"role-{Guid.NewGuid():N}",
+            DisplayName = "Publish Carry-Forward Role",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            TagsJson = "[]",
+        };
+        writeContext.AgentRoles.Add(role);
+        writeContext.Agents.Add(new AgentConfigEntity
+        {
+            Key = targetKey,
+            Version = 1,
+            ConfigJson = configJson,
+            TagsJson = "[]",
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedBy = "tester",
+            IsActive = true,
+        });
+        await writeContext.SaveChangesAsync();
+
+        writeContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+        {
+            AgentKey = targetKey,
+            AgentVersion = 1,
+            RoleId = role.Id,
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await writeContext.SaveChangesAsync();
+
+        var repository = new AgentConfigRepository(writeContext);
+        var version = await repository.CreatePublishedVersionAsync(
+            targetKey,
+            configJson,
+            forkedFromKey: "source",
+            forkedFromVersion: 1,
+            createdBy: "tester");
+
+        version.Should().Be(2);
+
+        await using var readContext = CreateDbContext();
+        var assignments = await readContext.AgentRoleAssignments
+            .AsNoTracking()
+            .Where(a => a.AgentKey == targetKey)
+            .OrderBy(a => a.AgentVersion)
+            .ToListAsync();
+
+        assignments.Should().HaveCount(2);
+        assignments[0].AgentVersion.Should().Be(1);
+        assignments[1].AgentVersion.Should().Be(2);
+        assignments.Should().OnlyContain(a => a.RoleId == role.Id);
+    }
+
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();

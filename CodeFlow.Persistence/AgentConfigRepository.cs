@@ -122,6 +122,16 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             };
 
             dbContext.Agents.Add(entity);
+
+            if (latestConfig is not null)
+            {
+                await CopyAssignmentsAsync(
+                    normalizedKey,
+                    latestConfig.Version,
+                    nextVersion,
+                    cancellationToken);
+            }
+
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
@@ -304,6 +314,16 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
             };
 
             dbContext.Agents.Add(entity);
+
+            if (latestConfig is not null)
+            {
+                await CopyAssignmentsAsync(
+                    normalizedTarget,
+                    latestConfig.Version,
+                    nextVersion,
+                    cancellationToken);
+            }
+
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
@@ -408,6 +428,43 @@ public sealed class AgentConfigRepository(CodeFlowDbContext dbContext) : IAgentC
         }
 
         return latest.Value;
+    }
+
+    // Schema is per-version ((agent_key, agent_version, role_id) PK), so a fresh row at
+    // nextVersion has no assignment slot until something writes one. Without this carry-forward,
+    // a body edit drops the prior version's roles and the agent appears unassigned. Mirrors the
+    // OwningWorkflowKey/ForkedFrom*/TagsJson lineage already copied on CreateNewVersionAsync /
+    // CreatePublishedVersionAsync. The bump-on-write role-only path
+    // (BumpAgentForRoleAssignmentChangeAsync) writes its own assignment slot directly so it
+    // doesn't go through this helper.
+    private async Task CopyAssignmentsAsync(
+        string agentKey,
+        int sourceVersion,
+        int targetVersion,
+        CancellationToken cancellationToken)
+    {
+        var priorRoleIds = await dbContext.AgentRoleAssignments
+            .AsNoTracking()
+            .Where(a => a.AgentKey == agentKey && a.AgentVersion == sourceVersion)
+            .Select(a => a.RoleId)
+            .ToListAsync(cancellationToken);
+
+        if (priorRoleIds.Count == 0)
+        {
+            return;
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        foreach (var roleId in priorRoleIds)
+        {
+            dbContext.AgentRoleAssignments.Add(new AgentRoleAssignmentEntity
+            {
+                AgentKey = agentKey,
+                AgentVersion = targetVersion,
+                RoleId = roleId,
+                CreatedAtUtc = nowUtc,
+            });
+        }
     }
 
     private static AgentConfig Map(AgentConfigEntity entity)
