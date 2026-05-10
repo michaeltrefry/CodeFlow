@@ -29,6 +29,7 @@ public static class CodeFlowEndpoints
         routes.MapWorkflowDataflowEndpoints();
         routes.MapWorkflowFixturesEndpoints();
         routes.MapAssistantEndpoints();
+        routes.MapShortcutWebhookEndpoints();
 
         return routes;
     }
