@@ -333,7 +333,7 @@ public sealed class DiagnoseTraceTool : IAssistantTool
                 .Select(n => new
                 {
                     n.NodeId,
-                    Total = n.Rollup.Totals.Values.Sum(),
+                    Total = SumInputOutputTokens(n.Rollup.Totals),
                 })
                 .Where(n => n.Total > 0)
                 .OrderBy(n => n.Total)
@@ -403,7 +403,7 @@ public sealed class DiagnoseTraceTool : IAssistantTool
             .Select(n => new
             {
                 n.NodeId,
-                Total = n.Rollup.Totals.Values.Sum(),
+                Total = SumInputOutputTokens(n.Rollup.Totals),
             })
             .OrderByDescending(n => n.Total)
             .ToArray();
@@ -412,13 +412,27 @@ public sealed class DiagnoseTraceTool : IAssistantTool
         return new
         {
             callCount = tokenAggregate.Total.CallCount,
-            totalTokens = tokenAggregate.Total.Totals.Values.Sum(),
+            totalTokens = SumInputOutputTokens(tokenAggregate.Total.Totals),
             topNode = new
             {
                 nodeId = top.NodeId,
                 tokens = top.Total,
             },
         };
+    }
+
+    // Match the trace inspector's convention (trace-detail.component.ts:666-680): a rollup's
+    // displayable token total is input+output, not the sum of every numeric leaf. Summing every
+    // leaf double-counts because providers report `total_tokens` (= input+output) AND nested
+    // `*_details.*` fields that are subsets of input/output. Falls back to OpenAI Chat
+    // Completions' `prompt_tokens` / `completion_tokens` for older capture rows.
+    private static long SumInputOutputTokens(IReadOnlyDictionary<string, long> totals)
+    {
+        var input = totals.TryGetValue("input_tokens", out var i) ? i
+            : totals.TryGetValue("prompt_tokens", out var p) ? p : 0L;
+        var output = totals.TryGetValue("output_tokens", out var o) ? o
+            : totals.TryGetValue("completion_tokens", out var c) ? c : 0L;
+        return input + output;
     }
 
     private static List<object> BuildSuggestions(
