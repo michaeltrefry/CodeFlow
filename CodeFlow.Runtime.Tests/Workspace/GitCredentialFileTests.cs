@@ -86,6 +86,44 @@ public sealed class GitCredentialFileTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_DoesNotEmitUtf8Bom_SoGitUrlParserSeesHttpsScheme()
+    {
+        // git's URL parser (used by git-credential-store to read entries) does NOT strip a
+        // leading UTF-8 BOM. If WriteAsync emits the file with `Encoding.UTF8` (which prepends
+        // 0xEF 0xBB 0xBF in .NET), the first stored URL parses as a malformed scheme and every
+        // `git push` falls through to a TTY prompt with "could not read Username … No such
+        // device or address". This test pins WriteAsync to BOM-less UTF-8.
+        var traceId = Guid.NewGuid();
+        await GitCredentialFile.WriteAsync(root, traceId,
+            new[] { new HostCredential("github.com", "x-access-token", "tok") });
+
+        var bytes = await File.ReadAllBytesAsync(GitCredentialFile.BuildPath(root, traceId));
+        bytes.Length.Should().BeGreaterThan(3);
+        bytes.Take(3).Should().NotEqual(new byte[] { 0xEF, 0xBB, 0xBF },
+            "the UTF-8 BOM defeats git-credential-store's URL parser and breaks every push");
+        // First byte should be ASCII 'h' (the start of "https://"), not a BOM byte.
+        bytes[0].Should().Be((byte)'h');
+    }
+
+    [Fact]
+    public async Task WriteAsync_UsesLfLineEndings_NotCrlf()
+    {
+        // CR in the line terminator (or anywhere else) corrupts the userinfo segment git parses
+        // out of the URL. Pin LF explicitly so a Windows-built test fixture or future refactor
+        // using `AppendLine` (which honours Environment.NewLine) cannot reintroduce CRLF.
+        var traceId = Guid.NewGuid();
+        await GitCredentialFile.WriteAsync(root, traceId,
+            new[]
+            {
+                new HostCredential("github.com", "x-access-token", "a"),
+                new HostCredential("gitlab.com", "oauth2", "b"),
+            });
+
+        var bytes = await File.ReadAllBytesAsync(GitCredentialFile.BuildPath(root, traceId));
+        bytes.Should().NotContain((byte)'\r', "git's credential-store accepts only LF terminators");
+    }
+
+    [Fact]
     public async Task WriteAsync_SetsMode0600_OnUnix()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
