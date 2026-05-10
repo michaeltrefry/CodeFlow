@@ -1,10 +1,14 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { AgentsApi } from '../../core/agents.api';
 import { useAsyncList } from '../../core/async-state';
 import { formatHttpError } from '../../core/format-error';
 import { relativeTime } from '../../core/format-time';
+import {
+  IMPORT_HANDOFF_STORAGE_KEY,
+  ImportHandoff,
+} from '../../core/import-handoff';
 import { AgentSummary } from '../../core/models';
 import { PageHeaderComponent } from '../../ui/page-header.component';
 import { ButtonComponent } from '../../ui/button.component';
@@ -12,6 +16,9 @@ import { ChipComponent } from '../../ui/chip.component';
 import { IconComponent } from '../../ui/icon.component';
 import { SegmentedComponent, SegmentedOption } from '../../ui/segmented.component';
 import { ProviderIconComponent } from '../../ui/provider-icon.component';
+import { fileNameFromContentDisposition, saveBlobToDisk } from './agent-package-download';
+
+export { fileNameFromContentDisposition, saveBlobToDisk } from './agent-package-download';
 
 type AgentFilter = 'all' | 'agent' | 'hitl';
 
@@ -29,6 +36,15 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
         title="Agents"
         subtitle="Named, versioned prompt + model bundles. Each version is immutable; latest is rotated in on new runs unless pinned.">
         <button type="button" cf-button variant="ghost" icon="refresh" (click)="reload()">Refresh</button>
+        <input
+          #packageInput
+          class="file-input"
+          type="file"
+          accept="application/json,.json"
+          (change)="previewPackageImport($event)" />
+        <button type="button" cf-button [disabled]="importing()" (click)="packageInput.click()">
+          {{ importing() ? 'Loading…' : 'Import JSON' }}
+        </button>
         <a routerLink="/agents/new">
           <button type="button" cf-button variant="primary" icon="plus">New agent</button>
         </a>
@@ -94,6 +110,10 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
 
       @if (exportError()) {
         <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ exportError() }}</cf-chip></div></div>
+      }
+
+      @if (importError()) {
+        <div class="card"><div class="card-body"><cf-chip variant="err" dot>{{ importError() }}</cf-chip></div></div>
       }
 
       @if (loading()) {
@@ -168,6 +188,7 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
     </div>
   `,
   styles: [`
+    .file-input { display: none; }
     .tag-filter {
       display: flex;
       align-items: end;
@@ -228,6 +249,7 @@ type AgentFilter = 'all' | 'agent' | 'hitl';
 })
 export class AgentsListComponent {
   private readonly agentsApi = inject(AgentsApi);
+  private readonly router = inject(Router);
   private readonly agentsList = useAsyncList(
     () => this.agentsApi.list(),
     { errorMessage: 'Failed to load agents' },
@@ -247,6 +269,12 @@ export class AgentsListComponent {
   // banner mirroring `retireError` — no global toast yet.
   readonly exportingKey = signal<string | null>(null);
   readonly exportError = signal<string | null>(null);
+  // Import: parse the file locally, stash as an inline ImportHandoff, then route to
+  // /workflows where the existing per-row conflict-resolution UI hydrates from the stash
+  // and dispatches on schemaVersion (workflow-package vs agent-package). No conflict UI
+  // is duplicated on the agents page.
+  readonly importing = signal(false);
+  readonly importError = signal<string | null>(null);
   readonly selectedCount = computed(() => this.selectedKeys().size);
 
   readonly visibleAgents = computed(() => {
@@ -363,6 +391,56 @@ export class AgentsListComponent {
     });
   }
 
+  /** Import flow on the Agents list. Parses the uploaded file locally so JSON errors
+   *  surface here, then stashes the package as an inline ImportHandoff and navigates to
+   *  /workflows. The imports page picks up the stash on init and routes to the correct
+   *  backend (workflow-package vs agent-package) via `schemaVersion` dispatch. */
+  previewPackageImport(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+
+    this.importError.set(null);
+    this.importing.set(true);
+
+    file.text()
+      .then(text => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          this.importing.set(false);
+          this.importError.set('Selected file is not valid JSON.');
+          return;
+        }
+
+        const handoff: ImportHandoff = {
+          v: 1,
+          stashedAtMs: Date.now(),
+          packageSource: 'inline',
+          conversationId: null,
+          package: parsed,
+        };
+
+        try {
+          sessionStorage.setItem(IMPORT_HANDOFF_STORAGE_KEY, JSON.stringify(handoff));
+        } catch {
+          this.importing.set(false);
+          this.importError.set('Could not stash the package for the imports page (sessionStorage unavailable).');
+          return;
+        }
+
+        void this.router.navigateByUrl('/workflows').then(() => {
+          this.importing.set(false);
+        });
+      })
+      .catch(() => {
+        this.importing.set(false);
+        this.importError.set('Failed to read selected file.');
+      });
+  }
+
   /** AP-6 (sc-837): fetch the canonical agent-package JSON and trigger a browser save.
    *  The card itself is a `<a routerLink>`, so the click handler must `preventDefault` +
    *  `stopPropagation` to avoid navigating to the agent detail page. */
@@ -391,29 +469,6 @@ export class AgentsListComponent {
       }
     });
   }
-}
-
-/** Trigger the browser's save-as flow for `blob` under `fileName`. Lifted out of the
- *  component so component tests can spy on it via the module export. */
-export function saveBlobToDisk(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
-}
-
-/** Parse a `Content-Disposition` header for the suggested filename. Handles both the
- *  bare `filename=name.json` form and the quoted `filename="name with spaces.json"`
- *  form; returns null when the header is missing or unparseable. */
-export function fileNameFromContentDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const match = /filename\*?=(?:UTF-8'')?(?:"([^"]+)"|([^;]+))/i.exec(header);
-  if (!match) return null;
-  return (match[1] ?? match[2] ?? '').trim() || null;
 }
 
 function parseTagInput(value: string): string[] {

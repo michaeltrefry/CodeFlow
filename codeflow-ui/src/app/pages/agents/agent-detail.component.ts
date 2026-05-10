@@ -7,6 +7,8 @@ import { AgentsApi } from '../../core/agents.api';
 import { AgentRolesApi } from '../../core/agent-roles.api';
 import { HostToolsApi } from '../../core/host-tools.api';
 import { McpServersApi } from '../../core/mcp-servers.api';
+import { formatHttpError } from '../../core/format-error';
+import { fileNameFromContentDisposition, saveBlobToDisk } from './agent-package-download';
 import {
   AgentConfig,
   AgentRole,
@@ -56,6 +58,16 @@ interface ReadOnlyFallbackRow {
         <a [routerLink]="['/agents', key(), 'edit']">
           <button type="button" cf-button variant="primary" icon="plus">New version</button>
         </a>
+      }
+      <button
+        type="button"
+        cf-button
+        variant="ghost"
+        [disabled]="exporting() || !viewing()"
+        (click)="exportPackage()">
+        {{ exporting() ? 'Exporting…' : 'Export package' }}
+      </button>
+      @if (!retired()) {
         <button type="button" cf-button variant="danger" (click)="retire()" [disabled]="retiring()">
           {{ retiring() ? 'Retiring…' : 'Retire agent' }}
         </button>
@@ -82,6 +94,10 @@ interface ReadOnlyFallbackRow {
 
     @if (retireError()) {
       <div class="trace-failure"><strong>Retire failed:</strong> {{ retireError() }}</div>
+    }
+
+    @if (exportError()) {
+      <div class="trace-failure"><strong>Export failed:</strong> {{ exportError() }}</div>
     }
 
     @if (versions().length > 1) {
@@ -503,6 +519,8 @@ export class AgentDetailComponent implements OnInit {
   protected readonly retired = signal(false);
   protected readonly retiring = signal(false);
   protected readonly retireError = signal<string | null>(null);
+  protected readonly exporting = signal(false);
+  protected readonly exportError = signal<string | null>(null);
 
   protected readonly rolesLoading = signal(false);
   protected readonly allRoles = signal<AgentRole[]>([]);
@@ -842,6 +860,35 @@ export class AgentDetailComponent implements OnInit {
       error: err => {
         this.retiring.set(false);
         this.retireError.set(err?.error?.error ?? err?.message ?? 'Retire failed');
+      }
+    });
+  }
+
+  /** Header Export button: download the canonical agent-package JSON for the version
+   *  currently selected in the version selector. Mirrors the per-row Export on the
+   *  Agents list (AP-6 sc-837) — same endpoint, same Content-Disposition fallback. */
+  exportPackage(): void {
+    const key = this.key();
+    const version = this.viewing()?.version;
+    if (version == null || this.exporting()) return;
+    this.exporting.set(true);
+    this.exportError.set(null);
+
+    this.api.downloadPackage(key, version).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: response => {
+        this.exporting.set(false);
+        const blob = response.body;
+        if (!blob) {
+          this.exportError.set('Server returned an empty package body.');
+          return;
+        }
+        const fileName = fileNameFromContentDisposition(response.headers.get('content-disposition'))
+          ?? `${key}-v${version}-agent-package.json`;
+        saveBlobToDisk(blob, fileName);
+      },
+      error: err => {
+        this.exporting.set(false);
+        this.exportError.set(formatHttpError(err, `Failed to export agent '${key}'.`));
       }
     });
   }
