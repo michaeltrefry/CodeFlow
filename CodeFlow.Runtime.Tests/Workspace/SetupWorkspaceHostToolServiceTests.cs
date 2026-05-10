@@ -235,7 +235,7 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SetupWorkspace_FeatureBranchPrefix_OverridesDefault()
+    public async Task SetupWorkspace_FeatureBranchPrefix_AppendTraceIdForUniqueness()
     {
         var fixture = NewBareFixture("fixture-g");
         var (service, workspaceRoot, traceId, sink) = NewService();
@@ -250,7 +250,8 @@ public sealed class SetupWorkspaceHostToolServiceTests : IDisposable
 
         result.IsError.Should().BeFalse(result.Content);
         var featureBranch = JsonNode.Parse(result.Content)!["repositories"]![0]!["featureBranch"]!.GetValue<string>();
-        featureBranch.Should().Be("story/sc-1234/fixture-g");
+        var traceIdSuffix = traceId.ToString("N")[..8];
+        featureBranch.Should().Be($"story/sc-1234-{traceIdSuffix}/fixture-g");
     }
 
     // === fixtures ==========================================================================
