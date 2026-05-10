@@ -393,6 +393,16 @@ public sealed class InvocationLoop
                         totalToolCalls);
                 }
             }
+
+            var toolBudgetRemaining = budget.MaxToolCalls - totalToolCalls;
+            if (toolBudgetRemaining <= 3)
+            {
+                var budgetWarning = BuildToolBudgetWarning(totalToolCalls, budget.MaxToolCalls, toolBudgetRemaining);
+                if (!string.IsNullOrWhiteSpace(budgetWarning))
+                {
+                    transcript.Add(new ChatMessage(ChatMessageRole.User, budgetWarning));
+                }
+            }
         }
     }
 
@@ -613,5 +623,20 @@ public sealed class InvocationLoop
                 current.OutputTokens + next.OutputTokens,
                 current.TotalTokens + next.TotalTokens)
         };
+    }
+
+    private static string BuildToolBudgetWarning(int totalToolCalls, int maxToolCalls, int remaining)
+    {
+        if (remaining == 1)
+        {
+            return "⚠️ Tool budget critical: 1 call remaining. Your next call must be `submit` or the invocation will fail.";
+        }
+
+        if (remaining <= 3)
+        {
+            return $"⚠️ Tool budget: {totalToolCalls}/{maxToolCalls} used, {remaining} calls remaining. Wrap up soon.";
+        }
+
+        return string.Empty;
     }
 }
