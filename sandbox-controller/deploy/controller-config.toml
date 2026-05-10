@@ -1,7 +1,13 @@
-# Sandbox-controller configuration — example.
+# Sandbox-controller configuration — CANONICAL.
 #
-# Copy to controller-config.dev.toml (or controller-config.toml in prod) and
-# fill in the paths. Validation happens at startup; missing fields fail fast.
+# This file IS the deployed config. The deploy workflow (.github/workflows/deploy.yml)
+# scps it verbatim to ${DEPLOY_DIR}/cfsc/config/config.toml on every release.
+# Do NOT hand-edit on the host — edits will be overwritten on the next deploy.
+# Make config changes here, in the repo, and let CI re-deploy.
+#
+# Local dev uses a derived copy: see sandbox-controller/README.md "Quick start".
+# CI validates this file parses + passes config.validate(); see
+# sandbox-controller/internal/config/canonical_config_test.go.
 
 [server]
 # host:port to bind. mTLS-only — there is no plaintext listener. Prod (sc-535)
@@ -26,6 +32,9 @@ client_ca_path = "/etc/cfsc-tls/ca.pem"
 # Allowlist of client cert subjects. A client cert must (a) be signed by
 # client_ca_path and (b) match at least one entry here. Each entry's set fields
 # (CN, O, OU) must all match the cert's Subject. Set at least one of CN/O/OU.
+#
+# These are the subjects bootstrap-ca.sh issues for the api + worker. They are
+# internal service identifiers, not secrets.
 [[tls.allowed_client_subjects]]
 common_name  = "codeflow-api"
 organization = "trefry"
@@ -92,35 +101,30 @@ results_dir_name = ".results"
 # No regex, no internal wildcards — auditable plain English by design.
 #
 # Hot-reload: send SIGHUP to the controller process to reload this section
-# without restarting (TLS / listen address are NOT reloadable on HUP).
+# without restarting (TLS / listen address are NOT reloadable on HUP). See
+# deploy/sandbox-controller/image-whitelist-updates.md — but prefer editing
+# this file in the repo and re-deploying so the change is in version control.
 
-# Uncomment the entries that match your trust set. Examples:
-#
-# # Trust every repo under your own GHCR org with any tag.
-# [[images.allowed]]
-# registry   = "ghcr.io"
-# repository = "trefry/*"
-# tag        = "*"
-#
-# # Trust all of Microsoft's .NET base images at any tag (sdk, runtime, aspnet).
-# [[images.allowed]]
-# registry   = "mcr.microsoft.com"
-# repository = "dotnet/*"
-# tag        = "*"
-#
-# # Trust Docker Hub's official-images namespace pinned to major versions.
-# # `library/*` is the namespace where the curated official images live
-# # (alpine, node, python, golang, postgres, ...).
-# [[images.allowed]]
-# registry   = "docker.io"
-# repository = "library/*"
-# tag        = "*"
-#
-# # If you want a tighter posture, prefer narrower entries instead:
-# # [[images.allowed]]
-# # registry   = "ghcr.io"
-# # repository = "trefry/dotnet-tester"
-# # tag        = "10.0-sdk-*"
+# Trust every repo under the trefry GHCR org with any tag. Covers the
+# CodeFlow-published sandbox tester images (e.g. ghcr.io/trefry/dotnet-tester).
+[[images.allowed]]
+registry   = "ghcr.io"
+repository = "trefry/*"
+tag        = "*"
+
+# Trust all of Microsoft's .NET base images at any tag (sdk, runtime, aspnet).
+[[images.allowed]]
+registry   = "mcr.microsoft.com"
+repository = "dotnet/*"
+tag        = "*"
+
+# Trust Docker Hub's official-images namespace at any tag. `library/*` is the
+# curated namespace where official images (alpine, node, python, postgres, ...)
+# live.
+[[images.allowed]]
+registry   = "docker.io"
+repository = "library/*"
+tag        = "*"
 
 [sweeper]
 # Periodic cleanup of orphaned containers + stale per-job results dirs (sc-533).
@@ -137,8 +141,13 @@ results_ttl_seconds   = 604800 # 7d
 
 [telemetry]
 # OTLP collector endpoint (sc-534). Empty disables export — all instruments
-# become no-ops, useful for local dev. The trace + metric exporters use HTTP
-# to /v1/traces and /v1/metrics under this base.
+# become no-ops, useful when no collector is wired up. The trace + metric
+# exporters use HTTP to /v1/traces and /v1/metrics under this base.
+#
+# Per-host override: the deploy workflow rewrites this line to the value of
+# `CODEFLOW_OTLP_ENDPOINT` (GitHub Actions var) when non-empty. Leave the
+# in-repo value as "" so CI validation against this file sees the disabled
+# default.
 otlp_endpoint   = ""
 
 # Surfaces as service.name in resource attributes. Default "sandbox-controller".

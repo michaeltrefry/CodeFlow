@@ -31,11 +31,11 @@ Requires Go 1.26+ and openssl.
 # Generate self-signed dev mTLS material in deploy/dev-tls/.
 make dev-certs
 
-# Drop a dev config in place (copy the example, paths point at deploy/dev-tls).
-# Note the path + filename rewrites: prod uses /etc/cfsc-tls/ + ca.pem (per
-# bootstrap-ca.sh + the un-nested compose mount); dev uses ./deploy/dev-tls/ +
-# client-ca.pem (per gen-dev-certs.sh).
-cp deploy/controller-config.example.toml deploy/controller-config.dev.toml
+# Drop a dev config in place by deriving from the canonical config. The prod
+# file points at /etc/cfsc-tls/ + ca.pem (per bootstrap-ca.sh + the un-nested
+# compose mount); dev rewrites to ./deploy/dev-tls/ + client-ca.pem (per
+# gen-dev-certs.sh) and to a local workdir root.
+cp deploy/controller-config.toml deploy/controller-config.dev.toml
 sed -i '' \
   -e 's|/etc/cfsc-tls/server.pem|deploy/dev-tls/server.pem|' \
   -e 's|/etc/cfsc-tls/server.key|deploy/dev-tls/server.key|' \
@@ -90,7 +90,7 @@ sandbox-controller/
 │   ├── Dockerfile                    # static Go build → distroless/static:nonroot
 │   ├── compose.yml                   # local-dev compose (hardened posture, dev carve-outs called out)
 │   ├── compose.prod.snippet.yml      # prod-shaped service definition for sc-535 to integrate
-│   ├── controller-config.example.toml
+│   ├── controller-config.toml          # canonical — shipped to host by deploy workflow
 │   ├── HARDENING.md                  # sc-538 — lever-to-threat mapping + verification checklist
 │   ├── apparmor/codeflow-sandbox-controller   # AppArmor profile (host-installed)
 │   └── seccomp/controller-seccomp.json        # seccomp profile (deny-by-default allowlist)
