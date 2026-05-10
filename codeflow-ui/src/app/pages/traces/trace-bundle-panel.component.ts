@@ -227,6 +227,12 @@ export class TraceBundlePanelComponent implements OnDestroy {
 
   readonly traceId = input.required<string>();
 
+  /** Optional change-token whose mutation triggers a manifest refetch. The trace-detail page
+   *  binds this to `d.updatedAtUtc` so the bundle's stats track the saga as it advances —
+   *  without it, the panel fetched once on mount and stayed empty until the user manually
+   *  refreshed. Independent of `traceId` so swapping traces still re-fetches via that input. */
+  readonly reloadKey = input<string | null>(null);
+
   readonly manifest = signal<TraceBundleManifest | null>(null);
   readonly exporting = signal(false);
   readonly loadError = signal<string | null>(null);
@@ -266,6 +272,8 @@ export class TraceBundlePanelComponent implements OnDestroy {
   constructor() {
     effect(() => {
       const id = this.traceId();
+      // Read reloadKey() so the effect re-runs when the trace's updatedAtUtc changes.
+      this.reloadKey();
       this.fetch(id);
     });
   }

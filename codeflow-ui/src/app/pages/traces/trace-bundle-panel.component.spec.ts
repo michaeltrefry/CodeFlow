@@ -143,6 +143,31 @@ describe('TraceBundlePanelComponent', () => {
     expect(text).not.toContain('replay attempts');
   });
 
+  it('refetches the manifest when reloadKey changes (live-update on saga progression)', () => {
+    const fixture = TestBed.createComponent(TraceBundlePanelComponent);
+    fixture.componentRef.setInput('traceId', 'trace-live');
+    fixture.componentRef.setInput('reloadKey', '2026-05-10T14:00:00Z');
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-live/bundle/manifest')
+      .flush(buildManifest({ refusals: [refusal('r1', 'tool', 'envelope-execute-grants')] }));
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).textContent ?? '').toContain('1 refusals');
+
+    fixture.componentRef.setInput('reloadKey', '2026-05-10T14:05:00Z');
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/traces/trace-live/bundle/manifest')
+      .flush(buildManifest({
+        refusals: [
+          refusal('r1', 'tool', 'envelope-execute-grants'),
+          refusal('r2', 'workspace', 'workspace-mutation-blocked'),
+        ],
+      }));
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).textContent ?? '').toContain('2 refusals');
+  });
+
   it('shows a friendly empty state when the manifest endpoint returns 404', () => {
     const fixture = TestBed.createComponent(TraceBundlePanelComponent);
     fixture.componentRef.setInput('traceId', 'unknown');

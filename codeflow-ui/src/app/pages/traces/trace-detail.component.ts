@@ -274,7 +274,9 @@ interface ReviewLoopGroup {
           [nodeLabel]="nodeLabelResolver"
           [scopeLabel]="scopeLabelResolver"></cf-token-usage-panel>
 
-        <cf-trace-bundle-panel [traceId]="d.traceId"></cf-trace-bundle-panel>
+        <cf-trace-bundle-panel
+          [traceId]="d.traceId"
+          [reloadKey]="d.updatedAtUtc"></cf-trace-bundle-panel>
 
         <cf-card title="Execution timeline" flush>
           <ng-template #cardRight><cf-chip mono>{{ timeline().length }} hops</cf-chip></ng-template>
