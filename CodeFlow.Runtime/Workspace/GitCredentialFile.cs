@@ -25,6 +25,8 @@ public static class GitCredentialFile
 {
     private const UnixFileMode FileMode0600 = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
+    private static readonly UTF8Encoding BomlessUtf8 = new(encoderShouldEmitUTF8Identifier: false);
+
     /// <summary>
     /// Writes the per-trace credential file. Overwrites any existing file at the same path
     /// (idempotent: a re-published trace start replaces the old creds rather than appending).
@@ -55,10 +57,17 @@ public static class GitCredentialFile
         var buffer = new StringBuilder();
         foreach (var cred in credentials)
         {
-            buffer.AppendLine(FormatStoreLine(cred));
+            buffer.Append(FormatStoreLine(cred)).Append('\n');
         }
 
-        await File.WriteAllTextAsync(path, buffer.ToString(), Encoding.UTF8, cancellationToken);
+        // BOM-less UTF-8 + LF: git's URL parser does not strip a UTF-8 BOM, so an entry written
+        // with `Encoding.UTF8` (which emits the BOM by default in .NET) parses as a malformed
+        // URL whose scheme is not `https`, and `git credential-store get` returns no match for
+        // every push. `Encoding.UTF8` is the BOM-emitting one; `UTF8Encoding(false)` is BOM-less.
+        // LF (not Environment.NewLine) so the entry round-trips identically across platforms —
+        // git accepts only LF line terminators in the store file, and a stray CR would also
+        // poison the parsed userinfo on Windows-built test fixtures.
+        await File.WriteAllTextAsync(path, buffer.ToString(), BomlessUtf8, cancellationToken);
         TrySetMode0600(path);
     }
 
