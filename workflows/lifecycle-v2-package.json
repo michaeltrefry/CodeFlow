@@ -2147,7 +2147,7 @@
     {
       "key": "code-worker",
       "displayName": "Code Worker",
-      "description": "Grants the host tools needed to read, edit, and run commands inside the trace's working directory: read_file, apply_patch, run_command, plus echo/now.",
+      "description": "Grants the host tools needed to read, edit, and run commands inside the trace's working directory: read_file, apply_patch, bulk_replace, run_command, plus echo/now. bulk_replace handles mechanical N-file renames in one tool call.",
       "isArchived": false,
       "toolGrants": [
         {
@@ -2157,6 +2157,10 @@
         {
           "category": "Host",
           "toolIdentifier": "apply_patch"
+        },
+        {
+          "category": "Host",
+          "toolIdentifier": "bulk_replace"
         },
         {
           "category": "Host",

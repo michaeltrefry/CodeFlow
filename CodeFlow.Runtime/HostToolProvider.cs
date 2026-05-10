@@ -58,6 +58,7 @@ public sealed class HostToolProvider : IToolProvider
             "now" => Task.FromResult(new ToolResult(toolCall.Id, nowProvider().ToString("O"))),
             "read_file" => workspaceTools.ReadFileAsync(toolCall, context, cancellationToken),
             "apply_patch" => workspaceTools.ApplyPatchAsync(toolCall, context, cancellationToken),
+            "bulk_replace" => workspaceTools.BulkReplaceAsync(toolCall, context, cancellationToken),
             "run_command" => workspaceTools.RunCommandAsync(toolCall, context, cancellationToken),
             "vcs.open_pr" => RequireVcs().OpenPullRequestAsync(toolCall, context, cancellationToken),
             "vcs.get_repo" => RequireVcs().GetRepoMetadataAsync(toolCall, context, cancellationToken),
@@ -143,6 +144,61 @@ public sealed class HostToolProvider : IToolProvider
                         }
                     },
                     ["required"] = new JsonArray("patch")
+                },
+                IsMutating: true),
+            new ToolSchema(
+                "bulk_replace",
+                "Mechanical find-and-replace across many files in one call. Use this for broad "
+                + "renames or other context-free substitutions where apply_patch would be N "
+                + "tool calls; prefer apply_patch for context-aware edits and for creating or "
+                + "deleting files. The replacement is plain by default; pass `regex: true` to "
+                + "interpret `pattern` as a .NET regex (NonBacktracking, with a per-file timeout). "
+                + "Skips binary files, symlinks, and well-known build/output dirs (.git, "
+                + "node_modules, bin, obj, target, dist, __pycache__, venv). Refuses with "
+                + "`too_many_files` rather than half-applying when scope exceeds the configured "
+                + "ceiling. Pass `dryRun: true` to preview counts without writing.",
+                new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["pattern"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Literal text to find, or a regex when `regex: true`."
+                        },
+                        ["replacement"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Replacement text. With `regex: true`, supports .NET "
+                                + "$0/$1/${name} substitution semantics."
+                        },
+                        ["paths"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Workspace-relative file or directory paths to scope the "
+                                + "scan. Directories are walked recursively. At least one of `paths` "
+                                + "or `pathGlob` is required."
+                        },
+                        ["pathGlob"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Glob filter applied to workspace-relative file paths "
+                                + "(e.g. `**/*.cs`, `src/**/*.ts`). Combines with `paths` if both supplied."
+                        },
+                        ["regex"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "When true, `pattern` is parsed as a .NET regex. Default false."
+                        },
+                        ["dryRun"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "When true, returns counts without writing. Default false."
+                        }
+                    },
+                    ["required"] = new JsonArray("pattern", "replacement")
                 },
                 IsMutating: true),
             new ToolSchema(

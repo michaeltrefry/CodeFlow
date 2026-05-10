@@ -223,7 +223,7 @@ public sealed class ContainerToolEndToEndTests : IDisposable
         var (provider, _) = NewProvider(runner);
 
         var allowed = new ToolAccessPolicy(
-            AllowedToolNames: new[] { "read_file", "apply_patch", "run_command", "echo", "now" });
+            AllowedToolNames: new[] { "read_file", "apply_patch", "bulk_replace", "run_command", "echo", "now" });
 
         var availableNames = provider.AvailableTools(allowed).Select(t => t.Name).ToHashSet();
 

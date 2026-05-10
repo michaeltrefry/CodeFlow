@@ -585,11 +585,12 @@
     {
       "key": "code-worker",
       "displayName": "Code Worker",
-      "description": "Grants the host tools needed to read, edit, run commands, and publish PRs inside the trace's working directory: read_file, apply_patch, run_command, vcs.get_repo, vcs.open_pr, plus echo/now.",
+      "description": "Grants the host tools needed to read, edit, run commands, and publish PRs inside the trace's working directory: read_file, apply_patch, bulk_replace, run_command, vcs.get_repo, vcs.open_pr, plus echo/now. bulk_replace handles mechanical N-file renames in one tool call.",
       "isArchived": false,
       "toolGrants": [
         {"category": "Host", "toolIdentifier": "read_file"},
         {"category": "Host", "toolIdentifier": "apply_patch"},
+        {"category": "Host", "toolIdentifier": "bulk_replace"},
         {"category": "Host", "toolIdentifier": "run_command"},
         {"category": "Host", "toolIdentifier": "vcs.open_pr"},
         {"category": "Host", "toolIdentifier": "vcs.get_repo"},
