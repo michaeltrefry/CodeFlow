@@ -521,8 +521,15 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     {
         if (!string.IsNullOrWhiteSpace(message.TraceWorkDir))
         {
+            // Workspace dirs are anchored at the root trace, NOT per-saga: an inner subflow
+            // saga has a fresh correlation id but reuses the parent's on-disk workspace at
+            // `{root}/{rootTraceId}/`. The basename of TraceWorkDir is the authoritative root
+            // trace id (in N format); use it for the workspace's RootTraceId so host tools
+            // that resolve the workspace on disk (sandbox-controller, future filesystem-scoped
+            // tools) hit the right directory regardless of subflow nesting.
+            var rootTraceId = TryParseRootTraceId(message.TraceWorkDir);
             return new RuntimeToolExecutionContext(
-                new RuntimeToolWorkspaceContext(message.TraceId, message.TraceWorkDir),
+                new RuntimeToolWorkspaceContext(message.TraceId, message.TraceWorkDir, rootTraceId),
                 ResolveRepositoryContexts(message),
                 envelope);
         }
@@ -595,12 +602,40 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             return null;
         }
 
+        // Legacy contract context predates RootTraceId. For non-code-aware workflows
+        // (no TraceWorkDir) the CorrelationId IS the root trace id — the host tools that
+        // depend on RootTraceId aren't reachable from these workflows anyway, so the
+        // fallback preserves prior behaviour without forcing the contract to carry the field.
         return new RuntimeToolWorkspaceContext(
             workspace.CorrelationId,
             workspace.RootPath,
+            RootTraceId: workspace.CorrelationId,
             workspace.RepoUrl,
             workspace.RepoIdentityKey,
             workspace.RepoSlug);
+    }
+
+    /// <summary>
+    /// The on-disk trace directory is named after the root trace id in N (no-dashes) form;
+    /// when set, the message's <see cref="AgentInvokeRequested.TraceWorkDir"/> ends in that
+    /// segment. Parse it back into a Guid so host tools that need the canonical id (rather
+    /// than its dir-string spelling) can use it directly. Returns null for malformed paths;
+    /// callers should treat null as "use CorrelationId as a fallback."
+    /// </summary>
+    internal static Guid? TryParseRootTraceId(string traceWorkDir)
+    {
+        if (string.IsNullOrWhiteSpace(traceWorkDir))
+        {
+            return null;
+        }
+
+        var segment = System.IO.Path.GetFileName(traceWorkDir.TrimEnd('/', '\\'));
+        if (Guid.TryParseExact(segment, "N", out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<RuntimeToolRepositoryContext>? MapRepositoryContexts(

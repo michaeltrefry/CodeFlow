@@ -249,6 +249,11 @@ public sealed class AgentInvocationConsumerTests
                     new CodeFlow.Runtime.ToolWorkspaceContext(
                         toolExecutionContext.Workspace!.CorrelationId,
                         toolExecutionContext.Workspace.RootPath,
+                        // Legacy contract-context mapper fills RootTraceId from CorrelationId
+                        // when no TraceWorkDir is set, since non-code-aware workflows don't
+                        // distinguish saga id from trace id and the consumers that need the
+                        // distinction (sandbox-controller) aren't reachable from this path.
+                        RootTraceId: toolExecutionContext.Workspace.CorrelationId,
                         toolExecutionContext.Workspace.RepoUrl,
                         toolExecutionContext.Workspace.RepoIdentityKey,
                         toolExecutionContext.Workspace.RepoSlug)));
