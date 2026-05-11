@@ -1248,7 +1248,12 @@ public sealed class WorkspaceHostToolService
     private static WorkspaceMutationRefusal TooManyFilesRefusal(int maxFiles) =>
         new(
             code: "too_many_files",
-            reason: $"bulk_replace would scan more than {maxFiles} files; tighten 'paths' or 'pathGlob' or raise WorkspaceOptions.BulkReplaceMaxFiles.",
+            reason: $"bulk_replace matched more than {maxFiles} files. The tool refused before "
+                + "touching any of them, so nothing was written. Retry with a narrower scope: "
+                + "use a more specific pathGlob (e.g. `**/*.cs` instead of `**/*`, or "
+                + "`src/**/*.ts` instead of `**/*.ts`), pass explicit `paths` rooted at the "
+                + "subtrees that actually need the rename, or split the rename across several "
+                + "calls keyed by top-level directory. Same pattern, smaller scope each call.",
             path: null);
 
     private static bool LooksLikeBinary(byte[] bytes)

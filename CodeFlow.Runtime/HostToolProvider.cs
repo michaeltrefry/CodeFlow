@@ -156,7 +156,11 @@ public sealed class HostToolProvider : IToolProvider
                 + "Skips binary files, symlinks, and well-known build/output dirs (.git, "
                 + "node_modules, bin, obj, target, dist, __pycache__, venv). Refuses with "
                 + "`too_many_files` rather than half-applying when scope exceeds the configured "
-                + "ceiling. Pass `dryRun: true` to preview counts without writing.",
+                + "ceiling. If you hit that refusal, narrow `pathGlob` to specific extensions "
+                + "(e.g. `**/*.cs`) or pass explicit `paths` rooted at smaller subtrees, then "
+                + "retry — splitting one too-broad call into a handful of scoped ones is the "
+                + "expected pattern for repo-wide renames. Pass `dryRun: true` to preview "
+                + "counts without writing.",
                 new JsonObject
                 {
                     ["type"] = "object",
