@@ -3,6 +3,11 @@ networks:
     external: true
   trefry-network:
     external: true
+  # Mirrors prod (deploy/docker-compose.prod.yml): api/worker only reach the
+  # sandbox controller over this network. Not marked internal locally so the
+  # initial controller image build can pull from registry; flip to
+  # `internal: true` if you want closer prod parity after first build.
+  controller-internal:
 services:
   rabbitmq:
     image: rabbitmq:4.0-management
@@ -75,6 +80,61 @@ services:
     volumes:
       - codeflow-assistant-workspace:/workspace/assistant
 
+  # Generates dev mTLS material + a derived controller config.toml into the
+  # cfsc-tls / cfsc-config volumes shared with the controller and api/worker.
+  # Idempotent — re-runs are a no-op once the certs + config exist. Production
+  # uses the canonical sandbox-controller/deploy/controller-config.toml; this
+  # init service derives a dev variant. See scripts/dev-cfsc-bootstrap.sh.
+  codeflow-cfsc-init:
+    image: alpine:3.20
+    container_name: codeflow-cfsc-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "/usr/local/bin/dev-cfsc-bootstrap.sh"]
+    environment:
+      TLS_DIR: /etc/cfsc-tls
+      CFG_DIR: /etc/cfsc
+    volumes:
+      - ./scripts/dev-cfsc-bootstrap.sh:/usr/local/bin/dev-cfsc-bootstrap.sh:ro
+      - codeflow-cfsc-tls:/etc/cfsc-tls
+      - codeflow-cfsc-config:/etc/cfsc
+
+  # Mirrors prod (deploy/docker-compose.prod.yml `codeflow-sandbox-controller`)
+  # with dev carve-outs: AppArmor/seccomp/internal-network removed because they
+  # require host-side setup not available on Docker Desktop, and the image is
+  # built from the local source tree rather than pulled by tag. Container.run
+  # routes through this service when api/worker have
+  # `ContainerTools__Backend=SandboxController`.
+  codeflow-sandbox-controller:
+    build:
+      context: ./sandbox-controller
+      dockerfile: deploy/Dockerfile
+      args:
+        COMMIT: ${COMMIT:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: codeflow-sandbox-controller:dev
+    container_name: codeflow-sandbox-controller
+    restart: unless-stopped
+    depends_on:
+      codeflow-cfsc-init:
+        condition: service_completed_successfully
+      codeflow-workdir-init:
+        condition: service_completed_successfully
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - /tmp:size=16m,mode=1700,uid=65532,gid=65532
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - codeflow-workdir:/workspace:ro
+      - codeflow-cfsc-config:/etc/cfsc:ro
+      - codeflow-cfsc-tls:/etc/cfsc-tls:ro
+    networks:
+      - controller-internal
+
   codeflow-api:
     build:
       context: .
@@ -89,6 +149,8 @@ services:
       codeflow-workdir-init:
         condition: service_completed_successfully
       codeflow-assistant-workspace-init:
+        condition: service_completed_successfully
+      codeflow-cfsc-init:
         condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -119,16 +181,29 @@ services:
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
       LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
+      # Mirrors prod: container.run routes through the sibling sandbox-controller
+      # service over mTLS. Override to `Docker` to fall back to legacy direct-docker
+      # (requires mounting /var/run/docker.sock onto api/worker — not done here).
+      ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
+      SandboxController__Url: https://codeflow-sandbox-controller:8443
+      SandboxController__ClientCertPath: /etc/cfsc-client/codeflow-api.pem
+      SandboxController__ClientKeyPath: /etc/cfsc-client/codeflow-api.key
+      SandboxController__ServerCAPath: /etc/cfsc-client/client-ca.pem
+      SandboxController__ServerCommonName: codeflow-sandbox-controller
     ports:
       - "5080:8080"
     volumes:
       - codeflow-artifacts:/app/artifacts
       - codeflow-workdir:/workspace
       - codeflow-assistant-workspace:/workspace/assistant
+      # Shares the dev-tls volume; SandboxController__* env vars above point at
+      # the api-specific client cert files inside it.
+      - codeflow-cfsc-tls:/etc/cfsc-client:ro
     networks:
       - default
       - mcp-shared
       - trefry-network
+      - controller-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -146,6 +221,8 @@ services:
       codeflow-artifacts-init:
         condition: service_completed_successfully
       codeflow-workdir-init:
+        condition: service_completed_successfully
+      codeflow-cfsc-init:
         condition: service_completed_successfully
     environment:
       DOTNET_ENVIRONMENT: Development
@@ -166,13 +243,21 @@ services:
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
       LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
+      ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
+      SandboxController__Url: https://codeflow-sandbox-controller:8443
+      SandboxController__ClientCertPath: /etc/cfsc-client/codeflow-worker.pem
+      SandboxController__ClientKeyPath: /etc/cfsc-client/codeflow-worker.key
+      SandboxController__ServerCAPath: /etc/cfsc-client/client-ca.pem
+      SandboxController__ServerCommonName: codeflow-sandbox-controller
     volumes:
       - codeflow-artifacts:/app/artifacts
       - codeflow-workdir:/workspace
+      - codeflow-cfsc-tls:/etc/cfsc-client:ro
     networks:
       - default
       - mcp-shared
       - trefry-network
+      - controller-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -196,3 +281,5 @@ volumes:
   codeflow-artifacts:
   codeflow-workdir:
   codeflow-assistant-workspace:
+  codeflow-cfsc-tls:
+  codeflow-cfsc-config:
