@@ -111,7 +111,15 @@ import { ChipComponent } from '../../../ui/chip.component';
                     <input type="checkbox" [checked]="isSelected(role.id)" (change)="toggleSelected(role.id, $event)" />
                   </td>
                   <td class="mono" style="font-weight: 500">{{ role.key }}</td>
-                  <td>{{ role.displayName }}</td>
+                  <td>
+                    <span class="role-name">
+                      {{ role.displayName }}
+                      @if (role.isSystemManaged) {
+                        <cf-chip variant="accent" mono
+                                 title="Seeded by the platform on startup. Operators can still edit; deletes won't be re-created.">System</cf-chip>
+                      }
+                    </span>
+                  </td>
                   <td class="muted small">{{ role.description ?? '—' }}</td>
                   <td>
                     <div class="role-tags">
@@ -154,6 +162,11 @@ import { ChipComponent } from '../../../ui/chip.component';
     }
     .tag-filter-input {
       min-height: 34px;
+    }
+    .role-name {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
     }
     .tag-filter-row,
     .role-tags {

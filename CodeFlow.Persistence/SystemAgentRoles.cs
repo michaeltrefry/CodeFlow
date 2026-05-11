@@ -18,13 +18,7 @@ public static class SystemAgentRoles
     public const string CodeWorkerKey = "code-worker";
     public const string CodeBuilderKey = "code-builder";
     public const string ReadOnlyShellKey = "read-only-shell";
-    public const string KanbanWorkerKey = "kanban-worker";
-
-    /// <summary>
-    /// Conventional MCP server key the kanban-worker role grants assume. If a tenant registers
-    /// the kanban MCP under a different server key, the operator must adjust the grants.
-    /// </summary>
-    public const string KanbanMcpServerKey = "kanban";
+    public const string CodeFlowAssistantKey = "codeflow-assistant";
 
     public static readonly IReadOnlyList<SystemAgentRole> All = new[]
     {
@@ -94,26 +88,28 @@ public static class SystemAgentRoles
                 new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
             }),
         new SystemAgentRole(
-            Key: KanbanWorkerKey,
-            DisplayName: "Kanban worker",
-            Description: "Read/write access to the conventional kanban MCP server (key: "
-                + $"'{KanbanMcpServerKey}'). Use for project-management / PM agents that track "
-                + "tasks. If the operator registers the kanban MCP under a different key, "
-                + "edit the grants on this role to match.",
+            Key: CodeFlowAssistantKey,
+            DisplayName: "CodeFlow assistant",
+            Description: "Starter grant set for the homepage assistant when an operator assigns "
+                + "a role on the LLM Config page. Tuned for an interactive, user-supervised "
+                + "session: read + edit + run + research, but no unattended PR opening "
+                + "(vcs.open_pr — the user can click 'Open PR' themselves once they've reviewed "
+                + "the change), no setup_workspace (that's a workflow-orchestration tool), and "
+                + "no container.run by default (operators who want sandboxed builds can clone "
+                + "this role and add it). Web tools are bounded HTTP(S) and never carry "
+                + "credentials/cookies. Operators who want MCP server access on top should "
+                + "clone the role and add server-specific grants — those are tenant-scoped, "
+                + "not platform-managed.",
             Grants: new[]
             {
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:list_projects"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:create_project"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:list_epics"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:get_epic"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:create_epic"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:update_epic"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:list_work_items"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:list_epic_work_items"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:create_work_item"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:update_work_item"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:move_work_item"),
-                new AgentRoleToolGrant(AgentRoleToolCategory.Mcp, $"mcp:{KanbanMcpServerKey}:add_work_item_comment"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "read_file"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "apply_patch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "bulk_replace"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "run_command"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_fetch"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "web_search"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "echo"),
+                new AgentRoleToolGrant(AgentRoleToolCategory.Host, "now"),
             }),
     };
 }

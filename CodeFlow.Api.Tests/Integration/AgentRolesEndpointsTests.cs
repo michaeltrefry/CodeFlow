@@ -419,7 +419,7 @@ public sealed class AgentRolesEndpointsTests
         using var client = factory.CreateClient();
 
         var roles = (await client.GetFromJsonAsync<IReadOnlyList<AgentRoleDto>>("/api/agent-roles"))!;
-        var systemRole = roles.SingleOrDefault(r => r.Key == "kanban-worker" && r.IsSystemManaged);
+        var systemRole = roles.SingleOrDefault(r => r.Key == "codeflow-assistant" && r.IsSystemManaged);
         systemRole.Should().NotBeNull();
 
         var response = await client.PutAsJsonAsync(

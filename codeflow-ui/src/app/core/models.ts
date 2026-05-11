@@ -237,6 +237,7 @@ export interface AgentRole {
   updatedBy?: string | null;
   isArchived: boolean;
   isRetired: boolean;
+  isSystemManaged: boolean;
   tags: string[];
 }
 
