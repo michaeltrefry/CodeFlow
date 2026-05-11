@@ -56,6 +56,41 @@ public sealed class SandboxControllerRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_SubflowSaga_SendsRootTraceLabelNotWorkflowLabel()
+    {
+        // Regression: workspaces live at `{workdirRoot}/{rootTraceId}/` and are shared across
+        // every saga in a trace. A subflow saga has its own correlation id (used for per-saga
+        // cleanup in the Docker backend's lifecycle service) but no on-disk dir of its own.
+        // When the argv carries DISTINCT cf.workflow (saga) + cf.trace (root) labels, the
+        // controller request must use the trace label so the workspace lookup hits the right
+        // directory. Without this, the controller responded with `workspace_invalid` and the
+        // dev/reviewer loop in any subflow consumer never converged (trace
+        // 5adfd4b5-e326-4d9c-b597-aa4f8bb5b2e7 burned ~2.6M tokens before exhausting).
+        JsonObject? capturedBody = null;
+        var runner = NewRunner((req, _) =>
+        {
+            capturedBody = ReadBody(req);
+            return Json(HttpStatusCode.OK, new
+            {
+                jobId = "01951f8d-0123-7abc-89ab-cdef00112233",
+                exitCode = 0, stdout = "", stderr = "",
+                stdoutTruncated = false, stderrTruncated = false,
+                timedOut = false, cancelled = false, durationMs = 1,
+            });
+        });
+
+        var argv = SampleRunArgv(
+            traceId: "rootTrace1111111111111111111111aa",
+            sagaId: "subflowSaga22222222222222222222bb");
+        await runner.RunAsync(argv, TimeSpan.FromSeconds(60), 1024, 1024);
+
+        capturedBody.Should().NotBeNull();
+        capturedBody!["traceId"]!.GetValue<string>()
+            .Should().Be("rootTrace1111111111111111111111aa",
+                "subflow sagas must use the root trace id so the controller's workspace lookup hits the on-disk dir");
+    }
+
+    [Fact]
     public async Task RunAsync_NonSuccessResponse_ReturnsFailureWithoutThrowing()
     {
         var runner = NewRunner((req, _) =>
@@ -118,11 +153,13 @@ public sealed class SandboxControllerRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_RunArgvWithoutTraceLabel_Throws()
+    public async Task RunAsync_RunArgvWithoutTraceOrWorkflowLabel_Throws()
     {
         var runner = NewRunner((_, _) => Json(HttpStatusCode.OK, new { }));
 
-        // Strip cf.workflow=… label.
+        // Strip both cf.trace= and cf.workflow= labels. The runner prefers cf.trace and
+        // falls back to cf.workflow; with neither present, there's no way to resolve the
+        // workspace dir and the runner refuses the call.
         var argv = new List<string> { "run", "--rm", "alpine:3", "echo", "hi" };
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             runner.RunAsync(argv, TimeSpan.FromSeconds(60), 1024, 1024));
@@ -155,14 +192,19 @@ public sealed class SandboxControllerRunnerTests
     private static SandboxControllerRunner NewRunner(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
         => NewRunner((req, _) => handler(req));
 
-    private static List<string> SampleRunArgv(string traceId, string image = "alpine:3", string command = "echo", string[]? args = null)
+    private static List<string> SampleRunArgv(string traceId, string image = "alpine:3", string command = "echo", string[]? args = null, string? sagaId = null)
     {
+        // Mirrors DockerHostToolService's emitted argv: cf.workflow = current saga id (cleanup
+        // scope), cf.trace = root trace id (workspace path resolution). When the test only
+        // passes traceId, both labels carry the same value, matching the root-saga case.
+        var workflowLabel = sagaId ?? traceId;
         var argv = new List<string>
         {
             "run", "--rm",
             "--name", "codeflow-1-call-deadbeef",
             "--label", $"{DockerResourceLabels.Managed}={DockerResourceLabels.ManagedValue}",
-            "--label", $"{DockerResourceLabels.Workflow}={traceId}",
+            "--label", $"{DockerResourceLabels.Workflow}={workflowLabel}",
+            "--label", $"{DockerResourceLabels.Trace}={traceId}",
             "--label", $"{DockerResourceLabels.CreatedAt}=2026-05-02T00:00:00Z",
             "--label", $"{DockerResourceLabels.ResourceKind}={DockerResourceLabels.ContainerKind}",
             "--workdir", "/workspace",
@@ -214,13 +256,14 @@ public sealed class SandboxControllerRunnerTests
 public sealed class DockerRunArgvParserTests
 {
     [Fact]
-    public void Parse_ExtractsImageCommandLabelAndLimits()
+    public void Parse_ExtractsImageCommandTraceLabelWorkflowLabelAndLimits()
     {
         IReadOnlyList<string> argv =
         [
             "run", "--rm",
             "--name", "codeflow-foo",
-            "--label", $"{DockerResourceLabels.Workflow}=trace-aaa",
+            "--label", $"{DockerResourceLabels.Workflow}=saga-bbb",
+            "--label", $"{DockerResourceLabels.Trace}=trace-aaa",
             "--cpus", "1.5",
             "--memory", "1073741824",
             "--pids-limit", "256",
@@ -235,9 +278,32 @@ public sealed class DockerRunArgvParserTests
         parsed.Image.Should().Be("ghcr.io/trefry/img:1.0");
         parsed.Cmd.Should().Equal(["dotnet", "test"]);
         parsed.TraceLabel.Should().Be("trace-aaa");
+        parsed.WorkflowLabel.Should().Be("saga-bbb");
         parsed.Cpus.Should().Be(1.5);
         parsed.MemoryBytes.Should().Be(1073741824);
         parsed.PidsLimit.Should().Be(256);
+    }
+
+    [Fact]
+    public void Parse_BackCompat_WorkflowLabelAloneStillExtractedAsFallback()
+    {
+        // Older argv builders (or replayed traces) may only emit cf.workflow. The parser
+        // still surfaces it so the runner can fall back gracefully — see
+        // SandboxControllerRunner.PostRunAsync's `parsed.TraceLabel ?? parsed.WorkflowLabel`.
+        IReadOnlyList<string> argv =
+        [
+            "run", "--rm",
+            "--name", "codeflow-legacy",
+            "--label", $"{DockerResourceLabels.Workflow}=trace-only",
+            "--mount", "type=bind,source=/x,target=/workspace,readonly=false",
+            "alpine:3.20",
+            "sh", "-c", "true",
+        ];
+
+        var parsed = DockerRunArgvParser.Parse(argv);
+
+        parsed.TraceLabel.Should().BeNull();
+        parsed.WorkflowLabel.Should().Be("trace-only");
     }
 
     [Fact]

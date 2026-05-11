@@ -170,6 +170,13 @@ public sealed class DockerHostToolService
             "--label",
             $"{DockerResourceLabels.Workflow}={workspace.CorrelationId:N}",
             "--label",
+            // The on-disk workspace dir is anchored at the ROOT trace id, not the current
+            // saga's correlation id. Subflow sagas inherit the same directory; sandbox-
+            // controller workspace lookup needs that root id. When RootTraceId isn't set
+            // (legacy plumbing path, non-code-aware workflows) fall back to CorrelationId,
+            // which preserves prior behaviour for the single-saga case where they coincide.
+            $"{DockerResourceLabels.Trace}={(workspace.RootTraceId ?? workspace.CorrelationId):N}",
+            "--label",
             $"{DockerResourceLabels.CreatedAt}={createdAt:O}",
             "--label",
             $"{DockerResourceLabels.ResourceKind}={DockerResourceLabels.ContainerKind}",

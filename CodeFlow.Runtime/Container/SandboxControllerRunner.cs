@@ -76,12 +76,17 @@ public sealed class SandboxControllerRunner : IDockerCommandRunner
         CancellationToken cancellationToken)
     {
         var parsed = DockerRunArgvParser.Parse(arguments);
-        var traceId = parsed.TraceLabel ?? string.Empty;
+        // Prefer the root trace id (cf.trace label) — the controller's workspace validator
+        // resolves `{workdirRoot}/{traceId}` against disk, and on-disk dirs are keyed by the
+        // root trace, not by per-saga correlation ids. Fall back to the cf.workflow label
+        // when cf.trace isn't present so in-flight requests from older argv builders still
+        // route, even if those will fail validation under subflow nesting.
+        var traceId = parsed.TraceLabel ?? parsed.WorkflowLabel ?? string.Empty;
         if (string.IsNullOrEmpty(traceId))
         {
             throw new InvalidOperationException(
-                "Sandbox controller requires the cf.workflow label on docker run argv. " +
-                "DockerHostToolService must include it; see DockerResourceLabels.Workflow.");
+                "Sandbox controller requires the cf.trace label on docker run argv. " +
+                "DockerHostToolService must include it; see DockerResourceLabels.Trace.");
         }
 
         var jobId = jobIdProvider().ToString("D");
@@ -209,10 +214,20 @@ public sealed class SandboxControllerRunner : IDockerCommandRunner
 /// </summary>
 public static class DockerRunArgvParser
 {
+    /// <summary>
+    /// <para><see cref="TraceLabel"/> is the value of <c>codeflow.trace</c> — the root trace
+    /// id used to resolve the on-disk workspace directory.</para>
+    /// <para><see cref="WorkflowLabel"/> is the value of <c>codeflow.workflow</c> — the
+    /// current saga's correlation id, used for per-saga cleanup. Equals the trace id for
+    /// root sagas; differs for subflows. Exposed alongside <see cref="TraceLabel"/> so the
+    /// runner can fall back to it on argv produced by older builders that haven't started
+    /// emitting <c>codeflow.trace</c> yet.</para>
+    /// </summary>
     public sealed record Parsed(
         string Image,
         IReadOnlyList<string> Cmd,
         string? TraceLabel,
+        string? WorkflowLabel,
         double? Cpus,
         long? MemoryBytes,
         int? PidsLimit);
@@ -226,6 +241,7 @@ public static class DockerRunArgvParser
         }
 
         string? traceLabel = null;
+        string? workflowLabel = null;
         double? cpus = null;
         long? memory = null;
         int? pids = null;
@@ -254,9 +270,17 @@ public static class DockerRunArgvParser
                     i += 2;
                     break;
                 case "--label":
-                    if (i + 1 < argv.Count && argv[i + 1].StartsWith($"{DockerResourceLabels.Workflow}=", StringComparison.Ordinal))
+                    if (i + 1 < argv.Count)
                     {
-                        traceLabel = argv[i + 1].Substring(DockerResourceLabels.Workflow.Length + 1);
+                        var labelValue = argv[i + 1];
+                        if (labelValue.StartsWith($"{DockerResourceLabels.Trace}=", StringComparison.Ordinal))
+                        {
+                            traceLabel = labelValue.Substring(DockerResourceLabels.Trace.Length + 1);
+                        }
+                        else if (labelValue.StartsWith($"{DockerResourceLabels.Workflow}=", StringComparison.Ordinal))
+                        {
+                            workflowLabel = labelValue.Substring(DockerResourceLabels.Workflow.Length + 1);
+                        }
                     }
                     i += 2;
                     break;
@@ -295,6 +319,6 @@ public static class DockerRunArgvParser
         var image = argv[i];
         var cmd = argv.Skip(i + 1).ToArray();
 
-        return new Parsed(image, cmd, traceLabel, cpus, memory, pids);
+        return new Parsed(image, cmd, traceLabel, workflowLabel, cpus, memory, pids);
     }
 }
