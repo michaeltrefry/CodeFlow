@@ -16,4 +16,19 @@ public sealed record InvocationLoopBudget
     public TimeSpan MaxLoopDuration { get; init; } = TimeSpan.FromMinutes(5);
 
     public int MaxConsecutiveNonMutatingCalls { get; init; } = 8;
+
+    /// <summary>
+    /// Soft warning is appended to the transcript when <c>totalToolCalls</c> crosses
+    /// <c>MaxToolCalls - SoftWarnRemaining</c>. Default 3 means the warning lands when 3 calls
+    /// remain. Set to <c>0</c> to disable the soft warning entirely.
+    /// </summary>
+    public int SoftWarnRemaining { get; init; } = 3;
+
+    /// <summary>
+    /// Hard warning is appended to the transcript when <c>totalToolCalls</c> crosses
+    /// <c>MaxToolCalls - HardWarnRemaining</c>. Default 1 means the warning lands when 1 call
+    /// remains; the agent's next tool call will hit the budget ceiling. Set to <c>0</c> to
+    /// disable.
+    /// </summary>
+    public int HardWarnRemaining { get; init; } = 1;
 }

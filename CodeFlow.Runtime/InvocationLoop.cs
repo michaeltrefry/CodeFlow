@@ -82,6 +82,8 @@ public sealed class InvocationLoop
         var roundNumber = 0;
         TokenUsage? aggregateTokenUsage = null;
         string lastAssistantOutput = string.Empty;
+        var softWarnFired = false;
+        var hardWarnFired = false;
 
         while (true)
         {
@@ -394,15 +396,55 @@ public sealed class InvocationLoop
                 }
             }
 
-            var toolBudgetRemaining = budget.MaxToolCalls - totalToolCalls;
-            if (toolBudgetRemaining <= 3)
-            {
-                var budgetWarning = BuildToolBudgetWarning(totalToolCalls, budget.MaxToolCalls, toolBudgetRemaining);
-                if (!string.IsNullOrWhiteSpace(budgetWarning))
-                {
-                    transcript.Add(new ChatMessage(ChatMessageRole.User, budgetWarning));
-                }
-            }
+            MaybeAppendBudgetWarning(
+                transcript,
+                totalToolCalls,
+                budget,
+                ref softWarnFired,
+                ref hardWarnFired);
+        }
+    }
+
+    /// <summary>
+    /// Appends a transcript trailer when <c>totalToolCalls</c> first crosses the soft- or
+    /// hard-warn threshold from <see cref="InvocationLoopBudget"/>. Each threshold fires once
+    /// per invocation so the warning lands at the moment of pressure without spamming every
+    /// subsequent turn. Either threshold can be disabled by setting its <c>WarnRemaining</c> to
+    /// <c>0</c> on the budget.
+    /// </summary>
+    private static void MaybeAppendBudgetWarning(
+        List<ChatMessage> transcript,
+        int totalToolCalls,
+        InvocationLoopBudget budget,
+        ref bool softWarnFired,
+        ref bool hardWarnFired)
+    {
+        var remaining = budget.MaxToolCalls - totalToolCalls;
+
+        if (budget.HardWarnRemaining > 0
+            && !hardWarnFired
+            && remaining <= budget.HardWarnRemaining)
+        {
+            transcript.Add(new ChatMessage(
+                ChatMessageRole.User,
+                $"⚠️ Tool budget critical: {remaining} call(s) remaining of {budget.MaxToolCalls}. "
+                + "Your next assistant turn must call `submit` on a declared port — any further "
+                + "tool call will exhaust the budget and fail the invocation."));
+            hardWarnFired = true;
+            softWarnFired = true;
+            return;
+        }
+
+        if (budget.SoftWarnRemaining > 0
+            && !softWarnFired
+            && remaining <= budget.SoftWarnRemaining)
+        {
+            transcript.Add(new ChatMessage(
+                ChatMessageRole.User,
+                $"⚠️ Tool budget: {totalToolCalls}/{budget.MaxToolCalls} used, {remaining} remaining. "
+                + "Finish any necessary edits and call `submit` on a declared port — further "
+                + "exploration risks exhausting the budget."));
+            softWarnFired = true;
         }
     }
 
@@ -625,18 +667,4 @@ public sealed class InvocationLoop
         };
     }
 
-    private static string BuildToolBudgetWarning(int totalToolCalls, int maxToolCalls, int remaining)
-    {
-        if (remaining == 1)
-        {
-            return "⚠️ Tool budget critical: 1 call remaining. Your next call must be `submit` or the invocation will fail.";
-        }
-
-        if (remaining <= 3)
-        {
-            return $"⚠️ Tool budget: {totalToolCalls}/{maxToolCalls} used, {remaining} calls remaining. Wrap up soon.";
-        }
-
-        return string.Empty;
-    }
 }
