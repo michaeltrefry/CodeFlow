@@ -651,7 +651,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: key,
             Name: "HAA-10 test flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -714,7 +714,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Invoke_PackageWithMaxRoundsPerRoundOutOfRange_ReturnsInvalid()
+    public async Task Invoke_PackageWithMaxStepsPerSagaOutOfRange_ReturnsInvalid()
     {
         // Companion to the Exhausted-port test: the same WorkflowValidator rule that the import
         // endpoint enforces ("maxRoundsPerRound must be between 1 and 50") must fire from the
@@ -736,7 +736,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
                     Key: "rounds-out-of-range-flow",
                     Version: 1,
                     Name: "Rounds Out Of Range",
-                    MaxRoundsPerRound: 99,
+                    MaxStepsPerSaga: 99,
                     Category: WorkflowCategory.Workflow,
                     Tags: Array.Empty<string>(),
                     CreatedAtUtc: DateTime.UtcNow,
@@ -784,7 +784,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
             Key: "exhausted-port-bug-flow",
             Version: 1,
             Name: "Exhausted Port Bug Flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Category: WorkflowCategory.Workflow,
             Tags: Array.Empty<string>(),
             CreatedAtUtc: DateTime.UtcNow,
@@ -829,7 +829,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
             Key: childKey,
             Version: 1,
             Name: "Bug Repro Child",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Category: WorkflowCategory.Subflow,
             Tags: Array.Empty<string>(),
             CreatedAtUtc: DateTime.UtcNow,
@@ -896,7 +896,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
             Key: entryKey,
             Version: entryVersion,
             Name: "Lonely",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Category: WorkflowCategory.Workflow,
             Tags: Array.Empty<string>(),
             CreatedAtUtc: DateTime.UtcNow,

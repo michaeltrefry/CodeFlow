@@ -175,7 +175,7 @@ internal static class LifecycleWrapperTemplate
         return new WorkflowDraft(
             Key: phaseKey,
             Name: $"Phase {phaseNumber} (placeholder)",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -278,7 +278,7 @@ internal static class LifecycleWrapperTemplate
         return new WorkflowDraft(
             Key: lifecycleKey,
             Name: $"{lifecycleKey} (lifecycle wrapper)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: nodes,
             Edges: edges,
             Inputs: Array.Empty<WorkflowInputDraft>());

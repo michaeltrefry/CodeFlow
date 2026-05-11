@@ -90,7 +90,7 @@ public interface IWorkflowRepository
 public sealed record WorkflowDraft(
     string Key,
     string Name,
-    int MaxRoundsPerRound,
+    int MaxStepsPerSaga,
     IReadOnlyList<WorkflowNodeDraft> Nodes,
     IReadOnlyList<WorkflowEdgeDraft> Edges,
     IReadOnlyList<WorkflowInputDraft> Inputs,

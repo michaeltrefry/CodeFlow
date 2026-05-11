@@ -1583,7 +1583,7 @@ namespace CodeFlow.Persistence.Migrations
                         .HasColumnType("varchar(128)")
                         .HasColumnName("key");
 
-                    b.Property<int>("MaxRoundsPerRound")
+                    b.Property<int>("MaxStepsPerSaga")
                         .HasColumnType("int")
                         .HasColumnName("max_rounds_per_round");
 

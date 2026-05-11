@@ -165,7 +165,7 @@ public sealed class WorkflowPackageImporter(
             var legacyValidation = await WorkflowValidator.ValidateAsync(
                 workflow.Key,
                 workflow.Name,
-                workflow.MaxRoundsPerRound,
+                workflow.MaxStepsPerSaga,
                 nodes,
                 edges,
                 inputs,
@@ -192,7 +192,7 @@ public sealed class WorkflowPackageImporter(
             var context = new WorkflowValidationContext(
                 Key: workflow.Key,
                 Name: workflow.Name,
-                MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+                MaxStepsPerSaga: workflow.MaxStepsPerSaga,
                 Nodes: nodes,
                 Edges: edges,
                 Inputs: inputs,
@@ -1761,7 +1761,7 @@ public sealed class WorkflowPackageImporter(
                 Key = workflow.Key.Trim(),
                 Version = workflow.Version,
                 Name = workflow.Name.Trim(),
-                MaxRoundsPerRound = workflow.MaxRoundsPerRound,
+                MaxStepsPerSaga = workflow.MaxStepsPerSaga,
                 Category = workflow.Category,
                 TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(workflow.Tags)),
                 WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(workflow.WorkflowVarsReads),
@@ -1921,7 +1921,7 @@ public sealed class WorkflowPackageImporter(
 
     private static bool Equivalent(WorkflowPackageWorkflow packageWorkflow, Workflow existing) =>
         string.Equals(packageWorkflow.Name, existing.Name, StringComparison.Ordinal) &&
-        packageWorkflow.MaxRoundsPerRound == existing.MaxRoundsPerRound &&
+        packageWorkflow.MaxStepsPerSaga == existing.MaxStepsPerSaga &&
         packageWorkflow.Category == existing.Category &&
         packageWorkflow.Tags.SequenceEqual(existing.TagsOrEmpty, StringComparer.Ordinal) &&
         SerializedEquals(packageWorkflow.Nodes, existing.Nodes.Select(node =>

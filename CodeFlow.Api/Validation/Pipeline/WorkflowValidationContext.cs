@@ -13,7 +13,7 @@ namespace CodeFlow.Api.Validation.Pipeline;
 /// <param name="Key">Workflow key the draft will be saved under. Empty when validating a brand-new
 /// draft that has not picked a key yet.</param>
 /// <param name="Name">Human-readable workflow name.</param>
-/// <param name="MaxRoundsPerRound">Workflow-level cap on agent rounds within a single round.</param>
+/// <param name="MaxStepsPerSaga">Workflow-level cap on agent rounds within a single round.</param>
 /// <param name="Nodes">Authored nodes — graph topology + per-node config.</param>
 /// <param name="Edges">Authored edges connecting node output ports to downstream node inputs.</param>
 /// <param name="Inputs">Declared workflow inputs (the trace caller's contract).</param>
@@ -26,7 +26,7 @@ namespace CodeFlow.Api.Validation.Pipeline;
 public sealed record WorkflowValidationContext(
     string Key,
     string? Name,
-    int? MaxRoundsPerRound,
+    int? MaxStepsPerSaga,
     IReadOnlyList<WorkflowNodeDto> Nodes,
     IReadOnlyList<WorkflowEdgeDto> Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs,

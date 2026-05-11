@@ -170,7 +170,7 @@ public sealed class ReplaySubflowOrderingTests
             Key: "inner",
             Version: 1,
             Name: "inner body",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -195,7 +195,7 @@ public sealed class ReplaySubflowOrderingTests
             Key: "outer",
             Version: 1,
             Name: "outer",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -225,7 +225,7 @@ public sealed class ReplaySubflowOrderingTests
             Key: "inner",
             Version: 1,
             Name: "shared body",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -246,7 +246,7 @@ public sealed class ReplaySubflowOrderingTests
             Key: "two-subflows",
             Version: 1,
             Name: "outer with two siblings",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

@@ -76,7 +76,7 @@ public sealed record WorkflowDetailDto(
     string Key,
     int Version,
     string Name,
-    int MaxRoundsPerRound,
+    int MaxStepsPerSaga,
     WorkflowCategory Category,
     IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,
@@ -90,7 +90,7 @@ public sealed record WorkflowDetailDto(
 public sealed record CreateWorkflowRequest(
     string? Key,
     string? Name,
-    int? MaxRoundsPerRound,
+    int? MaxStepsPerSaga,
     WorkflowCategory? Category,
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
@@ -101,7 +101,7 @@ public sealed record CreateWorkflowRequest(
 
 public sealed record UpdateWorkflowRequest(
     string? Name,
-    int? MaxRoundsPerRound,
+    int? MaxStepsPerSaga,
     WorkflowCategory? Category,
     IReadOnlyList<string>? Tags,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
@@ -132,7 +132,7 @@ public sealed record ValidateScriptError(int Line, int Column, string Message);
 public sealed record ValidateWorkflowRequest(
     string? Key,
     string? Name,
-    int? MaxRoundsPerRound,
+    int? MaxStepsPerSaga,
     IReadOnlyList<WorkflowNodeDto>? Nodes,
     IReadOnlyList<WorkflowEdgeDto>? Edges,
     IReadOnlyList<WorkflowInputDto>? Inputs,

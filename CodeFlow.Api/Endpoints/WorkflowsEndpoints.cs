@@ -940,7 +940,7 @@ public static class WorkflowsEndpoints
         var validation = await WorkflowValidator.ValidateAsync(
             key,
             request.Name,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Nodes,
             request.Edges,
             request.Inputs,
@@ -961,7 +961,7 @@ public static class WorkflowsEndpoints
         var pipelineBlock = await RunSaveTimePipelineAsync(
             key,
             request.Name,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Nodes,
             request.Edges,
             request.Inputs,
@@ -995,7 +995,7 @@ public static class WorkflowsEndpoints
         var draft = ToDraft(
             normalizedKey,
             request.Name!,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Category ?? WorkflowCategory.Workflow,
             request.Tags,
             resolvedNodes,
@@ -1034,7 +1034,7 @@ public static class WorkflowsEndpoints
         var context = new WorkflowValidationContext(
             Key: key ?? string.Empty,
             Name: name,
-            MaxRoundsPerRound: maxRoundsPerRound,
+            MaxStepsPerSaga: maxRoundsPerRound,
             Nodes: nodes ?? Array.Empty<WorkflowNodeDto>(),
             Edges: edges ?? Array.Empty<WorkflowEdgeDto>(),
             Inputs: inputs,
@@ -1096,7 +1096,7 @@ public static class WorkflowsEndpoints
         var context = new WorkflowValidationContext(
             Key: request.Key ?? string.Empty,
             Name: request.Name,
-            MaxRoundsPerRound: request.MaxRoundsPerRound,
+            MaxStepsPerSaga: request.MaxStepsPerSaga,
             Nodes: request.Nodes ?? Array.Empty<WorkflowNodeDto>(),
             Edges: request.Edges ?? Array.Empty<WorkflowEdgeDto>(),
             Inputs: request.Inputs,
@@ -1191,7 +1191,7 @@ public static class WorkflowsEndpoints
         return new WorkflowDraft(
             Key: key,
             Name: name,
-            MaxRoundsPerRound: maxRoundsPerRound ?? 3,
+            MaxStepsPerSaga: maxRoundsPerRound ?? 10,
             Category: category,
             Tags: tags ?? Array.Empty<string>(),
             WorkflowVarsReads: workflowVarsReads,

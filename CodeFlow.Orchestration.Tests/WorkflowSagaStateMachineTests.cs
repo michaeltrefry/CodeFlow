@@ -717,7 +717,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -1551,7 +1551,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: "scripted-setInput",
             Version: 1,
             Name: "scripted-setInput",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1641,7 +1641,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: "scripted-setInput-budget",
             Version: 1,
             Name: "scripted-setInput-budget",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -2044,7 +2044,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -2086,7 +2086,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -2138,7 +2138,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -3060,7 +3060,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: "custom-port-child",
             Version: 1,
             Name: "custom-port-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -3187,7 +3187,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: "reviewer-only",
             Version: 1,
             Name: "reviewer-only",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -3274,7 +3274,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: "child-flow",
             Version: 3,
             Name: "child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -3377,7 +3377,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: workflowKey,
             Version: 1,
             Name: workflowKey,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -3415,7 +3415,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: workflowKey,
             Version: 1,
             Name: workflowKey,
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,
@@ -3594,7 +3594,7 @@ public sealed class WorkflowSagaStateMachineTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: maxRounds,
+            MaxStepsPerSaga: maxRounds,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: workflowEdges,

@@ -171,7 +171,7 @@ internal static class SetupLoopFinalizeTemplate
         return new WorkflowDraft(
             Key: innerKey,
             Name: $"{innerKey} (producer + reviewer)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -224,7 +224,7 @@ internal static class SetupLoopFinalizeTemplate
         return new WorkflowDraft(
             Key: outerKey,
             Name: $"{outerKey} (setup → loop → finalize)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

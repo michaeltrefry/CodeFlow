@@ -164,7 +164,7 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
             name = workflow.Name,
             category = workflow.Category.ToString(),
             tags = workflow.TagsOrEmpty,
-            maxRoundsPerRound = workflow.MaxRoundsPerRound,
+            maxRoundsPerRound = workflow.MaxStepsPerSaga,
             createdAtUtc = workflow.CreatedAtUtc,
             isRetired = workflow.IsRetired,
             terminalPorts = workflow.TerminalPorts,

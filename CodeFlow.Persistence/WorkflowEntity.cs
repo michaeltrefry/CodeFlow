@@ -10,7 +10,7 @@ public sealed class WorkflowEntity
 
     public string Name { get; set; } = null!;
 
-    public int MaxRoundsPerRound { get; set; }
+    public int MaxStepsPerSaga { get; set; }
 
     public WorkflowCategory Category { get; set; }
 

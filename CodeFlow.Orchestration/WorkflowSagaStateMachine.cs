@@ -944,11 +944,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         // default of 3 fails any pipeline with ≥4 nodes. Treating Nodes.Count as a floor
         // prevents the trivial case from tripping while still honouring an author who set
         // a higher explicit cap.
-        var effectiveRoundCap = Math.Max(workflow.MaxRoundsPerRound, workflow.Nodes.Count);
+        var effectiveRoundCap = Math.Max(workflow.MaxStepsPerSaga, workflow.Nodes.Count);
         if (!resolution.RotatesRound && targetRoundCount >= effectiveRoundCap)
         {
             saga.PendingTransition = PendingTransitionFailed;
-            saga.FailureReason ??= $"Round limit {effectiveRoundCap} exceeded.";
+            saga.FailureReason ??= $"Step limit {effectiveRoundCap} exceeded.";
             saga.UpdatedAtUtc = DateTime.UtcNow;
             return;
         }

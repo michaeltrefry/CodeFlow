@@ -4,7 +4,7 @@ public sealed record Workflow(
     string Key,
     int Version,
     string Name,
-    int MaxRoundsPerRound,
+    int MaxStepsPerSaga,
     DateTime CreatedAtUtc,
     IReadOnlyList<WorkflowNode> Nodes,
     IReadOnlyList<WorkflowEdge> Edges,

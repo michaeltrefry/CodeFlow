@@ -310,7 +310,7 @@ public sealed class WorkflowVarDeclarationRule : IWorkflowValidationRule
                 Key: string.IsNullOrWhiteSpace(context.Key) ? "__draft" : context.Key,
                 Version: 0,
                 Name: context.Name ?? string.Empty,
-                MaxRoundsPerRound: context.MaxRoundsPerRound ?? 3,
+                MaxStepsPerSaga: context.MaxStepsPerSaga ?? 3,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes: nodes,
                 Edges: edges,

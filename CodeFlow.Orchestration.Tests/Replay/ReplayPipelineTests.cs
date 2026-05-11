@@ -176,7 +176,7 @@ public sealed class ReplayPipelineTests
             Key: "inner",
             Version: 1,
             Name: "Inner ReviewLoop body",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -201,7 +201,7 @@ public sealed class ReplayPipelineTests
             Key: "outer",
             Version: 1,
             Name: "Outer with ReviewLoop",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

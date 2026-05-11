@@ -39,7 +39,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "parent-e2e",
             Version: 1,
             Name: "parent-e2e",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -63,7 +63,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "child-e2e",
             Version: 1,
             Name: "child-e2e",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -171,7 +171,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "parent-repos",
             Version: 1,
             Name: "parent-repos",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -195,7 +195,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "child-repos",
             Version: 1,
             Name: "child-repos",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -299,7 +299,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "workdir-top-level",
             Version: 1,
             Name: "workdir-top-level",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -376,7 +376,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "parent-workdir",
             Version: 1,
             Name: "parent-workdir",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -400,7 +400,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "child-workdir",
             Version: 1,
             Name: "child-workdir",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -492,7 +492,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
                 Key: key,
                 Version: 1,
                 Name: key,
-                MaxRoundsPerRound: 5,
+                MaxStepsPerSaga: 5,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes: new[]
                 {
@@ -520,7 +520,7 @@ public sealed class WorkflowSagaSubflowEndToEndTests
             Key: "chain-leaf",
             Version: 1,
             Name: "chain-leaf",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

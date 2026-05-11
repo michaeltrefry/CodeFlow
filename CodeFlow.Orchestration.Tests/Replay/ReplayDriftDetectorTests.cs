@@ -142,7 +142,7 @@ public sealed class ReplayDriftDetectorTests
             Key: "drift-boundary-scripts",
             Version: 1,
             Name: "drift-boundary",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -221,7 +221,7 @@ public sealed class ReplayDriftDetectorTests
             Key: "drift-test",
             Version: version,
             Name: "drift",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

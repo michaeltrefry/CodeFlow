@@ -195,7 +195,7 @@ public sealed class WorkflowSagaEndToEndTests : IAsyncLifetime
             Key = "article-flow",
             Version = 1,
             Name = "Evaluator-Reviewer-Publisher",
-            MaxRoundsPerRound = 10,
+            MaxStepsPerSaga = 10,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [

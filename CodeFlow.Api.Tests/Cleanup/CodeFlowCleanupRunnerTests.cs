@@ -249,7 +249,7 @@ public sealed class CodeFlowCleanupRunnerTests
             Key = key,
             Version = 1,
             Name = key,
-            MaxRoundsPerRound = 3,
+            MaxStepsPerSaga = 3,
             Category = WorkflowCategory.Workflow,
             IsRetired = isRetired,
             CreatedAtUtc = DateTime.UtcNow,

@@ -422,7 +422,7 @@ public sealed class RegistryToolsTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: key,
             Name: name,
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: nodes,
             Edges: edges,
             Inputs: Array.Empty<WorkflowInputDraft>(),

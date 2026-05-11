@@ -51,7 +51,7 @@ public sealed class CreateWorkflowHandler
         var validation = await WorkflowValidator.ValidateAsync(
             request.Key ?? string.Empty,
             request.Name,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Nodes,
             request.Edges,
             request.Inputs,
@@ -74,7 +74,7 @@ public sealed class CreateWorkflowHandler
         var pipelineBlock = await WorkflowsEndpoints.RunSaveTimePipelineAsync(
             request.Key ?? string.Empty,
             request.Name,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Nodes,
             request.Edges,
             request.Inputs,
@@ -112,7 +112,7 @@ public sealed class CreateWorkflowHandler
         var draft = WorkflowsEndpoints.ToDraft(
             normalizedKey,
             request.Name!,
-            request.MaxRoundsPerRound,
+            request.MaxStepsPerSaga,
             request.Category ?? WorkflowCategory.Workflow,
             request.Tags,
             resolvedNodes,

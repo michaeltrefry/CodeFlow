@@ -57,7 +57,7 @@ public sealed class CascadeBumpExecutor(
             var draft = new WorkflowDraft(
                 Key: current.Key,
                 Name: current.Name,
-                MaxRoundsPerRound: current.MaxRoundsPerRound,
+                MaxStepsPerSaga: current.MaxStepsPerSaga,
                 Category: current.Category,
                 Tags: current.TagsOrEmpty.ToArray(),
                 Nodes: rewrittenNodes,

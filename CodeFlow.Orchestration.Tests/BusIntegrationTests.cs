@@ -209,7 +209,7 @@ public sealed class BusIntegrationTests : IAsyncLifetime
             Key = "article-flow",
             Version = 1,
             Name = "bus-integration-test",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [

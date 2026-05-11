@@ -9,7 +9,7 @@ namespace CodeFlow.Api.Validation;
 public static class WorkflowValidator
 {
     public const int MinRoundsPerRound = 1;
-    public const int MaxRoundsPerRoundUpperBound = 50;
+    public const int MaxStepsPerSagaUpperBound = 50;
 
     /// <summary>Inclusive lower bound for a ReviewLoop node's MaxRounds.</summary>
     public const int MinReviewLoopMaxRounds = 1;
@@ -69,10 +69,10 @@ public static class WorkflowValidator
         }
 
         var rounds = maxRoundsPerRound ?? 3;
-        if (rounds < MinRoundsPerRound || rounds > MaxRoundsPerRoundUpperBound)
+        if (rounds < MinRoundsPerRound || rounds > MaxStepsPerSagaUpperBound)
         {
             return ValidationResult.Fail(
-                $"maxRoundsPerRound must be between {MinRoundsPerRound} and {MaxRoundsPerRoundUpperBound}.");
+                $"maxRoundsPerRound must be between {MinRoundsPerRound} and {MaxStepsPerSagaUpperBound}.");
         }
 
         if (nodes is null || nodes.Count == 0)

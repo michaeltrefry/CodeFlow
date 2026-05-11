@@ -21,7 +21,7 @@ internal static class WorkflowMappings
         Key: workflow.Key,
         Version: workflow.Version,
         Name: workflow.Name,
-        MaxRoundsPerRound: workflow.MaxRoundsPerRound,
+        MaxStepsPerSaga: workflow.MaxStepsPerSaga,
         Category: workflow.Category,
         Tags: workflow.TagsOrEmpty,
         CreatedAtUtc: workflow.CreatedAtUtc,

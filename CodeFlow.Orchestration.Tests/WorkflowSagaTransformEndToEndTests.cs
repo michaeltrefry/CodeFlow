@@ -661,7 +661,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-happy",
             Version = 1,
             Name = "Transform happy path",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -732,7 +732,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-json-happy",
             Version = 1,
             Name = "Transform JSON happy path",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -801,7 +801,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-json-failure",
             Version = 1,
             Name = "Transform JSON parse failure",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -859,7 +859,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-input-script",
             Version = 1,
             Name = "Transform inputScript",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -927,7 +927,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-output-script",
             Version = 1,
             Name = "Transform outputScript",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -994,7 +994,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-both-scripts-json",
             Version = 1,
             Name = "Transform both scripts json",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -1061,7 +1061,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-output-invalid-json",
             Version = 1,
             Name = "Transform outputScript invalid JSON override",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -1114,7 +1114,7 @@ public sealed class WorkflowSagaTransformEndToEndTests : IAsyncLifetime
             Key = "transform-failure",
             Version = 1,
             Name = "Transform render failure",
-            MaxRoundsPerRound = 5,
+            MaxStepsPerSaga = 5,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [

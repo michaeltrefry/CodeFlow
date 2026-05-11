@@ -51,7 +51,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
             Key = workflowKey,
             Version = 2,
             Name = "Article flow",
-            MaxRoundsPerRound = 3,
+            MaxStepsPerSaga = 10,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [
@@ -122,7 +122,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Draft flow",
-            MaxRoundsPerRound: 2,
+            MaxStepsPerSaga: 10,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "writer", 1, null, new[] { "Completed", "Failed" }, 0, 0),
@@ -176,7 +176,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Scripted interviewer",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "interviewer", 1,
@@ -231,7 +231,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Composer",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
@@ -292,7 +292,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Review-loop composer",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
@@ -356,7 +356,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Opt-out reminder flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
@@ -408,7 +408,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Rejection-history config flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
@@ -469,7 +469,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Mirror + port-replacement flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes:
             [
                 new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
@@ -525,7 +525,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "VZ2 declarations",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -566,7 +566,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "VZ2 null declarations",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -606,7 +606,7 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
             Key = workflowKey,
             Version = 1,
             Name = "Terminal-port flow",
-            MaxRoundsPerRound = 1,
+            MaxStepsPerSaga = 1,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [

@@ -148,7 +148,7 @@ internal static class ReviewLoopPairTemplate
         return new WorkflowDraft(
             Key: innerKey,
             Name: $"{innerKey} (producer + reviewer)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -191,7 +191,7 @@ internal static class ReviewLoopPairTemplate
         return new WorkflowDraft(
             Key: outerKey,
             Name: $"{outerKey} (review loop)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

@@ -227,7 +227,7 @@ public sealed class DryRunExecutorTests
             Key: "input-script-start",
             Version: 1,
             Name: "Input script on Start",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -279,7 +279,7 @@ public sealed class DryRunExecutorTests
             Key: "input-script-agent",
             Version: 1,
             Name: "Input script on Agent",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -346,7 +346,7 @@ public sealed class DryRunExecutorTests
             Key: "output-script-agent",
             Version: 1,
             Name: "Output script on Agent",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -413,7 +413,7 @@ public sealed class DryRunExecutorTests
             Key: "boundary-in-inner",
             Version: 1,
             Name: "Boundary input child",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -434,7 +434,7 @@ public sealed class DryRunExecutorTests
             Key: "boundary-in-outer",
             Version: 1,
             Name: "Boundary input outer",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -499,7 +499,7 @@ public sealed class DryRunExecutorTests
             Key: "boundary-out-inner",
             Version: 1,
             Name: "Boundary output child",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -514,7 +514,7 @@ public sealed class DryRunExecutorTests
             Key: "boundary-out-outer",
             Version: 1,
             Name: "Boundary output outer",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -705,7 +705,7 @@ public sealed class DryRunExecutorTests
             Key: "retry-self-loop",
             Version: 1,
             Name: "Failed self-loop with retry-context",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -793,7 +793,7 @@ public sealed class DryRunExecutorTests
             Key: "retry-twice",
             Version: 1,
             Name: "Two consecutive retries",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -859,7 +859,7 @@ public sealed class DryRunExecutorTests
             Key: "retry-loop-inner",
             Version: 1,
             Name: "Loop body with worker self-retry",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -885,7 +885,7 @@ public sealed class DryRunExecutorTests
             Key: "retry-loop-outer",
             Version: 1,
             Name: "ReviewLoop wrapping a retry-prone body",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -954,7 +954,7 @@ public sealed class DryRunExecutorTests
             Key: "inner",
             Version: 1,
             Name: "Inner ReviewLoop",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -979,7 +979,7 @@ public sealed class DryRunExecutorTests
             Key: "outer",
             Version: 1,
             Name: "Outer with ReviewLoop",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1013,7 +1013,7 @@ public sealed class DryRunExecutorTests
             Key: "hitl-flow",
             Version: 1,
             Name: "HITL flow",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1045,7 +1045,7 @@ public sealed class DryRunExecutorTests
             Key: "mirror-flow",
             Version: 1,
             Name: "Mirror + replace flow",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1088,7 +1088,7 @@ public sealed class DryRunExecutorTests
             Key: "logic-flow",
             Version: 1,
             Name: "Logic-routed flow",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1132,7 +1132,7 @@ public sealed class DryRunExecutorTests
             Key: "decision-template",
             Version: 1,
             Name: "Decision-output template",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1205,7 +1205,7 @@ public sealed class DryRunExecutorTests
             Key: "skip-template",
             Version: 1,
             Name: "Skip template when setOutput",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1268,7 +1268,7 @@ public sealed class DryRunExecutorTests
             Key: "broken-template",
             Version: 1,
             Name: "Broken template",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1326,7 +1326,7 @@ public sealed class DryRunExecutorTests
             Key: "hitl-form-render",
             Version: 1,
             Name: "HITL form render at suspension",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1394,7 +1394,7 @@ public sealed class DryRunExecutorTests
             Key: "hitl-decision-only",
             Version: 1,
             Name: "HITL decision-only template",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -1450,7 +1450,7 @@ public sealed class DryRunExecutorTests
             Key: "hitl-broken",
             Version: 1,
             Name: "HITL with broken template",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

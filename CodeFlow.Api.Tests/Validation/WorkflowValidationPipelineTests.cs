@@ -232,7 +232,7 @@ public sealed class WorkflowValidationPipelineTests
         return new WorkflowValidationContext(
             Key: "test-flow",
             Name: "Test flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: nodes ?? Array.Empty<WorkflowNodeDto>(),
             Edges: edges ?? Array.Empty<WorkflowEdgeDto>(),
             Inputs: null,
