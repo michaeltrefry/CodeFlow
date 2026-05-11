@@ -144,6 +144,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                         message.ReviewMaxRounds,
                         message.WorkflowContext),
                     AgentPromptScopeBuilder.BuildSwarmVariables(message.SwarmContext),
+                    // Expose the resolved per-invocation budget so prompts can reference real
+                    // numbers (e.g. `## You have {{ maxToolCalls }} tool calls available`) and
+                    // ground their own stop conditions in concrete percentages. Falls back to
+                    // InvocationLoopBudget.Default when the agent didn't override the runtime
+                    // budget so the variable is always populated.
+                    AgentPromptScopeBuilder.BuildBudgetVariables(agentConfig.Configuration.Budget),
                     AgentPromptScopeBuilder.BuildInputVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs

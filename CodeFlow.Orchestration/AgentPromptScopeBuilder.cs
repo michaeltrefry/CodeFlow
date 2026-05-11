@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using CodeFlow.Runtime;
 
 namespace CodeFlow.Orchestration;
 
@@ -129,6 +130,35 @@ public static class AgentPromptScopeBuilder
         return variables;
     }
 
+    /// <summary>
+    /// Exposes the per-invocation tool-call + duration budget to the prompt template so authors
+    /// can ground budget-aware guidance ("If you have used 70% of the allowed tool calls…") in
+    /// real numbers instead of asking the model to estimate its own budget. <see cref="Budget"/>
+    /// can be null when an agent doesn't override the runtime defaults; this method always
+    /// resolves to <see cref="InvocationLoopBudget.Default"/> in that case so the template
+    /// always sees a concrete number rather than an empty variable.
+    ///
+    /// Exposed keys:
+    /// <list type="bullet">
+    ///   <item><description><c>maxToolCalls</c> — hard cap on tool calls per invocation.</description></item>
+    ///   <item><description><c>maxConsecutiveNonMutatingCalls</c> — cap on consecutive read-only tools before forcing a mutation or submit.</description></item>
+    ///   <item><description><c>maxLoopDurationSeconds</c> — wall-clock ceiling.</description></item>
+    ///   <item><description><c>softWarnRemaining</c> / <c>hardWarnRemaining</c> — thresholds at which the loop appends transcript trailers; useful for authoring prompts that align with the platform's nudge schedule.</description></item>
+    /// </list>
+    /// </summary>
+    public static IReadOnlyDictionary<string, string?> BuildBudgetVariables(InvocationLoopBudget? budget)
+    {
+        var resolved = budget ?? InvocationLoopBudget.Default;
+        return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["maxToolCalls"] = resolved.MaxToolCalls.ToString(CultureInfo.InvariantCulture),
+            ["maxConsecutiveNonMutatingCalls"] = resolved.MaxConsecutiveNonMutatingCalls.ToString(CultureInfo.InvariantCulture),
+            ["maxLoopDurationSeconds"] = ((long)resolved.MaxLoopDuration.TotalSeconds).ToString(CultureInfo.InvariantCulture),
+            ["softWarnRemaining"] = resolved.SoftWarnRemaining.ToString(CultureInfo.InvariantCulture),
+            ["hardWarnRemaining"] = resolved.HardWarnRemaining.ToString(CultureInfo.InvariantCulture),
+        };
+    }
+
     public static IReadOnlyDictionary<string, string?> BuildInputVariables(string? input)
     {
         var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -167,12 +197,14 @@ public static class AgentPromptScopeBuilder
         IReadOnlyDictionary<string, JsonElement>? context,
         int? reviewRound,
         int? reviewMaxRounds,
-        string? input)
+        string? input,
+        InvocationLoopBudget? budget = null)
     {
         var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in BuildContextVariables(context)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildWorkflowVariables(workflow)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildReviewLoopVariables(reviewRound, reviewMaxRounds, workflow)) merged[entry.Key] = entry.Value;
+        foreach (var entry in BuildBudgetVariables(budget)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildInputVariables(input)) merged[entry.Key] = entry.Value;
         return merged;
     }
