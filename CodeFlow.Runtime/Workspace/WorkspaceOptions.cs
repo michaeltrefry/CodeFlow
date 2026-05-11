@@ -88,10 +88,13 @@ public sealed class WorkspaceOptions
 
     /// <summary>
     /// Hard ceiling on the number of files <c>bulk_replace</c> may scan in a single call.
-    /// Refuses with <c>too_many_files</c> rather than half-applying. Defends against an agent
-    /// pointing the tool at the entire workspace tree by accident.
+    /// Refuses with <c>too_many_files</c> rather than half-applying. The number is a comfort
+    /// knob, not a safety boundary — the tool always either succeeds against every matched
+    /// file or refuses before touching any of them, so raising the cap doesn't introduce a
+    /// half-applied-state risk. Sized to cover repo-wide renames on medium-large .NET
+    /// projects (CodeFlow itself has ~1000 .cs files after standard exclusions).
     /// </summary>
-    public int BulkReplaceMaxFiles { get; set; } = 500;
+    public int BulkReplaceMaxFiles { get; set; } = 2000;
 
     /// <summary>
     /// Per-file regex match timeout for <c>bulk_replace</c> when <c>regex: true</c>. The tool
