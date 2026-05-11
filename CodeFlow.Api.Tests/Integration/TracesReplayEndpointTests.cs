@@ -108,7 +108,7 @@ public sealed class TracesReplayEndpointTests
             var draft = new WorkflowDraft(
                 Key: workflowKey,
                 Name: "Pruned-artifact test",
-                MaxRoundsPerRound: 64,
+                MaxStepsPerSaga: 64,
                 Nodes: new[]
                 {
                     new WorkflowNodeDraft(
@@ -300,7 +300,7 @@ public sealed class TracesReplayEndpointTests
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: "Replay test",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

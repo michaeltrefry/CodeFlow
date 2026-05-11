@@ -237,7 +237,7 @@ public sealed class RunWorkflowToolTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: key,
             Name: "HAA-11 test flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

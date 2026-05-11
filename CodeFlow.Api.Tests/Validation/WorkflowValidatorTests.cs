@@ -507,7 +507,7 @@ public sealed class WorkflowValidatorTests
                 Key = key,
                 Version = version,
                 Name = key,
-                MaxRoundsPerRound = 1,
+                MaxStepsPerSaga = 1,
                 CreatedAtUtc = DateTime.UtcNow,
                 Nodes = nodes,
                 Edges = [],

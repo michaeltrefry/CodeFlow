@@ -208,7 +208,7 @@ internal static class MechanicalReviewLoopTemplate
         return new WorkflowDraft(
             Key: innerKey,
             Name: $"{innerKey} (mechanical-then-model gate)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(
@@ -273,7 +273,7 @@ internal static class MechanicalReviewLoopTemplate
         return new WorkflowDraft(
             Key: outerKey,
             Name: $"{outerKey} (mechanical-then-model review loop)",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

@@ -294,7 +294,7 @@ public sealed class PortCouplingRuleTests
             var context = new WorkflowValidationContext(
                 Key: "test-flow",
                 Name: "Test flow",
-                MaxRoundsPerRound: 3,
+                MaxStepsPerSaga: 3,
                 Nodes: nodes,
                 Edges: Array.Empty<WorkflowEdgeDto>(),
                 Inputs: null,

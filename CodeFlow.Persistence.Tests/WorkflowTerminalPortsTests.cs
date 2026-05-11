@@ -16,7 +16,7 @@ public sealed class WorkflowTerminalPortsTests
             Key: "fan-out",
             Version: 1,
             Name: "Fan-out",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -51,7 +51,7 @@ public sealed class WorkflowTerminalPortsTests
             Key: "dup",
             Version: 1,
             Name: "Dup",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -83,7 +83,7 @@ public sealed class WorkflowTerminalPortsTests
             Key: "fail",
             Version: 1,
             Name: "Fail",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -106,7 +106,7 @@ public sealed class WorkflowTerminalPortsTests
             Key: "rl",
             Version: 1,
             Name: "ReviewLoop",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -139,7 +139,7 @@ public sealed class WorkflowTerminalPortsTests
             Key: "rl-wired",
             Version: 1,
             Name: "ReviewLoop wired",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

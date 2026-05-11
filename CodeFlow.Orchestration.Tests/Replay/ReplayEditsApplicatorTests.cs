@@ -178,7 +178,7 @@ public sealed class ReplayEditsApplicatorTests
             Key: "edits-test",
             Version: 1,
             Name: "edits",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -211,7 +211,7 @@ public sealed class ReplayEditsApplicatorTests
             Key: "inner",
             Version: 1,
             Name: "inner",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -232,7 +232,7 @@ public sealed class ReplayEditsApplicatorTests
             Key: "outer",
             Version: 1,
             Name: "outer",
-            MaxRoundsPerRound: 64,
+            MaxStepsPerSaga: 64,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

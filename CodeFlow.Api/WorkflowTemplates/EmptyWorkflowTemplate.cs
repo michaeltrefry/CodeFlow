@@ -59,7 +59,7 @@ internal static class EmptyWorkflowTemplate
         var draft = new WorkflowDraft(
             Key: workflowKey,
             Name: $"{context.NamePrefix} (from template)",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

@@ -492,7 +492,7 @@ public sealed class WorkflowSagaSwarmEndToEndTests : IAsyncLifetime
             Key = key,
             Version = 1,
             Name = $"Swarm test {key}",
-            MaxRoundsPerRound = 50,
+            MaxStepsPerSaga = 50,
             CreatedAtUtc = DateTime.UtcNow,
             Nodes =
             [

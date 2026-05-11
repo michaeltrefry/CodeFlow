@@ -211,7 +211,7 @@ public sealed class GetWorkflowPackageToolTests : IAsyncLifetime
         var draft = new WorkflowDraft(
             Key: key,
             Name: "GetWorkflowPackage test flow",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

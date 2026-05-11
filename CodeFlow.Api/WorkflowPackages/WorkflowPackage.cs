@@ -53,7 +53,7 @@ public sealed record WorkflowPackageWorkflow(
     string Key,
     int Version,
     string Name,
-    int MaxRoundsPerRound,
+    int MaxStepsPerSaga,
     WorkflowCategory Category,
     IReadOnlyList<string> Tags,
     DateTime CreatedAtUtc,

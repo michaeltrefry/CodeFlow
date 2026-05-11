@@ -44,7 +44,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-in-parent",
             Version: 1,
             Name: "boundary-in-parent",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -67,7 +67,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-in-child",
             Version: 1,
             Name: "boundary-in-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -152,7 +152,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-unknown-port-parent",
             Version: 1,
             Name: "boundary-unknown-port-parent",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -175,7 +175,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-unknown-port-child",
             Version: 1,
             Name: "boundary-unknown-port-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -262,7 +262,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-out-parent",
             Version: 1,
             Name: "boundary-out-parent",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -288,7 +288,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-out-child",
             Version: 1,
             Name: "boundary-out-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -392,7 +392,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-rl-input-parent",
             Version: 1,
             Name: "boundary-rl-input-parent",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -417,7 +417,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-rl-input-child",
             Version: 1,
             Name: "boundary-rl-input-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -499,7 +499,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-rl-output-parent",
             Version: 1,
             Name: "boundary-rl-output-parent",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {
@@ -523,7 +523,7 @@ public sealed class WorkflowSagaBoundaryScriptTests
             Key: "boundary-rl-output-child",
             Version: 1,
             Name: "boundary-rl-output-child",
-            MaxRoundsPerRound: 5,
+            MaxStepsPerSaga: 5,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: new[]
             {

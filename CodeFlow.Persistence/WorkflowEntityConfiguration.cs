@@ -29,8 +29,8 @@ public sealed class WorkflowEntityConfiguration : IEntityTypeConfiguration<Workf
             .HasMaxLength(256)
             .IsRequired();
 
-        builder.Property(workflow => workflow.MaxRoundsPerRound)
-            .HasColumnName("max_rounds_per_round")
+        builder.Property(workflow => workflow.MaxStepsPerSaga)
+            .HasColumnName("max_steps_per_saga")
             .IsRequired();
 
         builder.Property(workflow => workflow.Category)

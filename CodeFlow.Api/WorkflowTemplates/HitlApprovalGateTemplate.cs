@@ -108,7 +108,7 @@ internal static class HitlApprovalGateTemplate
         return new WorkflowDraft(
             Key: workflowKey,
             Name: $"{workflowKey} (HITL approval gate)",
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             Nodes: new[]
             {
                 new WorkflowNodeDraft(

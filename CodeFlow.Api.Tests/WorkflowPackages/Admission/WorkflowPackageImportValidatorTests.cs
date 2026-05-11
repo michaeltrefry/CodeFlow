@@ -187,7 +187,7 @@ public sealed class WorkflowPackageImportValidatorTests
             Key: "root",
             Version: 1,
             Name: "Root",
-            MaxRoundsPerRound: 1,
+            MaxStepsPerSaga: 1,
             Category: WorkflowCategory.Workflow,
             Tags: Array.Empty<string>(),
             CreatedAtUtc: DateTime.UtcNow,

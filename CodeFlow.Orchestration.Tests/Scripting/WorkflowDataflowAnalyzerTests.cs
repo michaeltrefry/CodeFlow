@@ -423,7 +423,7 @@ public sealed class WorkflowDataflowAnalyzerTests
             Key: key,
             Version: 1,
             Name: key,
-            MaxRoundsPerRound: 3,
+            MaxStepsPerSaga: 3,
             CreatedAtUtc: DateTime.UtcNow,
             Nodes: nodes,
             Edges: edges,

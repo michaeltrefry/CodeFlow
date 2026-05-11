@@ -22,7 +22,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "root-flow",
                 Version: 1,
                 Name: "Root",
-                MaxRoundsPerRound: 3,
+                MaxStepsPerSaga: 3,
                 CreatedAtUtc: new DateTime(2026, 4, 23, 16, 0, 0, DateTimeKind.Utc),
                 Nodes:
                 [
@@ -35,7 +35,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "child-flow",
                 Version: 2,
                 Name: "Child",
-                MaxRoundsPerRound: 2,
+                MaxStepsPerSaga: 2,
                 CreatedAtUtc: new DateTime(2026, 4, 23, 16, 1, 0, DateTimeKind.Utc),
                 Nodes:
                 [
@@ -99,7 +99,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "root-flow",
                 Version: 1,
                 Name: "Root",
-                MaxRoundsPerRound: 3,
+                MaxStepsPerSaga: 3,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes:
                 [
@@ -112,7 +112,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "child-flow",
                 Version: 4,
                 Name: "Child",
-                MaxRoundsPerRound: 2,
+                MaxStepsPerSaga: 2,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes:
                 [
@@ -204,7 +204,7 @@ public sealed class WorkflowPackageResolverTests
                     Key: "root-flow",
                     Version: 1,
                     Name: "Root",
-                    MaxRoundsPerRound: 3,
+                    MaxStepsPerSaga: 3,
                     CreatedAtUtc: DateTime.UtcNow,
                     Nodes:
                     [
@@ -295,7 +295,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "root-flow",
                 Version: 1,
                 Name: "Root",
-                MaxRoundsPerRound: 3,
+                MaxStepsPerSaga: 3,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes:
                 [
@@ -357,7 +357,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "root-flow",
                 Version: 1,
                 Name: "Root",
-                MaxRoundsPerRound: 3,
+                MaxStepsPerSaga: 3,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes:
                 [
@@ -370,7 +370,7 @@ public sealed class WorkflowPackageResolverTests
                 Key: "child-flow",
                 Version: 2,
                 Name: "Child",
-                MaxRoundsPerRound: 2,
+                MaxStepsPerSaga: 2,
                 CreatedAtUtc: DateTime.UtcNow,
                 Nodes:
                 [

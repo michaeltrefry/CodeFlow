@@ -236,7 +236,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                 Key = normalizedKey,
                 Version = nextVersion,
                 Name = draft.Name.Trim(),
-                MaxRoundsPerRound = draft.MaxRoundsPerRound,
+                MaxStepsPerSaga = draft.MaxStepsPerSaga,
                 Category = draft.Category,
                 TagsJson = WorkflowJson.SerializeTags(TagNormalizer.Normalize(draft.Tags)),
                 WorkflowVarsReadsJson = WorkflowJson.SerializeStringList(NormalizeWorkflowVarList(draft.WorkflowVarsReads)),
@@ -328,7 +328,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.Key,
             entity.Version,
             entity.Name,
-            entity.MaxRoundsPerRound,
+            entity.MaxStepsPerSaga,
             DateTime.SpecifyKind(entity.CreatedAtUtc, DateTimeKind.Utc),
             entity.Nodes
                 .Select(Map)
