@@ -81,7 +81,16 @@ issue codeflow-worker codeflow-worker
 # on every filesystem; the controller only needs read.
 chown -R 65532:65532 "$TLS_DIR" 2>/dev/null || true
 chmod 0644 "$TLS_DIR"/*.pem 2>/dev/null || true
-chmod 0640 "$TLS_DIR"/*.key 2>/dev/null || true
+# Server key stays group-only; the api + worker containers read DIFFERENT
+# client keys (codeflow-api.key / codeflow-worker.key) and run as a separate
+# uid (1654 — the .NET `app` user) with no shared group, so those need to be
+# world-readable inside the dev volume. The repo .gitignore + the local-only
+# named volume keep the file off disk in any real environment; this is dev-
+# self-signed material that exists for ~24h.
+chmod 0640 "$TLS_DIR"/server.key 2>/dev/null || true
+chmod 0640 "$TLS_DIR"/client-ca.key 2>/dev/null || true
+chmod 0644 "$TLS_DIR"/codeflow-api.key 2>/dev/null || true
+chmod 0644 "$TLS_DIR"/codeflow-worker.key 2>/dev/null || true
 
 if [ ! -f "$CFG_DIR/config.toml" ]; then
     cat > "$CFG_DIR/config.toml" <<'TOML'
