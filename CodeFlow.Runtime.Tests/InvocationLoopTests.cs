@@ -1120,6 +1120,100 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_AppendsBudgetWarnings_OnceAtEachThresholdCrossing()
+    {
+        // Budget = 5 with SoftWarnRemaining=3 and HardWarnRemaining=1: soft fires after the
+        // 2nd tool call (3 remain), hard fires after the 4th (1 remains). Each warning must
+        // appear exactly once even though the loop iterates many tool calls between them.
+        InvocationResponse ToolCallResponse(string id, string toolName) => new(
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling " + toolName,
+                ToolCalls: [new ToolCall(id, toolName, new JsonObject())]),
+            InvocationStopReason.ToolCalls);
+
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => ToolCallResponse("c1", "now"),
+            _ => ToolCallResponse("c2", "now"),
+            _ => ToolCallResponse("c3", "now"),
+            _ => ToolCallResponse("c4", "now"),
+            _ => new InvocationResponse(
+                new ChatMessage(ChatMessageRole.Assistant, "Done.",
+                    ToolCalls: [new ToolCall("call_submit", "submit", new JsonObject { ["decision"] = "Continue" })]),
+                InvocationStopReason.ToolCalls)
+        ]);
+
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Probe budget warnings.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)],
+            Budget: new InvocationLoopBudget
+            {
+                MaxToolCalls = 5,
+                MaxLoopDuration = TimeSpan.FromMinutes(1),
+                MaxConsecutiveNonMutatingCalls = 10,
+                SoftWarnRemaining = 3,
+                HardWarnRemaining = 1
+            }));
+
+        result.Decision.PortName.Should().Be("Continue");
+
+        var userTrailers = result.Transcript
+            .Where(m => m.Role == ChatMessageRole.User && m.Content.Contains("Tool budget"))
+            .Select(m => m.Content)
+            .ToArray();
+
+        userTrailers.Should().HaveCount(2,
+            "soft and hard warnings should each fire exactly once across the run");
+        userTrailers[0].Should().Contain("Tool budget:").And.Contain("3 remaining");
+        userTrailers[1].Should().Contain("critical").And.Contain("1 call(s) remaining");
+    }
+
+    [Fact]
+    public async Task RunAsync_SkipsBudgetWarnings_WhenDisabled()
+    {
+        InvocationResponse ToolCallResponse(string id) => new(
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "Calling now.",
+                ToolCalls: [new ToolCall(id, "now", new JsonObject())]),
+            InvocationStopReason.ToolCalls);
+
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => ToolCallResponse("c1"),
+            _ => ToolCallResponse("c2"),
+            _ => new InvocationResponse(
+                new ChatMessage(ChatMessageRole.Assistant, "Done.",
+                    ToolCalls: [new ToolCall("call_submit", "submit", new JsonObject { ["decision"] = "Continue" })]),
+                InvocationStopReason.ToolCalls)
+        ]);
+
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Disable nudges.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Continue", null, null)],
+            Budget: new InvocationLoopBudget
+            {
+                MaxToolCalls = 3,
+                MaxLoopDuration = TimeSpan.FromMinutes(1),
+                MaxConsecutiveNonMutatingCalls = 10,
+                SoftWarnRemaining = 0,
+                HardWarnRemaining = 0
+            }));
+
+        result.Decision.PortName.Should().Be("Continue");
+        result.Transcript
+            .Where(m => m.Role == ChatMessageRole.User && m.Content.Contains("Tool budget"))
+            .Should().BeEmpty();
+    }
+
+    [Fact]
     public void EnsureToolCallPairing_PassesOnEmptyTranscript()
     {
         // Defensive smoke check — the precondition is invoked before the very first model call,
