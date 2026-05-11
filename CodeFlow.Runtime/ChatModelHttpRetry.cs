@@ -130,6 +130,19 @@ internal static class ChatModelHttpRetry
 
             foreach (var header in request.Content.Headers)
             {
+                // StringContent's constructor already populates Content-Type (with charset) and the
+                // payload it writes drives Content-Length. Copying these via TryAddWithoutValidation
+                // appends a duplicate value, which .NET serializes as a comma-joined header
+                // (`Content-Type: application/json; charset=utf-8, application/json; charset=utf-8`).
+                // Express's body parser doesn't match the comma form as JSON, so the receiver sees
+                // `req.body = {}` and rejects the call as "missing required parameter: model" —
+                // LM Studio's gateway in particular returns 400 for this exact reason.
+                if (string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
         }
