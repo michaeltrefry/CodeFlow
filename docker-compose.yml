@@ -182,8 +182,9 @@ services:
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
       LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
       # Mirrors prod: container.run routes through the sibling sandbox-controller
-      # service over mTLS. Override to `Docker` to fall back to legacy direct-docker
-      # (requires mounting /var/run/docker.sock onto api/worker — not done here).
+      # service over mTLS. Override to `Docker` to fall back to the legacy direct-
+      # docker path (which would need the daemon socket bind-mounted onto api/worker
+      # — not wired here; the sandbox-controller is the only service with that mount).
       ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
       SandboxController__Url: https://codeflow-sandbox-controller:8443
       SandboxController__ClientCertPath: /etc/cfsc-client/codeflow-api.pem

@@ -30,32 +30,38 @@ done
 
 # 2. Api/Worker compose services must not mount /var/run/docker.sock or carry
 #    a group_add for the docker gid. Use yq if available; fall back to grep.
-COMPOSE=deploy/docker-compose.prod.yml
-if [[ -f "$COMPOSE" ]]; then
-  if command -v yq > /dev/null 2>&1; then
-    for svc in codeflow-api codeflow-worker codeflow-ui; do
-      if yq -e ".services.\"$svc\".volumes // [] | any(test(\"docker.sock\"))" "$COMPOSE" > /dev/null 2>&1; then
-        violations+=("$COMPOSE: $svc mounts /var/run/docker.sock — must not")
+#    The sandbox-controller service in the same file IS allowed to mount the
+#    socket — that's its whole job — so the checks are per-service, not
+#    whole-file.
+for COMPOSE in deploy/docker-compose.prod.yml docker-compose.yml; do
+  if [[ -f "$COMPOSE" ]]; then
+    if command -v yq > /dev/null 2>&1; then
+      for svc in codeflow-api codeflow-worker codeflow-ui; do
+        if yq -e ".services.\"$svc\".volumes // [] | any(test(\"docker.sock\"))" "$COMPOSE" > /dev/null 2>&1; then
+          violations+=("$COMPOSE: $svc mounts /var/run/docker.sock — must not")
+        fi
+        if yq -e ".services.\"$svc\".group_add // [] | length > 0" "$COMPOSE" > /dev/null 2>&1; then
+          # group_add itself isn't proof of DooD, but on api/worker today there's no legitimate
+          # reason to set it. Surface as a violation; whitelist via comment if a reason emerges.
+          violations+=("$COMPOSE: $svc has group_add — review intent (DooD on app tier is forbidden)")
+        fi
+      done
+    else
+      # Coarser fallback: only flag docker.sock when it appears inside an
+      # api/worker/ui service block. The sandbox-controller / init services
+      # mount it legitimately and are excluded from in_app.
+      if awk '/^  codeflow-(api|worker|ui):/{in_app=1} /^  codeflow-(sandbox-controller|cfsc-init|init):/{in_app=0} /^  [a-z]/{if(!/codeflow-(api|worker|ui|sandbox-controller|cfsc-init|init):/) in_app=0} in_app && /docker\.sock/' "$COMPOSE" | grep -q .; then
+        violations+=("$COMPOSE: api/worker/ui section mentions docker.sock — review intent")
       fi
-      if yq -e ".services.\"$svc\".group_add // [] | length > 0" "$COMPOSE" > /dev/null 2>&1; then
-        # group_add itself isn't proof of DooD, but on api/worker today there's no legitimate
-        # reason to set it. Surface as a violation; whitelist via comment if a reason emerges.
-        violations+=("$COMPOSE: $svc has group_add — review intent (DooD on app tier is forbidden)")
-      fi
-    done
-  else
-    # Coarser fallback: any docker.sock anywhere in the file is a flag for review.
-    # The sandbox-controller service is allowed to mount it — exclude that block.
-    if awk '/^  codeflow-(api|worker|ui):/{in_app=1} /^  codeflow-(sandbox-controller|init):/{in_app=0} /^  [a-z]/{if(!/codeflow-(api|worker|ui|sandbox-controller|init):/) in_app=0} in_app && /docker\.sock/' "$COMPOSE" | grep -q .; then
-      violations+=("$COMPOSE: api/worker/ui section mentions docker.sock — review intent")
     fi
   fi
-fi
+done
 
 # 3. Audit any other compose / dockerfile files we ship.
 while IFS= read -r f; do
   case "$f" in
     deploy/docker-compose.prod.yml) continue ;;        # handled above
+    docker-compose.yml) continue ;;                    # handled above (controller wired here too)
     sandbox-controller/*) continue ;;                  # controller LEGITIMATELY mounts the socket
     */sandbox-controller/*) continue ;;
   esac
