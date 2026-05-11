@@ -809,17 +809,99 @@ public sealed class WorkspaceHostToolService
         {
             throw new WorkspaceMutationRefusal(
                 code: "context-mismatch",
-                reason: $"Patch for '{filePath}' references line '{expected}' past the end of the file.",
+                reason: $"Patch for '{filePath}' references a line past the end of the file "
+                    + $"(line {index + 1} requested, file has {sourceLines.Count} lines). "
+                    + "Re-read the file with `read_file` and reconstruct the hunk against the "
+                    + "current content — the file likely shrank since you read it, or a prior "
+                    + "hunk in this same patch changed the line count.",
                 path: filePath);
         }
 
-        if (!string.Equals(sourceLines[index], expected, StringComparison.Ordinal))
+        var actual = sourceLines[index];
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
         {
             throw new WorkspaceMutationRefusal(
                 code: "context-mismatch",
-                reason: $"Patch context mismatch for '{filePath}'. Expected '{expected}' but found '{sourceLines[index]}'.",
+                reason: BuildContextMismatchMessage(filePath, index, expected, actual),
                 path: filePath);
         }
+    }
+
+    /// <summary>
+    /// Renders an exact byte-by-byte diff of the two strings so the model can spot
+    /// invisible-whitespace causes (tab vs space, trailing spaces, paraphrased text). Common
+    /// failure modes that look identical in normal printing but differ by one byte are the
+    /// hardest for an agent to debug from a generic "expected X, got Y" message — show the
+    /// whitespace explicitly + suggest the recovery path.
+    /// </summary>
+    private static string BuildContextMismatchMessage(string filePath, int index, string expected, string actual)
+    {
+        var renderedExpected = RenderLineForDiff(expected);
+        var renderedActual = RenderLineForDiff(actual);
+        var firstDiff = FirstDifferenceDescription(expected, actual);
+
+        return $"Patch context mismatch for '{filePath}' at line {index + 1}. "
+            + $"Expected (len {expected.Length}): {renderedExpected}. "
+            + $"Actual (len {actual.Length}): {renderedActual}. "
+            + (firstDiff is null ? "" : firstDiff + " ")
+            + "Whitespace is rendered explicitly: · = space, → = tab, ␍ = CR. Common causes: "
+            + "paraphrased context lines (the model wrote what it expected, not what's on disk); "
+            + "trailing-whitespace drift; tab vs space confusion; or sequential hunks in the same "
+            + "patch — a prior hunk modified the file and a later hunk's context now refers to "
+            + "the pre-edit state. Re-read with `read_file` and reconstruct the hunk against "
+            + "current content. apply_patch is strict by design — paraphrase, even one byte, fails.";
+    }
+
+    private static string RenderLineForDiff(string line)
+    {
+        var sb = new StringBuilder(line.Length + 4);
+        sb.Append('\'');
+        foreach (var ch in line)
+        {
+            switch (ch)
+            {
+                case ' ': sb.Append('·'); break;
+                case '\t': sb.Append('→'); break;
+                case '\r': sb.Append('␍'); break;
+                default: sb.Append(ch); break;
+            }
+        }
+        sb.Append('\'');
+        return sb.ToString();
+    }
+
+    private static string? FirstDifferenceDescription(string expected, string actual)
+    {
+        var bound = Math.Min(expected.Length, actual.Length);
+        for (var i = 0; i < bound; i++)
+        {
+            if (expected[i] != actual[i])
+            {
+                return $"First difference at char {i + 1}: "
+                    + $"expected {DescribeChar(expected[i])}, actual {DescribeChar(actual[i])}.";
+            }
+        }
+        if (expected.Length != actual.Length)
+        {
+            var (longer, longerLen, shorterLen) = expected.Length > actual.Length
+                ? ("expected", expected.Length, actual.Length)
+                : ("actual", actual.Length, expected.Length);
+            return $"Lines match for the first {shorterLen} chars; {longer} string is "
+                + $"{longerLen - shorterLen} char(s) longer (often trailing whitespace).";
+        }
+        return null;
+    }
+
+    private static string DescribeChar(char ch)
+    {
+        return ch switch
+        {
+            ' ' => "space (0x20)",
+            '\t' => "tab (0x09)",
+            '\r' => "CR (0x0D)",
+            _ when char.IsControl(ch) => $"control char (0x{(int)ch:X2})",
+            _ => $"'{ch}' (0x{(int)ch:X2})",
+        };
     }
 
     private async Task<ProcessExecutionResult> RunProcessAsync(

@@ -280,6 +280,47 @@ public sealed class WorkspaceHostToolServiceHardeningTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyPatch_ContextMismatch_RefusalContainsWhitespaceVisibleDiffAndRecoveryHint()
+    {
+        // The agent paraphrases context with trailing whitespace — common failure mode that's
+        // invisible in normal rendering. The refusal must surface enough detail that the model
+        // can self-correct: visible whitespace markers, length comparison, position of first
+        // difference, and a concrete recovery instruction (re-read + reconstruct).
+        // File has `alpha` (no trailing space); patch's context line is `alpha ` (one space).
+        // Identical at a glance; differ by one byte.
+        var (relative, _) = WriteFile("src/main.txt", "alpha\nbeta\ngamma\n");
+        var service = NewService();
+        var ctx = NewContext();
+
+        var patch =
+            "*** Begin Patch\n" +
+            "*** Update File: " + relative + "\n" +
+            " alpha \n" +           // <- context line WITH trailing space; file has none
+            "-beta\n" +
+            "+beta patched\n" +
+            " gamma\n" +
+            "*** End Patch\n";
+
+        var result = await service.ApplyPatchAsync(
+            new ToolCall("c1", "apply_patch", new JsonObject { ["patch"] = patch }),
+            ctx);
+
+        result.IsError.Should().BeTrue();
+        var refusal = JsonNode.Parse(result.Content)!["refusal"]!;
+        refusal["code"]!.GetValue<string>().Should().Be("context-mismatch");
+
+        var reason = refusal["reason"]!.GetValue<string>();
+        // Visible-whitespace rendering — agent can see the trailing-space cause.
+        reason.Should().Contain("·", "spaces should be rendered as · so trailing-whitespace drift is visible");
+        // Length comparison — agent immediately sees the strings differ by one char.
+        reason.Should().MatchRegex(@"len\s*\d+");
+        // Line number — useful when patch has multiple hunks.
+        reason.Should().Contain("line 1");
+        // Actionable recovery — agent knows what to do next instead of falling back to perl.
+        reason.Should().Contain("Re-read").And.Contain("read_file");
+    }
+
+    [Fact]
     public async Task ApplyPatch_OutsideWorkspace_ReturnsStructuredRefusal()
     {
         var service = NewService();
