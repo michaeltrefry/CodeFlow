@@ -270,11 +270,15 @@ services:
       # filesystem doesn't apply to bind-mounted hosts; the daemon ACL is what
       # gates this.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Workspace root — read-only from the controller's perspective. Bind-mounted at the same
-      # in-container path the api/worker use (`/workspace`) so the controller's `workdir_root`
-      # config and the spec.WorkspaceHostPath the controller hands to dockerd both reference one
-      # canonical path. Dockerd then re-mounts the per-trace subdir into the sandbox RW.
-      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace:ro
+      # Workspace root — bind-mounted at the same in-container path the api/worker use
+      # (`/workspace`) so the controller's `workdir_root` config and the spec.WorkspaceHostPath
+      # the controller hands to dockerd both reference one canonical path. The controller's view
+      # is RW because it has to mkdir per-job `.results/{jobId}/` subdirs inside each trace dir
+      # before mounting them RW into the sandboxed container at /artifacts
+      # (see sandbox-controller/internal/workspace/workspace.go Resolve()). The CHILD sandbox
+      # container still receives `/workspace` mounted READ-ONLY — the controller passes
+      # `readonly=true` on its bind mount, independent of this controller-side mount mode.
+      - ${CODEFLOW_WORKDIRS_DIR:-/opt/codeflow/workdirs}:/workspace
       # Per-host config — config.toml mounts at /etc/cfsc/config.toml (the
       # controller's default `-config` flag).
       - ${CODEFLOW_CFSC_CONFIG_DIR:-/opt/codeflow/cfsc/config}:/etc/cfsc:ro
