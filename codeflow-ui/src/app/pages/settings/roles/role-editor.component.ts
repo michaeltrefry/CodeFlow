@@ -33,6 +33,13 @@ import { ChipComponent } from '../../../ui/chip.component';
     <cf-page-header
       [title]="id() ? 'Edit role' : 'New role'"
       subtitle="Role edits take effect on the next agent invocation — no agent version bump.">
+      @if (role()?.isSystemManaged) {
+        <div page-header-body class="system-badge-row">
+          <cf-chip variant="accent" mono
+                   title="Seeded by the platform on startup. Your edits persist — the seeder won't overwrite them — but a delete won't be re-created automatically.">System-managed</cf-chip>
+          <span class="muted small">Seeded role — your edits persist; deletes are not re-seeded.</span>
+        </div>
+      }
       <a routerLink="/settings/roles">
         <button type="button" cf-button variant="ghost" icon="back">Cancel</button>
       </a>
@@ -145,6 +152,7 @@ import { ChipComponent } from '../../../ui/chip.component';
   `,
   styles: [`
     .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; }
+    .system-badge-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .muted { color: var(--muted); }
     .grants-section { margin-top: 2rem; }
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }

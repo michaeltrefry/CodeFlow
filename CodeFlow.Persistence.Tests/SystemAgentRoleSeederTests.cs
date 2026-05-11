@@ -149,27 +149,47 @@ public sealed class SystemAgentRoleSeederTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SeedAsync_KanbanRole_GrantsMcpToolsUnderConventionalServerKey()
+    public async Task SeedAsync_CodeFlowAssistantRole_GrantsInteractiveSupervisedSet()
     {
+        // The codeflow-assistant role is the starter grant set for the homepage assistant
+        // when an operator assigns a role on the LLM Config page. Tuned for an interactive,
+        // user-supervised session: read + edit + run + research, but NOT vcs.open_pr
+        // (user clicks Open PR themselves), NOT setup_workspace (workflow-orchestration
+        // tool), NOT container.run (operators clone + add if they want sandboxed builds).
         await using var ctx = CreateDbContext();
 
         await SystemAgentRoleSeeder.SeedAsync(ctx);
 
-        var kanban = await ctx.AgentRoles
+        var assistant = await ctx.AgentRoles
             .AsNoTracking()
-            .SingleAsync(r => r.Key == SystemAgentRoles.KanbanWorkerKey);
-        kanban.IsSystemManaged.Should().BeTrue();
+            .SingleAsync(r => r.Key == SystemAgentRoles.CodeFlowAssistantKey);
+        assistant.IsSystemManaged.Should().BeTrue();
 
         var grants = await ctx.AgentRoleToolGrants
             .AsNoTracking()
-            .Where(g => g.RoleId == kanban.Id)
+            .Where(g => g.RoleId == assistant.Id)
             .ToListAsync();
-        grants.Should().NotBeEmpty();
-        grants.Should().AllSatisfy(g =>
-        {
-            g.Category.Should().Be(AgentRoleToolCategory.Mcp);
-            g.ToolIdentifier.Should().StartWith($"mcp:{SystemAgentRoles.KanbanMcpServerKey}:");
-        });
+
+        grants.Select(g => g.ToolIdentifier)
+            .Should().BeEquivalentTo(
+                "read_file",
+                "apply_patch",
+                "bulk_replace",
+                "run_command",
+                "web_fetch",
+                "web_search",
+                "echo",
+                "now");
+        grants.Should().AllSatisfy(g => g.Category.Should().Be(AgentRoleToolCategory.Host));
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "vcs.open_pr",
+            because: "PR opening should require explicit user action in an interactive assistant context");
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "setup_workspace",
+            because: "setup_workspace is a workflow-orchestration tool, not for ad-hoc assistant chats");
+        grants.Select(g => g.ToolIdentifier).Should().NotContain(
+            "container.run",
+            because: "container.run is opt-in for assistants that need sandboxed builds; operators clone + add");
     }
 
     [Fact]

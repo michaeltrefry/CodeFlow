@@ -73,6 +73,7 @@ function role(overrides: Partial<AgentRole>): AgentRole {
     updatedBy: null,
     isArchived: false,
     isRetired: false,
+    isSystemManaged: false,
     tags: [],
     ...overrides,
   };
