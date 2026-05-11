@@ -138,7 +138,12 @@ services:
       - /tmp:size=16m,mode=1700,uid=65532,gid=65532
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - codeflow-workdir:/workspace:ro
+      # Controller needs RW to mkdir per-job `.results/{jobId}/` subdirs inside each trace
+      # workspace before mounting them RW into the sandboxed container at /artifacts (see
+      # sandbox-controller/internal/workspace/workspace.go Resolve()). The CHILD sandbox
+      # container still gets `/workspace` mounted READ-ONLY — the controller hands dockerd
+      # `readonly=true` on the workspace bind, separately from this controller-side mount.
+      - codeflow-workdir:/workspace
       - codeflow-cfsc-config:/etc/cfsc:ro
       - codeflow-cfsc-tls:/etc/cfsc-tls:ro
     networks:
@@ -190,6 +195,14 @@ services:
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
       LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
+      # The worker-side DockerHostToolService has its own image-registry allowlist that
+      # runs BEFORE the request reaches the sandbox-controller. Default is just docker.io,
+      # so MCR images (mcr.microsoft.com/dotnet/sdk) and GHCR images (ghcr.io/trefry/*)
+      # get refused with `image-registry-denied` before the controller sees them — even if
+      # the controller's own image policy would allow them. Match prod's surface area.
+      ContainerTools__AllowedImageRegistries__0: docker.io
+      ContainerTools__AllowedImageRegistries__1: mcr.microsoft.com
+      ContainerTools__AllowedImageRegistries__2: ghcr.io
       # Mirrors prod: container.run routes through the sibling sandbox-controller
       # service over mTLS. Override to `Docker` to fall back to the legacy direct-
       # docker path (which would need the daemon socket bind-mounted onto api/worker
@@ -253,6 +266,9 @@ services:
       OpenAI__ApiKey: ${OpenAI__ApiKey:-}
       Anthropic__ApiKey: ${Anthropic__ApiKey:-}
       LMStudio__ResponsesEndpoint: ${LMStudio__ResponsesEndpoint:-http://host.docker.internal:1234/v1/responses}
+      ContainerTools__AllowedImageRegistries__0: docker.io
+      ContainerTools__AllowedImageRegistries__1: mcr.microsoft.com
+      ContainerTools__AllowedImageRegistries__2: ghcr.io
       ContainerTools__Backend: ${CODEFLOW_CONTAINER_BACKEND:-SandboxController}
       SandboxController__Url: https://codeflow-sandbox-controller:8443
       SandboxController__ClientCertPath: /etc/cfsc-client/codeflow-worker.pem
