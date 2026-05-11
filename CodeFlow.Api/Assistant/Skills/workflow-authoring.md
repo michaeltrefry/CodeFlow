@@ -158,6 +158,15 @@ Standard variables in templates:
 - Inside ReviewLoop children: `{{ round }}`, `{{ maxRounds }}`,
   `{{ isLastRound }}`, and `{{ rejectionHistory }}` when the parent loop
   has rejection history enabled.
+- Per-invocation budget: `{{ maxToolCalls }}`,
+  `{{ maxConsecutiveNonMutatingCalls }}`, `{{ maxLoopDurationSeconds }}`,
+  `{{ softWarnRemaining }}`, `{{ hardWarnRemaining }}`. Always populated
+  (falls back to platform defaults when the agent doesn't override). Use
+  these to ground budget-aware prompt guidance in real numbers — e.g.
+  `You have {{ maxToolCalls }} tool calls available; reserve the last
+  {{ hardWarnRemaining }} for submit.` Authors who write "X% of allowed
+  tool calls" rules in their system prompts should anchor on
+  `{{ maxToolCalls }}` rather than asking the model to guess.
 
 **Pinned partials.** The platform ships stock `@codeflow/*` partials. Pin
 them via the agent's `partialPins: [{ key, version }]` and include with

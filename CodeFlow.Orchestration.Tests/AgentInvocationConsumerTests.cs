@@ -86,7 +86,15 @@ public sealed class AgentInvocationConsumerTests
             artifactStore.Writes[0].Content.Should().Be("Reviewed draft");
 
             agentInvoker.Invocations.Should().ContainSingle();
-            agentInvoker.Invocations[0].Configuration.Should().BeEquivalentTo(agentConfig.Configuration);
+            // Variables is excluded because the consumer always adds budget variables
+            // (`maxToolCalls`, etc.) on top of whatever the stored agent config has — see
+            // AgentPromptScopeBuilder.BuildBudgetVariables. Verified separately below.
+            agentInvoker.Invocations[0].Configuration.Should().BeEquivalentTo(
+                agentConfig.Configuration,
+                opts => opts.Excluding(c => c.Variables));
+            agentInvoker.Invocations[0].Configuration.Variables.Should().NotBeNull()
+                .And.ContainKey("maxToolCalls",
+                    because: "budget variables are always injected so prompts can reference real numbers");
             agentInvoker.Invocations[0].Input.Should().Be("Initial draft");
 
             var completion = harness.Published
@@ -959,7 +967,17 @@ public sealed class AgentInvocationConsumerTests
             agentInvoker.Invocations.Should().ContainSingle();
             var invocation = agentInvoker.Invocations[0];
             invocation.Input.Should().Be("Create a new blog website using .NET 10 and React.");
-            invocation.Configuration.Variables.Should().BeNullOrEmpty();
+            // Non-JSON input + no context/workflow/review variables → the only template
+            // variables present are the always-injected budget keys (so prompts that reference
+            // `{{ maxToolCalls }}` etc. always render). No `input.*` / context.* / workflow.*
+            // keys should be set.
+            invocation.Configuration.Variables.Should().NotBeNull();
+            invocation.Configuration.Variables!.Keys.Should().BeEquivalentTo(
+                "maxToolCalls",
+                "maxConsecutiveNonMutatingCalls",
+                "maxLoopDurationSeconds",
+                "softWarnRemaining",
+                "hardWarnRemaining");
         }
         finally
         {
