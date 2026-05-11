@@ -125,6 +125,15 @@ services:
       - ALL
     security_opt:
       - "no-new-privileges:true"
+    # Local-dev only: Docker Desktop bind-mounts /var/run/docker.sock owned by
+    # 0:0 with mode 0660. The nonroot user (65532) can't reach it without
+    # supplementary membership in gid 0. Prod uses the host's real docker GID
+    # (via DOCKER_GID + group_add in deploy/docker-compose.prod.yml); on macOS
+    # the gid inside the bind mount is just root, so we add 0 here. The other
+    # hardening levers (cap_drop ALL, no-new-privileges, read_only, distroless
+    # nonroot uid, internal network) stay intact.
+    group_add:
+      - "0"
     tmpfs:
       - /tmp:size=16m,mode=1700,uid=65532,gid=65532
     volumes:
