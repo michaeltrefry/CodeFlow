@@ -35,13 +35,28 @@ The package ships:
 
 | Entity | Role | Key | Notes |
 |---|---|---|---|
-| `shortcut-implementation-prep-agent` | Reshaped prompt + output emits `workflow.implementationTasks` | unchanged | Bumped on import |
+| `shortcut-implementation-prep-agent` | Reshaped prompt; enumerates workspace before emitting the task list; output emits `workflow.implementationTasks` | unchanged | Bumped on import |
+| `shortcut-task-paths-validator-agent` | New: backstop that verifies every task's `files[]` entries exist before ForEach dispatches | **new** | Created on first import; bumped on re-import |
 | `shortcut-developer-agent` | Reads `loop.item.*` for one-task scope | unchanged | Bumped on import |
 | `shortcut-code-reviewer-agent` | Reviews against `loop.item.constraints` | unchanged | Bumped on import |
 | `shortcut-development-task-loop` (workflow) | Start (dev) → reviewer, Approved/Rejected ports | unchanged | Bumped on import |
-| `shortcut-code-worker` (role) | Tool grants for the dev/reviewer pair | new | Self-contained per package admission rules |
+| `shortcut-code-worker` (role) | Tool grants shared by all four agents | new | Self-contained per package admission rules |
 
-Your real parent workflow (`shortcut-story-end-to-end`) is **intentionally not** in the package — it has additional intake / plan / completion / post-mortem nodes the FE-6 card explicitly leaves untouched. The single node-4 swap you do on the canvas is fast now that the palette ships a "For Each" button (FE-4 / [#357](https://github.com/michaeltrefry/CodeFlow/pull/357)).
+Your real parent workflow (`shortcut-story-end-to-end`) is **intentionally not** in the package — it has additional intake / plan / completion / post-mortem nodes the FE-6 card explicitly leaves untouched. The canvas edits (one new validator node + the node-4 ReviewLoop→ForEach swap) are fast now that the palette ships a "For Each" button (FE-4 / [#357](https://github.com/michaeltrefry/CodeFlow/pull/357)).
+
+### Why the validator agent exists
+
+The first end-to-end run of the reshape failed because the prep agent hallucinated paths (trace `7167cf25-...`) — its task list referenced files in a `src/Azimuth.Workflows.Core/` namespace that doesn't exist in the CodeFlow repo. The platform machinery (`loop.item.*` propagation, output-script JSON parse, ForEach first-failure-aborts) all worked correctly; the failure was purely the LLM inventing paths. Two reinforcing fixes shipped:
+
+1. **Self-discovery in the prep agent (Option 2).** The prep agent's prompt now requires `run_command ['find', '.', '-type', 'f', ...]` enumeration BEFORE emitting any task. Every `files` entry must be grounded in a path that actually appears in the discovery output, or explicitly flagged as a create-new file in the task's `constraints`.
+2. **Path validator backstop (Option 4).** The new `shortcut-task-paths-validator-agent` sits between prep and ForEach. It re-runs discovery, walks every task's `files[]`, and routes `Invalid` (→ post-mortem) if any path is missing AND not flagged as a create-new. Defense-in-depth — catches mistakes cheaply, before the first iteration burns a tool-call budget hunting for nonexistent files.
+
+In the parent workflow's wiring, the validator slots in like this:
+
+```
+... → prep.Continue → validator.Valid → ForEach → completion → post-mortem → final-hitl
+                    ↘ validator.Invalid → post-mortem (so the missing paths surface in the report)
+```
 
 If you'd prefer to apply the prompt deltas to your existing agents by hand instead of taking the package's prompt verbatim, the per-prompt addendums below give you the structural pieces; pair them with whatever prompt engineering your existing agents already have.
 
@@ -135,7 +150,7 @@ Bump the prep agent's version when saving.
 
 ## Step 2 — Reshape the parent workflow
 
-`shortcut-story-end-to-end`'s node 4 changes from a `ReviewLoop` to a `ForEach`. The `subflowKey` stays — the same `shortcut-development-task-loop` workflow handles one iteration.
+`shortcut-story-end-to-end`'s node 4 changes from a `ReviewLoop` to a `ForEach`, and a new validator Agent node lands between prep (node 3) and the new ForEach (node 4). The `subflowKey` on the ForEach stays — the same `shortcut-development-task-loop` workflow handles one iteration.
 
 **Before** (ReviewLoop config):
 
@@ -163,6 +178,10 @@ outputPorts: []   # ForEach synthesizes Continue + implicit Failed
 
 | Source port (old) | Target | Source port (new) |
 |---|---|---|
+| `prep.Continue` → `ReviewLoop` (node 4) | reroute to validator | `prep.Continue` → `validator` |
+| n/a | new edge | `validator.Valid` → `ForEach` (node 4) |
+| n/a | new edge | `validator.Invalid` → post-mortem |
+| n/a | new edge | `validator.Failed` → post-mortem (implicit Failed path) |
 | `ReviewLoop.Approved` → next-node | same target | `ForEach.Continue` → next-node |
 | `ReviewLoop.Exhausted` → next-node | same target | DELETED — ForEach doesn't synthesize Exhausted |
 | `ReviewLoop.Failed` → recovery node | same target | `ForEach.Failed` → same recovery node (port name is identical, only the source-node kind changes) |
