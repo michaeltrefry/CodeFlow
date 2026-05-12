@@ -242,6 +242,11 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         saga.ParentReviewRound = message.ReviewRound;
         saga.ParentReviewMaxRounds = message.ReviewMaxRounds;
         saga.ParentLoopDecision = message.LoopDecision;
+        // sc-943 ForEach: persist the parent's loop iteration context so every descendant agent
+        // dispatch can re-publish it via AgentInvokeRequested.LoopContext.
+        saga.ParentForEachItemJson = message.LoopContext?.ItemJson;
+        saga.ParentForEachIndex = message.LoopContext?.Index;
+        saga.ParentForEachCount = message.LoopContext?.Count;
         // Inherit the parent's per-trace repository allowlist so vcs_* tools inside this subflow
         // see the same allowed repos. Without this hand-off the child's local context starts
         // empty (line above) and every vcs_* call would return repo_not_allowed even though the
@@ -295,7 +300,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewRound: message.ReviewRound,
             ReviewMaxRounds: message.ReviewMaxRounds,
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: BuildLoopContextFromSaga(saga)));
     }
 
     /// <summary>
@@ -359,6 +365,24 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     /// interview loop that uses <c>"Answered"</c> as its loop signal).
     /// </summary>
     public const string DefaultLoopDecision = "Rejected";
+
+    /// <summary>
+    /// sc-943 ForEach: reconstructs a <see cref="ForEachInvocationContext"/> from the saga's
+    /// persisted parent-ForEach columns so every <see cref="AgentInvokeRequested"/> published while
+    /// the child saga runs carries the same iteration metadata. Returns <c>null</c> outside a
+    /// ForEach iteration, which keeps the <c>LoopContext</c> field unset on non-loop dispatches.
+    /// </summary>
+    internal static ForEachInvocationContext? BuildLoopContextFromSaga(WorkflowSagaStateEntity saga)
+    {
+        if (saga.ParentForEachItemJson is null
+            || saga.ParentForEachIndex is not int index
+            || saga.ParentForEachCount is not int count)
+        {
+            return null;
+        }
+
+        return new ForEachInvocationContext(saga.ParentForEachItemJson, index, count);
+    }
 
     internal static string ResolveLoopDecision(WorkflowNode reviewLoopNode)
         => string.IsNullOrWhiteSpace(reviewLoopNode.LoopDecision)
@@ -486,8 +510,29 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         // ReviewLoop parent: map the child's terminal decision to either (a) a specific output
         // port on the ReviewLoop node (Approved/Exhausted/Failed) or (b) a directive to re-invoke
         // the child workflow for the next round. Plain Subflow parents fall through unchanged.
+        // ForEach parent: per-iteration completion is fully owned by HandleForEachIterationCompletionAsync —
+        // it either spawns the next iteration or writes the aggregate output + routes Continue,
+        // bypassing the boundary output script + per-subflow decision row path below.
         var parentNode = workflow.FindNode(message.ParentNodeId);
         var effectivePortName = message.OutputPortName;
+
+        if (parentNode?.Kind == WorkflowNodeKind.ForEach)
+        {
+            var handled = await HandleForEachIterationCompletionAsync(
+                context,
+                scriptHost,
+                artifactStore,
+                saga,
+                workflow,
+                parentNode,
+                childEffectivePort: message.OutputPortName,
+                childOutputRef: message.OutputRef);
+            if (handled)
+            {
+                saga.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+        }
 
         if (parentNode?.Kind == WorkflowNodeKind.ReviewLoop)
         {
@@ -2261,7 +2306,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         int? reviewRound = null,
         int? reviewMaxRounds = null,
         string? loopDecision = null,
-        bool runInputScript = true)
+        bool runInputScript = true,
+        ForEachInvocationContext? loopContext = null)
     {
         if (string.IsNullOrWhiteSpace(subflowNode.SubflowKey))
         {
@@ -2316,7 +2362,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewMaxRounds: reviewMaxRounds,
             LoopDecision: loopDecision,
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: loopContext));
     }
 
     internal static async Task PublishHandoffAsync(
@@ -2381,7 +2428,8 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewMaxRounds: saga.ParentReviewMaxRounds,
             OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder,
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: BuildLoopContextFromSaga(saga)));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(

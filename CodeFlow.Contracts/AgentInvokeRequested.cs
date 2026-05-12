@@ -39,7 +39,12 @@ public sealed record AgentInvokeRequested(
     // the workspace root host tools jail to. Null on dispatches that don't operate on a per-trace
     // workspace; the consumer falls through to the legacy per-repo ToolExecutionContext in that
     // case.
-    string? TraceWorkDir = null);
+    string? TraceWorkDir = null,
+    // sc-943 ForEach iteration context: populated when the dispatching saga is inside a ForEach
+    // iteration. Renderer maps these to top-level prompt-template variables (loop.item, loop.index,
+    // loop.count, loop.isLast) the same way ReviewRound becomes `round`. Null on every dispatch
+    // outside a ForEach iteration.
+    ForEachInvocationContext? LoopContext = null);
 
 /// <summary>
 /// Per-invocation Swarm context piggybacked onto <see cref="AgentInvokeRequested"/> when the

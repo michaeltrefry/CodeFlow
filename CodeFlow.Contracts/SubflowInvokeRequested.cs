@@ -54,4 +54,10 @@ public sealed record SubflowInvokeRequested(
     int? ReviewMaxRounds = null,
     string? LoopDecision = null,
     IReadOnlyList<RepositoryDeclaration>? Repositories = null,
-    string? TraceWorkDir = null);
+    string? TraceWorkDir = null,
+    // sc-943 ForEach iteration: populated when this subflow invocation is one iteration of a parent
+    // ForEach node. The child saga persists these onto its own state at init so every descendant
+    // agent dispatch carries the same iteration context and the prompt-template scope sees
+    // {{ loop.item }} / {{ loop.index }} / {{ loop.count }} / {{ loop.isLast }}. Null on plain
+    // Subflow / ReviewLoop invocations.
+    ForEachInvocationContext? LoopContext = null);

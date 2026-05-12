@@ -170,6 +170,16 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("foreach_item_outputs_json")
             .HasColumnType("longtext");
 
+        builder.Property(saga => saga.ParentForEachItemJson)
+            .HasColumnName("parent_foreach_item_json")
+            .HasColumnType("longtext");
+
+        builder.Property(saga => saga.ParentForEachIndex)
+            .HasColumnName("parent_foreach_index");
+
+        builder.Property(saga => saga.ParentForEachCount)
+            .HasColumnName("parent_foreach_count");
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);

@@ -377,7 +377,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Assignment: null,
                 EarlyTerminated: null),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: BuildLoopContextFromSaga(saga)));
     }
 
     /// <summary>
@@ -442,7 +443,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Assignment: null,
                 EarlyTerminated: earlyTerminated),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: BuildLoopContextFromSaga(saga)));
     }
 
     /// <summary>
@@ -655,7 +657,8 @@ public sealed partial class WorkflowSagaStateMachine
                 Assignment: null,
                 EarlyTerminated: null),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-            TraceWorkDir: saga.TraceWorkDir));
+            TraceWorkDir: saga.TraceWorkDir,
+            LoopContext: BuildLoopContextFromSaga(saga)));
     }
 
     /// <summary>
@@ -794,7 +797,8 @@ public sealed partial class WorkflowSagaStateMachine
                     Assignment: assignment,
                     EarlyTerminated: null),
                 Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
-                TraceWorkDir: saga.TraceWorkDir));
+                TraceWorkDir: saga.TraceWorkDir,
+                LoopContext: BuildLoopContextFromSaga(saga)));
         }
 
         return null;
