@@ -281,6 +281,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item subflow" (click)="addPaletteNode('Subflow')">Subflow</button>
             <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
             <button type="button" class="palette-item swarm" (click)="addPaletteNode('Swarm')">Swarm</button>
+            <button type="button" class="palette-item foreach" (click)="addPaletteNode('ForEach')">For Each</button>
           </div>
         </div>
 
@@ -899,6 +900,87 @@ function defaultStartInput(): WorkflowInput {
               </div>
             }
 
+            @if (sel.editor.kind === 'ForEach') {
+              <div class="inspector-section">
+                <p class="muted xsmall">
+                  A ForEach node iterates over a workflow-context collection, spawning the chosen child
+                  workflow once per item. Each iteration's child sees <code>{{ '{{ loop.item }}' }}</code>,
+                  <code>{{ '{{ loop.index }}' }}</code>, <code>{{ '{{ loop.count }}' }}</code>, and
+                  <code>{{ '{{ loop.isLast }}' }}</code> in its prompt scope. The per-item outputs
+                  aggregate into a JSON array on the synthesized <code>Continue</code> port; the first
+                  child failure aborts via <code>Failed</code>.
+                </p>
+
+                <label class="field">
+                  <span>Collection expression <span class="muted xsmall">(Scriban expression against workflow context)</span></span>
+                  <input type="text" placeholder="workflow.implementationTasks"
+                         [ngModel]="sel.editor.collectionExpression ?? ''"
+                         (ngModelChange)="onForEachCollectionExpressionChanged(sel.editor, $event)" />
+                  @if (!sel.editor.collectionExpression) {
+                    <cf-chip variant="err" dot>collectionExpression is required.</cf-chip>
+                  }
+                </label>
+
+                <label class="field">
+                  <span>Item var <span class="muted xsmall">(per-iteration binding name; default <code>item</code>)</span></span>
+                  <input type="text" placeholder="item"
+                         [ngModel]="sel.editor.itemVar ?? ''"
+                         (ngModelChange)="onForEachItemVarChanged(sel.editor, $event)" />
+                  @if (forEachItemVarError(sel.editor); as msg) {
+                    <cf-chip variant="err" dot>{{ msg }}</cf-chip>
+                  }
+                </label>
+
+                <label class="field">
+                  <span>Child workflow <span class="muted xsmall">(invoked once per item)</span></span>
+                  <select [ngModel]="sel.editor.subflowKey ?? ''"
+                          (ngModelChange)="onSubflowKeyChanged(sel.editor, $event)">
+                    <option value="">(pick workflow)</option>
+                    @for (wf of availableSubflowTargets(); track wf.key) {
+                      <option [value]="wf.key">{{ subflowPickerLabel(wf) }}</option>
+                    }
+                  </select>
+                  @if (sel.editor.subflowKey && sel.editor.subflowKey === workflowKey()) {
+                    <cf-chip variant="err" dot>Self-reference — save will be rejected.</cf-chip>
+                  }
+                </label>
+
+                <label class="field">
+                  <span>Version <span class="muted xsmall">(blank = latest at save)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.subflowVersion ?? null"
+                         (ngModelChange)="onSubflowVersionChanged(sel.editor, $event)" />
+                </label>
+
+                @if (selectedSubflowDetail(); as detail) {
+                  <div class="field">
+                    <span class="field-label">Child workflow outline</span>
+                    <div class="subflow-outline">
+                      <div class="row-spread">
+                        <strong class="mono small">{{ detail.name }}</strong>
+                        <span class="muted xsmall">v{{ detail.version }} · {{ detail.nodes.length }} nodes</span>
+                      </div>
+                      <ul class="subflow-nodes">
+                        @for (n of detail.nodes; track n.id) {
+                          <li><cf-chip mono>{{ n.kind }}</cf-chip> <span class="mono xsmall">{{ labelForOutline(n) }}</span></li>
+                        }
+                      </ul>
+                    </div>
+                  </div>
+                }
+
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(synthesized — authors don't declare them)</span></span>
+                  <ul class="port-list mono">
+                    <li><code>Continue</code> <span class="muted xsmall">(emitted with the aggregate per-item outputs JSON when the iteration finishes)</span></li>
+                    <li class="implicit">
+                      <code>Failed</code> <span class="muted xsmall">(implicit; emitted on the first child failure with the failing index in failure_reason)</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            }
+
             <div class="inspector-section dataflow-section">
               <div class="row-spread">
                 <div class="panel-title-inline">Data flow</div>
@@ -1374,6 +1456,7 @@ function defaultStartInput(): WorkflowInput {
     .palette-item.subflow { border-left: 4px solid #2ea3f2; }
     .palette-item.reviewloop { border-left: 4px solid #f5a623; }
     .palette-item.swarm { border-left: 4px solid #ff7eb6; }
+    .palette-item.foreach { border-left: 4px solid #79c0ff; }
     .panel-title {
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -1449,6 +1532,7 @@ function defaultStartInput(): WorkflowInput {
     .inspector-kind.hitl { background: rgba(188, 140, 255, 0.2); color: #bc8cff; }
     .inspector-kind.escalation { background: rgba(248, 81, 73, 0.2); color: #f85149; }
     .inspector-kind.subflow { background: rgba(46, 163, 242, 0.2); color: #2ea3f2; }
+    .inspector-kind.foreach { background: rgba(121, 192, 255, 0.2); color: #79c0ff; }
     .inspector-kind.connection { background: rgba(255, 209, 102, 0.16); color: #ffd166; }
     .subflow-outline {
       padding: 0.5rem;
@@ -2299,12 +2383,20 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       ? { swarmProtocol: 'Sequential' as const, swarmN: 3 }
       : {};
 
+    // sc-944 / FE-3: ForEach validator requires both collectionExpression and itemVar.
+    // Seed itemVar with the default 'item' so the author only needs to fill in the
+    // expression + pick a child workflow before the inspector validates.
+    const forEachDefaults = kind === 'ForEach'
+      ? { itemVar: 'item' }
+      : {};
+
     const node = new WorkflowEditorNode({
       nodeId: crypto.randomUUID(),
       kind,
-      label: labelFor({ kind, agentKey: null, ...swarmDefaults }),
+      label: labelFor({ kind, agentKey: null, ...swarmDefaults, ...forEachDefaults }),
       outputPorts: defaultOutputPortsFor(kind),
-      ...swarmDefaults
+      ...swarmDefaults,
+      ...forEachDefaults
     });
 
     await this.editor.addNode(node);
@@ -2346,7 +2438,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
         disabled: !hasAgent,
         disabledReason: hasAgent ? undefined : 'Pick an agent on the inspector first.'
       });
-    } else if (node.kind === 'Subflow' || node.kind === 'ReviewLoop') {
+    } else if (node.kind === 'Subflow' || node.kind === 'ReviewLoop' || node.kind === 'ForEach') {
       const hasChild = !!node.subflowKey;
       items.push({
         id: 'update-to-latest',
@@ -2540,6 +2632,22 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     this.area?.update('node', node.id);
     this.selectedNodeId.set(this.selectedNodeId());
 
+    // sc-944: ForEach nodes have a fixed `Continue` port regardless of the child workflow's
+    // terminals — the aggregate output is synthesized by the runtime, not inherited from the
+    // child. Skip the terminal-port refresh entirely; the default seeded in addPaletteNode and
+    // loadIntoEditor already covers Continue.
+    if (node.kind === 'ForEach') {
+      if (!value) {
+        this.selectedSubflowDetail.set(null);
+        return;
+      }
+      this.api.getLatest(value).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+        next: detail => this.selectedSubflowDetail.set(detail),
+        error: () => this.selectedSubflowDetail.set(null)
+      });
+      return;
+    }
+
     if (!value) {
       this.selectedSubflowDetail.set(null);
       this.applyNodePorts(node, []);
@@ -2558,7 +2666,44 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     node.subflowVersion = value && value > 0 ? value : null;
     node.label = labelFor(node);
     this.area?.update('node', node.id);
+    // ForEach's port set is fixed (Continue + implicit Failed); skip the terminal-port refresh.
+    if (node.kind === 'ForEach') return;
     this.refreshSubflowPorts(node);
+  }
+
+  onForEachCollectionExpressionChanged(node: WorkflowEditorNode, value: string): void {
+    const trimmed = value?.trim() ?? '';
+    node.collectionExpression = trimmed.length === 0 ? null : trimmed;
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  onForEachItemVarChanged(node: WorkflowEditorNode, value: string): void {
+    const trimmed = value?.trim() ?? '';
+    node.itemVar = trimmed.length === 0 ? null : trimmed;
+    this.area?.update('node', node.id);
+  }
+
+  /**
+   * Inline mirror of the FE-3 server-side ForEach itemVar rules (sc-944):
+   * required, must match `^[a-zA-Z_][a-zA-Z0-9_]*$`, must not be one of the reserved
+   * names `index` / `count` / `isLast` (they collide with the implicit `loop.*` siblings
+   * the runtime binds into the child Scriban scope). Returns null when valid so the
+   * inspector chip stays hidden.
+   */
+  forEachItemVarError(node: WorkflowEditorNode): string | null {
+    if (node.kind !== 'ForEach') return null;
+    const raw = node.itemVar?.trim() ?? '';
+    if (raw.length === 0) {
+      return 'itemVar is required (default: item).';
+    }
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(raw)) {
+      return 'itemVar must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (identifier syntax).';
+    }
+    if (raw === 'index' || raw === 'count' || raw === 'isLast') {
+      return `itemVar '${raw}' is reserved — it collides with the implicit loop.* siblings.`;
+    }
+    return null;
   }
 
   onReviewMaxRoundsChanged(node: WorkflowEditorNode, value: number | null): void {

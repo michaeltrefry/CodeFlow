@@ -45,6 +45,12 @@ export const IMPLICIT_FAILED_PORT = 'Failed';
  *  ReviewLoop's declared `outputPorts` for the same reason it rejects "Failed"). */
 export const REVIEW_LOOP_EXHAUSTED_PORT = 'Exhausted';
 
+/** Synthesized terminal port emitted by ForEach nodes when the iteration completes (sc-944).
+ *  Authors never declare it; loadIntoEditor pads it onto a ForEach's declared ports so rete
+ *  can render the matching edge handle, and serializeEditor strips it on save (the validator
+ *  rejects any author-declared port on a ForEach node). */
+export const FOR_EACH_CONTINUE_PORT = 'Continue';
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
@@ -72,6 +78,10 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   coordinatorAgentKey: string | null = null;
   coordinatorAgentVersion: number | null = null;
   swarmTokenBudget: number | null = null;
+  // ForEach nodes only (sc-942 / sc-944). Validator demands collectionExpression (Scriban-parseable)
+  // and itemVar (valid identifier, not in {index, count, isLast}); default itemVar is 'item'.
+  collectionExpression: string | null = null;
+  itemVar: string | null = null;
   traceState: WorkflowNodeTraceState = null;
   /**
    * Token Usage Tracking [Slice 7]: optional per-node overlay populated by the
@@ -115,6 +125,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     coordinatorAgentKey?: string | null;
     coordinatorAgentVersion?: number | null;
     swarmTokenBudget?: number | null;
+    collectionExpression?: string | null;
+    itemVar?: string | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -138,6 +150,8 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.coordinatorAgentKey = params.coordinatorAgentKey ?? null;
     this.coordinatorAgentVersion = params.coordinatorAgentVersion ?? null;
     this.swarmTokenBudget = params.swarmTokenBudget ?? null;
+    this.collectionExpression = params.collectionExpression ?? null;
+    this.itemVar = params.itemVar ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));

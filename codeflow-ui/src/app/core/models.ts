@@ -630,7 +630,7 @@ export interface NotificationDeliveryAttemptListQuery {
   limit?: number | null;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm' | 'ForEach';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -665,6 +665,11 @@ export interface WorkflowNode {
   coordinatorAgentKey?: string | null;
   coordinatorAgentVersion?: number | null;
   swarmTokenBudget?: number | null;
+  // ForEach nodes only (sc-942/sc-944). Scriban expression evaluated against workflow context
+  // that yields the collection to iterate; iteration variable name bound under `loop.item` in
+  // the child Scriban scope (default 'item' at the editor layer).
+  collectionExpression?: string | null;
+  itemVar?: string | null;
 }
 
 export interface WorkflowEdge {
