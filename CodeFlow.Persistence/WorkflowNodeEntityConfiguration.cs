@@ -129,6 +129,14 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
         builder.Property(node => node.SwarmTokenBudget)
             .HasColumnName("swarm_token_budget");
 
+        builder.Property(node => node.CollectionExpression)
+            .HasColumnName("collection_expression")
+            .HasColumnType("longtext");
+
+        builder.Property(node => node.ItemVar)
+            .HasColumnName("item_var")
+            .HasMaxLength(128);
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

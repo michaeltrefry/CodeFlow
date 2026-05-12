@@ -127,7 +127,9 @@ public sealed record WorkflowNodeDraft(
     int? SynthesizerAgentVersion = null,
     string? CoordinatorAgentKey = null,
     int? CoordinatorAgentVersion = null,
-    int? SwarmTokenBudget = null);
+    int? SwarmTokenBudget = null,
+    string? CollectionExpression = null,
+    string? ItemVar = null);
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,

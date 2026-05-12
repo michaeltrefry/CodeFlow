@@ -273,6 +273,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         CoordinatorAgentKey = NormalizeOptionalString(node.CoordinatorAgentKey),
                         CoordinatorAgentVersion = node.CoordinatorAgentVersion,
                         SwarmTokenBudget = node.SwarmTokenBudget,
+                        CollectionExpression = node.CollectionExpression,
+                        ItemVar = NormalizeOptionalString(node.ItemVar),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -397,7 +399,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.SynthesizerAgentVersion,
             entity.CoordinatorAgentKey,
             entity.CoordinatorAgentVersion,
-            entity.SwarmTokenBudget);
+            entity.SwarmTokenBudget,
+            entity.CollectionExpression,
+            entity.ItemVar);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

@@ -55,7 +55,9 @@ internal static class WorkflowMappings
                 SynthesizerAgentVersion: node.SynthesizerAgentVersion,
                 CoordinatorAgentKey: node.CoordinatorAgentKey,
                 CoordinatorAgentVersion: node.CoordinatorAgentVersion,
-                SwarmTokenBudget: node.SwarmTokenBudget))
+                SwarmTokenBudget: node.SwarmTokenBudget,
+                CollectionExpression: node.CollectionExpression,
+                ItemVar: node.ItemVar))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

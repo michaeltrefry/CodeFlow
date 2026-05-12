@@ -52,4 +52,10 @@ public sealed record WorkflowNode(
     // contributors, and synthesizer for this node only). Null = unbounded. > 0 when set. The
     // saga checks the budget after each contributor completion and may run the synthesizer early
     // with swarmEarlyTerminated = true. See docs/swarm-node.md §"Token budget".
-    int? SwarmTokenBudget = null);
+    int? SwarmTokenBudget = null,
+    // ForEach nodes (sc-942): Scriban expression evaluated against workflow context that yields
+    // the collection to iterate. Required and non-empty for ForEach; null on every other kind.
+    string? CollectionExpression = null,
+    // ForEach nodes (sc-942): author-chosen identifier bound under `loop.item` in the child
+    // Scriban scope. Defaults to "item" at the API/UI layer; null on every other kind.
+    string? ItemVar = null);

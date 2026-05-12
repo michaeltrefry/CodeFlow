@@ -295,4 +295,85 @@ public sealed class WorkflowSagaPersistenceTests : IAsyncLifetime
             history[1].NodeEnteredAtUtc.Should().BeNull();
         }
     }
+
+    [Fact]
+    public async Task Saga_ShouldRoundTripForEachIterationColumns()
+    {
+        // Covers Slice FE-1 of the ForEach iteration node-kind epic: the saga state carries
+        // three new columns — current_foreach_index, foreach_total_items, foreach_item_outputs_json
+        // — that mirror the parent_review_round / pending_parallel_round_ids_json patterns from
+        // prior node kinds. Schema-only validation here; FE-2 wires the dispatcher and lifecycle.
+        var options = new DbContextOptionsBuilder<CodeFlowDbContext>();
+        CodeFlowDbContextOptions.Configure(options, connectionString!);
+
+        await using (var migrationContext = new CodeFlowDbContext(options.Options))
+        {
+            await migrationContext.Database.MigrateAsync();
+        }
+
+        var correlationId = Guid.NewGuid();
+        const string itemOutputsJson = """[{"summary":"first item done"},{"summary":"second item done"}]""";
+
+        await using (var writeContext = new CodeFlowDbContext(options.Options))
+        {
+            writeContext.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = correlationId,
+                TraceId = Guid.NewGuid(),
+                CurrentState = "Running",
+                CurrentAgentKey = "foreach-host",
+                CurrentRoundId = Guid.NewGuid(),
+                WorkflowKey = "foreach-driver",
+                WorkflowVersion = 1,
+                CurrentForEachIndex = 2,
+                ForEachTotalItems = 3,
+                ForEachItemOutputsJson = itemOutputsJson,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await writeContext.SaveChangesAsync();
+        }
+
+        await using (var readContext = new CodeFlowDbContext(options.Options))
+        {
+            var loaded = await readContext.WorkflowSagas
+                .AsNoTracking()
+                .SingleAsync(s => s.CorrelationId == correlationId);
+
+            loaded.CurrentForEachIndex.Should().Be(2);
+            loaded.ForEachTotalItems.Should().Be(3);
+            loaded.ForEachItemOutputsJson.Should().Be(itemOutputsJson);
+        }
+
+        // A saga outside any ForEach node — all three columns must default to NULL so legacy
+        // rows and non-ForEach sagas keep their existing shape.
+        var nonForEachCorrelationId = Guid.NewGuid();
+        await using (var writeContext = new CodeFlowDbContext(options.Options))
+        {
+            writeContext.WorkflowSagas.Add(new WorkflowSagaStateEntity
+            {
+                CorrelationId = nonForEachCorrelationId,
+                TraceId = Guid.NewGuid(),
+                CurrentState = "Running",
+                CurrentAgentKey = "plain",
+                CurrentRoundId = Guid.NewGuid(),
+                WorkflowKey = "plain-flow",
+                WorkflowVersion = 1,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await writeContext.SaveChangesAsync();
+        }
+
+        await using (var readContext = new CodeFlowDbContext(options.Options))
+        {
+            var nonForEach = await readContext.WorkflowSagas
+                .AsNoTracking()
+                .SingleAsync(s => s.CorrelationId == nonForEachCorrelationId);
+
+            nonForEach.CurrentForEachIndex.Should().BeNull();
+            nonForEach.ForEachTotalItems.Should().BeNull();
+            nonForEach.ForEachItemOutputsJson.Should().BeNull();
+        }
+    }
 }

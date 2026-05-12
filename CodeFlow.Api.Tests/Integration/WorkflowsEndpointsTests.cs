@@ -1720,7 +1720,9 @@ public sealed class WorkflowsEndpointsTests
         string? InputScript = null,
         int? AgentVersion = null,
         string? SubflowKey = null,
-        int? SubflowVersion = null);
+        int? SubflowVersion = null,
+        string? CollectionExpression = null,
+        string? ItemVar = null);
 
     private sealed record EdgePayload(Guid FromNodeId, string FromPort, Guid ToNodeId, string ToPort, bool RotatesRound);
 
@@ -1803,6 +1805,75 @@ public sealed class WorkflowsEndpointsTests
         var reloadedAccept = detail.Nodes.Single(n => n.Id == acceptId);
         reloadedAccept.OutputScript.Should().BeNull();
         reloadedAccept.OutputPorts.Should().Equal("Completed");
+    }
+
+    [Fact]
+    public async Task Post_ThenGet_RoundTripsForEachNodeFields()
+    {
+        // sc-942 / FE-1: a ForEach node carries CollectionExpression + ItemVar plus the existing
+        // SubflowKey + SubflowVersion slots. All four must survive an API POST → GET round-trip.
+        // No dispatcher / validator-rules behavior yet — FE-2 / FE-3 land that work.
+        using var client = factory.CreateClient();
+        await SeedAgentAsync(client, "wf-foreach-kickoff");
+
+        var startId = Guid.NewGuid();
+        var forEachId = Guid.NewGuid();
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "foreach-round-trip",
+            name = "ForEach round trip",
+            maxRoundsPerRound = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = startId,
+                    kind = "Start",
+                    agentKey = "wf-foreach-kickoff",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                },
+                new
+                {
+                    id = forEachId,
+                    kind = "ForEach",
+                    agentKey = (string?)null,
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = Array.Empty<string>(),
+                    layoutX = 200,
+                    layoutY = 0,
+                    subflowKey = "per-item-flow",
+                    subflowVersion = (int?)null,
+                    collectionExpression = "workflow.items",
+                    itemVar = "row"
+                }
+            },
+            edges = new object[]
+            {
+                new { fromNodeId = startId, fromPort = "Completed", toNodeId = forEachId, toPort = "in", rotatesRound = false, sortOrder = 0 }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var detail = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/foreach-round-trip");
+        detail.Should().NotBeNull();
+
+        var reloadedForEach = detail!.Nodes.Single(n => n.Id == forEachId);
+        reloadedForEach.Kind.Should().Be("ForEach");
+        reloadedForEach.CollectionExpression.Should().Be("workflow.items");
+        reloadedForEach.ItemVar.Should().Be("row");
+        reloadedForEach.SubflowKey.Should().Be("per-item-flow");
+        reloadedForEach.SubflowVersion.Should().BeNull("null subflowVersion encodes 'latest at save' until resolution");
+
+        var reloadedStart = detail.Nodes.Single(n => n.Id == startId);
+        reloadedStart.CollectionExpression.Should().BeNull("non-ForEach nodes round-trip with null CollectionExpression");
+        reloadedStart.ItemVar.Should().BeNull();
     }
 
     [Fact]

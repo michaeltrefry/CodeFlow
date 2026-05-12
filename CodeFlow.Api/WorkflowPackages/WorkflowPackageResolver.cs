@@ -180,7 +180,9 @@ public sealed class WorkflowPackageResolver(
                 SynthesizerAgentVersion: node.SynthesizerAgentVersion,
                 CoordinatorAgentKey: NormalizeOptional(node.CoordinatorAgentKey),
                 CoordinatorAgentVersion: node.CoordinatorAgentVersion,
-                SwarmTokenBudget: node.SwarmTokenBudget));
+                SwarmTokenBudget: node.SwarmTokenBudget,
+                CollectionExpression: node.CollectionExpression,
+                ItemVar: NormalizeOptional(node.ItemVar)));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

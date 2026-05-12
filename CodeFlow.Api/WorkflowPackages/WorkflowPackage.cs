@@ -93,7 +93,11 @@ public sealed record WorkflowPackageWorkflowNode(
     int? SynthesizerAgentVersion = null,
     string? CoordinatorAgentKey = null,
     int? CoordinatorAgentVersion = null,
-    int? SwarmTokenBudget = null);
+    int? SwarmTokenBudget = null,
+    // ForEach-node fields (sc-942). Null on every other kind. Carried through the package so
+    // library examples (FE-5) and exports round-trip ForEach configuration end-to-end.
+    string? CollectionExpression = null,
+    string? ItemVar = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,
