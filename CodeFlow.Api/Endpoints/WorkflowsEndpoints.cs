@@ -1225,7 +1225,9 @@ public static class WorkflowsEndpoints
                     SynthesizerAgentVersion: node.SynthesizerAgentVersion,
                     CoordinatorAgentKey: node.CoordinatorAgentKey,
                     CoordinatorAgentVersion: node.CoordinatorAgentVersion,
-                    SwarmTokenBudget: node.SwarmTokenBudget))
+                    SwarmTokenBudget: node.SwarmTokenBudget,
+                    CollectionExpression: node.CollectionExpression,
+                    ItemVar: node.ItemVar))
                 .ToArray(),
             Edges: edges
                 .Select((edge, index) => new WorkflowEdgeDraft(

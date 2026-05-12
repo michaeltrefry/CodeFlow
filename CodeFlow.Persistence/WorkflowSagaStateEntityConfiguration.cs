@@ -160,6 +160,16 @@ public sealed class WorkflowSagaStateEntityConfiguration : IEntityTypeConfigurat
             .HasColumnName("trace_work_dir")
             .HasColumnType("text");
 
+        builder.Property(saga => saga.CurrentForEachIndex)
+            .HasColumnName("current_foreach_index");
+
+        builder.Property(saga => saga.ForEachTotalItems)
+            .HasColumnName("foreach_total_items");
+
+        builder.Property(saga => saga.ForEachItemOutputsJson)
+            .HasColumnName("foreach_item_outputs_json")
+            .HasColumnType("longtext");
+
         builder.HasIndex(saga => saga.ParentTraceId);
 
         builder.Ignore(saga => saga.PendingTransition);

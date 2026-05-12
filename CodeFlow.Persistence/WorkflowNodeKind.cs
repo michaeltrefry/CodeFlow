@@ -9,5 +9,6 @@ public enum WorkflowNodeKind
     Subflow = 4,
     ReviewLoop = 5,
     Transform = 6,
-    Swarm = 7
+    Swarm = 7,
+    ForEach = 8
 }

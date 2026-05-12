@@ -63,4 +63,8 @@ public sealed class WorkflowNodeEntity
     public int? CoordinatorAgentVersion { get; set; }
 
     public int? SwarmTokenBudget { get; set; }
+
+    public string? CollectionExpression { get; set; }
+
+    public string? ItemVar { get; set; }
 }

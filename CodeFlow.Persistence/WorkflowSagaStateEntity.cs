@@ -180,6 +180,28 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? TraceWorkDir { get; set; }
 
     /// <summary>
+    /// ForEach iteration cursor (sc-942): zero-based index of the iteration the saga is currently
+    /// dispatching (or just completed). Null whenever the saga is outside a ForEach node, including
+    /// before the first dispatch and after the aggregate output has been routed. Mirrors the
+    /// <see cref="CurrentSwarmNodeId"/> / <see cref="ParentReviewRound"/> patterns from prior node
+    /// kinds — wired by FE-2.
+    /// </summary>
+    public int? CurrentForEachIndex { get; set; }
+
+    /// <summary>
+    /// ForEach iteration size (sc-942): snapshot of the evaluated collection's length captured on
+    /// first dispatch. Null whenever the saga is outside a ForEach node. Wired by FE-2.
+    /// </summary>
+    public int? ForEachTotalItems { get; set; }
+
+    /// <summary>
+    /// ForEach aggregate output (sc-942): JSON array of per-item child outputs appended as each
+    /// iteration completes. Final value becomes the node's terminal artifact. Null whenever the
+    /// saga is outside a ForEach node. Wired by FE-2.
+    /// </summary>
+    public string? ForEachItemOutputsJson { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>

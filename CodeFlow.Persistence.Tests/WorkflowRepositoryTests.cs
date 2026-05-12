@@ -342,6 +342,62 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripForEachNodeFields()
+    {
+        // Covers Slice FE-1 of the ForEach iteration node-kind epic: a ForEach node carries a
+        // CollectionExpression (Scriban expression) plus a per-iteration ItemVar. Both fields
+        // must survive a save/load cycle, and non-ForEach nodes must round-trip with null on
+        // both columns. No dispatcher behavior yet — FE-2 wires the saga lifecycle.
+        var workflowKey = $"foreach-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var forEachNodeId = Guid.NewGuid();
+        var passthroughAgentNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "ForEach round-trip",
+            MaxStepsPerSaga: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(forEachNodeId, WorkflowNodeKind.ForEach, AgentKey: null,
+                    AgentVersion: null, OutputScript: null,
+                    OutputPorts: Array.Empty<string>(),
+                    LayoutX: 250, LayoutY: 0,
+                    SubflowKey: "per-item-flow", SubflowVersion: 1,
+                    CollectionExpression: "workflow.implementationTasks",
+                    ItemVar: "task"),
+                new WorkflowNodeDraft(passthroughAgentNodeId, WorkflowNodeKind.Agent, "passthrough", 1,
+                    null, new[] { "Completed", "Failed" }, 500, 0)
+            ],
+            Edges: Array.Empty<WorkflowEdgeDraft>(),
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var forEachNode = reloaded.Nodes.Single(n => n.Id == forEachNodeId);
+        forEachNode.Kind.Should().Be(WorkflowNodeKind.ForEach);
+        forEachNode.CollectionExpression.Should().Be("workflow.implementationTasks");
+        forEachNode.ItemVar.Should().Be("task");
+        forEachNode.SubflowKey.Should().Be("per-item-flow");
+        forEachNode.SubflowVersion.Should().Be(1);
+
+        var agentNode = reloaded.Nodes.Single(n => n.Id == passthroughAgentNodeId);
+        agentNode.CollectionExpression.Should().BeNull("non-ForEach nodes must round-trip with null CollectionExpression");
+        agentNode.ItemVar.Should().BeNull("non-ForEach nodes must round-trip with null ItemVar");
+
+        var startNode = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        startNode.CollectionExpression.Should().BeNull();
+        startNode.ItemVar.Should().BeNull();
+    }
+
+    [Fact]
     public async Task CreateNewVersionAsync_ShouldRoundTripOptOutLastRoundReminderFlag()
     {
         // P2 (Workflow Authoring DX): the workflow node carries an OptOutLastRoundReminder flag

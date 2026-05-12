@@ -202,6 +202,8 @@ public sealed class GetWorkflowTool(IWorkflowRepository repository) : IAssistant
                     contributorAgentKey = n.ContributorAgentKey,
                     synthesizerAgentKey = n.SynthesizerAgentKey,
                     coordinatorAgentKey = n.CoordinatorAgentKey,
+                    collectionExpression = n.CollectionExpression,
+                    itemVar = n.ItemVar,
                 })
                 .ToArray(),
             edges = workflow.Edges

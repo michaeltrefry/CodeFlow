@@ -263,7 +263,9 @@ public sealed class WorkflowPackageImporter(
             SynthesizerAgentVersion: node.SynthesizerAgentVersion,
             CoordinatorAgentKey: node.CoordinatorAgentKey,
             CoordinatorAgentVersion: node.CoordinatorAgentVersion,
-            SwarmTokenBudget: node.SwarmTokenBudget);
+            SwarmTokenBudget: node.SwarmTokenBudget,
+            CollectionExpression: node.CollectionExpression,
+            ItemVar: node.ItemVar);
 
     private static WorkflowEdgeDto ToDto(WorkflowPackageWorkflowEdge edge) =>
         new(
@@ -1798,6 +1800,8 @@ public sealed class WorkflowPackageImporter(
                         CoordinatorAgentKey = Trim(node.CoordinatorAgentKey),
                         CoordinatorAgentVersion = node.CoordinatorAgentVersion,
                         SwarmTokenBudget = node.SwarmTokenBudget,
+                        CollectionExpression = node.CollectionExpression,
+                        ItemVar = Trim(node.ItemVar),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -1955,7 +1959,9 @@ public sealed class WorkflowPackageImporter(
             node.SynthesizerAgentVersion ?? packageNode?.SynthesizerAgentVersion,
             NormalizeOptional(node.CoordinatorAgentKey),
             node.CoordinatorAgentVersion ?? packageNode?.CoordinatorAgentVersion,
-            node.SwarmTokenBudget);
+            node.SwarmTokenBudget,
+            node.CollectionExpression,
+            NormalizeOptional(node.ItemVar));
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,

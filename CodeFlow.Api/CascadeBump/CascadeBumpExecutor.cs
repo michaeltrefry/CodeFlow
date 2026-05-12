@@ -176,6 +176,8 @@ public sealed class CascadeBumpExecutor(
             SynthesizerAgentVersion: synthesizerVersion,
             CoordinatorAgentKey: node.CoordinatorAgentKey,
             CoordinatorAgentVersion: coordinatorVersion,
-            SwarmTokenBudget: node.SwarmTokenBudget);
+            SwarmTokenBudget: node.SwarmTokenBudget,
+            CollectionExpression: node.CollectionExpression,
+            ItemVar: node.ItemVar);
     }
 }
