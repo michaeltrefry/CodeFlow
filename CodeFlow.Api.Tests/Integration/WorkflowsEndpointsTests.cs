@@ -1403,6 +1403,42 @@ public sealed class WorkflowsEndpointsTests
         reviewerJson.Should().Contain("loop.item.constraints");
     }
 
+    /// <summary>
+    /// sc-947 followup — catches the class of bug that fired on trace
+    /// 99c234c2-73ac-4a44-a03a-0bc85684070e: the dev agent's systemPrompt referenced
+    /// `{{ if round == 1 }}` inline (as documentation) but Scriban parses every
+    /// `{{ ... }}` block regardless of surrounding markdown, so the unclosed if exploded
+    /// the prompt-template renderer with `Error while parsing if statement`. Every
+    /// systemPrompt / promptTemplate shipped in a library agent package must Scriban-parse
+    /// cleanly so this never reaches an import again.
+    /// </summary>
+    [Theory]
+    [InlineData("shortcut-story-foreach-migration-v1-package.json")]
+    [InlineData("foreach-iteration-demo-v1-package.json")]
+    public void LibraryWorkflowPackage_AgentPrompts_ScribanParseClean(string fileName)
+    {
+        var path = LocateLibraryPackage(fileName);
+        var json = File.ReadAllText(path);
+        using var doc = JsonDocument.Parse(json);
+        var agents = doc.RootElement.GetProperty("agents").EnumerateArray().ToList();
+        agents.Should().NotBeEmpty($"{fileName} should ship at least one agent");
+
+        foreach (var agent in agents)
+        {
+            var key = agent.GetProperty("key").GetString()!;
+            var config = agent.GetProperty("config");
+            foreach (var field in new[] { "systemPrompt", "promptTemplate" })
+            {
+                if (!config.TryGetProperty(field, out var prop) || prop.ValueKind != JsonValueKind.String) continue;
+                var template = prop.GetString()!;
+                var parsed = Scriban.Template.Parse(template);
+                parsed.HasErrors.Should().BeFalse(
+                    $"agent '{key}' field '{field}' in {fileName} must Scriban-parse cleanly. " +
+                    $"Errors: {string.Join("; ", parsed.Messages.Where(m => m.Type == Scriban.Parsing.ParserMessageType.Error).Select(m => m.Message))}");
+            }
+        }
+    }
+
     private static string LocateLibraryPackage(string fileName)
     {
         var dir = AppContext.BaseDirectory;
