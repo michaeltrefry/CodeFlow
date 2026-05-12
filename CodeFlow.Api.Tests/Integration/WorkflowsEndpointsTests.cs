@@ -1341,6 +1341,68 @@ public sealed class WorkflowsEndpointsTests
         childNodes[0].GetProperty("agentKey").GetString().Should().Be("foreach-iteration-demo-item");
     }
 
+    [Fact]
+    public async Task ApplyPackageImport_ShortcutStoryForeachMigrationV1_RoundTripsAgentsAndChildWorkflow()
+    {
+        // sc-947 / FE-6 — Operational migration package shipped alongside the FE-6 playbook.
+        // The package contains the three reshaped agents (prep / dev / reviewer) and the per-
+        // iteration child workflow (shortcut-development-task-loop). The user's real parent
+        // workflow is intentionally NOT in the package — they edit node 4 in the canvas after
+        // import. This test verifies the package admits and applies end-to-end against a fresh
+        // database (no pre-existing keys collide), and the imported entities have the expected
+        // shape — most importantly, the dev + reviewer prompts read loop.item.* bindings.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("shortcut-story-foreach-migration-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            WrapPackage(packageJson));
+
+        var applyBody = await apply.Content.ReadAsStringAsync();
+        apply.StatusCode.Should().Be(HttpStatusCode.OK, applyBody);
+        using var resultDoc = JsonDocument.Parse(applyBody);
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(4,
+            "package contains 3 agents + 1 child workflow");
+
+        // Child workflow: Start (developer) -> Agent (reviewer) with Approved/Rejected ports.
+        var childJson = await client.GetStringAsync("/api/workflows/shortcut-development-task-loop/1");
+        using var childDoc = JsonDocument.Parse(childJson);
+        var childNodes = childDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        childNodes.Should().HaveCount(2);
+
+        var devNode = childNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        devNode.GetProperty("agentKey").GetString().Should().Be("shortcut-developer-agent");
+
+        var reviewerNode = childNodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
+        reviewerNode.GetProperty("agentKey").GetString().Should().Be("shortcut-code-reviewer-agent");
+        reviewerNode.GetProperty("outputPorts").EnumerateArray().Select(e => e.GetString())
+            .Should().BeEquivalentTo(new[] { "Approved", "Rejected" });
+
+        // Single edge: developer.Drafted -> reviewer (in)
+        var childEdges = childDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        childEdges.Should().ContainSingle();
+        childEdges[0].GetProperty("fromPort").GetString().Should().Be("Drafted");
+
+        // Prep agent prompt seeds workflow.implementationTasks via the prep handoff format the
+        // dev/reviewer prompts read from loop.item.* — assert the structural anchors are present.
+        var prepJson = await client.GetStringAsync("/api/agents/shortcut-implementation-prep-agent/1");
+        prepJson.Should().Contain("implementationTasks");
+        prepJson.Should().Contain("loop.item");
+
+        var devJson = await client.GetStringAsync("/api/agents/shortcut-developer-agent/1");
+        devJson.Should().Contain("loop.item.name");
+        devJson.Should().Contain("loop.item.constraints");
+
+        var reviewerJson = await client.GetStringAsync("/api/agents/shortcut-code-reviewer-agent/1");
+        reviewerJson.Should().Contain("loop.item.name");
+        reviewerJson.Should().Contain("loop.item.constraints");
+    }
+
     private static string LocateLibraryPackage(string fileName)
     {
         var dir = AppContext.BaseDirectory;
