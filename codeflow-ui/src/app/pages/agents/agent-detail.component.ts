@@ -15,10 +15,12 @@ import {
   AgentRoleGrant,
   AgentVersion,
   AgentVersionSummary,
+  AuthorableHistoryMessage,
   HostTool,
   LLM_PROVIDER_DISPLAY_NAMES,
   LlmProviderKey,
   McpServer,
+  SubAgentConfig,
 } from '../../core/models';
 import { ToolPickerComponent, McpServerToolCatalog } from '../../shared/tool-picker/tool-picker.component';
 import { PageHeaderComponent } from '../../ui/page-header.component';
@@ -179,6 +181,30 @@ interface ReadOnlyFallbackRow {
           </div>
           <div class="form-section">
             <div class="form-section-head">
+              <h3>History
+                @if (history().length > 0) {
+                  <cf-chip mono>{{ history().length }}</cf-chip>
+                }
+              </h3>
+              <p>Pre-canned conversation prepended to every invocation between the system block and the latest user input.</p>
+            </div>
+            @if (history().length === 0) {
+              <p class="muted small">(no history)</p>
+            } @else {
+              <div class="stack history-stack">
+                @for (msg of history(); track $index; let i = $index) {
+                  <div class="history-row">
+                    <div class="history-row-head">
+                      <input class="input mono history-role" [value]="historyRoleLabel(msg.role)" readonly />
+                    </div>
+                    <textarea class="textarea history-content" rows="3" readonly [value]="msg.content"></textarea>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+          <div class="form-section">
+            <div class="form-section-head">
               <h3>Prompt template</h3>
               <p>Rendered per-round with Scriban substitution.</p>
             </div>
@@ -189,6 +215,42 @@ interface ReadOnlyFallbackRow {
                         placeholder="(no prompt template)"
                         style="border: 0; border-radius: 0; background: var(--bg); min-height: 28rem; resize: vertical"></textarea>
             </div>
+          </div>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Sub-agents
+                @if (subAgentsEnabled()) {
+                  <cf-chip mono>{{ subAgentsMaxConcurrent() }}× max</cf-chip>
+                } @else {
+                  <cf-chip>disabled</cf-chip>
+                }
+              </h3>
+              <p>When enabled, the runtime exposes a <code>spawn_subagent</code> tool. Sub-agents inherit the parent's resolved tool set and run with the settings below.</p>
+            </div>
+            @if (subAgentsEnabled()) {
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">Provider</span>
+                  <input class="input mono" [value]="subAgentsProviderLabel()" readonly placeholder="(inherits parent)" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Model</span>
+                  <input class="input mono" [value]="subAgentsModel()" readonly placeholder="(inherits parent)" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Max concurrent</span>
+                  <input class="input mono" [value]="subAgentsMaxConcurrent() ?? ''" readonly placeholder="(default)" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Max tokens</span>
+                  <input class="input mono" [value]="subAgentsMaxTokens() ?? ''" readonly placeholder="(inherits parent)" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Temperature</span>
+                  <input class="input mono" [value]="subAgentsTemperature() ?? ''" readonly placeholder="(inherits parent)" />
+                </label>
+              </div>
+            }
           </div>
         </cf-card>
       } @else {
@@ -234,6 +296,26 @@ interface ReadOnlyFallbackRow {
               <label class="field">
                 <span class="field-label">Max output tokens</span>
                 <input class="input mono" [value]="maxTokens() ?? ''" readonly placeholder="(default)" />
+              </label>
+            </div>
+          </div>
+          <div class="form-section">
+            <div class="form-section-head">
+              <h3>Invocation budget</h3>
+              <p>Per-invocation guardrails that bound a single agent turn. Blank fields use the platform defaults ({{ DEFAULT_BUDGET_HINT }}).</p>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">Max tool calls</span>
+                <input class="input mono" [value]="budgetMaxToolCalls() ?? ''" readonly placeholder="(default)" />
+              </label>
+              <label class="field">
+                <span class="field-label">Max wall-clock duration (seconds)</span>
+                <input class="input mono" [value]="budgetMaxLoopSeconds() ?? ''" readonly placeholder="(default)" />
+              </label>
+              <label class="field">
+                <span class="field-label">Max consecutive non-mutating tool calls</span>
+                <input class="input mono" [value]="budgetMaxConsecutiveNonMutatingCalls() ?? ''" readonly placeholder="(default)" />
               </label>
             </div>
           </div>
@@ -503,6 +585,24 @@ interface ReadOnlyFallbackRow {
       flex-direction: column;
       gap: 12px;
     }
+    .history-stack { gap: 10px; }
+    .history-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+    .history-row-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .history-role { width: auto; min-width: 120px; }
+    .history-content { width: 100%; }
   `]
 })
 export class AgentDetailComponent implements OnInit {
@@ -563,6 +663,54 @@ export class AgentDetailComponent implements OnInit {
   protected readonly systemPrompt = computed<string>(() => (this.config()?.['systemPrompt'] as string) ?? '');
   protected readonly promptTemplate = computed<string>(() => (this.config()?.['promptTemplate'] as string) ?? '');
   protected readonly outputTemplate = computed<string>(() => (this.config()?.['outputTemplate'] as string) ?? '');
+
+  protected readonly DEFAULT_BUDGET_HINT = '16 tool calls / 5 min / 8 consecutive non-mutating';
+
+  protected readonly budgetMaxToolCalls = computed<number | undefined>(() => {
+    const v = (this.config()?.['budget'] as Record<string, unknown> | undefined)?.['maxToolCalls'];
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  });
+  protected readonly budgetMaxLoopSeconds = computed<number | undefined>(() => {
+    const v = (this.config()?.['budget'] as Record<string, unknown> | undefined)?.['maxLoopDuration'];
+    return parseTimeSpanSeconds(v);
+  });
+  protected readonly budgetMaxConsecutiveNonMutatingCalls = computed<number | undefined>(() => {
+    const v = (this.config()?.['budget'] as Record<string, unknown> | undefined)?.['maxConsecutiveNonMutatingCalls'];
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  });
+
+  protected readonly history = computed<readonly AuthorableHistoryMessage[]>(() => {
+    const raw = this.config()?.['history'];
+    if (!Array.isArray(raw)) return [];
+    const out: AuthorableHistoryMessage[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const m = entry as Partial<AuthorableHistoryMessage>;
+      if (m.role !== 'user' && m.role !== 'assistant') continue;
+      if (typeof m.content !== 'string') continue;
+      out.push({ role: m.role, content: m.content });
+    }
+    return out;
+  });
+
+  protected readonly subAgents = computed<SubAgentConfig | null>(() => {
+    const raw = this.config()?.['subAgents'];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    return raw as SubAgentConfig;
+  });
+  protected readonly subAgentsEnabled = computed<boolean>(() => this.subAgents() !== null);
+  protected readonly subAgentsProviderLabel = computed<string>(() => {
+    const p = this.subAgents()?.provider;
+    return p ? LLM_PROVIDER_DISPLAY_NAMES[p] : '';
+  });
+  protected readonly subAgentsModel = computed<string>(() => this.subAgents()?.model ?? '');
+  protected readonly subAgentsMaxConcurrent = computed<number | undefined>(() => this.subAgents()?.maxConcurrent);
+  protected readonly subAgentsMaxTokens = computed<number | null | undefined>(() => this.subAgents()?.maxTokens);
+  protected readonly subAgentsTemperature = computed<number | null | undefined>(() => this.subAgents()?.temperature);
+
+  protected historyRoleLabel(role: AuthorableHistoryMessage['role']): string {
+    return role === 'user' ? 'User' : 'Assistant';
+  }
 
   protected readonly outputs = computed<ReadOnlyOutputRow[]>(() => {
     const cfg = this.config();
@@ -892,4 +1040,18 @@ export class AgentDetailComponent implements OnInit {
       }
     });
   }
+}
+
+function parseTimeSpanSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const m = trimmed.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+)(?:\.(\d+))?$/);
+  if (!m) return undefined;
+  const days = m[1] ? Number(m[1]) : 0;
+  const hours = Number(m[2]);
+  const minutes = Number(m[3]);
+  const secs = Number(m[4]);
+  return days * 86400 + hours * 3600 + minutes * 60 + secs;
 }
