@@ -1416,6 +1416,42 @@ public sealed class WorkflowsEndpointsTests
     }
 
     /// <summary>
+    /// sc-947 followup — every tool-using agent in the shortcut-story-foreach-migration
+    /// library package must surface the invocation-loop budget variables in its prompt
+    /// scope so the LLM can self-regulate against the maxToolCalls ceiling. Trace
+    /// 36081822-59ee-4003-a1ef-bfd8e5e92bc6 showed the architect agent hitting
+    /// maxToolCalls=50 with zero in-prompt visibility into its remaining budget — the
+    /// failure mode this test prevents from regressing in the package.
+    /// AgentPromptScopeBuilder.BuildBudgetVariables exposes these names; the prompts
+    /// must reference them.
+    /// </summary>
+    [Fact]
+    public void ShortcutStoryForeachMigrationPackage_ToolUsingAgents_ReferenceBudgetVars()
+    {
+        var path = LocateLibraryPackage("shortcut-story-foreach-migration-v1-package.json");
+        var json = File.ReadAllText(path);
+        using var doc = JsonDocument.Parse(json);
+
+        var agents = doc.RootElement.GetProperty("agents").EnumerateArray().ToList();
+        agents.Should().NotBeEmpty();
+
+        // Every agent in this package uses tools (the shortcut-code-worker role is granted
+        // to all of them in agentRoleAssignments). Each must surface budget visibility.
+        foreach (var agent in agents)
+        {
+            var key = agent.GetProperty("key").GetString()!;
+            var cfg = agent.GetProperty("config");
+            var sp = cfg.GetProperty("systemPrompt").GetString()!;
+            sp.Should().Contain("maxToolCalls",
+                $"agent '{key}' must reference {{{{ maxToolCalls }}}} so the LLM can read its hard ceiling");
+            sp.Should().Contain("softWarnRemaining",
+                $"agent '{key}' must reference {{{{ softWarnRemaining }}}} so the LLM knows the soft-warning threshold");
+            sp.Should().Contain("hardWarnRemaining",
+                $"agent '{key}' must reference {{{{ hardWarnRemaining }}}} so the LLM knows the final-chance threshold");
+        }
+    }
+
+    /// <summary>
     /// sc-947 followup — catches the class of bug that fired on trace
     /// 99c234c2-73ac-4a44-a03a-0bc85684070e: the dev agent's systemPrompt referenced
     /// `{{ if round == 1 }}` inline (as documentation) but Scriban parses every
