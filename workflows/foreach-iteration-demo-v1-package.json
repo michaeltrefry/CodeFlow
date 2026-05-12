@@ -1,0 +1,194 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-05-12T01:30:00Z",
+    "migrationNotes": "sc-946 / FE-5 — ForEach reference workflow. Demonstrates the producer → ForEach → summarizer pattern: a producer agent seeds a fixed demo list onto workflow.demoItems, the ForEach node iterates a single-agent child workflow over that list (binding loop.item / loop.index / loop.count / loop.isLast in the child's prompt scope), and a summarizer agent reduces the per-iteration outputs into a final artifact. Authors customize three things: the producer's output script (replace the seed-array literal with logic that derives the list from real context), the per-item agent's prompt (do the real per-iteration work), and the summarizer's prompt (the reducer). The structural wiring is the canonical iterate-over-known-collection shape."
+  },
+  "entryPoint": {
+    "key": "foreach-iteration-demo",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "foreach-iteration-demo",
+      "version": 1,
+      "name": "ForEach Iteration Demo",
+      "maxStepsPerSaga": 20,
+      "category": "Workflow",
+      "tags": ["foreach", "iteration", "reference"],
+      "createdAtUtc": "2026-05-12T01:30:00Z",
+      "workflowVarsWrites": ["demoItems"],
+      "nodes": [
+        {
+          "id": "f0e1c001-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "foreach-iteration-demo-producer",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 0,
+          "layoutY": 0,
+          "outputScript": "// Seed a tiny demo list onto workflow.demoItems so the downstream ForEach node has\n// something to iterate over. Replace the literal array with logic that derives the\n// iteration list from real context (e.g. parse input JSON, look up workflow.* keys,\n// or branch on context.* fields).\nsetWorkflow('demoItems', ['red', 'green', 'blue']);\nsetNodePath('Continue');"
+        },
+        {
+          "id": "f0e1c001-0001-0001-0001-000000000002",
+          "kind": "ForEach",
+          "outputPorts": [],
+          "layoutX": 300,
+          "layoutY": 0,
+          "subflowKey": "foreach-iteration-demo-per-item",
+          "subflowVersion": 1,
+          "collectionExpression": "workflow.demoItems",
+          "itemVar": "item"
+        },
+        {
+          "id": "f0e1c001-0001-0001-0001-000000000003",
+          "kind": "Agent",
+          "agentKey": "foreach-iteration-demo-summarizer",
+          "agentVersion": 1,
+          "outputPorts": ["Completed"],
+          "layoutX": 600,
+          "layoutY": 0
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "f0e1c001-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "f0e1c001-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "f0e1c001-0001-0001-0001-000000000002",
+          "fromPort": "Continue",
+          "toNodeId": "f0e1c001-0001-0001-0001-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 1
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "key": "foreach-iteration-demo-per-item",
+      "version": 1,
+      "name": "ForEach Iteration Demo (per-item handler)",
+      "maxStepsPerSaga": 5,
+      "category": "Workflow",
+      "tags": ["foreach", "iteration", "reference"],
+      "createdAtUtc": "2026-05-12T01:30:00Z",
+      "nodes": [
+        {
+          "id": "f0e1c001-0002-0002-0002-000000000001",
+          "kind": "Start",
+          "agentKey": "foreach-iteration-demo-item",
+          "agentVersion": 1,
+          "outputPorts": ["Completed"],
+          "layoutX": 0,
+          "layoutY": 0
+        }
+      ],
+      "edges": [],
+      "inputs": []
+    }
+  ],
+  "agents": [
+    {
+      "key": "foreach-iteration-demo-producer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "ForEach Producer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the producer in a ForEach demo workflow.\n\n## What you do\n\nYou are seeded with a fixed demo list by the Start node's output script (see the workflow's outputScript on the Start node). Your only job here is to acknowledge the workflow input — the real per-item work happens in the downstream ForEach child workflow.\n\nWrite a one-line acknowledgement message, then submit on Continue.\n\n## Customizing for real use\n\n- Replace the Start node's output script with one that derives the iteration list from a real source — `setWorkflow('demoItems', [...])` accepts any JSON-serializable array.\n- Replace this prompt with concrete instructions for how to compute the iteration list when the producer is a real LLM step (e.g. \"analyze the input ticket and emit a list of subtasks\").",
+        "promptTemplate": "## Workflow input\n{{ input }}\n\nAcknowledge with a single sentence describing what's about to run, then submit on Continue.",
+        "maxTokens": 400,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands off to the ForEach node; the seeded demoItems are already in the workflow bag."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-12T01:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands off to the ForEach node; the seeded demoItems are already in the workflow bag."
+        }
+      ]
+    },
+    {
+      "key": "foreach-iteration-demo-item",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "ForEach Item Processor",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the per-iteration agent inside a ForEach child workflow.\n\n## Iteration context\n\nThe runtime binds these top-level template variables for every iteration:\n- `{{ loop.item }}` — the JSON-encoded payload for this iteration's item.\n- `{{ loop.index }}` — the 0-based iteration index.\n- `{{ loop.count }}` — the total number of iterations.\n- `{{ loop.isLast }}` — `true` on the final iteration, `false` otherwise.\n\n## What you do\n\nProcess the item and emit a short result. The runtime collects your output and appends it to a per-iteration outputs array the parent's downstream summarizer agent sees.\n\nCustomize the prompt below with concrete instructions (e.g. \"summarize the article at {{ loop.item }}\", \"draft a code patch for task {{ loop.item }}\").",
+        "promptTemplate": "## Iteration {{ loop.index }} of {{ loop.count }}{{ if loop.isLast == \"true\" }} (final){{ end }}\n\n### Item\n{{ loop.item }}\n\nProcess the item and submit on Completed with your result as the message body.",
+        "maxTokens": 800,
+        "temperature": 0.3,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": "Per-iteration result; the runtime appends it to the aggregate output."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-12T01:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "description": "Per-iteration result the runtime aggregates into the ForEach node's terminal artifact."
+        }
+      ]
+    },
+    {
+      "key": "foreach-iteration-demo-summarizer",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "ForEach Summarizer",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the summarizer downstream of a ForEach iteration.\n\n## What you receive\n\nThe ForEach node emits a JSON array describing every iteration:\n```\n[\n  { \"index\": 0, \"outputRef\": \"artifact://...\", \"port\": \"Completed\" },\n  { \"index\": 1, \"outputRef\": \"artifact://...\", \"port\": \"Completed\" }\n]\n```\nEach `outputRef` points at the per-item agent's output artifact for that iteration. The list arrives verbatim on your input.\n\n## What you do\n\nWrite a one-paragraph summary of the run: how many iterations completed, whether they all succeeded, and any pattern worth flagging. Submit on Completed when done.",
+        "promptTemplate": "## ForEach run summary\n\n### Aggregate outputs (JSON)\n```json\n{{ input }}\n```\n\nWrite the summary paragraph and submit on Completed.",
+        "maxTokens": 800,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": "Final summary paragraph. Unwired in the workflow — the agent's message body is the workflow's terminal artifact."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-12T01:30:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "description": "Final summary paragraph; terminal artifact of the demo workflow."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "foreach-iteration-demo-producer", "roleKeys": [] },
+    { "agentKey": "foreach-iteration-demo-item", "roleKeys": [] },
+    { "agentKey": "foreach-iteration-demo-summarizer", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

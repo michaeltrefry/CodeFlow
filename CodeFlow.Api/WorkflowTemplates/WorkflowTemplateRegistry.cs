@@ -22,7 +22,8 @@ public sealed class WorkflowTemplateRegistry
             MechanicalReviewLoopTemplate.Build(),
             HitlApprovalGateTemplate.Build(),
             SetupLoopFinalizeTemplate.Build(),
-            LifecycleWrapperTemplate.Build())
+            LifecycleWrapperTemplate.Build(),
+            ForEachIterationTemplate.Build())
     {
     }
 

@@ -167,6 +167,10 @@ public sealed class WorkflowTemplateMaterializerTests : IClassFixture<WorkflowTe
             && t.Category == WorkflowTemplateCategory.Other);
         listed.Should().Contain(t => t.Id == "lifecycle-wrapper"
             && t.Category == WorkflowTemplateCategory.Lifecycle);
+        // sc-946 — FE-5 ships under Other alongside setup-loop-finalize so both general-purpose
+        // iteration scaffolds surface in the picker as a pair.
+        listed.Should().Contain(t => t.Id == "foreach-iteration"
+            && t.Category == WorkflowTemplateCategory.Other);
     }
 
     [Fact]
@@ -402,6 +406,126 @@ public sealed class WorkflowTemplateMaterializerTests : IClassFixture<WorkflowTe
         workflow.Edges.Should().ContainSingle();
         workflow.Edges[0].FromPort.Should().Be("Continue");
         workflow.Edges[0].ToNodeId.Should().Be(hitlNode.Id);
+    }
+
+    [Fact]
+    public async Task ForEachIterationTemplate_Materialize_CreatesAllFiveEntities()
+    {
+        // sc-946 / FE-5 acceptance: scaffold lands producer + per-item + summarizer agents
+        // plus per-item + outer workflows, all stitched up.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"fei-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        var result = await materializer.MaterializeAsync(
+            templateId: "foreach-iteration",
+            namePrefix: prefix,
+            createdBy: "tester");
+
+        result.EntryWorkflowKey.Should().Be(prefix);
+        result.EntryWorkflowVersion.Should().Be(1);
+        result.CreatedEntities.Should().HaveCount(5);
+        result.CreatedEntities.Select(e => e.Key).Should().BeEquivalentTo(new[]
+        {
+            $"{prefix}-producer",
+            $"{prefix}-item",
+            $"{prefix}-summarizer",
+            $"{prefix}-per-item",
+            prefix,
+        });
+    }
+
+    [Fact]
+    public async Task ForEachIterationTemplate_OuterWorkflow_WiresProducerToForEachToSummarizer()
+    {
+        // sc-946 / FE-5 acceptance: outer flow is Start (producer) → ForEach (workflow.demoItems,
+        // itemVar=item, child=<prefix>-per-item) → Agent (summarizer). ForEach.Continue routes
+        // to the summarizer; the producer's Start node carries the seed output script.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"fei-wiring-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "foreach-iteration",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var outer = await workflowRepo.GetAsync(prefix, 1);
+
+        var startNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.Start);
+        startNode.AgentKey.Should().Be($"{prefix}-producer");
+        startNode.OutputScript.Should().NotBeNullOrEmpty();
+        startNode.OutputScript!.Should().Contain("setWorkflow('demoItems'");
+
+        var forEachNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.ForEach);
+        forEachNode.SubflowKey.Should().Be($"{prefix}-per-item");
+        forEachNode.SubflowVersion.Should().Be(1);
+        forEachNode.CollectionExpression.Should().Be("workflow.demoItems");
+        forEachNode.ItemVar.Should().Be("item");
+        forEachNode.OutputPorts.Should().BeEmpty("ForEach synthesizes Continue + Failed — authors must not declare any ports");
+
+        var summarizerNode = outer.Nodes.Single(n => n.Kind == WorkflowNodeKind.Agent);
+        summarizerNode.AgentKey.Should().Be($"{prefix}-summarizer");
+
+        // Edge wiring: start → forEach (DefaultInput), forEach.Continue → summarizer.
+        outer.Edges.Should().HaveCount(2);
+        var startEdge = outer.Edges.Single(e => e.FromNodeId == startNode.Id);
+        startEdge.FromPort.Should().Be("Continue");
+        startEdge.ToNodeId.Should().Be(forEachNode.Id);
+
+        var forEachEdge = outer.Edges.Single(e => e.FromNodeId == forEachNode.Id);
+        forEachEdge.FromPort.Should().Be("Continue");
+        forEachEdge.ToNodeId.Should().Be(summarizerNode.Id);
+    }
+
+    [Fact]
+    public async Task ForEachIterationTemplate_PerItemWorkflow_HasSingleStartAgentBoundToItemKey()
+    {
+        // sc-946 / FE-5 acceptance: the per-item child workflow is a minimal one-node flow whose
+        // Start agent reads loop.* bindings the runtime publishes per iteration.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"fei-child-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "foreach-iteration",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var workflowRepo = new WorkflowRepository(verifyCtx);
+
+        var perItem = await workflowRepo.GetAsync($"{prefix}-per-item", 1);
+        perItem.Nodes.Should().ContainSingle();
+        perItem.Nodes[0].Kind.Should().Be(WorkflowNodeKind.Start);
+        perItem.Nodes[0].AgentKey.Should().Be($"{prefix}-item");
+        perItem.Edges.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ForEachIterationTemplate_ItemAgent_PromptReadsLoopBindings()
+    {
+        // sc-946 / FE-5 acceptance: the per-item agent's prompt template binds loop.item /
+        // loop.index / loop.count / loop.isLast so authors see the canonical shape.
+        AgentConfigRepository.ClearCacheForTests();
+        var prefix = $"fei-prompt-{Guid.NewGuid():N}";
+        var materializer = CreateMaterializer();
+
+        await materializer.MaterializeAsync(
+            templateId: "foreach-iteration",
+            namePrefix: prefix,
+            createdBy: null);
+
+        await using var verifyCtx = CreateDbContext();
+        var agentRepo = new AgentConfigRepository(verifyCtx);
+
+        var itemAgent = await agentRepo.GetAsync($"{prefix}-item", 1);
+        itemAgent.Configuration.PromptTemplate.Should().Contain("{{ loop.item }}");
+        itemAgent.Configuration.PromptTemplate.Should().Contain("{{ loop.index }}");
+        itemAgent.Configuration.PromptTemplate.Should().Contain("{{ loop.count }}");
     }
 
     [Fact]
