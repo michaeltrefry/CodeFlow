@@ -1812,9 +1812,37 @@ public sealed class WorkflowsEndpointsTests
     {
         // sc-942 / FE-1: a ForEach node carries CollectionExpression + ItemVar plus the existing
         // SubflowKey + SubflowVersion slots. All four must survive an API POST → GET round-trip.
-        // No dispatcher / validator-rules behavior yet — FE-2 / FE-3 land that work.
+        // sc-944 / FE-3: validator now demands the referenced child workflow exists, so the test
+        // seeds a minimal per-item-flow first. Null SubflowVersion → resolved to the latest
+        // version of the seeded child before persistence.
         using var client = factory.CreateClient();
         await SeedAgentAsync(client, "wf-foreach-kickoff");
+        await SeedAgentAsync(client, "wf-foreach-child");
+
+        // Minimal child workflow the ForEach can reference. Single Start node, no edges.
+        var childStartId = Guid.NewGuid();
+        var childCreate = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            key = "per-item-flow",
+            name = "Per-item flow",
+            maxStepsPerSaga = 3,
+            nodes = new object[]
+            {
+                new
+                {
+                    id = childStartId,
+                    kind = "Start",
+                    agentKey = "wf-foreach-child",
+                    agentVersion = (int?)null,
+                    outputScript = (string?)null,
+                    outputPorts = new[] { "Completed" },
+                    layoutX = 0,
+                    layoutY = 0
+                }
+            },
+            edges = Array.Empty<object>()
+        });
+        childCreate.StatusCode.Should().Be(HttpStatusCode.Created, await childCreate.Content.ReadAsStringAsync());
 
         var startId = Guid.NewGuid();
         var forEachId = Guid.NewGuid();
@@ -1823,7 +1851,7 @@ public sealed class WorkflowsEndpointsTests
         {
             key = "foreach-round-trip",
             name = "ForEach round trip",
-            maxRoundsPerRound = 3,
+            maxStepsPerSaga = 3,
             nodes = new object[]
             {
                 new
@@ -1859,7 +1887,8 @@ public sealed class WorkflowsEndpointsTests
             }
         });
 
-        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.Created, responseBody);
 
         var detail = await client.GetFromJsonAsync<WorkflowDetailPayload>("/api/workflows/foreach-round-trip");
         detail.Should().NotBeNull();
@@ -1869,7 +1898,7 @@ public sealed class WorkflowsEndpointsTests
         reloadedForEach.CollectionExpression.Should().Be("workflow.items");
         reloadedForEach.ItemVar.Should().Be("row");
         reloadedForEach.SubflowKey.Should().Be("per-item-flow");
-        reloadedForEach.SubflowVersion.Should().BeNull("null subflowVersion encodes 'latest at save' until resolution");
+        reloadedForEach.SubflowVersion.Should().Be(1, "ResolveSubflowLatestVersionsAsync pins null version to the latest at save");
 
         var reloadedStart = detail.Nodes.Single(n => n.Id == startId);
         reloadedStart.CollectionExpression.Should().BeNull("non-ForEach nodes round-trip with null CollectionExpression");

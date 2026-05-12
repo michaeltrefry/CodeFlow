@@ -1129,9 +1129,9 @@ public static class WorkflowsEndpoints
     }
 
     /// <summary>
-    /// Rewrites every Subflow node with a null <c>SubflowVersion</c> ("latest at save") to the
-    /// current latest version of the referenced workflow, so the saved parent row is
-    /// reproducible. Validation has already confirmed each referenced key exists.
+    /// Rewrites every Subflow / ReviewLoop / ForEach node with a null <c>SubflowVersion</c>
+    /// ("latest at save") to the current latest version of the referenced workflow, so the saved
+    /// parent row is reproducible. Validation has already confirmed each referenced key exists.
     /// </summary>
     internal static async Task<IReadOnlyList<WorkflowNodeDto>> ResolveSubflowLatestVersionsAsync(
         IReadOnlyList<WorkflowNodeDto> nodes,
@@ -1139,7 +1139,9 @@ public static class WorkflowsEndpoints
         CancellationToken cancellationToken)
     {
         var needsResolution = nodes
-            .Where(n => (n.Kind == WorkflowNodeKind.Subflow || n.Kind == WorkflowNodeKind.ReviewLoop)
+            .Where(n => (n.Kind == WorkflowNodeKind.Subflow
+                    || n.Kind == WorkflowNodeKind.ReviewLoop
+                    || n.Kind == WorkflowNodeKind.ForEach)
                 && !string.IsNullOrWhiteSpace(n.SubflowKey)
                 && n.SubflowVersion is null)
             .Select(n => n.SubflowKey!.Trim())
@@ -1162,7 +1164,9 @@ public static class WorkflowsEndpoints
         return nodes
             .Select(n =>
             {
-                if ((n.Kind != WorkflowNodeKind.Subflow && n.Kind != WorkflowNodeKind.ReviewLoop)
+                if ((n.Kind != WorkflowNodeKind.Subflow
+                        && n.Kind != WorkflowNodeKind.ReviewLoop
+                        && n.Kind != WorkflowNodeKind.ForEach)
                     || string.IsNullOrWhiteSpace(n.SubflowKey)
                     || n.SubflowVersion is not null)
                 {

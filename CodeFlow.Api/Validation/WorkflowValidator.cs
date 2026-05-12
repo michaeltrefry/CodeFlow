@@ -29,6 +29,24 @@ public static class WorkflowValidator
     /// <summary>Synthesized output port emitted by a Transform node on successful render.</summary>
     internal const string TransformOutputPort = "Out";
 
+    /// <summary>Synthesized "advance to the next workflow node" port on a ForEach node, emitted
+    /// once the entire iteration has completed. Authors do not declare it; the validator
+    /// rejects any ForEach node whose outputPorts list is non-empty.</summary>
+    internal const string ForEachContinuePort = "Continue";
+
+    /// <summary>Identifier regex for a ForEach node's <c>itemVar</c>. JavaScript-style: leading
+    /// underscore or letter, then word characters. Matches the shape Scriban accepts as a bare
+    /// variable name without quoting.</summary>
+    internal static readonly System.Text.RegularExpressions.Regex ForEachItemVarPattern =
+        new(@"^[a-zA-Z_][a-zA-Z0-9_]*$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Reserved <c>itemVar</c> identifiers on a ForEach node. These collide with the
+    /// implicit <c>loop.*</c> siblings the runtime binds into the child Scriban scope —
+    /// allowing them here would let the author shadow a builtin by accident. <c>item</c> stays
+    /// allowed because it's the default value the validator nudges authors towards.</summary>
+    internal static readonly HashSet<string> ForEachReservedItemVars =
+        new(StringComparer.Ordinal) { "index", "count", "isLast" };
+
     /// <summary>Inclusive lower bound for a Swarm node's <c>n</c> (contributor count cap).</summary>
     public const int MinSwarmN = 1;
     /// <summary>Inclusive upper bound for a Swarm node's <c>n</c>. Conservative for v1 — the
@@ -245,13 +263,23 @@ public static class WorkflowValidator
                         }
                     }
                     break;
+
+                case WorkflowNodeKind.ForEach:
+                    var forEachValidation = ValidateForEachNode(node, key);
+                    if (!forEachValidation.IsValid)
+                    {
+                        return forEachValidation;
+                    }
+                    break;
             }
         }
 
-        // Validate that referenced Subflow / ReviewLoop workflows exist (and the pinned version,
-        // if any). Both node kinds point at another workflow via SubflowKey/SubflowVersion.
+        // Validate that referenced Subflow / ReviewLoop / ForEach workflows exist (and the pinned
+        // version, if any). All three node kinds point at another workflow via SubflowKey/SubflowVersion.
         var subflowReferenceNodes = nodes
-            .Where(n => (n.Kind == WorkflowNodeKind.Subflow || n.Kind == WorkflowNodeKind.ReviewLoop)
+            .Where(n => (n.Kind == WorkflowNodeKind.Subflow
+                    || n.Kind == WorkflowNodeKind.ReviewLoop
+                    || n.Kind == WorkflowNodeKind.ForEach)
                 && !string.IsNullOrWhiteSpace(n.SubflowKey))
             .ToArray();
 
@@ -277,7 +305,7 @@ public static class WorkflowValidator
             if (missingKeys.Length > 0)
             {
                 return ValidationResult.Fail(
-                    $"Subflow/ReviewLoop node(s) reference unknown workflow key(s): {string.Join(", ", missingKeys)}.");
+                    $"Subflow/ReviewLoop/ForEach node(s) reference unknown workflow key(s): {string.Join(", ", missingKeys)}.");
             }
 
             foreach (var node in subflowReferenceNodes)
@@ -700,6 +728,109 @@ public static class WorkflowValidator
         return ValidationResult.Ok();
     }
 
+    /// <summary>
+    /// Save-time validation for <see cref="WorkflowNodeKind.ForEach"/> (sc-942 / sc-944). Mirrors
+    /// the rules in the FE-3 card on epic 941. Agent-key references are an error (ForEach is a
+    /// control-flow node, not an agent invocation); subflow existence is checked alongside
+    /// Subflow / ReviewLoop in the workflow-level pass below.
+    /// </summary>
+    private static ValidationResult ValidateForEachNode(WorkflowNodeDto node, string workflowKey)
+    {
+        if (!string.IsNullOrWhiteSpace(node.AgentKey))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} must not reference an AgentKey — ForEach is a control-flow "
+                + "node, not an agent invocation.");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.CollectionExpression))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} must set collectionExpression (the Scriban expression "
+                + "evaluated against workflow context that yields the collection to iterate).");
+        }
+
+        // Parse the expression as a Scriban template wrapping the user's expression in a no-op
+        // assignment. Catches typos and unterminated brackets at save time so authors don't only
+        // learn about a malformed expression when a saga starts iterating.
+        try
+        {
+            var probeTemplate = Scriban.Template.Parse(
+                "{{ __codeflow_foreach_validate = (" + node.CollectionExpression + ") }}");
+            if (probeTemplate.HasErrors)
+            {
+                var details = string.Join(
+                    "; ",
+                    probeTemplate.Messages
+                        .Where(m => m.Type == Scriban.Parsing.ParserMessageType.Error)
+                        .Select(m => m.Message));
+                return ValidationResult.Fail(
+                    string.IsNullOrWhiteSpace(details)
+                        ? $"ForEach node {node.Id} collectionExpression is not a parseable Scriban expression."
+                        : $"ForEach node {node.Id} collectionExpression is not a parseable Scriban expression: {details}.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} collectionExpression could not be parsed: {ex.Message}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.ItemVar))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} must set itemVar (the per-iteration binding name; "
+                + "default 'item').");
+        }
+
+        var itemVar = node.ItemVar.Trim();
+        if (!ForEachItemVarPattern.IsMatch(itemVar))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} itemVar '{itemVar}' is not a valid identifier. "
+                + "It must match ^[a-zA-Z_][a-zA-Z0-9_]*$.");
+        }
+
+        if (ForEachReservedItemVars.Contains(itemVar))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} itemVar '{itemVar}' is reserved — it collides with the "
+                + "implicit loop.* siblings the runtime binds into the child Scriban scope. "
+                + "Choose a different name (e.g. 'item', the default).");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.SubflowKey))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} must reference a SubflowKey (the child workflow invoked "
+                + "once per iteration).");
+        }
+
+        if (string.Equals(node.SubflowKey!.Trim(), workflowKey.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} points at its own workflow key '{workflowKey}'. "
+                + "Self-referential ForEach loops are rejected at save time.");
+        }
+
+        // SubflowVersion may legitimately be null at this stage: that's the "latest at save"
+        // sentinel that ResolveSubflowLatestVersionsAsync pins before persistence. Existence of
+        // the (key, version) pair is verified later in the workflow-level pass for all subflow
+        // reference kinds (Subflow + ReviewLoop + ForEach).
+
+        if (node.OutputPorts is { Count: > 0 } declaredPorts
+            && declaredPorts.Any(p => !string.IsNullOrWhiteSpace(p)))
+        {
+            var formatted = FormatPortList(declaredPorts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray());
+            return ValidationResult.Fail(
+                $"ForEach node {node.Id} declares output port(s) {formatted}. "
+                + $"ForEach nodes have a single synthesized '{ForEachContinuePort}' port plus the "
+                + $"implicit '{ImplicitFailedPort}'; authors must not declare any outputPorts.");
+        }
+
+        return ValidationResult.Ok();
+    }
+
     private static async Task<IReadOnlyDictionary<string, IReadOnlyCollection<string>>> ResolveAgentOutputsAsync(
         IReadOnlyList<WorkflowNodeDto> nodes,
         IAgentConfigRepository agentRepository,
@@ -949,6 +1080,13 @@ public static class WorkflowValidator
                     };
                     return set;
                 }
+
+            case WorkflowNodeKind.ForEach:
+                // ForEach nodes have a single synthesized "Continue" port emitted after the entire
+                // iteration completes, plus the implicit "Failed" port. Authors don't declare them;
+                // the validator synthesizes Continue here so outgoing edges from a ForEach node
+                // can reference it.
+                return new[] { ForEachContinuePort };
 
             default:
                 return Array.Empty<string>();
