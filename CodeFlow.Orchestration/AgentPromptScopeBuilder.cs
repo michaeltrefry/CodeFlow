@@ -131,6 +131,63 @@ public static class AgentPromptScopeBuilder
     }
 
     /// <summary>
+    /// ForEach iteration variables (sc-943) exposed to the child workflow's agent prompts. Mirrors
+    /// <see cref="BuildReviewLoopVariables"/>: each field becomes a flat top-level scope entry the
+    /// renderer maps to a <c>{{ loop.* }}</c> template variable. The keys use dotted notation
+    /// (e.g. <c>loop.item</c>) so the prompt template reads them as a logical struct even though
+    /// the underlying dictionary is flat — matches how <c>context.*</c> and <c>workflow.*</c>
+    /// already flatten in this builder.
+    ///
+    /// Exposed keys (only when <paramref name="loopContext"/> is non-null):
+    /// <list type="bullet">
+    ///   <item><description><c>loop.item</c> — the iteration's item payload (raw JSON-serialized text when the underlying value is a string/number/object/array; <c>null</c> for null items).</description></item>
+    ///   <item><description><c>loop.index</c> — the 0-based iteration index.</description></item>
+    ///   <item><description><c>loop.count</c> — the total iteration count snapshot taken at the parent's first dispatch.</description></item>
+    ///   <item><description><c>loop.isLast</c> — <c>"true"</c> on the final iteration, <c>"false"</c> otherwise.</description></item>
+    /// </list>
+    /// </summary>
+    public static IReadOnlyDictionary<string, string?> BuildLoopVariables(
+        CodeFlow.Contracts.ForEachInvocationContext? loopContext)
+    {
+        var variables = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (loopContext is null)
+        {
+            return variables;
+        }
+
+        // The item JSON is whatever the parent's collection-expression evaluated to at the slot
+        // — string, number, object, array, or null. Strings round-trip as their string value
+        // (without the JSON quotes) so prompts can interpolate them directly; everything else
+        // round-trips as the raw JSON the saga persisted so structured items remain inspectable.
+        string? itemDisplay;
+        try
+        {
+            using var doc = JsonDocument.Parse(loopContext.ItemJson);
+            itemDisplay = doc.RootElement.ValueKind switch
+            {
+                JsonValueKind.String => doc.RootElement.GetString(),
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                _ => doc.RootElement.GetRawText()
+            };
+        }
+        catch (JsonException)
+        {
+            // Should not happen — the saga only ever persists JSON it parsed from the collection
+            // expression — but fall back to the raw text rather than throwing inside prompt assembly.
+            itemDisplay = loopContext.ItemJson;
+        }
+
+        variables["loop.item"] = itemDisplay;
+        variables["loop.index"] = loopContext.Index.ToString(CultureInfo.InvariantCulture);
+        variables["loop.count"] = loopContext.Count.ToString(CultureInfo.InvariantCulture);
+        variables["loop.isLast"] = loopContext.Count > 0 && loopContext.Index >= loopContext.Count - 1
+            ? "true"
+            : "false";
+
+        return variables;
+    }
+
+    /// <summary>
     /// Exposes the per-invocation tool-call + duration budget to the prompt template so authors
     /// can ground budget-aware guidance ("If you have used 70% of the allowed tool calls…") in
     /// real numbers instead of asking the model to estimate its own budget. <see cref="Budget"/>
@@ -198,13 +255,15 @@ public static class AgentPromptScopeBuilder
         int? reviewRound,
         int? reviewMaxRounds,
         string? input,
-        InvocationLoopBudget? budget = null)
+        InvocationLoopBudget? budget = null,
+        CodeFlow.Contracts.ForEachInvocationContext? loopContext = null)
     {
         var merged = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in BuildContextVariables(context)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildWorkflowVariables(workflow)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildReviewLoopVariables(reviewRound, reviewMaxRounds, workflow)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildBudgetVariables(budget)) merged[entry.Key] = entry.Value;
+        foreach (var entry in BuildLoopVariables(loopContext)) merged[entry.Key] = entry.Value;
         foreach (var entry in BuildInputVariables(input)) merged[entry.Key] = entry.Value;
         return merged;
     }

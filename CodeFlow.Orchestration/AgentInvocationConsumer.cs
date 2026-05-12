@@ -144,6 +144,11 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                         message.ReviewMaxRounds,
                         message.WorkflowContext),
                     AgentPromptScopeBuilder.BuildSwarmVariables(message.SwarmContext),
+                    // sc-943 ForEach: expose loop.item / loop.index / loop.count / loop.isLast to
+                    // agents dispatched inside a ForEach iteration. Null on every dispatch outside
+                    // a ForEach so the keys stay absent from the scope (rather than dangling as
+                    // empty strings) for non-loop prompts.
+                    AgentPromptScopeBuilder.BuildLoopVariables(message.LoopContext),
                     // Expose the resolved per-invocation budget so prompts can reference real
                     // numbers (e.g. `## You have {{ maxToolCalls }} tool calls available`) and
                     // ground their own stop conditions in concrete percentages. Falls back to

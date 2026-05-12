@@ -202,6 +202,28 @@ public sealed class WorkflowSagaStateEntity : SagaStateMachineInstance, ISagaVer
     public string? ForEachItemOutputsJson { get; set; }
 
     /// <summary>
+    /// ForEach child-side context (sc-943): JSON-encoded payload for the iteration item this child
+    /// saga was spawned to process. Populated by <see cref="ApplyInitialSubflowAsync"/> from
+    /// <see cref="SubflowInvokeRequested.LoopContext"/> and re-published on every descendant
+    /// <see cref="AgentInvokeRequested"/> so the agent's Scriban scope sees <c>loop.item</c>.
+    /// Null on plain Subflow / ReviewLoop / top-level sagas.
+    /// </summary>
+    public string? ParentForEachItemJson { get; set; }
+
+    /// <summary>
+    /// ForEach child-side context (sc-943): 0-based iteration index. Exposed to descendant agent
+    /// prompts as <c>loop.index</c>. Null on plain Subflow / ReviewLoop / top-level sagas.
+    /// </summary>
+    public int? ParentForEachIndex { get; set; }
+
+    /// <summary>
+    /// ForEach child-side context (sc-943): total iteration count snapshot at the parent's first
+    /// dispatch. Exposed as <c>loop.count</c>; used to derive <c>loop.isLast</c>. Null on plain
+    /// Subflow / ReviewLoop / top-level sagas.
+    /// </summary>
+    public int? ParentForEachCount { get; set; }
+
+    /// <summary>
     /// Transient routing flag set by the state machine during <see cref="AgentInvocationCompleted"/>
     /// handling so the conditional transition binders can select the terminal state. Not persisted.
     /// </summary>
