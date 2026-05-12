@@ -29,7 +29,7 @@ import { ChipComponent } from '../../ui/chip.component';
 import { CardComponent } from '../../ui/card.component';
 import { TabsComponent, TabItem } from '../../ui/tabs.component';
 
-type DetailTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'roles' | 'json';
+type DetailTab = 'identity' | 'prompt' | 'model' | 'outputs' | 'roles' | 'history' | 'json';
 
 interface ReadOnlyOutputRow {
   kind: string;
@@ -480,6 +480,61 @@ interface ReadOnlyFallbackRow {
       </cf-card>
     }
 
+    @if (tab() === 'history') {
+      <cf-card>
+        <div class="form-section">
+          <div class="form-section-head">
+            <h3>Version history</h3>
+            <p>Every persisted version of this agent in order, newest first. Click <strong>View</strong> to load that version's prompts, model, and outputs in the other tabs.</p>
+          </div>
+          @if (versions().length === 0) {
+            <p class="muted small">No versions yet.</p>
+          } @else {
+            <div class="history-table-wrap">
+              <table class="history-table">
+                <thead>
+                  <tr>
+                    <th>Version</th>
+                    <th>Created</th>
+                    <th>Created by</th>
+                    <th>Tags</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (v of versions(); track v.version) {
+                    <tr [class.current]="viewing()?.version === v.version">
+                      <td class="mono">
+                        v{{ v.version }}
+                        @if (viewing()?.version === v.version) {
+                          <cf-chip variant="accent" mono>viewing</cf-chip>
+                        }
+                      </td>
+                      <td>{{ v.createdAtUtc | date:'medium' }}</td>
+                      <td class="mono">&#64;{{ v.createdBy ?? 'unknown' }}</td>
+                      <td class="mono small">
+                        @if (v.tags && v.tags.length > 0) {
+                          {{ v.tags.join(', ') }}
+                        } @else {
+                          <span class="muted">(none)</span>
+                        }
+                      </td>
+                      <td>
+                        @if (viewing()?.version !== v.version) {
+                          <button type="button" cf-button variant="ghost" size="sm"
+                                  (click)="selectVersion(v.version)">View</button>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+      </cf-card>
+    }
+
     @if (tab() === 'json') {
       <cf-card>
         <div class="form-section">
@@ -585,6 +640,30 @@ interface ReadOnlyFallbackRow {
       flex-direction: column;
       gap: 12px;
     }
+    .history-table-wrap { overflow-x: auto; }
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--fs-md);
+    }
+    .history-table th,
+    .history-table td {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .history-table th {
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: var(--fs-sm);
+    }
+    .history-table tr:last-child td { border-bottom: 0; }
+    .history-table tr.current td { background: rgba(56,189,248,0.06); }
+    .history-table td.mono { font-family: var(--font-mono); }
+    .history-table td.small { font-size: var(--fs-sm); }
     .history-stack { gap: 10px; }
     .history-row {
       display: flex;
@@ -757,6 +836,7 @@ export class AgentDetailComponent implements OnInit {
     }
     items.push({ value: 'outputs', label: 'Decisions', count: this.outputs().length });
     items.push({ value: 'roles', label: 'Roles & tools' });
+    items.push({ value: 'history', label: 'History', count: this.versions().length });
     items.push({ value: 'json', label: 'JSON' });
     return items;
   });
@@ -959,6 +1039,11 @@ export class AgentDetailComponent implements OnInit {
     if (Number.isFinite(version)) {
       this.select(version);
     }
+  }
+
+  /** Used by the History tab's "View" buttons to flip the inspected version. */
+  selectVersion(version: number): void {
+    this.select(version);
   }
 
   isExpanded(index: number): boolean {
