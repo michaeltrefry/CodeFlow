@@ -20,6 +20,31 @@ All of FE-1 through FE-5 must be live in the target CodeFlow instance:
 | FE-4 ([#357](https://github.com/michaeltrefry/CodeFlow/pull/357)) | Angular palette + inspector | The "For Each" palette button is visible in the workflow canvas |
 | FE-5 ([#356](https://github.com/michaeltrefry/CodeFlow/pull/356)) | `ForEachIterationTemplate` + library example | "ForEach iteration" appears under the Other category in the template picker |
 
+## The fast path: import the migration package
+
+Most of the work below is bundled into [`workflows/shortcut-story-foreach-migration-v1-package.json`](../../workflows/shortcut-story-foreach-migration-v1-package.json). Importing the package atomically creates **new versions** of the three agents + the child workflow (the importer auto-bumps because the keys already exist in your instance, and it rewrites cross-refs to the new versions on bump). The only step left after import is to edit node 4 of your real `shortcut-story-end-to-end` workflow on the canvas — that's Step 2 below.
+
+```bash
+# From the chat panel, drag the file in and submit, or via curl:
+curl -X POST https://<your-codeflow>/api/workflows/package/apply \
+    -H 'Content-Type: application/json' \
+    -d "{\"package\": $(cat workflows/shortcut-story-foreach-migration-v1-package.json)}"
+```
+
+The package ships:
+
+| Entity | Role | Key | Notes |
+|---|---|---|---|
+| `shortcut-implementation-prep-agent` | Reshaped prompt + output emits `workflow.implementationTasks` | unchanged | Bumped on import |
+| `shortcut-developer-agent` | Reads `loop.item.*` for one-task scope | unchanged | Bumped on import |
+| `shortcut-code-reviewer-agent` | Reviews against `loop.item.constraints` | unchanged | Bumped on import |
+| `shortcut-development-task-loop` (workflow) | Start (dev) → reviewer, Approved/Rejected ports | unchanged | Bumped on import |
+| `shortcut-code-worker` (role) | Tool grants for the dev/reviewer pair | new | Self-contained per package admission rules |
+
+Your real parent workflow (`shortcut-story-end-to-end`) is **intentionally not** in the package — it has additional intake / plan / completion / post-mortem nodes the FE-6 card explicitly leaves untouched. The single node-4 swap you do on the canvas is fast now that the palette ships a "For Each" button (FE-4 / [#357](https://github.com/michaeltrefry/CodeFlow/pull/357)).
+
+If you'd prefer to apply the prompt deltas to your existing agents by hand instead of taking the package's prompt verbatim, the per-prompt addendums below give you the structural pieces; pair them with whatever prompt engineering your existing agents already have.
+
 ## Migration overview
 
 Three artifacts change. Bump each independently — the parent workflow's pinned versions pick up the new agents on the next save.
@@ -229,6 +254,6 @@ If the smoke test surfaces a regression, the parent workflow's previous version 
 
 ## Why this slice is data-modeling rather than a code change
 
-Per the [`feedback_workflows_are_data`](../../README.md) convention, the agent prompts, workflow definitions, and per-node configs all live as data in the running CodeFlow instance — not as source code in this repo. There is nothing to commit to the codebase to "implement" FE-6 directly; the platform changes the iteration depends on (FE-1 through FE-5) are already merged, and this playbook is the operational guide for applying them to the motivating workflow.
+Per the [`feedback_workflows_are_data`](../../README.md) convention, the agent prompts, workflow definitions, and per-node configs all live as data in the running CodeFlow instance — not as source code in this repo. The platform changes the iteration depends on (FE-1 through FE-5) are already merged; this playbook (plus the shipped migration package) is the operational guide for applying them to the motivating workflow.
 
-The user runs Steps 1 through 3 via the workflow / agent editor (or the chat-panel's `save_workflow_package` tool, which carries the per-agent prompt edits in a single package and handles the version bumps atomically). Steps 4 and 5 require a live Shortcut story to operate against.
+The migration-package import covers Steps 1 + 3 (all three agent prompts + the child workflow). Step 2 (the single ForEach swap on the parent workflow's node 4) is a canvas edit. Steps 4 and 5 require a live Shortcut story to operate against.
