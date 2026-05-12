@@ -135,7 +135,7 @@ Bump the prep agent's version when saving.
 
 ## Step 2 — Reshape the parent workflow
 
-`shortcut-story-end-to-end`'s node 4 changes from a `ReviewLoop` to a `ForEach`. The `subflowKey` stays — the same `shortcut-development-task-loop` workflow handles one iteration.
+`shortcut-story-end-to-end`'s node 4 changes from a `ReviewLoop` to a `ForEach`, and a new validator Agent node lands between prep (node 3) and the new ForEach (node 4). The `subflowKey` on the ForEach stays — the same `shortcut-development-task-loop` workflow handles one iteration.
 
 **Before** (ReviewLoop config):
 
@@ -163,6 +163,10 @@ outputPorts: []   # ForEach synthesizes Continue + implicit Failed
 
 | Source port (old) | Target | Source port (new) |
 |---|---|---|
+| `prep.Continue` → `ReviewLoop` (node 4) | reroute to validator | `prep.Continue` → `validator` |
+| n/a | new edge | `validator.Valid` → `ForEach` (node 4) |
+| n/a | new edge | `validator.Invalid` → post-mortem |
+| n/a | new edge | `validator.Failed` → post-mortem (implicit Failed path) |
 | `ReviewLoop.Approved` → next-node | same target | `ForEach.Continue` → next-node |
 | `ReviewLoop.Exhausted` → next-node | same target | DELETED — ForEach doesn't synthesize Exhausted |
 | `ReviewLoop.Failed` → recovery node | same target | `ForEach.Failed` → same recovery node (port name is identical, only the source-node kind changes) |

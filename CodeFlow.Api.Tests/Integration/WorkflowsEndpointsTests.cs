@@ -1364,8 +1364,8 @@ public sealed class WorkflowsEndpointsTests
         apply.StatusCode.Should().Be(HttpStatusCode.OK, applyBody);
         using var resultDoc = JsonDocument.Parse(applyBody);
         resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
-        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(4,
-            "package contains 3 agents + 1 child workflow");
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(5,
+            "package contains 4 agents (prep, validator, dev, reviewer) + 1 child workflow");
 
         // Child workflow: Start (developer) -> Agent (reviewer) with Approved/Rejected ports.
         var childJson = await client.GetStringAsync("/api/workflows/shortcut-development-task-loop/1");
@@ -1401,6 +1401,18 @@ public sealed class WorkflowsEndpointsTests
         var reviewerJson = await client.GetStringAsync("/api/agents/shortcut-code-reviewer-agent/1");
         reviewerJson.Should().Contain("loop.item.name");
         reviewerJson.Should().Contain("loop.item.constraints");
+
+        // The validator agent (Option 4 from the FE-6 followup) sits between prep and ForEach in
+        // the user's parent workflow. It enumerates the workspace and verifies every task's
+        // files[] entries actually exist before letting ForEach dispatch — a backstop for the
+        // class of failure observed on trace 7167cf25 where the prep agent hallucinated paths.
+        var validatorJson = await client.GetStringAsync("/api/agents/shortcut-task-paths-validator-agent/1");
+        validatorJson.Should().Contain("workflow.implementationTasks",
+            "validator's prompt template binds the task list it must verify");
+        validatorJson.Should().Contain("\"Valid\"",
+            "validator declares a Valid output port for the happy path");
+        validatorJson.Should().Contain("\"Invalid\"",
+            "validator declares an Invalid output port that routes Failed when paths are missing");
     }
 
     /// <summary>
