@@ -1279,6 +1279,68 @@ public sealed class WorkflowsEndpointsTests
         loopEdges.Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task ApplyPackageImport_ForEachIterationDemoV1_RoundTripsProducerForEachSummarizer()
+    {
+        // sc-946 / FE-5 — Reference workflow for the ForEach iteration node-kind epic. End-to-end
+        // import sanity: deserialize, resolve references through the importer, query both
+        // workflows back, and check the ForEach node's CollectionExpression / ItemVar plus the
+        // producer-Start → ForEach.Continue → summarizer wiring.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("foreach-iteration-demo-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            WrapPackage(packageJson));
+
+        var applyBody = await apply.Content.ReadAsStringAsync();
+        apply.StatusCode.Should().Be(HttpStatusCode.OK, applyBody);
+        using var resultDoc = JsonDocument.Parse(applyBody);
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(5,
+            "package contains 2 workflows + 3 agents");
+
+        // Outer workflow: Start (producer) → ForEach → Agent (summarizer).
+        var outerJson = await client.GetStringAsync("/api/workflows/foreach-iteration-demo/1");
+        using var outerDoc = JsonDocument.Parse(outerJson);
+        var nodes = outerDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(3);
+
+        var forEachNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "ForEach", StringComparison.Ordinal));
+        forEachNode.GetProperty("collectionExpression").GetString().Should().Be("workflow.demoItems");
+        forEachNode.GetProperty("itemVar").GetString().Should().Be("item");
+        forEachNode.GetProperty("subflowKey").GetString().Should().Be("foreach-iteration-demo-per-item");
+        forEachNode.GetProperty("subflowVersion").GetInt32().Should().Be(1);
+
+        var startNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        startNode.GetProperty("agentKey").GetString().Should().Be("foreach-iteration-demo-producer");
+        startNode.GetProperty("outputScript").GetString().Should().Contain("setWorkflow('demoItems'");
+
+        var summarizerNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
+        summarizerNode.GetProperty("agentKey").GetString().Should().Be("foreach-iteration-demo-summarizer");
+
+        // Edges: Start.Continue → ForEach, ForEach.Continue → Summarizer.
+        var edges = outerDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        edges.Should().HaveCount(2);
+        var continueEdge = edges.Single(e =>
+            e.GetProperty("fromNodeId").GetGuid() == forEachNode.GetProperty("id").GetGuid());
+        continueEdge.GetProperty("fromPort").GetString().Should().Be("Continue");
+        continueEdge.GetProperty("toNodeId").GetGuid().Should().Be(summarizerNode.GetProperty("id").GetGuid());
+
+        // Child workflow: single Start node bound to the per-item agent.
+        var childJson = await client.GetStringAsync("/api/workflows/foreach-iteration-demo-per-item/1");
+        using var childDoc = JsonDocument.Parse(childJson);
+        var childNodes = childDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        childNodes.Should().ContainSingle();
+        childNodes[0].GetProperty("kind").GetString().Should().Be("Start");
+        childNodes[0].GetProperty("agentKey").GetString().Should().Be("foreach-iteration-demo-item");
+    }
+
     private static string LocateLibraryPackage(string fileName)
     {
         var dir = AppContext.BaseDirectory;
