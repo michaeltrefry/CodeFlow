@@ -9,7 +9,7 @@ import {
 import { WorkflowPayload } from '../../../core/workflows.api';
 import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
-import { IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
+import { FOR_EACH_CONTINUE_PORT, IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
 /**
  * Default declared ports when a node is first added to the canvas.
@@ -44,6 +44,11 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       // "Synthesized" — matches the convention used by the hand-authored library entries
       // that pre-date the runtime; authors override via the agent picker.
       return ['Synthesized'];
+    case 'ForEach':
+      // ForEach has a single synthesized "Continue" port (sc-944). Authors never declare
+      // ports; the canvas pads Continue here so loadIntoEditor's rete handle exists and
+      // serializeEditor strips it before save the same way ReviewLoop strips Exhausted.
+      return ['Continue'];
   }
 }
 
@@ -98,9 +103,17 @@ export async function loadIntoEditor(
     // hand-edited DB rows can omit it — and rete will throw "source node doesn't have output
     // with a key Exhausted" the moment we try to add the matching edge. Pad the declared
     // ports here so loadIntoEditor stays robust to those upstream variations.
-    const declaredPorts = node.kind === 'ReviewLoop' && !node.outputPorts.includes('Exhausted')
-      ? [...node.outputPorts, 'Exhausted']
-      : node.outputPorts;
+    let declaredPorts = node.outputPorts;
+    if (node.kind === 'ReviewLoop' && !declaredPorts.includes('Exhausted')) {
+      declaredPorts = [...declaredPorts, 'Exhausted'];
+    }
+    // ForEach synthesizes its `Continue` terminal port server-side (sc-944 validator rejects
+    // any author-declared port on ForEach), so workflows from the API arrive with an empty
+    // outputPorts list. Pad it here so rete renders the wirable handle; serializeEditor
+    // strips it back out before save the same way it strips ReviewLoop's Exhausted.
+    if (node.kind === 'ForEach' && !declaredPorts.includes(FOR_EACH_CONTINUE_PORT)) {
+      declaredPorts = [...declaredPorts, FOR_EACH_CONTINUE_PORT];
+    }
     const editorNode = new WorkflowEditorNode({
       nodeId: node.id,
       kind: node.kind,
@@ -124,7 +137,9 @@ export async function loadIntoEditor(
       synthesizerAgentVersion: node.synthesizerAgentVersion,
       coordinatorAgentKey: node.coordinatorAgentKey,
       coordinatorAgentVersion: node.coordinatorAgentVersion,
-      swarmTokenBudget: node.swarmTokenBudget
+      swarmTokenBudget: node.swarmTokenBudget,
+      collectionExpression: node.collectionExpression,
+      itemVar: node.itemVar
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -146,7 +161,9 @@ export async function loadIntoEditor(
   return idToNode;
 }
 
-export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds' | 'outputType' | 'swarmProtocol' | 'swarmN'>): string {
+export function labelFor(
+  node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds'
+    | 'outputType' | 'swarmProtocol' | 'swarmN' | 'collectionExpression' | 'itemVar'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
@@ -168,6 +185,11 @@ export function labelFor(node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflow
       const n = node.swarmN ?? '?';
       return `Swarm ${protocol} ×${n}`;
     }
+    case 'ForEach': {
+      const expr = node.collectionExpression ?? '(pick collection)';
+      const child = node.subflowKey ?? '(pick workflow)';
+      return `ForEach ${expr} → ${child}`;
+    }
   }
 }
 
@@ -185,8 +207,12 @@ export function serializeEditor(
     // for the same reason.
     const declaredPorts = node.outputPortNames
       .filter(p => p !== IMPLICIT_FAILED_PORT)
-      .filter(p => !(node.kind === 'ReviewLoop' && p === REVIEW_LOOP_EXHAUSTED_PORT));
+      .filter(p => !(node.kind === 'ReviewLoop' && p === REVIEW_LOOP_EXHAUSTED_PORT))
+      // sc-944 validator rejects any author-declared port on a ForEach node — Continue is
+      // synthesized server-side. Strip it on save the same way ReviewLoop strips Exhausted.
+      .filter(p => !(node.kind === 'ForEach' && p === FOR_EACH_CONTINUE_PORT));
     const isSwarm = node.kind === 'Swarm';
+    const isForEach = node.kind === 'ForEach';
     // Validator rejects CoordinatorAgent* on Sequential, so suppress them unless the
     // configured protocol is Coordinator.
     const isCoordinator = isSwarm && node.swarmProtocol === 'Coordinator';
@@ -214,7 +240,9 @@ export function serializeEditor(
       synthesizerAgentVersion: isSwarm ? node.synthesizerAgentVersion : null,
       coordinatorAgentKey: isCoordinator ? node.coordinatorAgentKey : null,
       coordinatorAgentVersion: isCoordinator ? node.coordinatorAgentVersion : null,
-      swarmTokenBudget: isSwarm ? node.swarmTokenBudget : null
+      swarmTokenBudget: isSwarm ? node.swarmTokenBudget : null,
+      collectionExpression: isForEach ? node.collectionExpression : null,
+      itemVar: isForEach ? node.itemVar : null
     };
   });
 

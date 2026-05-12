@@ -2,6 +2,7 @@ import type { NodeEditor } from 'rete';
 import type { AreaPlugin } from 'rete-area-plugin';
 import type { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 import {
+  FOR_EACH_CONTINUE_PORT,
   IMPLICIT_FAILED_PORT,
   REVIEW_LOOP_EXHAUSTED_PORT,
 } from './workflow-node-schemes';
@@ -21,6 +22,7 @@ describe('defaultOutputPortsFor', () => {
     expect(defaultOutputPortsFor('ReviewLoop')).toEqual([]);
     expect(defaultOutputPortsFor('Transform')).toEqual(['Out']);
     expect(defaultOutputPortsFor('Swarm')).toEqual(['Synthesized']);
+    expect(defaultOutputPortsFor('ForEach')).toEqual(['Continue']);
   });
 });
 
@@ -31,6 +33,8 @@ describe('labelFor', () => {
     expect(labelFor({ kind: 'ReviewLoop', subflowKey: 'review-child', reviewMaxRounds: 2 })).toBe('ReviewLoop \u00d72 \u2014 review-child');
     expect(labelFor({ kind: 'Transform', outputType: 'json' })).toBe('Transform \u2192 json');
     expect(labelFor({ kind: 'Swarm', swarmProtocol: 'Sequential', swarmN: 4 })).toBe('Swarm Sequential \u00d74');
+    expect(labelFor({ kind: 'ForEach', collectionExpression: 'workflow.items', subflowKey: 'per-item' }))
+      .toBe('ForEach workflow.items \u2192 per-item');
   });
 });
 
@@ -169,6 +173,67 @@ describe('serializeEditor', () => {
     }));
     expect(payload.nodes[0].outputPorts).not.toContain(REVIEW_LOOP_EXHAUSTED_PORT);
     expect(payload.nodes[0].outputPorts).not.toContain(IMPLICIT_FAILED_PORT);
+  });
+
+  it('round-trips ForEach config and strips the synthesized Continue port from the save payload', () => {
+    // sc-944: ForEach synthesizes its `Continue` terminal port server-side and rejects any
+    // author-declared port. The editor pads `Continue` onto the canvas so rete renders the
+    // outgoing handle, but serializeEditor must strip it back out before save the same way
+    // it strips ReviewLoop's `Exhausted` — otherwise the save trips the validator's
+    // declared-port reservation rule.
+    const forEach = editorNode({
+      id: 'rete-foreach',
+      nodeId: 'foreach-1',
+      kind: 'ForEach',
+      outputPortNames: [FOR_EACH_CONTINUE_PORT, IMPLICIT_FAILED_PORT],
+      subflowKey: 'per-item-flow',
+      subflowVersion: 1,
+      collectionExpression: 'workflow.demoItems',
+      itemVar: 'task',
+    });
+    const editor = fakeEditor([forEach], []);
+    const area = fakeArea([['rete-foreach', { x: 300, y: 200 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'foreach-flow', name: 'ForEach Flow', maxRoundsPerRound: 3,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      id: 'foreach-1',
+      kind: 'ForEach',
+      collectionExpression: 'workflow.demoItems',
+      itemVar: 'task',
+      subflowKey: 'per-item-flow',
+      subflowVersion: 1,
+      outputPorts: [],
+    }));
+    expect(payload.nodes[0].outputPorts).not.toContain(FOR_EACH_CONTINUE_PORT);
+    expect(payload.nodes[0].outputPorts).not.toContain(IMPLICIT_FAILED_PORT);
+  });
+
+  it('does not emit ForEach fields on non-ForEach node kinds', () => {
+    const agentNode = editorNode({
+      id: 'rete-agent',
+      nodeId: 'agent-1',
+      kind: 'Agent',
+      outputPortNames: ['Approved', IMPLICIT_FAILED_PORT],
+      collectionExpression: 'leftover-expr',
+      itemVar: 'leftover-var',
+    });
+    const editor = fakeEditor([agentNode], []);
+    const area = fakeArea([['rete-agent', { x: 0, y: 0 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'k', name: 'n', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0]).toEqual(expect.objectContaining({
+      kind: 'Agent',
+      collectionExpression: null,
+      itemVar: null,
+    }));
   });
 
   it('filters implicit failed ports and preserves canvas/connection metadata', () => {
