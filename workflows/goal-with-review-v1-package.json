@@ -1,0 +1,231 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-05-13T18:00:00Z",
+    "migrationNotes": "Epic 978 / GN-6 — Goal workflow with postmortem-on-every-terminal-port. Wraps goal-test-v1's single Goal node with a goal-postmortem agent that runs regardless of whether the Goal exits via Success, BudgetLimited, or Failed. The postmortem reads the Goal's final output, inspects the workspace via read_file, and writes a structured markdown postmortem so every goal run leaves an artifact reviewers can scan without re-reading the full transcript. HITL approval-on-completion is intentionally NOT in v1 — the postmortem already documents the outcome for the reviewer; if you want a blocking approval gate before the postmortem fires, file a follow-up. Self-contained per feedback_workflow_package_self_contained: 1 workflow + 3 agents + 1 role + 3 role assignments."
+  },
+  "entryPoint": {
+    "key": "goal-with-review",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "goal-with-review",
+      "version": 1,
+      "name": "Goal with Postmortem",
+      "maxStepsPerSaga": 10,
+      "category": "Workflow",
+      "tags": ["goal", "postmortem", "reference"],
+      "createdAtUtc": "2026-05-13T18:00:00Z",
+      "workflowVarsReads": ["objective"],
+      "workflowVarsWrites": ["objective"],
+      "nodes": [
+        {
+          "id": "99999999-0002-0002-0002-000000000001",
+          "kind": "Start",
+          "agentKey": "goal-with-review-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "// Seed the operator's input text into workflow.objective. Same pattern as\n// goal-test-v1/Start; the Goal node's goalObjective template reads workflow.objective.\nvar text = (input && input.text) ? String(input.text) : '';\nif (text) { setWorkflow('objective', text); }"
+        },
+        {
+          "id": "99999999-0002-0002-0002-000000000002",
+          "kind": "Goal",
+          "agentKey": "goal-with-review-runner",
+          "agentVersion": 1,
+          "outputPorts": [],
+          "layoutX": 400,
+          "layoutY": 200,
+          "goalObjective": "{{ workflow.objective }}",
+          "goalTokenBudget": null,
+          "goalMaxIterations": null
+        },
+        {
+          "id": "99999999-0002-0002-0002-000000000003",
+          "kind": "Agent",
+          "agentKey": "goal-postmortem",
+          "agentVersion": 1,
+          "outputPorts": ["Written"],
+          "layoutX": 800,
+          "layoutY": 200
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "99999999-0002-0002-0002-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "99999999-0002-0002-0002-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        },
+        {
+          "fromNodeId": "99999999-0002-0002-0002-000000000002",
+          "fromPort": "Success",
+          "toNodeId": "99999999-0002-0002-0002-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 1
+        },
+        {
+          "fromNodeId": "99999999-0002-0002-0002-000000000002",
+          "fromPort": "BudgetLimited",
+          "toNodeId": "99999999-0002-0002-0002-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 2
+        },
+        {
+          "fromNodeId": "99999999-0002-0002-0002-000000000002",
+          "fromPort": "Failed",
+          "toNodeId": "99999999-0002-0002-0002-000000000003",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 3
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Objective",
+          "kind": "Text",
+          "required": true,
+          "description": "The objective the goal-runner should pursue. Could be a Shortcut story description, acceptance criteria list, refactor brief. The Start node seeds it into workflow.objective; the Goal node renders the rendered objective per goal-run; the Postmortem agent reads the Goal's output regardless of which exit port fired.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "goal-with-review-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Goal with Review Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the Goal with Postmortem workflow. The operator's objective has already been seeded into workflow state by an input script.\n\nYour only job: write the single word `Initialized.` as your message content, then submit with port `Continue`.",
+        "promptTemplate": "The objective has been seeded into workflow state. Acknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands off to the goal-runner."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-13T18:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands off to the goal-runner."
+        }
+      ]
+    },
+    {
+      "key": "goal-with-review-runner",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Goal With Review Runner",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a goal-runner agent. The user provides an objective and you pursue it across one or more conversation turns until you have verified completion.\n\n## Tools\n\nYou have file-system tools (`read_file`, `apply_patch`, `bulk_replace`, `run_command`), VCS tools (`vcs.get_repo`, `vcs.open_pr`), and workspace setup (`setup_workspace`). Use them to investigate current state, make changes, verify against acceptance criteria, and produce the requested deliverable.\n\nYou also have two goal-management tools:\n\n- `goal.get` — reads the current objective, token budget, tokens used, and tokens remaining. Call this when you want to ground your stop-condition reasoning in actual budget numbers.\n- `goal.update` — call with `status: \"complete\"` when, AND ONLY WHEN, you have audited the objective against current state and verified every requirement is satisfied. This is your only exit signal.\n\n## How completion works\n\nOn every turn after the first you will receive a continuation prompt with an audit checklist. Follow it.\n\n- Do not narrow the objective to fit what is already done.\n- Do not substitute easier alternatives for harder requirements.\n- Verify against current state, not memory of earlier work.\n- Do not call `goal.update` because the budget is low or because you are stopping — only when the requirements are actually met.\n\nSubmit with the port `Completed` on every turn. The Goal-node dispatcher decides the final exit port (Success / BudgetLimited / Failed). A postmortem agent will read your final output regardless of which exit port fired and write a structured writeup — so make your final turn's message a clear summary of what you did and what state you left things in.",
+        "promptTemplate": "{{ input }}",
+        "maxTokens": 8000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": "Agent's per-iteration message. The Goal-node dispatcher synthesizes Success / BudgetLimited / Failed ports based on the loop outcome."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-13T18:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "description": "Agent's per-iteration output. Goal-node dispatcher decides the final port."
+        }
+      ]
+    },
+    {
+      "key": "goal-postmortem",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Goal Postmortem",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You write postmortem documents for goal runs. Your input is the goal-runner agent's final message — whatever it said on the last iteration before the loop terminated. The goal-runner may have completed successfully, run out of token budget, hit the iteration cap, or failed mid-run; read its final output and the workspace to figure out which.\n\n## Tools\n\nYou have `read_file` to inspect the workspace and `vcs.get_repo` to look up commit history. Use them to verify what the goal-runner claimed against the actual current state.\n\n## Output\n\nWrite a markdown postmortem with this structure:\n\n```\n# Postmortem: <one-line summary of the objective>\n\n## Outcome\n\n<One of: \"Completed\" / \"Partial — budget exhausted\" / \"Partial — iteration cap reached\" / \"Failed\". Pick based on the agent's final message + workspace state, NOT on a guess.>\n\n## What was attempted\n\n<2-4 sentences describing the work the goal-runner did, grounded in workspace changes (files modified, commands run, PRs opened).>\n\n## What was achieved\n\n<Bullet list of concrete completed items, verified against current workspace state. If nothing measurable was achieved, say so plainly.>\n\n## What is missing or unverified\n\n<Bullet list of objective requirements that were NOT achieved or that the agent claimed but you could not verify from current state. Empty list is fine if the outcome is fully completed.>\n\n## Recommendations\n\n<1-3 short bullets. For Completed: next steps for the reviewer. For Partial: what to do if rerunning (refine objective? raise budget? split into smaller goals?). For Failed: most likely cause + the cheapest next experiment.>\n```\n\nSubmit on port `Written`.",
+        "promptTemplate": "## Original objective\n\n{{ workflow.objective }}\n\n## Goal-runner final message\n\n{{ input }}\n\nWrite the postmortem document.",
+        "maxTokens": 4000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Written",
+            "description": "Markdown postmortem document. Becomes the workflow's terminal artifact and lands in the trace evidence bundle."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-13T18:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Written",
+          "description": "Markdown postmortem document."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "goal-with-review-init", "roleKeys": [] },
+    { "agentKey": "goal-with-review-runner", "roleKeys": ["goal-with-review-runner-role"] },
+    { "agentKey": "goal-postmortem", "roleKeys": ["goal-postmortem-role"] }
+  ],
+  "roles": [
+    {
+      "key": "goal-with-review-runner-role",
+      "displayName": "Goal Runner (with review)",
+      "description": "Same tool surface as the standalone goal-test goal-runner-role: read_file, apply_patch, bulk_replace, run_command, vcs.get_repo, vcs.open_pr, setup_workspace, plus echo/now. Distinct role key from goal-test's so the two packages stay independent.",
+      "isArchived": false,
+      "toolGrants": [
+        {"category": "Host", "toolIdentifier": "setup_workspace"},
+        {"category": "Host", "toolIdentifier": "read_file"},
+        {"category": "Host", "toolIdentifier": "apply_patch"},
+        {"category": "Host", "toolIdentifier": "bulk_replace"},
+        {"category": "Host", "toolIdentifier": "run_command"},
+        {"category": "Host", "toolIdentifier": "vcs.open_pr"},
+        {"category": "Host", "toolIdentifier": "vcs.get_repo"},
+        {"category": "Host", "toolIdentifier": "echo"},
+        {"category": "Host", "toolIdentifier": "now"}
+      ],
+      "skillNames": []
+    },
+    {
+      "key": "goal-postmortem-role",
+      "displayName": "Goal Postmortem",
+      "description": "Read-only role for the postmortem agent. Grants read_file (inspect workspace state) + vcs.get_repo (commit history). No write tools — the postmortem documents what happened, it does not modify the workspace.",
+      "isArchived": false,
+      "toolGrants": [
+        {"category": "Host", "toolIdentifier": "read_file"},
+        {"category": "Host", "toolIdentifier": "vcs.get_repo"},
+        {"category": "Host", "toolIdentifier": "echo"},
+        {"category": "Host", "toolIdentifier": "now"}
+      ],
+      "skillNames": []
+    }
+  ],
+  "skills": [],
+  "mcpServers": []
+}
