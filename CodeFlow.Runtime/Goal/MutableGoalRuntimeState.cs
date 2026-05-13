@@ -20,6 +20,8 @@ public sealed class MutableGoalRuntimeState : IGoalRuntimeState
     private readonly int? tokenBudget;
     private int tokensUsed;
     private bool completeRequested;
+    private bool abandonRequested;
+    private string? abandonReason;
 
     public MutableGoalRuntimeState(string objective, int? tokenBudget)
     {
@@ -48,7 +50,9 @@ public sealed class MutableGoalRuntimeState : IGoalRuntimeState
                 TokenBudget: tokenBudget,
                 TokensUsed: tokensUsed,
                 TokensRemaining: remaining,
-                IsCompleteRequested: completeRequested);
+                IsCompleteRequested: completeRequested,
+                IsAbandonRequested: abandonRequested,
+                AbandonReason: abandonReason);
         }
     }
 
@@ -57,6 +61,23 @@ public sealed class MutableGoalRuntimeState : IGoalRuntimeState
         lock (gate)
         {
             completeRequested = true;
+        }
+    }
+
+    public void MarkAbandoned(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        lock (gate)
+        {
+            // First reason wins. A later call cannot overwrite an honest assessment of "this is
+            // impossible" with a softer message — the executor exits on the first abandon signal
+            // anyway, so the second call would be unreachable in practice, but we belt-and-brace
+            // here in case the tool dispatcher ever reorders calls inside one iteration.
+            if (!abandonRequested)
+            {
+                abandonRequested = true;
+                abandonReason = reason;
+            }
         }
     }
 
@@ -89,6 +110,22 @@ public sealed class MutableGoalRuntimeState : IGoalRuntimeState
         lock (gate)
         {
             completeRequested = false;
+        }
+    }
+
+    /// <summary>
+    /// Reset the per-iteration abandon signal between outer iterations. The orchestrator exits as
+    /// soon as abandon fires, so in practice this clear never runs after a real abandon — but the
+    /// orchestrator calls it at iteration entry symmetrically with <see cref="ClearCompleteRequested"/>
+    /// as defence-in-depth.
+    /// </summary>
+    public void ClearAbandonRequested()
+    {
+        lock (gate)
+        {
+            // Reason is intentionally NOT cleared; if abandon already fired, the recorded reason
+            // is the source of truth even if the executor somehow loops again.
+            abandonRequested = false;
         }
     }
 

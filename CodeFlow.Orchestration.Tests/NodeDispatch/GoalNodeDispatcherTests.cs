@@ -107,6 +107,7 @@ public sealed class GoalNodeDispatcherTests
     [Theory]
     [InlineData(GoalIterationOutcome.Success, "Success")]
     [InlineData(GoalIterationOutcome.BudgetLimited, "BudgetLimited")]
+    [InlineData(GoalIterationOutcome.Abandoned, "Abandoned")]
     [InlineData(GoalIterationOutcome.IterationCapReached, "Failed")]
     public void MapOutcome_RoutesEachOutcomeToTheRightPort(GoalIterationOutcome outcome, string expectedPort)
     {
@@ -176,6 +177,39 @@ public sealed class GoalNodeDispatcherTests
         var payload = GoalNodeDispatcher.BuildDecisionPayload(result)!.Value;
 
         payload.GetProperty("reason").GetString().Should().Be("GoalIterationCapReached");
+    }
+
+    [Fact]
+    public void BuildDecisionPayload_Abandoned_IncludesReasonAndAgentMessage()
+    {
+        // The Abandoned port's downstream handler (postmortem / HITL) reads `abandonReason`
+        // verbatim from the agent — that field is the entire point of the abandon-exit path.
+        // Pin both the saga-level `reason` discriminator and the agent's free-text reason.
+        var result = new GoalIterationResult(
+            Outcome: GoalIterationOutcome.Abandoned,
+            Iterations:
+            [
+                new GoalIterationRecord(1, "Abandoning.", 0, null, new AgentDecision("Completed")),
+            ],
+            FinalHistory: Array.Empty<ChatMessage>(),
+            FinalSnapshot: new GoalRuntimeStateSnapshot(
+                Objective: "Run a Python script",
+                TokenBudget: 100_000,
+                TokensUsed: 5_000,
+                TokensRemaining: 95_000,
+                IsCompleteRequested: false,
+                IsAbandonRequested: true,
+                AbandonReason: "python is unreachable; container.run rejects every approach"),
+            TotalInputTokens: 4_000,
+            TotalOutputTokens: 1_000,
+            TotalToolCallsExecuted: 6);
+
+        var payload = GoalNodeDispatcher.BuildDecisionPayload(result)!.Value;
+
+        payload.GetProperty("outcome").GetString().Should().Be("Abandoned");
+        payload.GetProperty("reason").GetString().Should().Be("GoalAbandoned");
+        payload.GetProperty("abandonReason").GetString()
+            .Should().Be("python is unreachable; container.run rejects every approach");
     }
 
     [Fact]

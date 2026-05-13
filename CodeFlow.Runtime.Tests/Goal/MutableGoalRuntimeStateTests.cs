@@ -134,4 +134,87 @@ public sealed class MutableGoalRuntimeStateTests
         var state = new MutableGoalRuntimeState("o", tokenBudget: null);
         Assert.Throws<ArgumentOutOfRangeException>(() => state.AddTokensUsed(-1));
     }
+
+    [Fact]
+    public void MarkAbandoned_RecordsReasonOnSnapshot()
+    {
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+
+        state.Snapshot().IsAbandonRequested.Should().BeFalse();
+        state.Snapshot().AbandonReason.Should().BeNull();
+
+        state.MarkAbandoned("python is unreachable; container.run rejects every approach");
+
+        var after = state.Snapshot();
+        after.IsAbandonRequested.Should().BeTrue();
+        after.AbandonReason.Should().Be("python is unreachable; container.run rejects every approach");
+        after.IsCompleteRequested.Should().BeFalse(
+            "abandon and complete are independent signals");
+    }
+
+    [Fact]
+    public void MarkAbandoned_FirstReasonWins()
+    {
+        // Belt-and-brace against the model retracting an honest "this is impossible" with a
+        // softer second call later in the same iteration. The orchestrator exits on the first
+        // abandon anyway, but the state's invariant should survive even if the tool dispatcher
+        // ever reordered calls.
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+
+        state.MarkAbandoned("first honest reason: env is broken");
+        state.MarkAbandoned("second softer reason: actually nevermind");
+
+        state.Snapshot().AbandonReason.Should().Be("first honest reason: env is broken");
+    }
+
+    [Fact]
+    public void MarkAbandoned_BlankReason_Throws()
+    {
+        // Tool layer guards against this too, but the state itself enforces the invariant.
+        // ArgumentException.ThrowIfNullOrWhiteSpace throws ArgumentNullException for null and
+        // ArgumentException for empty/whitespace, so accept either subtype.
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+
+        Assert.Throws<ArgumentException>(() => state.MarkAbandoned(""));
+        Assert.Throws<ArgumentException>(() => state.MarkAbandoned("   "));
+        Assert.Throws<ArgumentNullException>(() => state.MarkAbandoned(null!));
+
+        state.Snapshot().IsAbandonRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClearAbandonRequested_ResetsFlag_KeepsReason()
+    {
+        // The flag clears so a stale iteration doesn't falsely exit, but the reason is
+        // preserved as the source of truth in case the executor somehow loops again after a
+        // real abandon already fired.
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+        state.MarkAbandoned("blocker X");
+        state.Snapshot().IsAbandonRequested.Should().BeTrue();
+
+        state.ClearAbandonRequested();
+
+        var after = state.Snapshot();
+        after.IsAbandonRequested.Should().BeFalse();
+        after.AbandonReason.Should().Be("blocker X",
+            "reason survives the flag clear by design — it remains the source of truth");
+    }
+
+    [Fact]
+    public void MarkAbandoned_DoesNotAffectCompleteFlag()
+    {
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+        state.MarkAbandoned("reason");
+        state.Snapshot().IsCompleteRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void MarkComplete_DoesNotAffectAbandonFlag()
+    {
+        var state = new MutableGoalRuntimeState("o", tokenBudget: null);
+        state.MarkComplete();
+        var snap = state.Snapshot();
+        snap.IsAbandonRequested.Should().BeFalse();
+        snap.AbandonReason.Should().BeNull();
+    }
 }

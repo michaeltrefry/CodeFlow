@@ -31,6 +31,19 @@ public interface IGoalRuntimeState
     /// — multiple calls in the same iteration are equivalent to one.
     /// </summary>
     void MarkComplete();
+
+    /// <summary>
+    /// Signals that the agent has called <c>goal.update(status="abandon")</c> because the
+    /// objective is environmentally impossible (e.g. a tool consistently rejects every legitimate
+    /// approach, an external dependency is unreachable, a prerequisite the workflow promised does
+    /// not exist). The executor exits via the <c>Abandoned</c> port on the next loop tick so a
+    /// downstream postmortem / HITL gate can investigate. Idempotent — the FIRST reason wins so a
+    /// later call cannot rewrite an honest assessment; this is by design, not a bug.
+    /// </summary>
+    /// <param name="reason">Free-text rationale the agent must provide. The tool layer rejects
+    /// empty / whitespace-only reasons before reaching here, so this is always a meaningful
+    /// string. Plumbed into the Goal-node decision payload for downstream consumers.</param>
+    void MarkAbandoned(string reason);
 }
 
 /// <summary>
@@ -59,9 +72,23 @@ public interface IGoalRuntimeState
 /// <c>true</c> after the agent has called <c>goal.update(status="complete")</c> in the current
 /// iteration; <c>false</c> otherwise. The executor's exit check, not a UI signal.
 /// </param>
+/// <param name="IsAbandonRequested">
+/// <c>true</c> after the agent has called <c>goal.update(status="abandon")</c> in the current
+/// iteration; <c>false</c> otherwise. Mutually exclusive with <see cref="IsCompleteRequested"/> in
+/// practice (the executor exits as soon as either fires), but both are exposed independently so
+/// the dispatcher can map cleanly to <c>Success</c> vs <c>Abandoned</c> ports without inferring.
+/// </param>
+/// <param name="AbandonReason">
+/// The free-text rationale the agent passed to <c>goal.update(status="abandon", reason=...)</c>.
+/// <c>null</c> when no abandon call has been made. Surfaces in the Goal-node decision payload and
+/// the trace inspector so a postmortem / HITL gate can act on it without re-reading the
+/// conversation history.
+/// </param>
 public sealed record GoalRuntimeStateSnapshot(
     string Objective,
     int? TokenBudget,
     int TokensUsed,
     int? TokensRemaining,
-    bool IsCompleteRequested);
+    bool IsCompleteRequested,
+    bool IsAbandonRequested = false,
+    string? AbandonReason = null);

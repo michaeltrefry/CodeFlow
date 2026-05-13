@@ -379,6 +379,7 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
         {
             GoalIterationOutcome.Success => ("Success", lastOutput),
             GoalIterationOutcome.BudgetLimited => ("BudgetLimited", lastOutput),
+            GoalIterationOutcome.Abandoned => ("Abandoned", lastOutput),
             GoalIterationOutcome.IterationCapReached => ("Failed", lastOutput),
             _ => ("Failed", lastOutput),
         };
@@ -397,6 +398,14 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
         if (result.Outcome == GoalIterationOutcome.IterationCapReached)
         {
             payload["reason"] = "GoalIterationCapReached";
+        }
+        if (result.Outcome == GoalIterationOutcome.Abandoned)
+        {
+            // The reason is the load-bearing field for the Abandoned port — downstream
+            // postmortem / HITL handlers route on it. Preserve verbatim so the agent's
+            // language survives serialization.
+            payload["reason"] = "GoalAbandoned";
+            payload["abandonReason"] = result.FinalSnapshot.AbandonReason;
         }
         return JsonDocument.Parse(payload.ToJsonString()).RootElement.Clone();
     }

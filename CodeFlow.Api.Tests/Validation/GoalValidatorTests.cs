@@ -164,6 +164,52 @@ public sealed class GoalValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Error.Should().Contain("Custom");
+        // Error message must enumerate all three synthesized ports so the author knows what
+        // the runtime will actually emit. Pin all three by name.
+        result.Error.Should().Contain("Success");
+        result.Error.Should().Contain("BudgetLimited");
+        result.Error.Should().Contain("Abandoned");
+    }
+
+    [Fact]
+    public async Task GoalNode_EdgeFromAbandonedPort_Validates()
+    {
+        // The Abandoned port is synthesized by the validator (GN-7). An edge that routes
+        // Abandoned to a downstream postmortem/HITL handler must be accepted without the
+        // author declaring `outputPorts: ["Abandoned"]` (declaring it would fail per the
+        // test above).
+        var fx = await CreateFixtureAsync();
+
+        var startId = Guid.NewGuid();
+        var goalId = Guid.NewGuid();
+        var sinkId = Guid.NewGuid();
+        var postmortemId = Guid.NewGuid();
+
+        var nodes = new[]
+        {
+            new WorkflowNodeDto(startId, WorkflowNodeKind.Start, "kickoff", 1, null,
+                new[] { "Completed" }, 0, 0),
+            new WorkflowNodeDto(goalId, WorkflowNodeKind.Goal, "goal-runner", 1, null,
+                Array.Empty<string>(), 0, 0,
+                GoalObjective: "Complete the story acceptance criteria",
+                GoalTokenBudget: 500_000,
+                GoalMaxIterations: 50),
+            new WorkflowNodeDto(sinkId, WorkflowNodeKind.Agent, "sink", 1, null,
+                new[] { "Completed" }, 0, 0),
+            new WorkflowNodeDto(postmortemId, WorkflowNodeKind.Agent, "sink", 1, null,
+                new[] { "Completed" }, 0, 0),
+        };
+
+        var edges = new[]
+        {
+            new WorkflowEdgeDto(startId, "Completed", goalId, "in", false, 0),
+            new WorkflowEdgeDto(goalId, "Success", sinkId, "in", false, 1),
+            new WorkflowEdgeDto(goalId, "Abandoned", postmortemId, "in", false, 2),
+        };
+
+        var result = await fx.ValidateAsync("parent", nodes, edges);
+
+        result.IsValid.Should().BeTrue(result.Error ?? string.Empty);
     }
 
     private static async Task<TestFixture> CreateFixtureAsync()

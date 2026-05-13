@@ -60,7 +60,10 @@ public static class GoalContinuationPromptTemplate
 
         Do not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. Marking the goal complete is a claim that the full objective has been finished and can withstand requirement-by-requirement scrutiny. Only mark the goal achieved when current evidence proves every requirement has been satisfied and no required work remains. If the evidence is incomplete, weak, indirect, merely consistent with completion, or leaves any requirement missing, incomplete, or unverified, keep working instead of marking the goal complete. If the objective is achieved, call `goal.update` with status `"complete"` so usage accounting is preserved. If the achieved goal has a token budget, report the final consumed token budget to the user after `goal.update` succeeds.
 
-        Do not call `goal.update` unless the goal is complete. Do not mark a goal complete merely because the budget is nearly exhausted or because you are stopping work.
+        Do not call `goal.update` with status `"complete"` unless the goal is complete. Do not mark a goal complete merely because the budget is nearly exhausted or because you are stopping work.
+
+        Abandon path:
+        If — and only if — the objective is ENVIRONMENTALLY IMPOSSIBLE (a required tool consistently rejects every legitimate approach with the same error; a dependency the objective assumes is unreachable; a prerequisite the workflow promised does not exist), call `goal.update` with status `"abandon"` and a `reason` field describing the specific blocker. Abandoning routes to a postmortem / HITL handler that investigates whether the objective was misposed or the environment is broken. Do not abandon because the work is hard, the budget is tight, or you would prefer not to do it; abandon is for impossibility, not for inconvenience. Do not satisfy a requirement literally with a workaround that fakes the spirit of it (a script masquerading as the requested tool, a hardcoded answer that pattern-matches the test) — that is a worse outcome than an honest abandon. If you find yourself constructing such a workaround, stop and abandon instead, with a reason that names the specific failure you were trying to route around.
         """;
 
     /// <summary>

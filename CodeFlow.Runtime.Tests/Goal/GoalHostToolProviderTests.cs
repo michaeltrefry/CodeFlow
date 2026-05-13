@@ -42,16 +42,24 @@ public sealed class GoalHostToolProviderTests
     }
 
     [Fact]
-    public void UpdateGoal_Schema_OnlyAcceptsCompleteEnum()
+    public void UpdateGoal_Schema_AcceptsCompleteAndAbandonEnum()
     {
         var spec = GoalHostToolProvider.GetCatalog().Single(t => t.Name == "goal.update");
         var statusEnum = spec.Parameters!["properties"]!["status"]!["enum"]!.AsArray();
 
-        statusEnum.Count.Should().Be(1);
-        statusEnum[0]!.GetValue<string>().Should().Be("complete");
+        statusEnum.Select(n => n!.GetValue<string>())
+            .Should().BeEquivalentTo(["complete", "abandon"]);
+
+        // Only `status` is in the top-level required list. `reason` is enforced at the handler
+        // layer when status=="abandon", not at schema-level, because OpenAI/Anthropic don't
+        // express conditional-required cross-field rules in JSON Schema.
         spec.Parameters!["required"]!.AsArray()
             .Select(n => n!.GetValue<string>())
             .Should().BeEquivalentTo(["status"]);
+
+        // `reason` must be declared in `properties` so models can populate it.
+        spec.Parameters!["properties"]!["reason"]!["type"]!.GetValue<string>().Should().Be("string");
+
         spec.IsMutating.Should().BeTrue();
     }
 
@@ -129,12 +137,13 @@ public sealed class GoalHostToolProviderTests
 
     [Theory]
     [InlineData("paused")]
-    [InlineData("abandoned")]
+    [InlineData("abandoned")]    // past tense — only the verb "abandon" is accepted
     [InlineData("blocked")]
     [InlineData("budget-limited")]
     [InlineData("failed")]
-    [InlineData("COMPLETE")] // case sensitive — only lowercase "complete"
-    public async Task UpdateGoal_NonCompleteStatus_ReturnsError(string badStatus)
+    [InlineData("COMPLETE")]     // case sensitive — only lowercase "complete"
+    [InlineData("ABANDON")]      // case sensitive — only lowercase "abandon"
+    public async Task UpdateGoal_NonAcceptedStatus_ReturnsError(string badStatus)
     {
         var state = new StubState();
         var provider = new GoalHostToolProvider(state);
@@ -146,7 +155,83 @@ public sealed class GoalHostToolProviderTests
 
         result.IsError.Should().BeTrue();
         result.Content.Should().Contain("complete");
+        result.Content.Should().Contain("abandon");
         state.MarkCompleteCalls.Should().Be(0);
+        state.MarkAbandonedCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task UpdateGoal_AbandonWithReason_CallsMarkAbandoned()
+    {
+        var state = new StubState();
+        var provider = new GoalHostToolProvider(state);
+
+        var reason = "container.run consistently rejects every legitimate approach with "
+            + "workspace_invalid; Python is unreachable in this environment.";
+        var result = await provider.InvokeAsync(new ToolCall(
+            "call_update",
+            "goal.update",
+            new JsonObject { ["status"] = "abandon", ["reason"] = reason }));
+
+        result.IsError.Should().BeFalse();
+        state.MarkAbandonedCalls.Should().Be(1);
+        state.LastAbandonReason.Should().Be(reason);
+        state.MarkCompleteCalls.Should().Be(0);
+
+        using var doc = JsonDocument.Parse(result.Content);
+        doc.RootElement.GetProperty("acknowledged").GetBoolean().Should().BeTrue();
+        doc.RootElement.GetProperty("status").GetString().Should().Be("abandon");
+        doc.RootElement.GetProperty("reason").GetString().Should().Be(reason);
+    }
+
+    [Fact]
+    public async Task UpdateGoal_AbandonWithoutReason_ReturnsError()
+    {
+        var state = new StubState();
+        var provider = new GoalHostToolProvider(state);
+
+        var result = await provider.InvokeAsync(new ToolCall(
+            "call_update",
+            "goal.update",
+            new JsonObject { ["status"] = "abandon" }));
+
+        result.IsError.Should().BeTrue();
+        result.Content.Should().Contain("reason");
+        state.MarkAbandonedCalls.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n  \r")]
+    public async Task UpdateGoal_AbandonWithBlankReason_ReturnsError(string blankReason)
+    {
+        var state = new StubState();
+        var provider = new GoalHostToolProvider(state);
+
+        var result = await provider.InvokeAsync(new ToolCall(
+            "call_update",
+            "goal.update",
+            new JsonObject { ["status"] = "abandon", ["reason"] = blankReason }));
+
+        result.IsError.Should().BeTrue();
+        result.Content.Should().Contain("reason");
+        state.MarkAbandonedCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task UpdateGoal_AbandonWithNonStringReason_ReturnsError()
+    {
+        var state = new StubState();
+        var provider = new GoalHostToolProvider(state);
+
+        var result = await provider.InvokeAsync(new ToolCall(
+            "call_update",
+            "goal.update",
+            new JsonObject { ["status"] = "abandon", ["reason"] = 42 }));
+
+        result.IsError.Should().BeTrue();
+        state.MarkAbandonedCalls.Should().Be(0);
     }
 
     [Fact]
@@ -239,6 +324,8 @@ public sealed class GoalHostToolProviderTests
     {
         private readonly GoalRuntimeStateSnapshot snapshot;
         public int MarkCompleteCalls { get; private set; }
+        public int MarkAbandonedCalls { get; private set; }
+        public string? LastAbandonReason { get; private set; }
 
         public StubState() : this(new GoalRuntimeStateSnapshot(
             Objective: "default objective",
@@ -257,5 +344,11 @@ public sealed class GoalHostToolProviderTests
         public GoalRuntimeStateSnapshot Snapshot() => snapshot;
 
         public void MarkComplete() => MarkCompleteCalls++;
+
+        public void MarkAbandoned(string reason)
+        {
+            MarkAbandonedCalls++;
+            LastAbandonReason = reason;
+        }
     }
 }
