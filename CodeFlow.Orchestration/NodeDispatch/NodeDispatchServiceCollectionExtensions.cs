@@ -29,6 +29,7 @@ public static class NodeDispatchServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IWorkflowNodeDispatcher, ReviewLoopNodeDispatcher>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IWorkflowNodeDispatcher, SwarmNodeDispatcher>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IWorkflowNodeDispatcher, ForEachNodeDispatcher>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IWorkflowNodeDispatcher, GoalNodeDispatcher>());
         services.TryAddSingleton<WorkflowNodeDispatcherRegistry>();
 
         return services;
