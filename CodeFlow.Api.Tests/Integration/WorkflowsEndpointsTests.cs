@@ -1118,17 +1118,19 @@ public sealed class WorkflowsEndpointsTests
         postmortemNode.GetProperty("kind").GetString().Should().Be("Agent",
             "the postmortem is a regular Agent node — not a HITL gate in v1");
 
-        // The fan-in is the load-bearing piece of this workflow shape. Verify all three Goal
-        // exit ports (Success / BudgetLimited / Failed) have edges into the postmortem node
-        // so every outcome produces a postmortem artifact.
+        // The fan-in is the load-bearing piece of this workflow shape. Verify all four Goal
+        // exit ports (Success / BudgetLimited / Abandoned / Failed) have edges into the
+        // postmortem node so every outcome produces a postmortem artifact. Abandoned was
+        // added in GN-7 (sc-990) — the postmortem prompt has a dedicated recommendations
+        // path for it (misposed objective vs. broken environment).
         var edges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
         var postmortemId = postmortemNode.GetProperty("id").GetString();
         var goalToPostmortemEdges = edges
             .Where(e => string.Equals(e.GetProperty("toNodeId").GetString(), postmortemId, StringComparison.Ordinal))
             .Select(e => e.GetProperty("fromPort").GetString())
             .ToList();
-        goalToPostmortemEdges.Should().BeEquivalentTo(new[] { "Success", "BudgetLimited", "Failed" },
-            "the postmortem fans in from every Goal exit port — Success approves, BudgetLimited / Failed need the same writeup");
+        goalToPostmortemEdges.Should().BeEquivalentTo(new[] { "Success", "BudgetLimited", "Abandoned", "Failed" },
+            "the postmortem fans in from every Goal exit port — Success approves, BudgetLimited / Abandoned / Failed each need a structured writeup");
     }
 
     [Fact]
