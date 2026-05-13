@@ -1,0 +1,155 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-05-13T16:00:00Z",
+    "migrationNotes": "Epic 978 / GN-5 — single-node Goal workflow for the hypothesis test. Start node seeds the operator's input into workflow.objective; the Goal node then runs the goal-runner agent in an auto-continuation loop until the agent calls goal.update(complete) or the iteration cap (50) trips. Token budget is left null (unbounded) so the test exercises the loop's completion-audit prompt, not budget enforcement — GN-6's wrapper workflow adds a HITL budget gate. The goal-runner has the standard code-aware tool surface (read_file, apply_patch, bulk_replace, run_command, vcs.* , setup_workspace) so it can actually investigate, edit, verify, and open a PR for a story whose acceptance criteria can be checked against current state. Self-contained per feedback_workflow_package_self_contained: ships the workflow, both agents, the role, and the role assignment. No MCP servers, no skills."
+  },
+  "entryPoint": {
+    "key": "goal-test",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "goal-test",
+      "version": 1,
+      "name": "Goal Test (hypothesis)",
+      "maxStepsPerSaga": 5,
+      "category": "Workflow",
+      "tags": ["goal", "hypothesis", "reference"],
+      "createdAtUtc": "2026-05-13T16:00:00Z",
+      "workflowVarsReads": ["objective"],
+      "workflowVarsWrites": ["objective"],
+      "nodes": [
+        {
+          "id": "99999999-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "goal-test-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200,
+          "inputScript": "// Seed the operator's input text into workflow.objective so the Goal node's\n// goalObjective Scriban template (`{{ workflow.objective }}`) can read it. The Goal\n// dispatcher renders that template per run at goal-loop entry.\nvar text = (input && input.text) ? String(input.text) : '';\nif (text) { setWorkflow('objective', text); }"
+        },
+        {
+          "id": "99999999-0001-0001-0001-000000000002",
+          "kind": "Goal",
+          "agentKey": "goal-runner",
+          "agentVersion": 1,
+          "outputPorts": [],
+          "layoutX": 400,
+          "layoutY": 200,
+          "goalObjective": "{{ workflow.objective }}",
+          "goalTokenBudget": null,
+          "goalMaxIterations": null
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "99999999-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "99999999-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Objective",
+          "kind": "Text",
+          "required": true,
+          "description": "The objective the goal-runner agent should pursue across an auto-continuation loop. Could be a Shortcut story description, acceptance criteria list, refactor brief — anything with verifiable outcomes the audit prompt can check against current state. The Start node copies this text into workflow.objective; the Goal node's goalObjective template renders that variable per goal run.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "goal-test-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Goal Test Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the Goal Test workflow. The operator's objective has already been seeded into workflow state by an input script — you do not need to do anything with it.\n\nYour only job: write the single word `Initialized.` as your message content, then submit with port `Continue`.",
+        "promptTemplate": "The objective has been seeded into workflow state. Acknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Seeds the objective into workflow vars and hands off to the goal-runner."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-13T16:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Seeds the objective into workflow vars and hands off to the goal-runner."
+        }
+      ]
+    },
+    {
+      "key": "goal-runner",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Goal Runner",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are a goal-runner agent. The user provides an objective and you pursue it across one or more conversation turns until you have verified completion.\n\n## Tools\n\nYou have file-system tools (`read_file`, `apply_patch`, `bulk_replace`, `run_command`), VCS tools (`vcs.get_repo`, `vcs.open_pr`), and workspace setup (`setup_workspace`). Use them to investigate current state, make changes, verify against acceptance criteria, and produce the requested deliverable.\n\nYou also have two goal-management tools:\n\n- `goal.get` — reads the current objective, token budget, tokens used, and tokens remaining. Call this when you want to ground your stop-condition reasoning in actual budget numbers.\n- `goal.update` — call with `status: \"complete\"` when, AND ONLY WHEN, you have audited the objective against current state and verified every requirement is satisfied. This is your only exit signal.\n\n## How completion works\n\nOn every turn after the first you will receive a continuation prompt with an audit checklist. Follow it.\n\n- Do not narrow the objective to fit what is already done.\n- Do not substitute easier alternatives for harder requirements.\n- Verify against current state, not memory of earlier work.\n- Do not call `goal.update` because the budget is low or because you are stopping — only when the requirements are actually met.\n\nSubmit with the port `Completed` on every turn. The Goal-node dispatcher decides the final exit port (Success / BudgetLimited / Failed) based on whether `goal.update(complete)` was called and whether the budget held.",
+        "promptTemplate": "{{ input }}",
+        "maxTokens": 8000,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Completed",
+            "description": "Agent's per-iteration message. The Goal-node dispatcher synthesizes Success / BudgetLimited / Failed ports based on the loop outcome, not on the agent's emitted port — every iteration submits on Completed regardless."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-13T16:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Completed",
+          "description": "Agent's per-iteration output. Goal-node dispatcher decides the final port."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "goal-test-init", "roleKeys": [] },
+    { "agentKey": "goal-runner", "roleKeys": ["goal-runner-role"] }
+  ],
+  "roles": [
+    {
+      "key": "goal-runner-role",
+      "displayName": "Goal Runner",
+      "description": "Grants the host tools needed for an agent inside a Goal node to investigate, edit, and verify code changes inside the trace's working directory: read_file, apply_patch, bulk_replace, run_command, vcs.get_repo, vcs.open_pr, setup_workspace, plus echo/now. The Goal-node executor injects goal.get + goal.update separately as scope-local meta-tools — those are not granted via this role and never leak to non-Goal agent invocations.",
+      "isArchived": false,
+      "toolGrants": [
+        {"category": "Host", "toolIdentifier": "setup_workspace"},
+        {"category": "Host", "toolIdentifier": "read_file"},
+        {"category": "Host", "toolIdentifier": "apply_patch"},
+        {"category": "Host", "toolIdentifier": "bulk_replace"},
+        {"category": "Host", "toolIdentifier": "run_command"},
+        {"category": "Host", "toolIdentifier": "vcs.open_pr"},
+        {"category": "Host", "toolIdentifier": "vcs.get_repo"},
+        {"category": "Host", "toolIdentifier": "echo"},
+        {"category": "Host", "toolIdentifier": "now"}
+      ],
+      "skillNames": []
+    }
+  ],
+  "skills": [],
+  "mcpServers": []
+}
