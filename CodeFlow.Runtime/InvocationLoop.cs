@@ -319,11 +319,31 @@ public sealed class InvocationLoop
                             continue;
                         }
 
+                        // Pair the terminal tool call with a synthetic Tool message before
+                        // returning. The submit / fail tools are resolved by the InvocationLoop
+                        // itself (no dispatched tool produces a real `function_call_output`), so
+                        // without this append the transcript ends with an unpaired assistant
+                        // `function_call`. That's fine when the caller throws the transcript
+                        // away after one invocation, but the Goal-node orchestrator (epic 978)
+                        // accumulates each iteration's transcript into the next iteration's
+                        // History — every Goal iteration that exits via submit before the goal
+                        // is complete leaves the submit call unpaired and breaks the next
+                        // iteration's EnsureToolCallPairing guard with
+                        // OrphanFunctionCallException. Pin the synthetic content to the same
+                        // `[<toolname>]` placeholder the observer overload sees so transcript
+                        // consumers + observers stay aligned.
+                        var terminalAck = new ToolResult(toolCall.Id, $"[{toolCall.Name}]");
+                        transcript.Add(new ChatMessage(
+                            ChatMessageRole.Tool,
+                            terminalAck.Content,
+                            ToolCallId: terminalAck.CallId,
+                            IsError: false));
+
                         if (observer is not null)
                         {
                             await observer.OnToolCallCompletedAsync(
                                 toolCall,
-                                new ToolResult(toolCall.Id, $"[{toolCall.Name}]"),
+                                terminalAck,
                                 cancellationToken);
                         }
 

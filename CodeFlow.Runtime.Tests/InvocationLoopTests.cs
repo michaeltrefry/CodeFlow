@@ -1325,6 +1325,95 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_TerminalSubmit_PairsTheSubmitCallInTranscript_NoOrphan()
+    {
+        // Regression for the SECOND orphan source surfaced 2026-05-13 during qwen3-35b Goal
+        // testing: the submit / fail tools are resolved by the InvocationLoop itself, not by
+        // dispatching a real tool, so before this fix the transcript ended with an unpaired
+        // assistant function_call for the terminal tool. Goal-node orchestrator (epic 978)
+        // accumulates each iteration's transcript into the next iteration's History; every
+        // Goal iteration that exited via submit before reaching goal completion left the submit
+        // call unpaired and blew up the next iteration's EnsureToolCallPairing guard with
+        // OrphanFunctionCallException.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Done.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_submit", "submit", new JsonObject
+                        {
+                            ["decision"] = "Completed",
+                        }),
+                    ]),
+                InvocationStopReason.ToolCalls),
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Just submit.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Completed", null, null)]));
+
+        result.Decision.PortName.Should().Be("Completed");
+
+        // The load-bearing assertion: the returned transcript must satisfy the pairing guard.
+        // Without the terminal-pair fix, this would throw with `call_submit` as the orphan.
+        var checkPairing = () => InvocationLoop.EnsureToolCallPairing(result.Transcript);
+        checkPairing.Should().NotThrow(
+            because: "the terminal submit tool call must be paired with a synthetic Tool message "
+            + "so a downstream consumer (e.g. Goal-node orchestrator's next iteration) can safely "
+            + "use the transcript as History");
+
+        // Specifically: the submit call gets a `[submit]` ack stub so the model sees a coherent
+        // transcript if the same conversation is resumed (Goal iteration N+1 case).
+        result.Transcript.Should().Contain(m =>
+            m.Role == ChatMessageRole.Tool
+            && m.ToolCallId == "call_submit"
+            && m.Content == "[submit]"
+            && !m.IsError,
+            because: "the synthetic Tool ack pairs the terminal-tool call without claiming a real "
+            + "tool dispatched it");
+    }
+
+    [Fact]
+    public async Task RunAsync_TerminalFail_PairsTheFailCallInTranscript_NoOrphan()
+    {
+        // Same pattern as submit: the `fail` tool resolves to a "Failed" decision inside the
+        // loop, the transcript needs the synthetic Tool ack so downstream consumers don't see
+        // an orphan.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Cannot continue.",
+                    ToolCalls:
+                    [
+                        new ToolCall("call_fail", "fail", new JsonObject
+                        {
+                            ["reason"] = "scope unclear",
+                        }),
+                    ]),
+                InvocationStopReason.ToolCalls),
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Try it.")],
+            "gpt-5",
+            DeclaredOutputs: [new AgentOutputDeclaration("Completed", null, null)]));
+
+        result.Decision.PortName.Should().Be("Failed");
+        var checkPairing = () => InvocationLoop.EnsureToolCallPairing(result.Transcript);
+        checkPairing.Should().NotThrow();
+        result.Transcript.Should().Contain(m =>
+            m.Role == ChatMessageRole.Tool && m.ToolCallId == "call_fail" && m.Content == "[fail]");
+    }
+
+    [Fact]
     public async Task RunAsync_MidBatchConsecutiveNonMutatingExit_DrainsOrphans_NoPairingViolation()
     {
         // Regression for the orphan-tool-call bug surfaced 2026-05-13 during qwen3-35b Goal
