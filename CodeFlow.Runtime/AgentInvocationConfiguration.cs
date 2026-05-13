@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using CodeFlow.Runtime.Goal;
 
 namespace CodeFlow.Runtime;
 
@@ -29,4 +30,10 @@ public sealed record AgentInvocationConfiguration(
     IReadOnlyList<PromptPartialPin>? PartialPins = null,
     // Runtime-only: pre-resolved partial bodies, populated by AgentInvocationConsumer from
     // PartialPins via IPromptPartialRepository before ContextAssembler runs.
-    [property: JsonIgnore] IReadOnlyDictionary<string, string>? ResolvedPartials = null);
+    [property: JsonIgnore] IReadOnlyDictionary<string, string>? ResolvedPartials = null,
+    // Epic 978 / GN-2: runtime state for a Goal-node invocation. The Goal-node executor (GN-3)
+    // sets this when invoking the goal-runner agent; the presence of a non-null state object
+    // causes Agent.BuildProviders to surface the goal.get + goal.update tools. Null on every
+    // other invocation path (Agent / Hitl / Subflow / ReviewLoop / Swarm / Transform / ForEach
+    // nodes and the homepage assistant), so the goal.* tools cannot leak into those surfaces.
+    [property: JsonIgnore] IGoalRuntimeState? GoalState = null);

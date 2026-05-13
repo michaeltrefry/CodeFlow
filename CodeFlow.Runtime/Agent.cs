@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CodeFlow.Runtime.Authority;
+using CodeFlow.Runtime.Goal;
 using CodeFlow.Runtime.Observability;
 
 namespace CodeFlow.Runtime;
@@ -129,6 +130,15 @@ public sealed class Agent : IAgentInvoker
             yield return new SubAgentToolProvider(this, configuration, tools);
         }
 
+        // Epic 978 / GN-2: only Goal-node executor invocations carry a non-null GoalState.
+        // The presence of state is the gating mechanism — there is no node-kind switch here,
+        // so other code paths (Agent / Hitl / Subflow / ReviewLoop / Swarm / Transform / ForEach
+        // nodes, homepage assistant, sub-agents) cannot accidentally enable the goal.* tools.
+        if (configuration.GoalState is not null)
+        {
+            yield return new GoalHostToolProvider(configuration.GoalState);
+        }
+
         if (tools.McpTools is { Count: > 0 })
         {
             if (mcpClient is null)
@@ -176,6 +186,16 @@ public sealed class Agent : IAgentInvoker
         if (configuration.SubAgents is not null)
         {
             allowed.Add(SubAgentToolProvider.SpawnToolName);
+        }
+
+        // Epic 978: goal.* tools are runtime-managed meta-tools injected by the Goal-node
+        // executor — authors do not (and must not) grant them through a role / envelope. The
+        // executor signals their presence by setting GoalState; implicitly allow them through
+        // the role's allowlist when state is present, the same pattern as spawn_subagent.
+        if (configuration.GoalState is not null)
+        {
+            allowed.Add(GoalHostToolProvider.GetGoalToolName);
+            allowed.Add(GoalHostToolProvider.UpdateGoalToolName);
         }
 
         return new ToolAccessPolicy(AllowedToolNames: allowed);
