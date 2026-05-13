@@ -114,6 +114,32 @@ public sealed class HostToolProviderTests : IDisposable
     }
 
     [Fact]
+    public void GetCatalog_ApplyPatchDescription_TeachesV4AFormat()
+    {
+        // 2026-05-13: models that haven't seen V4A patches (qwen3-35b in local testing) try
+        // unified-diff format and hit `patch-malformed` refusals every time. Pin the worked
+        // examples + the "not unified-diff" framing so the description doesn't regress to a
+        // one-liner that leaves smaller models guessing.
+        var catalog = HostToolProvider.GetCatalog();
+        var applyPatch = catalog.Single(t => t.Name == "apply_patch");
+
+        applyPatch.Description.Should().Contain("*** Begin Patch",
+            "the envelope marker is the load-bearing piece — the parser rejects anything else");
+        applyPatch.Description.Should().Contain("*** End Patch");
+        applyPatch.Description.Should().Contain("*** Add File:");
+        applyPatch.Description.Should().Contain("*** Update File:");
+        applyPatch.Description.Should().Contain("*** Delete File:");
+        applyPatch.Description.Should().Contain("V4A",
+            "models trained on unified-diff need to see the format name to recognise this is "
+            + "a different grammar, not a corrupted diff");
+        applyPatch.Description.Should().Contain("NOT unified diff",
+            "the most common model failure is sending unified-diff format — call it out by name");
+        applyPatch.Description.Should().Contain("run_command",
+            "the fallback path for models that only know unified-diff: pipe the file content "
+            + "via shell heredoc instead of trying apply_patch");
+    }
+
+    [Fact]
     public void GetCatalog_IncludesSetupWorkspace()
     {
         var catalog = HostToolProvider.GetCatalog();
