@@ -1,3 +1,5 @@
+using CodeFlow.Runtime.Observability;
+
 namespace CodeFlow.Runtime.Goal;
 
 /// <summary>
@@ -83,10 +85,17 @@ public sealed class GoalIterationOrchestrator
                 GoalState = state,
             };
 
+            // Thread the observer through every iteration so the token-usage capture observer
+            // (epic 978 / GN-4) fires `TokenUsageRecorded` events PER iteration — not just
+            // rolled up at the end. Without this, the trace inspector's per-node token chip
+            // would show one aggregate, hiding which iterations were expensive.
+            // IInvocationObserver.InvokeAsync overload falls back to the no-observer overload
+            // when the observer is null, so test callers that don't care can pass null.
             var invocationResult = await agentInvoker.InvokeAsync(
                 iterationConfig,
                 input: userMessage,
                 request.Tools,
+                request.Observer,
                 cancellationToken,
                 request.ToolExecutionContext);
 
@@ -188,6 +197,11 @@ public sealed class GoalIterationOrchestrator
 /// the agent's file edits accumulate across turns.</param>
 /// <param name="SeedHistory">Optional history to seed the conversation with (e.g. a system-set
 /// preamble from the saga). The orchestrator appends iteration transcripts to this.</param>
+/// <param name="Observer">Optional per-iteration invocation observer (epic 978 / GN-4). When set,
+/// the orchestrator passes it through to every <c>IAgentInvoker.InvokeAsync</c> call so each
+/// iteration's <c>TokenUsageRecorded</c> events fire individually — without this, the trace
+/// inspector's per-node token chip shows only the final aggregate and hides which iterations
+/// were expensive. Null is fine for tests that don't model the observability path.</param>
 public sealed record GoalIterationRequest(
     string Objective,
     int? TokenBudget,
@@ -195,7 +209,8 @@ public sealed record GoalIterationRequest(
     AgentInvocationConfiguration BaseConfiguration,
     ResolvedAgentTools Tools,
     ToolExecutionContext? ToolExecutionContext = null,
-    IReadOnlyList<ChatMessage>? SeedHistory = null);
+    IReadOnlyList<ChatMessage>? SeedHistory = null,
+    IInvocationObserver? Observer = null);
 
 /// <summary>Outcome categories the saga routes on. <c>Failed</c> is implicit at the saga layer.</summary>
 public enum GoalIterationOutcome
