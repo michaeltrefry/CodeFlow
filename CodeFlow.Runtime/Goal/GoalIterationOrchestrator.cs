@@ -69,11 +69,18 @@ public sealed class GoalIterationOrchestrator
             // defence-in-depth.)
             state.ClearCompleteRequested();
 
-            // The user message for THIS iteration. Iteration 1 = the bare objective; later
-            // iterations = the continuation prompt rendered against the current state.
-            var userMessage = iteration == 1
-                ? request.Objective
-                : GoalContinuationPromptTemplate.Render(templateRenderer, state.Snapshot());
+            // The continuation prompt — with its anti-laziness audit checklist — is injected
+            // as the user message on EVERY iteration, including the first. The original Codex
+            // /goal design only injected on iteration 2+, but that left a real audit gap: if
+            // the agent's tool budget was enough to complete the work in one InvocationLoop,
+            // the audit clauses never reached it, and a less-aligned model could claim
+            // completion without the per-requirement verification check (observed in qwen3
+            // testing 2026-05-13). Always-rendering closes the gap: the agent sees the full
+            // objective + audit checklist + budget block from turn 1, the cached system-prompt
+            // prefix is unaffected (the template is a user message, not a system mutation),
+            // and the wording is general enough to read fine on turn 1 ("make concrete progress
+            // toward the real requested end state" applies just as much to a fresh start).
+            var userMessage = GoalContinuationPromptTemplate.Render(templateRenderer, state.Snapshot());
 
             // Configuration is rebuilt per iteration so History and GoalState reflect the current
             // run, but everything else (system prompt, tool schemas, partials, decision templates)

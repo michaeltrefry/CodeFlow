@@ -177,11 +177,14 @@ public sealed class GoalIterationOrchestratorTests
     }
 
     [Fact]
-    public async Task RunAsync_FirstIteration_UsesBareObjective_AsUserMessage()
+    public async Task RunAsync_EveryIteration_UsesContinuationPromptWithAuditClauses()
     {
-        // GN-3 contract: iteration 1's user message is the rendered objective only, NOT the
-        // continuation prompt (which assumes prior turns). The audit prompt arrives on
-        // iteration 2+ when there's actually a prior turn to audit against.
+        // Iteration-1 audit gap fix (2026-05-13): the continuation prompt is now injected as
+        // the user message on EVERY iteration, including the first. Original Codex /goal only
+        // injected on iteration 2+, but that left a real audit gap — observed in qwen3 testing
+        // where the agent completed work inside one InvocationLoop and never saw the audit
+        // checklist before claiming completion. Pin the new behaviour so regression to the old
+        // "iteration 1 = bare objective" path is caught at CI.
         var observedInputs = new List<string?>();
         var invoker = new RecordingAgentInvoker(steps:
         [
@@ -207,11 +210,14 @@ public sealed class GoalIterationOrchestratorTests
             Tools: ResolvedAgentTools.Empty));
 
         observedInputs.Should().HaveCount(2);
-        observedInputs[0].Should().Be("Ship the PR", "iteration 1 user message is the bare objective");
-        observedInputs[1].Should().Contain("Completion audit:",
-            "iteration 2+ user message is the continuation prompt with the audit clauses");
-        observedInputs[1].Should().Contain("Ship the PR",
-            "continuation prompt embeds the current objective");
+        foreach (var input in observedInputs)
+        {
+            input.Should().Contain("Completion audit:",
+                "every iteration sees the audit checklist so the agent cannot claim completion "
+                + "without per-requirement verification, even on a one-iteration run");
+            input.Should().Contain("Ship the PR",
+                "the continuation template embeds the current objective on every render");
+        }
     }
 
     [Fact]
