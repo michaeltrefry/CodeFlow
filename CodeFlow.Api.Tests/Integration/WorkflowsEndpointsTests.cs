@@ -1080,6 +1080,58 @@ public sealed class WorkflowsEndpointsTests
     }
 
     [Fact]
+    public async Task ApplyPackageImport_GoalWithReviewV1_RoundTripsGoalPlusPostmortem()
+    {
+        // Epic 978 / GN-6 — the postmortem wrapper around goal-test. End-to-end import sanity:
+        // the package ships 3 agents (init, runner, postmortem) + 2 roles + 3 role assignments
+        // plus the workflow topology (Start → Goal → Postmortem with fan-in from all three Goal
+        // exit ports). Pinning here so a future refactor of multi-edge-to-same-node routing
+        // (Goal.Success / BudgetLimited / Failed all targeting the same Postmortem node) has
+        // an explicit guardrail at the importer.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("goal-with-review-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            WrapPackage(packageJson));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(6,
+            "package contains 1 workflow + 3 agents + 2 roles (and 3 role assignments)");
+
+        var detailJson = await client.GetStringAsync("/api/workflows/goal-with-review/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(3, "Start + Goal + Postmortem");
+
+        var goalNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Goal", StringComparison.Ordinal));
+        goalNode.GetProperty("agentKey").GetString().Should().Be("goal-with-review-runner");
+
+        var postmortemNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("agentKey").GetString(), "goal-postmortem", StringComparison.Ordinal));
+        postmortemNode.GetProperty("kind").GetString().Should().Be("Agent",
+            "the postmortem is a regular Agent node — not a HITL gate in v1");
+
+        // The fan-in is the load-bearing piece of this workflow shape. Verify all three Goal
+        // exit ports (Success / BudgetLimited / Failed) have edges into the postmortem node
+        // so every outcome produces a postmortem artifact.
+        var edges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        var postmortemId = postmortemNode.GetProperty("id").GetString();
+        var goalToPostmortemEdges = edges
+            .Where(e => string.Equals(e.GetProperty("toNodeId").GetString(), postmortemId, StringComparison.Ordinal))
+            .Select(e => e.GetProperty("fromPort").GetString())
+            .ToList();
+        goalToPostmortemEdges.Should().BeEquivalentTo(new[] { "Success", "BudgetLimited", "Failed" },
+            "the postmortem fans in from every Goal exit port — Success approves, BudgetLimited / Failed need the same writeup");
+    }
+
+    [Fact]
     public async Task ApplyPackageImport_GoalTestV1_RoundTripsSingleGoalNodeWorkflow()
     {
         // Epic 978 / GN-5 — the hypothesis-test library example. End-to-end import sanity for
@@ -1535,6 +1587,7 @@ public sealed class WorkflowsEndpointsTests
     [InlineData("shortcut-story-foreach-migration-v1-package.json")]
     [InlineData("foreach-iteration-demo-v1-package.json")]
     [InlineData("goal-test-v1-package.json")]
+    [InlineData("goal-with-review-v1-package.json")]
     public void LibraryWorkflowPackage_AgentPrompts_ScribanParseClean(string fileName)
     {
         var path = LocateLibraryPackage(fileName);
