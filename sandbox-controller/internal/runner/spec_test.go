@@ -38,6 +38,10 @@ func TestJobSpec_ToCreateRequest_LocksDownDefaults(t *testing.T) {
 		MemoryBytes:    1 << 30,
 		PidsLimit:      512,
 		TimeoutSeconds: 60,
+		// Caller (request handler) is responsible for setting Runtime from
+		// config. ToCreateRequest passes it through verbatim — empty means
+		// "let dockerd default", prod sets "runsc" in its config.
+		Runtime: "runsc",
 	}
 	req := s.ToCreateRequest()
 

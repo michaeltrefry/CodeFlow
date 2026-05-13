@@ -55,6 +55,14 @@ services:
     volumes:
       - codeflow-artifacts:/app/artifacts
 
+  # Per-trace workdir root. Mounted with the SAME path inside containers as on
+  # the host (Docker Desktop on macOS shares /tmp into the VM by default) so the
+  # sandbox controller's `WorkspaceHostPath=/tmp/codeflow-workdir/<traceId>`
+  # bind source resolves correctly when dockerd creates the nested sandbox
+  # container — dockerd sees the path on the host filesystem (the VM), and
+  # api/worker/controller all see it at the same absolute path. A named-volume
+  # backing breaks this because dockerd can't translate `/workspace/<traceId>`
+  # to the volume's `/var/lib/docker/volumes/.../<traceId>` host path.
   codeflow-workdir-init:
     image: alpine:3.20
     container_name: codeflow-workdir-init
@@ -62,9 +70,9 @@ services:
     command:
       - /bin/sh
       - -c
-      - mkdir -p /workspace && chown -R 1654:1654 /workspace
+      - mkdir -p /tmp/codeflow-workdir && chown -R 1654:1654 /tmp/codeflow-workdir && chmod 2775 /tmp/codeflow-workdir
     volumes:
-      - codeflow-workdir:/workspace
+      - /tmp/codeflow-workdir:/tmp/codeflow-workdir
 
   # HAA-18 — homepage assistant's per-conversation workspace root. Mounted under the unified
   # /workspace tree at /workspace/assistant, owned by the api container's `app` user (uid 1654)
@@ -132,8 +140,14 @@ services:
     # the gid inside the bind mount is just root, so we add 0 here. The other
     # hardening levers (cap_drop ALL, no-new-privileges, read_only, distroless
     # nonroot uid, internal network) stay intact.
+    # gid 1654 = api/worker `app` user's primary group. The controller (uid
+    # 65532) needs supplementary membership so it can mkdir `.results/{jobId}/`
+    # inside per-trace dirs that api creates as 1654:1654 mode 0775 (see
+    # CreateTraceHandler.SetUnixFileMode). Prod resolves this via the host
+    # filesystem's actual group ownership; dev needs the explicit group_add.
     group_add:
       - "0"
+      - "1654"
     tmpfs:
       - /tmp:size=16m,mode=1700,uid=65532,gid=65532
     volumes:
@@ -143,7 +157,7 @@ services:
       # sandbox-controller/internal/workspace/workspace.go Resolve()). The CHILD sandbox
       # container still gets `/workspace` mounted READ-ONLY — the controller hands dockerd
       # `readonly=true` on the workspace bind, separately from this controller-side mount.
-      - codeflow-workdir:/workspace
+      - /tmp/codeflow-workdir:/tmp/codeflow-workdir
       - codeflow-cfsc-config:/etc/cfsc:ro
       - codeflow-cfsc-tls:/etc/cfsc-tls:ro
     networks:
@@ -213,11 +227,14 @@ services:
       SandboxController__ClientKeyPath: /etc/cfsc-client/codeflow-api.key
       SandboxController__ServerCAPath: /etc/cfsc-client/client-ca.pem
       SandboxController__ServerCommonName: codeflow-sandbox-controller
+      # Same path inside container and on host so dockerd's bind-mount for
+      # container.run's nested sandbox container resolves correctly.
+      Workspace__WorkingDirectoryRoot: /tmp/codeflow-workdir
     ports:
       - "5080:8080"
     volumes:
       - codeflow-artifacts:/app/artifacts
-      - codeflow-workdir:/workspace
+      - /tmp/codeflow-workdir:/tmp/codeflow-workdir
       - codeflow-assistant-workspace:/workspace/assistant
       # Shares the dev-tls volume; SandboxController__* env vars above point at
       # the api-specific client cert files inside it.
@@ -275,9 +292,10 @@ services:
       SandboxController__ClientKeyPath: /etc/cfsc-client/codeflow-worker.key
       SandboxController__ServerCAPath: /etc/cfsc-client/client-ca.pem
       SandboxController__ServerCommonName: codeflow-sandbox-controller
+      Workspace__WorkingDirectoryRoot: /tmp/codeflow-workdir
     volumes:
       - codeflow-artifacts:/app/artifacts
-      - codeflow-workdir:/workspace
+      - /tmp/codeflow-workdir:/tmp/codeflow-workdir
       - codeflow-cfsc-tls:/etc/cfsc-client:ro
     networks:
       - default
@@ -305,7 +323,6 @@ services:
 volumes:
   codeflow-rabbitmq-data:
   codeflow-artifacts:
-  codeflow-workdir:
   codeflow-assistant-workspace:
   codeflow-cfsc-tls:
   codeflow-cfsc-config:

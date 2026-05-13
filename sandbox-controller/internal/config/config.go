@@ -82,6 +82,14 @@ type RunnerConfig struct {
 
 	// ContainerTeardownTimeoutSeconds caps best-effort kill+remove on tear-down.
 	ContainerTeardownTimeoutSeconds int `toml:"container_teardown_timeout_seconds"`
+
+	// Runtime overrides the dockerd runtime for spawned sandbox containers.
+	// Defaults to "runsc" (gVisor) — production-grade isolation. Set to "" or
+	// "runc" on hosts where gVisor isn't installed (e.g. macOS Docker Desktop
+	// dev stacks); the sandbox loses runtime-level syscall filtering but
+	// retains every other lockdown (no-network, read-only rootfs,
+	// no-new-privileges, cap_drop ALL, nonroot user, tmpfs scratch).
+	Runtime string `toml:"runtime"`
 }
 
 // ServerConfig controls the HTTP listener.
