@@ -3,6 +3,8 @@ import type { AreaPlugin } from 'rete-area-plugin';
 import type { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 import {
   FOR_EACH_CONTINUE_PORT,
+  GOAL_BUDGET_LIMITED_PORT,
+  GOAL_SUCCESS_PORT,
   IMPLICIT_FAILED_PORT,
   REVIEW_LOOP_EXHAUSTED_PORT,
 } from './workflow-node-schemes';
@@ -23,6 +25,7 @@ describe('defaultOutputPortsFor', () => {
     expect(defaultOutputPortsFor('Transform')).toEqual(['Out']);
     expect(defaultOutputPortsFor('Swarm')).toEqual(['Synthesized']);
     expect(defaultOutputPortsFor('ForEach')).toEqual(['Continue']);
+    expect(defaultOutputPortsFor('Goal')).toEqual([GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT]);
   });
 });
 
@@ -35,6 +38,10 @@ describe('labelFor', () => {
     expect(labelFor({ kind: 'Swarm', swarmProtocol: 'Sequential', swarmN: 4 })).toBe('Swarm Sequential \u00d74');
     expect(labelFor({ kind: 'ForEach', collectionExpression: 'workflow.items', subflowKey: 'per-item' }))
       .toBe('ForEach workflow.items \u2192 per-item');
+    expect(labelFor({ kind: 'Goal', goalObjective: 'Ship sc-979' })).toBe('Goal \u2014 Ship sc-979');
+    expect(labelFor({ kind: 'Goal', goalObjective: null })).toBe('Goal \u2014 (set objective)');
+    expect(labelFor({ kind: 'Goal', goalObjective: 'a'.repeat(40) }))
+      .toBe('Goal \u2014 ' + 'a'.repeat(24) + '\u2026');
   });
 });
 

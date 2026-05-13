@@ -918,6 +918,36 @@ public sealed class DryRunExecutor
                         + "Replay re-runs swarm bodies fresh; this dry-run path doesn't invoke live LLMs.",
                         contextVars, workflowVars);
 
+                case WorkflowNodeKind.Goal:
+                    // epic 978: Goal nodes drive a multi-iteration auto-continuation loop against a
+                    // single live agent conversation. Like Swarm, the body is non-replayable — the
+                    // dry-run path can't simulate the model's audit decisions or token accounting,
+                    // and replay-with-edit would have to re-run the whole loop fresh. Fail the walk
+                    // with a clear message; authors can branch upstream of the Goal if they need to
+                    // vary inputs without running the live loop.
+                    state.RecordEvent(new DryRunEvent(
+                        Ordinal: state.NextOrdinal(),
+                        Kind: DryRunEventKind.Diagnostic,
+                        NodeId: currentNode.Id,
+                        NodeKind: currentNode.Kind.ToString(),
+                        AgentKey: currentNode.AgentKey,
+                        PortName: null,
+                        Message: "Goal nodes are non-replayable; dry-run / replay-with-edit cannot simulate the continuation loop.",
+                        InputPreview: Preview(currentInput),
+                        OutputPreview: null,
+                        ReviewRound: reviewRound,
+                        MaxRounds: maxRounds,
+                        SubflowDepth: depth,
+                        SubflowKey: null,
+                        SubflowVersion: null,
+                        Logs: null,
+                        DecisionPayload: null));
+                    return DryRunWalkResult.Failed(
+                        $"Goal node {currentNode.Id} cannot be dry-run (non-replayable). "
+                        + "The Goal executor runs a live auto-continuation loop against an agent; "
+                        + "dry-run doesn't invoke live LLMs and replay re-runs the whole loop fresh.",
+                        contextVars, workflowVars);
+
                 default:
                     return DryRunWalkResult.Failed(
                         $"Unknown node kind {currentNode.Kind} on node {currentNode.Id}.",

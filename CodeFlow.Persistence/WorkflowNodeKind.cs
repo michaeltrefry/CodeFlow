@@ -10,5 +10,6 @@ public enum WorkflowNodeKind
     ReviewLoop = 5,
     Transform = 6,
     Swarm = 7,
-    ForEach = 8
+    ForEach = 8,
+    Goal = 9
 }

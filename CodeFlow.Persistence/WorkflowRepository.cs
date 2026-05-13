@@ -275,6 +275,9 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         SwarmTokenBudget = node.SwarmTokenBudget,
                         CollectionExpression = node.CollectionExpression,
                         ItemVar = NormalizeOptionalString(node.ItemVar),
+                        GoalObjective = node.GoalObjective,
+                        GoalTokenBudget = node.GoalTokenBudget,
+                        GoalMaxIterations = node.GoalMaxIterations,
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -401,7 +404,10 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.CoordinatorAgentVersion,
             entity.SwarmTokenBudget,
             entity.CollectionExpression,
-            entity.ItemVar);
+            entity.ItemVar,
+            entity.GoalObjective,
+            entity.GoalTokenBudget,
+            entity.GoalMaxIterations);
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)

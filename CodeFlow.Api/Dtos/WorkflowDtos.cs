@@ -54,7 +54,10 @@ public sealed record WorkflowNodeDto(
     int? CoordinatorAgentVersion = null,
     int? SwarmTokenBudget = null,
     string? CollectionExpression = null,
-    string? ItemVar = null);
+    string? ItemVar = null,
+    string? GoalObjective = null,
+    int? GoalTokenBudget = null,
+    int? GoalMaxIterations = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,

@@ -34,6 +34,30 @@ public static class WorkflowValidator
     /// rejects any ForEach node whose outputPorts list is non-empty.</summary>
     internal const string ForEachContinuePort = "Continue";
 
+    /// <summary>Synthesized port emitted by a Goal node when the model calls
+    /// <c>goal.update(status="complete")</c> and the completion audit passes (epic 978).</summary>
+    internal const string GoalSuccessPort = "Success";
+
+    /// <summary>Synthesized port emitted by a Goal node when the token budget is exhausted
+    /// before the model marks the objective complete (epic 978). Distinct from the implicit
+    /// <see cref="ImplicitFailedPort"/> so authors can route partial work to a budget-aware
+    /// handler (extend, postmortem-partial) vs. a true failure handler.</summary>
+    internal const string GoalBudgetLimitedPort = "BudgetLimited";
+
+    /// <summary>Default safety-net iteration cap applied to a Goal node when the author leaves
+    /// <c>goalMaxIterations</c> null. Token budget is the primary cap; this exists so a runaway
+    /// prompt cannot loop forever. Picked to leave plenty of headroom for real goals without
+    /// being open-ended.</summary>
+    public const int DefaultGoalMaxIterations = 50;
+
+    /// <summary>Inclusive lower bound for an explicit <c>goalMaxIterations</c>.</summary>
+    public const int MinGoalMaxIterations = 1;
+
+    /// <summary>Inclusive upper bound for an explicit <c>goalMaxIterations</c>. Conservative — the
+    /// token budget should be the practical cap; this prevents authors from typing a Very Large
+    /// Number into the iteration field by mistake.</summary>
+    public const int MaxGoalMaxIterations = 500;
+
     /// <summary>Identifier regex for a ForEach node's <c>itemVar</c>. JavaScript-style: leading
     /// underscore or letter, then word characters. Matches the shape Scriban accepts as a bare
     /// variable name without quoting.</summary>
@@ -269,6 +293,14 @@ public static class WorkflowValidator
                     if (!forEachValidation.IsValid)
                     {
                         return forEachValidation;
+                    }
+                    break;
+
+                case WorkflowNodeKind.Goal:
+                    var goalValidation = ValidateGoalNode(node);
+                    if (!goalValidation.IsValid)
+                    {
+                        return goalValidation;
                     }
                     break;
             }
@@ -831,6 +863,75 @@ public static class WorkflowValidator
         return ValidationResult.Ok();
     }
 
+    private static ValidationResult ValidateGoalNode(WorkflowNodeDto node)
+    {
+        if (string.IsNullOrWhiteSpace(node.AgentKey))
+        {
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} must reference an AgentKey — the goal-runner agent role "
+                + "that drives the continuation loop.");
+        }
+
+        if (string.IsNullOrWhiteSpace(node.GoalObjective))
+        {
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} must set goalObjective (the objective text the agent "
+                + "pursues; may include Scriban placeholders against workflow.*).");
+        }
+
+        // Parse the objective as a Scriban template so authors get a save-time error for typos
+        // or unterminated brackets instead of a runtime failure the first time the goal kicks off.
+        try
+        {
+            var probe = Scriban.Template.Parse(node.GoalObjective);
+            if (probe.HasErrors)
+            {
+                var details = string.Join(
+                    "; ",
+                    probe.Messages
+                        .Where(m => m.Type == Scriban.Parsing.ParserMessageType.Error)
+                        .Select(m => m.Message));
+                return ValidationResult.Fail(
+                    string.IsNullOrWhiteSpace(details)
+                        ? $"Goal node {node.Id} goalObjective is not a parseable Scriban template."
+                        : $"Goal node {node.Id} goalObjective is not a parseable Scriban template: {details}.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} goalObjective could not be parsed: {ex.Message}.");
+        }
+
+        if (node.GoalTokenBudget is { } tokenBudget && tokenBudget <= 0)
+        {
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} goalTokenBudget = {tokenBudget}; when set it must be > 0. "
+                + "Leave null for an unbounded run (the iteration cap is the safety net).");
+        }
+
+        if (node.GoalMaxIterations is { } maxIterations
+            && (maxIterations < MinGoalMaxIterations || maxIterations > MaxGoalMaxIterations))
+        {
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} goalMaxIterations = {maxIterations}, "
+                + $"which must be between {MinGoalMaxIterations} and {MaxGoalMaxIterations}. "
+                + $"Leave null to apply the default ({DefaultGoalMaxIterations}).");
+        }
+
+        if (node.OutputPorts is { Count: > 0 } declaredPorts
+            && declaredPorts.Any(p => !string.IsNullOrWhiteSpace(p)))
+        {
+            var formatted = FormatPortList(declaredPorts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray());
+            return ValidationResult.Fail(
+                $"Goal node {node.Id} declares output port(s) {formatted}. "
+                + $"Goal nodes have synthesized '{GoalSuccessPort}' and '{GoalBudgetLimitedPort}' ports "
+                + $"plus the implicit '{ImplicitFailedPort}'; authors must not declare any outputPorts.");
+        }
+
+        return ValidationResult.Ok();
+    }
+
     private static async Task<IReadOnlyDictionary<string, IReadOnlyCollection<string>>> ResolveAgentOutputsAsync(
         IReadOnlyList<WorkflowNodeDto> nodes,
         IAgentConfigRepository agentRepository,
@@ -1087,6 +1188,14 @@ public static class WorkflowValidator
                 // the validator synthesizes Continue here so outgoing edges from a ForEach node
                 // can reference it.
                 return new[] { ForEachContinuePort };
+
+            case WorkflowNodeKind.Goal:
+                // Goal nodes have two synthesized exits plus the implicit Failed:
+                // - "Success" when the model calls goal.update(complete) and the audit passes.
+                // - "BudgetLimited" when the token budget is exhausted before completion.
+                // Authors don't declare them; the validator synthesizes both so outgoing edges
+                // can reference them (e.g. routing BudgetLimited into a HITL extend-budget gate).
+                return new[] { GoalSuccessPort, GoalBudgetLimitedPort };
 
             default:
                 return Array.Empty<string>();

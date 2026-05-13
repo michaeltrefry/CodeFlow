@@ -67,4 +67,10 @@ public sealed class WorkflowNodeEntity
     public string? CollectionExpression { get; set; }
 
     public string? ItemVar { get; set; }
+
+    public string? GoalObjective { get; set; }
+
+    public int? GoalTokenBudget { get; set; }
+
+    public int? GoalMaxIterations { get; set; }
 }
