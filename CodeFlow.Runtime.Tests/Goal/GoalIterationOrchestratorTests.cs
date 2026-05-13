@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeFlow.Runtime.Goal;
 using FluentAssertions;
@@ -341,6 +342,62 @@ public sealed class GoalIterationOrchestratorTests
             Tools: ResolvedAgentTools.Empty)));
     }
 
+    [Fact]
+    public async Task RunAsync_Observer_IsThreadedThroughEveryIteration()
+    {
+        // GN-4: the observer overload of IAgentInvoker.InvokeAsync must receive the same
+        // observer instance on every iteration so the per-iteration TokenUsageRecorded
+        // events fire individually (rather than being silently dropped by the no-observer
+        // overload). Without this thread-through, the trace inspector's per-node token chip
+        // shows one final aggregate and hides which iterations were expensive.
+        var observer = new RecordingObserver();
+        var observersSeen = new List<IInvocationObserver?>();
+        var invoker = new ObserverRecordingInvoker(
+            observerSink: observersSeen,
+            steps:
+            [
+                BuildResponse("draft", "Completed", 100, 50, 0),
+                BuildResponse("revised", "Completed", 100, 50, 0),
+                BuildResponse("final", "Completed", 100, 50, 0),
+            ],
+            completeOn: 3);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: null,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty,
+            Observer: observer));
+
+        observersSeen.Should().HaveCount(3);
+        observersSeen.Should().AllSatisfy(o => o.Should().BeSameAs(observer,
+            "the same observer instance must be passed to every iteration so token-usage events accumulate against one stream"));
+    }
+
+    [Fact]
+    public async Task RunAsync_NullObserver_StillRunsCleanly()
+    {
+        // Defensive: callers that don't model observability (saga test harnesses without a
+        // tokenUsageRecords repository) pass null; the orchestrator must not require it.
+        var invoker = new ObserverRecordingInvoker(
+            observerSink: new List<IInvocationObserver?>(),
+            steps: [BuildResponse("done", "Completed", 0, 0, 0)],
+            completeOn: 1);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        var result = await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: null,
+            MaxIterations: 5,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty,
+            Observer: null));
+
+        result.Outcome.Should().Be(GoalIterationOutcome.Success);
+    }
+
     private static AgentInvocationResult BuildResponse(
         string output,
         string portName,
@@ -360,6 +417,64 @@ public sealed class GoalIterationOrchestratorTests
         AgentInvocationConfiguration Configuration,
         string? Input,
         IReadOnlyList<ChatMessage>? History);
+
+    /// <summary>
+    /// Stub observer used only to capture identity in the threading test. Real observability
+    /// is exercised in <c>GoalNodeDispatcherTests</c> with the production observer wiring.
+    /// </summary>
+    private sealed class RecordingObserver : IInvocationObserver
+    {
+        public Task OnModelCallStartedAsync(Guid invocationId, int roundNumber, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+        public Task OnModelCallCompletedAsync(Guid invocationId, int roundNumber, ChatMessage responseMessage,
+            TokenUsage? callTokenUsage, TokenUsage? cumulativeTokenUsage, string provider, string model,
+            JsonElement? rawUsage, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+        public Task OnToolCallStartedAsync(ToolCall call, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+        public Task OnToolCallCompletedAsync(ToolCall call, ToolResult result, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Implements the observer overload so the test can record which observer reached the
+    /// invoker on each call. Falls back to a per-step canned response.
+    /// </summary>
+    private sealed class ObserverRecordingInvoker(
+        IList<IInvocationObserver?> observerSink,
+        IReadOnlyList<AgentInvocationResult> steps,
+        int completeOn) : IAgentInvoker
+    {
+        private int nextStep;
+
+        public Task<AgentInvocationResult> InvokeAsync(
+            AgentInvocationConfiguration configuration,
+            string? input,
+            ResolvedAgentTools tools,
+            CancellationToken cancellationToken = default,
+            ToolExecutionContext? toolExecutionContext = null)
+            => InvokeAsync(configuration, input, tools, observer: null, cancellationToken, toolExecutionContext);
+
+        public Task<AgentInvocationResult> InvokeAsync(
+            AgentInvocationConfiguration configuration,
+            string? input,
+            ResolvedAgentTools tools,
+            IInvocationObserver? observer,
+            CancellationToken cancellationToken = default,
+            ToolExecutionContext? toolExecutionContext = null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            observerSink.Add(observer);
+            var step = nextStep++;
+            // Trigger completion on the configured iteration so the test terminates rather
+            // than hitting the iteration cap.
+            if (step + 1 == completeOn && configuration.GoalState is MutableGoalRuntimeState state)
+            {
+                state.MarkComplete();
+            }
+            return Task.FromResult(steps[step]);
+        }
+    }
 
     private sealed class RecordingAgentInvoker : IAgentInvoker
     {

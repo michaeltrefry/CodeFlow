@@ -1,7 +1,9 @@
 using CodeFlow.Contracts;
+using CodeFlow.Orchestration.TokenTracking;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Goal;
+using CodeFlow.Runtime.Observability;
 using CodeFlow.Runtime.Workspace;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
@@ -76,6 +78,11 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
         var renderer = services.GetRequiredService<IScribanTemplateRenderer>();
         var agentInvoker = services.GetRequiredService<IAgentInvoker>();
         var artifactStore = services.GetRequiredService<IArtifactStore>();
+        // Token-usage observer is optional — production wires it, but legacy saga test
+        // fixtures that construct the saga without a tokenUsageRecords repository skip it.
+        // Mirrors AgentInvocationConsumer.BuildTokenUsageCaptureObserverAsync.
+        var tokenUsageRecords = services.GetService<ITokenUsageRecordRepository>();
+        var dbContext = services.GetRequiredService<CodeFlowDbContext>();
 
         // Pin the agent version on the saga — same pattern as PublishHandoffAsync.
         var pinnedVersion = saga.GetPinnedVersion(node.AgentKey);
@@ -124,6 +131,13 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
 
             var toolExecutionContext = BuildGoalToolExecutionContext(saga);
 
+            // Build the per-iteration token-usage observer. The orchestrator will pass it
+            // through to every IAgentInvoker.InvokeAsync call so each iteration's
+            // TokenUsageRecorded events fire individually — without this, the trace
+            // inspector's per-node token chip shows only the final aggregate.
+            var observer = await BuildTokenUsageObserverAsync(
+                ctx, dbContext, tokenUsageRecords, saga.TraceId, node.Id, cancellationToken);
+
             var orchestrator = new GoalIterationOrchestrator(agentInvoker, renderer);
             var maxIterations = node.GoalMaxIterations ?? DefaultGoalMaxIterations;
             var goalRequest = new GoalIterationRequest(
@@ -132,7 +146,8 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
                 MaxIterations: maxIterations,
                 BaseConfiguration: baseConfig,
                 Tools: tools,
-                ToolExecutionContext: toolExecutionContext);
+                ToolExecutionContext: toolExecutionContext,
+                Observer: observer);
 
             var result = await orchestrator.RunAsync(goalRequest, cancellationToken);
             var duration = DateTimeOffset.UtcNow - startedAt;
@@ -144,6 +159,35 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
             var duration = DateTimeOffset.UtcNow - startedAt;
             await PublishGoalFailureAsync(ctx, saga, node, pinnedVersion.Value, ex, duration, artifactStore);
         }
+    }
+
+    /// <summary>
+    /// Construct the per-iteration token-usage observer. Returns null when
+    /// <paramref name="tokenUsageRecords"/> is null — legacy saga test fixtures construct the
+    /// saga without a repository, and the orchestrator's observer overload tolerates a null.
+    /// Mirrors <c>AgentInvocationConsumer.BuildTokenUsageCaptureObserverAsync</c> so a Goal
+    /// invocation's token events land in the same trace stream as a regular Agent invocation,
+    /// attributed to the same NodeId regardless of iteration count.
+    /// </summary>
+    internal static async Task<IInvocationObserver?> BuildTokenUsageObserverAsync(
+        IPublishEndpoint publishEndpoint,
+        CodeFlowDbContext dbContext,
+        ITokenUsageRecordRepository? tokenUsageRecords,
+        Guid traceId,
+        Guid nodeId,
+        CancellationToken cancellationToken)
+    {
+        if (tokenUsageRecords is null)
+        {
+            return null;
+        }
+        var scope = await SagaScopeChainResolver.ResolveAsync(dbContext, traceId, cancellationToken);
+        return new TokenUsageCaptureObserver(
+            tokenUsageRecords,
+            rootTraceId: scope.RootTraceId,
+            nodeId: nodeId,
+            scopeChain: scope.ScopeChain,
+            publishEndpoint: publishEndpoint);
     }
 
     internal static string RenderGoalObjective(
