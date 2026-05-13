@@ -181,6 +181,9 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := req.toJobSpec()
+	if s.cfg != nil {
+		spec.Runtime = s.cfg.Runner.Runtime
+	}
 
 	// Layer-2 workspace-path resolution + validation (sc-531).
 	if s.wsValidator != nil {

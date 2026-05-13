@@ -121,9 +121,14 @@ level = "debug"
 docker_socket_path                = "/var/run/docker.sock"
 image_pull_timeout_seconds        = 600
 container_teardown_timeout_seconds = 30
+# Dev: macOS Docker Desktop has no gVisor; fall back to the default runc
+# runtime. Prod overrides to "runsc" via the prod controller-config.toml.
+runtime                            = ""
 
 [workspace]
-workdir_root = "/workspace"
+# Dev: identical host & container path so dockerd's bind-mount resolution
+# works for the nested sandbox container that container.run launches.
+workdir_root = "/tmp/codeflow-workdir"
 
 [[images.allowed]]
 registry   = "ghcr.io"

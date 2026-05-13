@@ -60,6 +60,13 @@ image_pull_timeout_seconds = 600
 # kill/remove before logging a warning and giving up.
 container_teardown_timeout_seconds = 30
 
+# Dockerd runtime for sandbox containers. Prod = "runsc" (gVisor, syscall-
+# filtered). Dev hosts without gVisor installed should set this to "" so
+# dockerd uses its default runtime (runc); the lockdown without gVisor still
+# carries no-network, read-only rootfs, no-new-privileges, cap_drop ALL,
+# nonroot user, tmpfs scratch — just no kernel-syscall filter.
+runtime = "runsc"
+
 [workspace]
 # Absolute path to the per-trace workspace root (sc-531). Phase 1 uses a
 # host bind-mount; Phase 2 uses a shared NFS mount on both VMs at the same

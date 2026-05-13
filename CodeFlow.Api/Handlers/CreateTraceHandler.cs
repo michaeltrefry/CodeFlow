@@ -209,6 +209,19 @@ public sealed class CreateTraceHandler
         try
         {
             Directory.CreateDirectory(traceWorkDir);
+            // The sandbox controller runs as a different uid (distroless nonroot, 65532) than
+            // api/worker (1654). For container.run to mkdir its per-job `.results/{jobId}/`
+            // subdir inside this trace dir, the controller needs group-write on the trace dir.
+            // The shared GID is wired via `group_add` on the controller service in compose.
+            // Group-writable (0775) is sufficient — world-write isn't needed.
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(
+                    traceWorkDir,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                    | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                    | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

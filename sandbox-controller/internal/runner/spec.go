@@ -36,6 +36,12 @@ type JobSpec struct {
 	// the controller is configured without a workdir root (test-only path).
 	WorkspaceHostPath string // mounted rw at /workspace
 	ResultsHostPath   string // mounted rw at /artifacts; runner walks this for the manifest
+
+	// Runtime overrides dockerd's runtime for this job's container. Empty
+	// falls back to "runsc" (gVisor). Operators set "" or "runc" in dev when
+	// gVisor isn't installed; populated from RunnerConfig.Runtime by the
+	// request handler.
+	Runtime string
 }
 
 // ContainerLabels are stamped on every spawned container so the cleanup
@@ -112,12 +118,16 @@ func (s JobSpec) ToCreateRequest() dockerd.CreateContainerRequest {
 		})
 	}
 
+	// Empty s.Runtime means "use dockerd's default runtime" (typically runc).
+	// Prod sets "runsc" explicitly in controller-config.toml; dev leaves it
+	// empty. Passing "" to dockerd omits the runtime field from the create
+	// request body so the daemon falls back to its registered default.
 	return dockerd.CreateContainerRequest{
 		Image:       s.Image,
 		Cmd:         s.Cmd,
 		Env:         env,
 		User:        SandboxUserUID,
-		Runtime:     "runsc",
+		Runtime:     s.Runtime,
 		NetworkMode: "none",
 		CPUs:        s.CPUs,
 		MemoryBytes: s.MemoryBytes,
