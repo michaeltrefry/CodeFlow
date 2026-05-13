@@ -106,10 +106,31 @@ public sealed class GoalIterationOrchestrator
                 cancellationToken,
                 request.ToolExecutionContext);
 
-            // Append this iteration's transcript so the next iteration sees full history.
-            // The invocation's transcript starts with the user message we passed and ends with
-            // the final assistant message + any intervening tool exchanges.
-            history.AddRange(invocationResult.Transcript);
+            // Extend the orchestrator's running history with ONLY the messages this iteration
+            // added — the iteration's user message (the continuation prompt we sent) plus the
+            // assistant + tool exchanges the agent produced in response. The returned
+            // `invocationResult.Transcript` starts with the FULL conversation including a fresh
+            // system message and a replay of the history we passed in; appending that verbatim
+            // duplicates the system message and re-includes every prior iteration's history,
+            // which compounds exponentially across iterations.
+            //
+            // Diagnosed 2026-05-13 on qwen3-35b multi-step test: 12 iterations grew the input
+            // from 4k tokens (iter 1) to 100k+ tokens (iter 10), most of it duplicated system
+            // prompts + re-included history. Cache hit rate stayed high (each iteration's prefix
+            // matched its preceding turn within the same iteration) but cross-iteration cache
+            // misses on the growing prefix burned tokens that should never have been sent.
+            //
+            // Mechanically: filter system messages out of the transcript, then skip the prefix
+            // that matches the history we already have (those are exact replays of what we
+            // passed in). The remainder is the user message we sent + the iteration's new
+            // assistant/tool messages.
+            var nonSystem = invocationResult.Transcript
+                .Where(m => m.Role != ChatMessageRole.System)
+                .ToList();
+            for (var i = history.Count; i < nonSystem.Count; i++)
+            {
+                history.Add(nonSystem[i]);
+            }
 
             // Token accounting. The state's tokens_used drives the next iteration's continuation
             // prompt + `goal.get` answers. Input + output are summed because the cap is
