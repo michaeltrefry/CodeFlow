@@ -177,6 +177,96 @@ public sealed class GoalIterationOrchestratorTests
     }
 
     [Fact]
+    public async Task RunAsync_AcrossIterations_HistoryGrowsLinearly_NoDuplicatedSeed()
+    {
+        // Regression for the exponential-history-growth bug observed 2026-05-13 in qwen3-35b
+        // multi-step testing: input tokens grew from 4k (iter 1) to 100k+ (iter ~10) because the
+        // orchestrator was appending the FULL invocationResult.Transcript verbatim, which
+        // included the system message + a replay of every previous iteration's transcript. The
+        // fix only retains the messages this iteration ADDED — the user message we sent + the
+        // assistant/tool exchanges produced in response — and skips the seed (system, prior
+        // history).
+        //
+        // The realistic transcript stub returns: [system, ...history..., user_msg, assistant].
+        // After 3 iterations, history should contain 3x [user, assistant] = 6 messages, NOT
+        // 3 + 6 + 9 = 18 (the compounding shape).
+        var historySizesObserved = new List<int>();
+        var invoker = new RecordingAgentInvoker(steps:
+        [
+            (request, state) =>
+            {
+                historySizesObserved.Add(request.History?.Count ?? 0);
+                return BuildResponse("A", "Completed", 100, 10, 0);
+            },
+            (request, state) =>
+            {
+                historySizesObserved.Add(request.History?.Count ?? 0);
+                return BuildResponse("B", "Completed", 100, 10, 0);
+            },
+            (request, state) =>
+            {
+                historySizesObserved.Add(request.History?.Count ?? 0);
+                state.MarkComplete();
+                return BuildResponse("C", "Completed", 100, 10, 0);
+            },
+        ]);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: null,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty));
+
+        historySizesObserved.Should().HaveCount(3);
+        // Each iteration adds exactly one user message + one assistant message (the stub's
+        // canned response). So history grows by 2 per iteration: 0, 2, 4.
+        historySizesObserved[0].Should().Be(0, "iteration 1 starts fresh with no history");
+        historySizesObserved[1].Should().Be(2, "iteration 2 sees iter 1's [user, assistant] — no system");
+        historySizesObserved[2].Should().Be(4, "iteration 3 sees iter 1+2's [user, assistant, user, assistant] — linear growth");
+    }
+
+    [Fact]
+    public async Task RunAsync_AcrossIterations_HistoryContainsOnlyUserAssistantToolMessages_NoSystem()
+    {
+        // Pin the no-system-in-history invariant. ContextAssembler injects a single system
+        // message at position 0 of every InvocationLoop call; including system messages in
+        // history would either duplicate them or interleave them mid-conversation. Neither is
+        // valid for the provider APIs and both bust the prompt cache.
+        var historiesObserved = new List<IReadOnlyList<ChatMessage>?>();
+        var invoker = new RecordingAgentInvoker(steps:
+        [
+            (request, state) =>
+            {
+                historiesObserved.Add(request.History);
+                return BuildResponse("A", "Completed", 0, 0, 0);
+            },
+            (request, state) =>
+            {
+                historiesObserved.Add(request.History);
+                state.MarkComplete();
+                return BuildResponse("B", "Completed", 0, 0, 0);
+            },
+        ]);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: null,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty));
+
+        // Iteration 2's history must be entirely user/assistant/tool — no System.
+        historiesObserved[1].Should().NotBeNull();
+        historiesObserved[1]!.Should().NotContain(m => m.Role == ChatMessageRole.System,
+            "history fed back to the next iteration must never contain System messages — "
+            + "ContextAssembler always prepends exactly one system message, and including any "
+            + "in history either duplicates it (cache miss) or interleaves it mid-conversation");
+    }
+
+    [Fact]
     public async Task RunAsync_EveryIteration_UsesContinuationPromptWithAuditClauses()
     {
         // Iteration-1 audit gap fix (2026-05-13): the continuation prompt is now injected as
@@ -516,7 +606,28 @@ public sealed class GoalIterationOrchestratorTests
                 ?? throw new InvalidOperationException(
                     "GoalIterationOrchestrator must pass a MutableGoalRuntimeState; got " + configuration.GoalState?.GetType().Name);
             var response = steps[nextStep++](record, state);
-            return Task.FromResult(response);
+
+            // Simulate the real InvocationLoop's transcript shape: ContextAssembler builds
+            // [system, ...history..., user_msg] and the loop appends assistant/tool messages on
+            // top of that. The orchestrator's history-dedup logic relies on this prefix being
+            // present in invocationResult.Transcript, so the stub must include it (the canned
+            // response's transcript is only the NEW assistant/tool exchanges added during the
+            // iteration).
+            var realisticTranscript = new List<ChatMessage>
+            {
+                new ChatMessage(ChatMessageRole.System, configuration.SystemPrompt ?? string.Empty),
+            };
+            if (configuration.History is { Count: > 0 } history)
+            {
+                realisticTranscript.AddRange(history);
+            }
+            if (!string.IsNullOrEmpty(input))
+            {
+                realisticTranscript.Add(new ChatMessage(ChatMessageRole.User, input));
+            }
+            realisticTranscript.AddRange(response.Transcript);
+
+            return Task.FromResult(response with { Transcript = realisticTranscript });
         }
     }
 }
