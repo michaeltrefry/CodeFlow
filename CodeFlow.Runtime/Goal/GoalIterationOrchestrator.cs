@@ -62,12 +62,12 @@ public sealed class GoalIterationOrchestrator
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Clear the per-iteration completion signal before invoking. A `goal.update(complete)`
-            // call in iteration N-1 should not falsely exit iteration N before the agent has had
-            // a chance to act. (The completion check below DOES inspect the post-invocation
-            // snapshot, so this only matters if MarkComplete somehow leaks across invocations —
-            // defence-in-depth.)
+            // Clear the per-iteration completion + abandon signals before invoking. A signal from
+            // iteration N-1 should not falsely exit iteration N before the agent has had a chance
+            // to act. (The exit checks below inspect the post-invocation snapshot, so this only
+            // matters if a flag somehow leaks across invocations — defence-in-depth.)
             state.ClearCompleteRequested();
+            state.ClearAbandonRequested();
 
             // The continuation prompt — with its anti-laziness audit checklist — is injected
             // as the user message on EVERY iteration, including the first. The original Codex
@@ -150,13 +150,31 @@ public sealed class GoalIterationOrchestrator
                 TokenUsage: invocationResult.TokenUsage,
                 AgentDecision: invocationResult.Decision));
 
-            // Exit checks, in priority order. The agent's completion claim wins over a
-            // simultaneous budget exhaustion — if both fire on the same iteration we honor the
-            // model's signal that the work is verified done.
-            if (state.Snapshot().IsCompleteRequested)
+            // Exit checks, in priority order:
+            //   1. Complete — the agent says the audit passed; honored over budget exhaustion
+            //      because completion is "I verified the work" and we want to trust that signal.
+            //   2. Abandon — the agent says the environment makes the objective impossible;
+            //      honored over budget exhaustion because abandon is more informative than
+            //      "we ran out of tokens." If the model claims BOTH complete and abandon on the
+            //      same iteration, complete wins (it's the "I made it work" signal).
+            //   3. Budget exhausted — soft exit with partial work surfaced via BudgetLimited port.
+            var snapshot = state.Snapshot();
+            if (snapshot.IsCompleteRequested)
             {
                 return BuildResult(
                     GoalIterationOutcome.Success,
+                    iterations,
+                    history,
+                    state,
+                    totalInputTokens,
+                    totalOutputTokens,
+                    totalToolCalls);
+            }
+
+            if (snapshot.IsAbandonRequested)
+            {
+                return BuildResult(
+                    GoalIterationOutcome.Abandoned,
                     iterations,
                     history,
                     state,
@@ -254,6 +272,12 @@ public enum GoalIterationOutcome
     /// <summary>The runaway-protection iteration cap was hit. Saga routes via the implicit
     /// <c>Failed</c> port with a clear reason in the decision payload.</summary>
     IterationCapReached,
+
+    /// <summary>The agent called <c>goal.update(status="abandon", reason=...)</c> because the
+    /// objective is environmentally impossible. Saga routes via the <c>Abandoned</c> port — a
+    /// postmortem agent or HITL gate handles whether the objective was misposed or the
+    /// environment is genuinely broken. Reason is preserved in the decision payload.</summary>
+    Abandoned,
 }
 
 /// <summary>Per-iteration record. Surfaces to trace evidence bundles + token usage UI.</summary>

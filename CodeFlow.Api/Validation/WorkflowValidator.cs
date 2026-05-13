@@ -44,6 +44,13 @@ public static class WorkflowValidator
     /// handler (extend, postmortem-partial) vs. a true failure handler.</summary>
     internal const string GoalBudgetLimitedPort = "BudgetLimited";
 
+    /// <summary>Synthesized port emitted by a Goal node when the model calls
+    /// <c>goal.update(status="abandon", reason=...)</c> because the objective is environmentally
+    /// impossible (epic 978 / GN-7). Distinct from <see cref="ImplicitFailedPort"/> so authors can
+    /// route to a postmortem / HITL handler that investigates the blocker the agent reported,
+    /// rather than treating it as an opaque runtime failure.</summary>
+    internal const string GoalAbandonedPort = "Abandoned";
+
     /// <summary>Default safety-net iteration cap applied to a Goal node when the author leaves
     /// <c>goalMaxIterations</c> null. Token budget is the primary cap; this exists so a runaway
     /// prompt cannot loop forever. Picked to leave plenty of headroom for real goals without
@@ -925,8 +932,9 @@ public static class WorkflowValidator
             var formatted = FormatPortList(declaredPorts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray());
             return ValidationResult.Fail(
                 $"Goal node {node.Id} declares output port(s) {formatted}. "
-                + $"Goal nodes have synthesized '{GoalSuccessPort}' and '{GoalBudgetLimitedPort}' ports "
-                + $"plus the implicit '{ImplicitFailedPort}'; authors must not declare any outputPorts.");
+                + $"Goal nodes have synthesized '{GoalSuccessPort}', '{GoalBudgetLimitedPort}', "
+                + $"and '{GoalAbandonedPort}' ports plus the implicit '{ImplicitFailedPort}'; "
+                + $"authors must not declare any outputPorts.");
         }
 
         return ValidationResult.Ok();
@@ -1190,12 +1198,16 @@ public static class WorkflowValidator
                 return new[] { ForEachContinuePort };
 
             case WorkflowNodeKind.Goal:
-                // Goal nodes have two synthesized exits plus the implicit Failed:
+                // Goal nodes have three synthesized exits plus the implicit Failed:
                 // - "Success" when the model calls goal.update(complete) and the audit passes.
                 // - "BudgetLimited" when the token budget is exhausted before completion.
-                // Authors don't declare them; the validator synthesizes both so outgoing edges
-                // can reference them (e.g. routing BudgetLimited into a HITL extend-budget gate).
-                return new[] { GoalSuccessPort, GoalBudgetLimitedPort };
+                // - "Abandoned" when the model calls goal.update(abandon, reason=...) because the
+                //   objective is environmentally impossible. The agent-supplied reason flows to
+                //   the decision payload so a postmortem / HITL handler can act on it.
+                // Authors don't declare them; the validator synthesizes all three so outgoing
+                // edges can reference them (e.g. routing BudgetLimited into a HITL extend-budget
+                // gate; routing Abandoned into a postmortem agent).
+                return new[] { GoalSuccessPort, GoalBudgetLimitedPort, GoalAbandonedPort };
 
             default:
                 return Array.Empty<string>();

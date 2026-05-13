@@ -38,8 +38,18 @@ public sealed class GoalContinuationPromptTemplateTests
         body.Should().Contain("Treat uncertain or indirect evidence as not achieved");
 
         body.Should().Contain("Do not rely on intent, partial progress, memory of earlier work");
-        body.Should().Contain("Do not call `goal.update` unless the goal is complete");
+        body.Should().Contain("Do not call `goal.update` with status `\"complete\"` unless the goal is complete");
         body.Should().Contain("Do not mark a goal complete merely because the budget is nearly exhausted");
+
+        // GN-7 abandon path: the prompt must surface the abandon-exit so models faced with an
+        // environmentally impossible objective have an honest exit instead of constructing a
+        // literal-but-spiritless workaround (e.g. the Perl-as-python3 cheat observed during
+        // testing). Pin both the affirmative guidance and the anti-cheat clause.
+        body.Should().Contain("ENVIRONMENTALLY IMPOSSIBLE");
+        body.Should().Contain("status `\"abandon\"`");
+        body.Should().Contain("reason");
+        body.Should().Contain("abandon is for impossibility, not for inconvenience");
+        body.Should().Contain("workaround that fakes the spirit");
     }
 
     [Fact]

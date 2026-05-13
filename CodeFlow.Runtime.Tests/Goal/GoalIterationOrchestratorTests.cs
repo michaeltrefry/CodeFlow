@@ -386,6 +386,89 @@ public sealed class GoalIterationOrchestratorTests
     }
 
     [Fact]
+    public async Task RunAsync_ModelCallsAbandonImmediately_ExitsAbandonedOnIterationOne()
+    {
+        var invoker = new RecordingAgentInvoker(steps:
+        [
+            (request, state) =>
+            {
+                state.MarkAbandoned("python is unreachable; container.run fails every attempt");
+                return BuildResponse("Abandoning.", "Completed", 1000, 100, 1);
+            },
+        ]);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        var result = await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "Run a Python script",
+            TokenBudget: 100_000,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty));
+
+        result.Outcome.Should().Be(GoalIterationOutcome.Abandoned);
+        result.Iterations.Should().HaveCount(1);
+        invoker.CallCount.Should().Be(1);
+        result.FinalSnapshot.IsAbandonRequested.Should().BeTrue();
+        result.FinalSnapshot.AbandonReason.Should()
+            .Be("python is unreachable; container.run fails every attempt");
+        result.FinalSnapshot.IsCompleteRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_AbandonWinsOverBudgetExhaustion()
+    {
+        // Same priority logic as the Success-over-budget pin: an honest abandon-with-reason is
+        // more informative than "ran out of tokens," so it wins when both fire on the same turn.
+        var invoker = new RecordingAgentInvoker(steps:
+        [
+            (request, state) =>
+            {
+                state.MarkAbandoned("required dependency unreachable");
+                return BuildResponse("Abandoning.", "Completed", 9000, 2000, 0);
+            },
+        ]);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        var result = await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: 10_000,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty));
+
+        result.Outcome.Should().Be(GoalIterationOutcome.Abandoned);
+        result.FinalSnapshot.TokensUsed.Should().Be(11_000);
+        result.FinalSnapshot.AbandonReason.Should().Be("required dependency unreachable");
+    }
+
+    [Fact]
+    public async Task RunAsync_CompletionWinsOverAbandonOnSameIteration()
+    {
+        // If a model somehow signalled both on the same turn (it shouldn't — they're mutually
+        // exclusive intents — but the tool layer doesn't enforce that), trust the "I made it
+        // work" signal over "I gave up." Complete is the stronger claim.
+        var invoker = new RecordingAgentInvoker(steps:
+        [
+            (request, state) =>
+            {
+                state.MarkAbandoned("changed mind");
+                state.MarkComplete();
+                return BuildResponse("Done.", "Completed", 500, 100, 1);
+            },
+        ]);
+        var orchestrator = new GoalIterationOrchestrator(invoker, Renderer);
+
+        var result = await orchestrator.RunAsync(new GoalIterationRequest(
+            Objective: "task",
+            TokenBudget: null,
+            MaxIterations: 50,
+            BaseConfiguration: BaseConfig,
+            Tools: ResolvedAgentTools.Empty));
+
+        result.Outcome.Should().Be(GoalIterationOutcome.Success);
+    }
+
+    [Fact]
     public async Task RunAsync_CancellationToken_StopsLoopBetweenIterations()
     {
         using var cts = new CancellationTokenSource();

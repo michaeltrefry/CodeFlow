@@ -149,15 +149,25 @@ public sealed class GoalAgentIntegrationTests
     private sealed class RecordingState : IGoalRuntimeState
     {
         public int MarkCompleteCalls { get; private set; }
+        public int MarkAbandonedCalls { get; private set; }
+        public string? LastAbandonReason { get; private set; }
 
         public GoalRuntimeStateSnapshot Snapshot() => new(
             Objective: "Test objective",
             TokenBudget: 100_000,
             TokensUsed: 250,
             TokensRemaining: 99_750,
-            IsCompleteRequested: MarkCompleteCalls > 0);
+            IsCompleteRequested: MarkCompleteCalls > 0,
+            IsAbandonRequested: MarkAbandonedCalls > 0,
+            AbandonReason: LastAbandonReason);
 
         public void MarkComplete() => MarkCompleteCalls++;
+
+        public void MarkAbandoned(string reason)
+        {
+            MarkAbandonedCalls++;
+            LastAbandonReason = reason;
+        }
     }
 
     private sealed class ScriptedModelClient(IReadOnlyList<Func<InvocationRequest, InvocationResponse>> steps) : IModelClient
