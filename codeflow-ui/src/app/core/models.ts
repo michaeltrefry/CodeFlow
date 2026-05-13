@@ -630,7 +630,7 @@ export interface NotificationDeliveryAttemptListQuery {
   limit?: number | null;
 }
 
-export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm' | 'ForEach';
+export type WorkflowNodeKind = 'Start' | 'Agent' | 'Logic' | 'Hitl' | 'Subflow' | 'ReviewLoop' | 'Transform' | 'Swarm' | 'ForEach' | 'Goal';
 
 export type WorkflowInputKind = 'Text' | 'Json';
 
@@ -670,6 +670,17 @@ export interface WorkflowNode {
   // the child Scriban scope (default 'item' at the editor layer).
   collectionExpression?: string | null;
   itemVar?: string | null;
+  // Goal nodes only (epic 978). The objective the goal-runner agent pursues across the
+  // auto-continuation loop. Scriban-rendered against `workflow.*` so authors can substitute
+  // story titles / requirement docs at runtime.
+  goalObjective?: string | null;
+  // Goal nodes only. Cumulative token cap across all iterations of the goal loop. The model
+  // can read this via `goal.get` but cannot self-pause on budget pressure; the system pauses
+  // and exits via `BudgetLimited` when consumption reaches the cap. Null = unbounded.
+  goalTokenBudget?: number | null;
+  // Goal nodes only. Safety-net cap on continuation iterations. Token budget is the primary
+  // cap; this exists so a runaway prompt cannot loop forever. Null defaults to 50 at runtime.
+  goalMaxIterations?: number | null;
 }
 
 export interface WorkflowEdge {

@@ -51,6 +51,17 @@ export const REVIEW_LOOP_EXHAUSTED_PORT = 'Exhausted';
  *  rejects any author-declared port on a ForEach node). */
 export const FOR_EACH_CONTINUE_PORT = 'Continue';
 
+/** Synthesized terminal port emitted by a Goal node when the model calls
+ *  `goal.update(status="complete")` and the completion audit passes (epic 978). Authors
+ *  never declare it; padded on load, stripped on save. */
+export const GOAL_SUCCESS_PORT = 'Success';
+
+/** Synthesized terminal port emitted by a Goal node when the token budget is exhausted
+ *  before the model marks the objective complete (epic 978). Distinct from the implicit
+ *  Failed port so authors can route budget-limited runs to a partial-completion handler
+ *  (extend, postmortem-partial). Authors never declare it; padded on load, stripped on save. */
+export const GOAL_BUDGET_LIMITED_PORT = 'BudgetLimited';
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
@@ -82,6 +93,12 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   // and itemVar (valid identifier, not in {index, count, isLast}); default itemVar is 'item'.
   collectionExpression: string | null = null;
   itemVar: string | null = null;
+  // Goal nodes only (epic 978). Validator demands a non-empty goalObjective (Scriban-parseable).
+  // tokenBudget + maxIterations are optional; null tokenBudget = unbounded, null maxIterations
+  // applies the runtime default (50).
+  goalObjective: string | null = null;
+  goalTokenBudget: number | null = null;
+  goalMaxIterations: number | null = null;
   traceState: WorkflowNodeTraceState = null;
   /**
    * Token Usage Tracking [Slice 7]: optional per-node overlay populated by the
@@ -127,6 +144,9 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     swarmTokenBudget?: number | null;
     collectionExpression?: string | null;
     itemVar?: string | null;
+    goalObjective?: string | null;
+    goalTokenBudget?: number | null;
+    goalMaxIterations?: number | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -152,6 +172,9 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.swarmTokenBudget = params.swarmTokenBudget ?? null;
     this.collectionExpression = params.collectionExpression ?? null;
     this.itemVar = params.itemVar ?? null;
+    this.goalObjective = params.goalObjective ?? null;
+    this.goalTokenBudget = params.goalTokenBudget ?? null;
+    this.goalMaxIterations = params.goalMaxIterations ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));

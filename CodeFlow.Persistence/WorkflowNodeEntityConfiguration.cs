@@ -137,6 +137,16 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
             .HasColumnName("item_var")
             .HasMaxLength(128);
 
+        builder.Property(node => node.GoalObjective)
+            .HasColumnName("goal_objective")
+            .HasColumnType("longtext");
+
+        builder.Property(node => node.GoalTokenBudget)
+            .HasColumnName("goal_token_budget");
+
+        builder.Property(node => node.GoalMaxIterations)
+            .HasColumnName("goal_max_iterations");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

@@ -16,6 +16,7 @@ const KIND_CHIP: Record<string, ChipVariant> = {
   Hitl: 'accent',
   Subflow: 'accent',
   ReviewLoop: 'accent',
+  Goal: 'accent',
 };
 
 @Component({
@@ -156,6 +157,13 @@ export class WorkflowDetailComponent implements OnInit {
       case 'Transform': return 'Transform';
       case 'Swarm': return `Swarm ${node.swarmProtocol ?? '?'} ×${node.swarmN ?? '?'}`;
       case 'ForEach': return `ForEach ${node.collectionExpression ?? '?'} → ${node.subflowKey ?? '?'}`;
+      case 'Goal': {
+        const objective = node.goalObjective?.trim();
+        const preview = !objective
+          ? '(set objective)'
+          : objective.length > 24 ? objective.slice(0, 24) + '…' : objective;
+        return `Goal — ${preview}`;
+      }
     }
   }
 

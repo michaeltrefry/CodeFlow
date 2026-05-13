@@ -81,7 +81,11 @@ import type { DerivedPortRow } from './workflow-port-rows';
 const AGENT_BEARING_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'Agent',
   'Hitl',
-  'Start'
+  'Start',
+  // Goal nodes carry an agent assignment (the goal-runner role that drives the
+  // continuation loop), so they participate in the same agent-picker, edit-in-place,
+  // and update-to-latest flows as Agent/Hitl/Start.
+  'Goal'
 ] as WorkflowNodeKind[]);
 
 const FORK_KEY_PREFIX = '__fork_';
@@ -282,6 +286,7 @@ function defaultStartInput(): WorkflowInput {
             <button type="button" class="palette-item reviewloop" (click)="addPaletteNode('ReviewLoop')">Review Loop</button>
             <button type="button" class="palette-item swarm" (click)="addPaletteNode('Swarm')">Swarm</button>
             <button type="button" class="palette-item foreach" (click)="addPaletteNode('ForEach')">For Each</button>
+            <button type="button" class="palette-item goal" (click)="addPaletteNode('Goal')">Goal</button>
           </div>
         </div>
 
@@ -2390,13 +2395,22 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       ? { itemVar: 'item' }
       : {};
 
+    // Goal (epic 978): seed an empty objective string so the inspector renders the editor;
+    // validator requires goalObjective to be non-empty before save. tokenBudget +
+    // maxIterations stay null — null tokenBudget = unbounded, null maxIterations applies the
+    // runtime default (50).
+    const goalDefaults = kind === 'Goal'
+      ? { goalObjective: '' }
+      : {};
+
     const node = new WorkflowEditorNode({
       nodeId: crypto.randomUUID(),
       kind,
-      label: labelFor({ kind, agentKey: null, ...swarmDefaults, ...forEachDefaults }),
+      label: labelFor({ kind, agentKey: null, ...swarmDefaults, ...forEachDefaults, ...goalDefaults }),
       outputPorts: defaultOutputPortsFor(kind),
       ...swarmDefaults,
-      ...forEachDefaults
+      ...forEachDefaults,
+      ...goalDefaults
     });
 
     await this.editor.addNode(node);

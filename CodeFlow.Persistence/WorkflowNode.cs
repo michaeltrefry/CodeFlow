@@ -58,4 +58,16 @@ public sealed record WorkflowNode(
     string? CollectionExpression = null,
     // ForEach nodes (sc-942): author-chosen identifier bound under `loop.item` in the child
     // Scriban scope. Defaults to "item" at the API/UI layer; null on every other kind.
-    string? ItemVar = null);
+    string? ItemVar = null,
+    // Goal nodes (epic 978): objective text the goal-runner agent pursues. Scriban-rendered
+    // against `workflow.*` at runtime so authors can plug in story titles, requirement docs,
+    // etc. Required on Goal; null on every other kind.
+    string? GoalObjective = null,
+    // Goal nodes (epic 978): optional cumulative token cap across all iterations of the goal
+    // loop. System-enforced — the model can read it via `goal.get` but cannot self-pause on
+    // budget pressure. Null = unbounded; > 0 when set.
+    int? GoalTokenBudget = null,
+    // Goal nodes (epic 978): safety-net cap on continuation iterations within the goal loop.
+    // Token budget is the primary cap; this exists so a runaway prompt cannot loop forever.
+    // Null defaults to 50 at runtime; must be > 0 when set.
+    int? GoalMaxIterations = null);

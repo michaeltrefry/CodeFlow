@@ -57,7 +57,10 @@ internal static class WorkflowMappings
                 CoordinatorAgentVersion: node.CoordinatorAgentVersion,
                 SwarmTokenBudget: node.SwarmTokenBudget,
                 CollectionExpression: node.CollectionExpression,
-                ItemVar: node.ItemVar))
+                ItemVar: node.ItemVar,
+                GoalObjective: node.GoalObjective,
+                GoalTokenBudget: node.GoalTokenBudget,
+                GoalMaxIterations: node.GoalMaxIterations))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

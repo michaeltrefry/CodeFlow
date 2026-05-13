@@ -9,7 +9,7 @@ import {
 import { WorkflowPayload } from '../../../core/workflows.api';
 import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
-import { FOR_EACH_CONTINUE_PORT, IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
+import { FOR_EACH_CONTINUE_PORT, GOAL_BUDGET_LIMITED_PORT, GOAL_SUCCESS_PORT, IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
 /**
  * Default declared ports when a node is first added to the canvas.
@@ -49,6 +49,12 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       // ports; the canvas pads Continue here so loadIntoEditor's rete handle exists and
       // serializeEditor strips it before save the same way ReviewLoop strips Exhausted.
       return ['Continue'];
+    case 'Goal':
+      // Goal has two synthesized ports (epic 978): Success when the model calls
+      // `goal.update(complete)` after the audit passes, and BudgetLimited when the token
+      // budget is exhausted before completion. Authors never declare them; the canvas pads
+      // them in for rete and serializeEditor strips them on save the same way as ForEach.
+      return [GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT];
   }
 }
 
@@ -114,6 +120,17 @@ export async function loadIntoEditor(
     if (node.kind === 'ForEach' && !declaredPorts.includes(FOR_EACH_CONTINUE_PORT)) {
       declaredPorts = [...declaredPorts, FOR_EACH_CONTINUE_PORT];
     }
+    // Goal nodes synthesize Success + BudgetLimited server-side (epic 978 validator rejects
+    // any author-declared port). Workflows from the API arrive with empty outputPorts; pad
+    // both here so rete renders wirable handles. serializeEditor strips them back out on save.
+    if (node.kind === 'Goal') {
+      if (!declaredPorts.includes(GOAL_SUCCESS_PORT)) {
+        declaredPorts = [...declaredPorts, GOAL_SUCCESS_PORT];
+      }
+      if (!declaredPorts.includes(GOAL_BUDGET_LIMITED_PORT)) {
+        declaredPorts = [...declaredPorts, GOAL_BUDGET_LIMITED_PORT];
+      }
+    }
     const editorNode = new WorkflowEditorNode({
       nodeId: node.id,
       kind: node.kind,
@@ -139,7 +156,10 @@ export async function loadIntoEditor(
       coordinatorAgentVersion: node.coordinatorAgentVersion,
       swarmTokenBudget: node.swarmTokenBudget,
       collectionExpression: node.collectionExpression,
-      itemVar: node.itemVar
+      itemVar: node.itemVar,
+      goalObjective: node.goalObjective,
+      goalTokenBudget: node.goalTokenBudget,
+      goalMaxIterations: node.goalMaxIterations
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -163,7 +183,8 @@ export async function loadIntoEditor(
 
 export function labelFor(
   node: Pick<WorkflowNode, 'kind' | 'agentKey' | 'subflowKey' | 'subflowVersion' | 'reviewMaxRounds'
-    | 'outputType' | 'swarmProtocol' | 'swarmN' | 'collectionExpression' | 'itemVar'>): string {
+    | 'outputType' | 'swarmProtocol' | 'swarmN' | 'collectionExpression' | 'itemVar'
+    | 'goalObjective'>): string {
   switch (node.kind) {
     case 'Start': return `Start — ${node.agentKey ?? '(pick agent)'}`;
     case 'Agent': return node.agentKey ?? '(pick agent)';
@@ -190,6 +211,13 @@ export function labelFor(
       const child = node.subflowKey ?? '(pick workflow)';
       return `ForEach ${expr} → ${child}`;
     }
+    case 'Goal': {
+      const objective = node.goalObjective?.trim();
+      const preview = !objective
+        ? '(set objective)'
+        : objective.length > 24 ? objective.slice(0, 24) + '…' : objective;
+      return `Goal — ${preview}`;
+    }
   }
 }
 
@@ -210,9 +238,13 @@ export function serializeEditor(
       .filter(p => !(node.kind === 'ReviewLoop' && p === REVIEW_LOOP_EXHAUSTED_PORT))
       // sc-944 validator rejects any author-declared port on a ForEach node — Continue is
       // synthesized server-side. Strip it on save the same way ReviewLoop strips Exhausted.
-      .filter(p => !(node.kind === 'ForEach' && p === FOR_EACH_CONTINUE_PORT));
+      .filter(p => !(node.kind === 'ForEach' && p === FOR_EACH_CONTINUE_PORT))
+      // epic 978: Goal synthesizes Success + BudgetLimited server-side; validator rejects any
+      // author-declared port on a Goal node. Strip both on save.
+      .filter(p => !(node.kind === 'Goal' && (p === GOAL_SUCCESS_PORT || p === GOAL_BUDGET_LIMITED_PORT)));
     const isSwarm = node.kind === 'Swarm';
     const isForEach = node.kind === 'ForEach';
+    const isGoal = node.kind === 'Goal';
     // Validator rejects CoordinatorAgent* on Sequential, so suppress them unless the
     // configured protocol is Coordinator.
     const isCoordinator = isSwarm && node.swarmProtocol === 'Coordinator';
@@ -242,7 +274,10 @@ export function serializeEditor(
       coordinatorAgentVersion: isCoordinator ? node.coordinatorAgentVersion : null,
       swarmTokenBudget: isSwarm ? node.swarmTokenBudget : null,
       collectionExpression: isForEach ? node.collectionExpression : null,
-      itemVar: isForEach ? node.itemVar : null
+      itemVar: isForEach ? node.itemVar : null,
+      goalObjective: isGoal ? node.goalObjective : null,
+      goalTokenBudget: isGoal ? node.goalTokenBudget : null,
+      goalMaxIterations: isGoal ? node.goalMaxIterations : null
     };
   });
 
