@@ -202,6 +202,9 @@ public sealed class InvocationLoop
 
                 if (totalToolCalls > budget.MaxToolCalls)
                 {
+                    DrainOrphanedToolCalls(
+                        transcript,
+                        "Invocation aborted: ToolCallBudgetExceeded. Tool call was not dispatched.");
                     return BuildFailureResult(
                         transcript,
                         lastAssistantOutput,
@@ -212,6 +215,9 @@ public sealed class InvocationLoop
 
                 if (HasExceededDuration(startedAt, budget))
                 {
+                    DrainOrphanedToolCalls(
+                        transcript,
+                        "Invocation aborted: LoopDurationExceeded. Tool call was not dispatched.");
                     return BuildFailureResult(
                         transcript,
                         lastAssistantOutput,
@@ -300,6 +306,9 @@ public sealed class InvocationLoop
                             }
                             if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
                             {
+                                DrainOrphanedToolCalls(
+                                    transcript,
+                                    "Invocation aborted: ConsecutiveNonMutatingCallsExceeded after submit on empty content. Subsequent tool calls from the same assistant message were not dispatched.");
                                 return BuildFailureResult(
                                     transcript,
                                     lastAssistantOutput,
@@ -345,6 +354,9 @@ public sealed class InvocationLoop
 
                         if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
                         {
+                            DrainOrphanedToolCalls(
+                                transcript,
+                                "Invocation aborted: ConsecutiveNonMutatingCallsExceeded after terminal-tool error. Subsequent tool calls from the same assistant message were not dispatched.");
                             return BuildFailureResult(
                                 transcript,
                                 lastAssistantOutput,
@@ -387,6 +399,9 @@ public sealed class InvocationLoop
 
                 if (consecutiveNonMutatingCalls > budget.MaxConsecutiveNonMutatingCalls)
                 {
+                    DrainOrphanedToolCalls(
+                        transcript,
+                        "Invocation aborted: ConsecutiveNonMutatingCallsExceeded after host-tool call. Subsequent tool calls from the same assistant message were not dispatched.");
                     return BuildFailureResult(
                         transcript,
                         lastAssistantOutput,
@@ -624,6 +639,25 @@ public sealed class InvocationLoop
     {
         ArgumentNullException.ThrowIfNull(transcript);
 
+        var orphans = FindOrphanedToolCallIds(transcript);
+        if (orphans.Count > 0)
+        {
+            throw new OrphanFunctionCallException(orphans);
+        }
+    }
+
+    /// <summary>
+    /// Walks <paramref name="transcript"/> and returns the deterministically-ordered list of
+    /// tool-call IDs that have no matching <c>function_call_output</c> Tool message. Empty when
+    /// the transcript is well-formed. Pure function — used by both
+    /// <see cref="EnsureToolCallPairing"/> (which throws on a non-empty result) and the loop's
+    /// own mid-batch early-exit drain (which appends error stubs to repair the transcript before
+    /// returning a failure result).
+    /// </summary>
+    public static IReadOnlyList<string> FindOrphanedToolCallIds(IReadOnlyList<ChatMessage> transcript)
+    {
+        ArgumentNullException.ThrowIfNull(transcript);
+
         // Single forward pass: track outstanding tool-call IDs and tick them off when the
         // matching Tool message appears. Any IDs still outstanding at the end are orphans.
         // O(n) in transcript length; constant memory in unique-ID count.
@@ -647,9 +681,45 @@ public sealed class InvocationLoop
             }
         }
 
-        if (outstanding.Count > 0)
+        if (outstanding.Count == 0)
         {
-            throw new OrphanFunctionCallException(outstanding.OrderBy(static id => id, StringComparer.Ordinal).ToList());
+            return Array.Empty<string>();
+        }
+        return outstanding.OrderBy(static id => id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Repair a transcript with unpaired assistant <c>function_call</c>s before the loop returns
+    /// a failure result mid-tool-call-batch. The OpenAI Responses API + Anthropic both reject any
+    /// transcript that contains an assistant <c>function_call</c> without a matching Tool
+    /// <c>function_call_output</c>; the Goal-node orchestrator (epic 978) accumulates each
+    /// iteration's transcript into the next iteration's <c>History</c>, so an orphan inside a
+    /// failed iteration breaks the next iteration's first model call with
+    /// <see cref="OrphanFunctionCallException"/>.
+    /// <para/>
+    /// Without this drain, every mid-batch early-exit (ToolCallBudgetExceeded /
+    /// LoopDurationExceeded / ConsecutiveNonMutatingCallsExceeded fired while the loop was still
+    /// iterating an assistant message's <c>ToolCalls</c>) leaves the unprocessed tool calls
+    /// unpaired. Observed on 2026-05-13 during qwen3-35b Goal testing: a multi-step task where
+    /// qwen emitted several tool calls per assistant turn hit the consecutive-non-mutating
+    /// budget mid-batch, exited, and the next Goal iteration's pairing guard threw on the
+    /// surfaced orphan ID.
+    /// </summary>
+    private static void DrainOrphanedToolCalls(List<ChatMessage> transcript, string reason)
+    {
+        var orphans = FindOrphanedToolCallIds(transcript);
+        if (orphans.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var callId in orphans)
+        {
+            transcript.Add(new ChatMessage(
+                ChatMessageRole.Tool,
+                reason,
+                ToolCallId: callId,
+                IsError: true));
         }
     }
 

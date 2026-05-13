@@ -1278,6 +1278,114 @@ public sealed class InvocationLoopTests
     }
 
     [Fact]
+    public void FindOrphanedToolCallIds_EmptyTranscript_ReturnsEmpty()
+    {
+        InvocationLoop.FindOrphanedToolCallIds(Array.Empty<ChatMessage>())
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FindOrphanedToolCallIds_AllPaired_ReturnsEmpty()
+    {
+        var transcript = new[]
+        {
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "",
+                ToolCalls: [new ToolCall("call_a", "echo", new JsonObject())]),
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_a"),
+        };
+
+        InvocationLoop.FindOrphanedToolCallIds(transcript).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FindOrphanedToolCallIds_ReturnsUnpairedIdsInDeterministicOrder()
+    {
+        // Multiple orphans in one assistant message — the most common shape when a mid-batch
+        // early-exit aborts before processing every tool_call.
+        var transcript = new[]
+        {
+            new ChatMessage(
+                ChatMessageRole.Assistant,
+                "",
+                ToolCalls:
+                [
+                    new ToolCall("call_z", "echo", new JsonObject()),
+                    new ToolCall("call_a", "echo", new JsonObject()),
+                    new ToolCall("call_m", "echo", new JsonObject()),
+                ]),
+            // Only call_z was processed before the exit.
+            new ChatMessage(ChatMessageRole.Tool, "ok", ToolCallId: "call_z"),
+        };
+
+        InvocationLoop.FindOrphanedToolCallIds(transcript)
+            .Should().Equal(["call_a", "call_m"],
+                because: "orphans are returned in deterministic ordinal order so error messages + drain stubs are stable");
+    }
+
+    [Fact]
+    public async Task RunAsync_MidBatchConsecutiveNonMutatingExit_DrainsOrphans_NoPairingViolation()
+    {
+        // Regression for the orphan-tool-call bug surfaced 2026-05-13 during qwen3-35b Goal
+        // testing: an assistant message emits multiple tool calls, the 1st succeeds, the 2nd
+        // trips ConsecutiveNonMutatingCallsExceeded, and the 3rd was never dispatched. Before
+        // the drain fix, the 3rd tool call's ID stayed orphaned in the returned transcript —
+        // breaking the next iteration's `EnsureToolCallPairing` guard when the Goal-node
+        // orchestrator forwarded that transcript as History.
+        var modelClient = new ScriptedModelClient(
+        [
+            _ => new InvocationResponse(
+                new ChatMessage(
+                    ChatMessageRole.Assistant,
+                    "Three reads in one turn.",
+                    ToolCalls:
+                    [
+                        // First call lands and increments the non-mutating counter.
+                        new ToolCall("call_first", "echo", new JsonObject { ["text"] = "a" }),
+                        // Second call exceeds MaxConsecutiveNonMutatingCalls=1 → return.
+                        new ToolCall("call_second", "echo", new JsonObject { ["text"] = "b" }),
+                        // Third call must NOT be left orphaned.
+                        new ToolCall("call_third", "now", new JsonObject()),
+                    ]),
+                InvocationStopReason.ToolCalls),
+        ]);
+        var loop = new InvocationLoop(modelClient, new ToolRegistry([new HostToolProvider()]));
+
+        var result = await loop.RunAsync(new InvocationLoopRequest(
+            [new ChatMessage(ChatMessageRole.User, "Read three things.")],
+            "gpt-5",
+            Budget: new InvocationLoopBudget
+            {
+                MaxToolCalls = 5,
+                MaxLoopDuration = TimeSpan.FromMinutes(1),
+                MaxConsecutiveNonMutatingCalls = 1,
+            }));
+
+        result.Decision.PortName.Should().Be("Failed");
+        result.Decision.Payload!.AsObject()["reason"]!.GetValue<string>()
+            .Should().Be(InvocationLoopFailureReasons.ConsecutiveNonMutatingCallsExceeded);
+
+        // The load-bearing assertion: the returned transcript must satisfy the pairing
+        // guard. Without the drain, this would throw with `call_third` as the orphan.
+        var checkPairing = () => InvocationLoop.EnsureToolCallPairing(result.Transcript);
+        checkPairing.Should().NotThrow(
+            because: "every unpaired tool_call must be drained with an error Tool stub before "
+            + "the loop returns, so a downstream consumer (e.g. Goal-node orchestrator's next "
+            + "iteration) can safely use the transcript as History");
+
+        // Specifically: call_third should have a synthetic error Tool message describing the
+        // abort reason.
+        result.Transcript.Should().Contain(m =>
+            m.Role == ChatMessageRole.Tool
+            && m.ToolCallId == "call_third"
+            && m.IsError
+            && m.Content.Contains("ConsecutiveNonMutatingCallsExceeded", StringComparison.Ordinal),
+            because: "the drain stub explains WHY the tool call was not dispatched, so the model "
+            + "sees a coherent transcript if the same conversation is resumed later");
+    }
+
+    [Fact]
     public async Task RunAsync_ThrowsOrphanFunctionCallException_WhenTranscriptStartsWithUnpairedAssistantToolCall()
     {
         // End-to-end shape: an attacker / buggy caller hands the loop an initial transcript
