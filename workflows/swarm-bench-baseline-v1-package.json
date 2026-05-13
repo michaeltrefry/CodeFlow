@@ -14,7 +14,7 @@
       "key": "swarm-bench-baseline",
       "version": 1,
       "name": "Swarm Bench — Baseline (V1)",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Workflow",
       "tags": ["swarm", "baseline", "bench", "swarm-bench"],
       "createdAtUtc": "2026-04-28T14:00:00Z",
