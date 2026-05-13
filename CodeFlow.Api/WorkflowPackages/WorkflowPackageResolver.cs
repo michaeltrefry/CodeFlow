@@ -182,7 +182,10 @@ public sealed class WorkflowPackageResolver(
                 CoordinatorAgentVersion: node.CoordinatorAgentVersion,
                 SwarmTokenBudget: node.SwarmTokenBudget,
                 CollectionExpression: node.CollectionExpression,
-                ItemVar: NormalizeOptional(node.ItemVar)));
+                ItemVar: NormalizeOptional(node.ItemVar),
+                GoalObjective: node.GoalObjective,
+                GoalTokenBudget: node.GoalTokenBudget,
+                GoalMaxIterations: node.GoalMaxIterations));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(

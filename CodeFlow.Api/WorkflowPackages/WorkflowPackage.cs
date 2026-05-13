@@ -97,7 +97,15 @@ public sealed record WorkflowPackageWorkflowNode(
     // ForEach-node fields (sc-942). Null on every other kind. Carried through the package so
     // library examples (FE-5) and exports round-trip ForEach configuration end-to-end.
     string? CollectionExpression = null,
-    string? ItemVar = null);
+    string? ItemVar = null,
+    // Goal-node fields (epic 978 / GN-1). Null on every other kind. Carried through the
+    // package so library examples (GN-5) and exports round-trip Goal configuration end-to-end.
+    // goalObjective is a Scriban template rendered per goal run; goalTokenBudget is the
+    // cumulative cap (null = unbounded); goalMaxIterations is the safety-net cap (null applies
+    // the runtime default — currently 50 in GoalNodeDispatcher).
+    string? GoalObjective = null,
+    int? GoalTokenBudget = null,
+    int? GoalMaxIterations = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

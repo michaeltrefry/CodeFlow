@@ -1080,6 +1080,77 @@ public sealed class WorkflowsEndpointsTests
     }
 
     [Fact]
+    public async Task ApplyPackageImport_GoalTestV1_RoundTripsSingleGoalNodeWorkflow()
+    {
+        // Epic 978 / GN-5 — the hypothesis-test library example. End-to-end import sanity for
+        // the goal-test workflow: deserialize, admit, persist, then query back via the same
+        // paths the runtime uses. Goal-specific assertions: the Goal node carries
+        // goalObjective + null tokenBudget + null maxIterations, declares no author ports
+        // (Success + BudgetLimited are synthesised), and the goal-runner agent is wired to a
+        // role that grants the standard code-aware host tools (read_file, apply_patch,
+        // bulk_replace, run_command, vcs.*, setup_workspace).
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("goal-test-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            WrapPackage(packageJson));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(4,
+            "package contains 1 workflow + 2 agents + 1 role (and 2 role assignments)");
+
+        var detailJson = await client.GetStringAsync("/api/workflows/goal-test/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+        nodes.Should().HaveCount(2, "Start + Goal");
+
+        var startNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Start", StringComparison.Ordinal));
+        startNode.GetProperty("agentKey").GetString().Should().Be("goal-test-init");
+        startNode.GetProperty("inputScript").GetString().Should().Contain("setWorkflow('objective'",
+            "the Start node's inputScript seeds the operator's text into workflow.objective");
+
+        var goalNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Goal", StringComparison.Ordinal));
+        goalNode.GetProperty("agentKey").GetString().Should().Be("goal-runner");
+        goalNode.GetProperty("goalObjective").GetString().Should().Be("{{ workflow.objective }}",
+            "the Goal node renders workflow.objective as the per-run goal text");
+        // The response serializer skips null properties (DefaultIgnoreCondition =
+        // WhenWritingNull on JsonSerializerOptions), so an unbounded budget shows up as a
+        // missing field rather than `"goalTokenBudget": null`. Either is fine — the runtime
+        // treats absence and null identically.
+        var hasTokenBudget = goalNode.TryGetProperty("goalTokenBudget", out var tokenBudgetProp);
+        (hasTokenBudget && tokenBudgetProp.ValueKind != JsonValueKind.Null).Should().BeFalse(
+            "v1 leaves the budget unbounded — GN-6's wrapper workflow adds a HITL budget gate");
+        var hasMaxIter = goalNode.TryGetProperty("goalMaxIterations", out var maxIterProp);
+        (hasMaxIter && maxIterProp.ValueKind != JsonValueKind.Null).Should().BeFalse(
+            "null maxIterations applies the runtime default (50) — the safety net cap");
+        goalNode.GetProperty("outputPorts").EnumerateArray().Should().BeEmpty(
+            "Goal nodes synthesize Success + BudgetLimited; authors must not declare any output ports");
+
+        // Confirm the edge from Start.Continue → Goal.in landed correctly so the saga can
+        // actually route into the Goal node.
+        var edges = detailDoc.RootElement.GetProperty("edges").EnumerateArray().ToList();
+        edges.Should().HaveCount(1);
+        var edge = edges[0];
+        edge.GetProperty("fromPort").GetString().Should().Be("Continue");
+        edge.GetProperty("toPort").GetString().Should().Be("in");
+
+        // The workflow's only input is the operator's text. Verify the input declaration so
+        // the Trace launcher UI surfaces it.
+        var inputs = detailDoc.RootElement.GetProperty("inputs").EnumerateArray().ToList();
+        inputs.Should().HaveCount(1);
+        inputs[0].GetProperty("key").GetString().Should().Be("input");
+        inputs[0].GetProperty("kind").GetString().Should().Be("Text");
+        inputs[0].GetProperty("required").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ApplyPackageImport_SwarmBenchSequentialV1_RoundTripsParentAndSubflow()
     {
         // sc-40 — Variant V2 of the swarm-bench harness. End-to-end import sanity for the
@@ -1463,6 +1534,7 @@ public sealed class WorkflowsEndpointsTests
     [Theory]
     [InlineData("shortcut-story-foreach-migration-v1-package.json")]
     [InlineData("foreach-iteration-demo-v1-package.json")]
+    [InlineData("goal-test-v1-package.json")]
     public void LibraryWorkflowPackage_AgentPrompts_ScribanParseClean(string fileName)
     {
         var path = LocateLibraryPackage(fileName);

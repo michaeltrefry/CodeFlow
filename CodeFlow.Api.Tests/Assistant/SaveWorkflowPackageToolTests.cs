@@ -404,7 +404,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
                     "key": "haa10-island-flow",
                     "version": 1,
                     "name": "Island flow",
-                    "maxRoundsPerRound": 3,
+                    "maxStepsPerSaga": 3,
                     "category": "Workflow",
                     "createdAtUtc": "2026-04-30T00:00:00Z",
                     "nodes": [
@@ -522,7 +522,7 @@ public sealed class SaveWorkflowPackageToolTests : IAsyncLifetime
                     "key": "{{workflowKey}}",
                     "version": 1,
                     "name": "Minimal LLM emission",
-                    "maxRoundsPerRound": 1,
+                    "maxStepsPerSaga": 1,
                     "category": "Workflow",
                     "createdAtUtc": "2026-04-30T00:00:00Z",
                     "nodes": [

@@ -265,7 +265,10 @@ public sealed class WorkflowPackageImporter(
             CoordinatorAgentVersion: node.CoordinatorAgentVersion,
             SwarmTokenBudget: node.SwarmTokenBudget,
             CollectionExpression: node.CollectionExpression,
-            ItemVar: node.ItemVar);
+            ItemVar: node.ItemVar,
+            GoalObjective: node.GoalObjective,
+            GoalTokenBudget: node.GoalTokenBudget,
+            GoalMaxIterations: node.GoalMaxIterations);
 
     private static WorkflowEdgeDto ToDto(WorkflowPackageWorkflowEdge edge) =>
         new(
@@ -1802,6 +1805,9 @@ public sealed class WorkflowPackageImporter(
                         SwarmTokenBudget = node.SwarmTokenBudget,
                         CollectionExpression = node.CollectionExpression,
                         ItemVar = Trim(node.ItemVar),
+                        GoalObjective = node.GoalObjective,
+                        GoalTokenBudget = node.GoalTokenBudget,
+                        GoalMaxIterations = node.GoalMaxIterations,
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -1961,7 +1967,10 @@ public sealed class WorkflowPackageImporter(
             node.CoordinatorAgentVersion ?? packageNode?.CoordinatorAgentVersion,
             node.SwarmTokenBudget,
             node.CollectionExpression,
-            NormalizeOptional(node.ItemVar));
+            NormalizeOptional(node.ItemVar),
+            node.GoalObjective,
+            node.GoalTokenBudget,
+            node.GoalMaxIterations);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,
