@@ -2485,7 +2485,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)
+    internal static IReadOnlyDictionary<string, JsonElement> DeserializeContextInputs(string? inputsJson)
     {
         if (string.IsNullOrWhiteSpace(inputsJson))
         {
@@ -2544,7 +2544,7 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
     /// Returns null when the saga has no allowlist; returns an empty list only if the JSON parses
     /// but contains no valid <c>{url}</c> entries (malformed entries are silently skipped).
     /// </summary>
-    private static IReadOnlyList<RepositoryDeclaration>? ParseRepositoriesJson(string? repositoriesJson)
+    internal static IReadOnlyList<RepositoryDeclaration>? ParseRepositoriesJson(string? repositoriesJson)
     {
         if (string.IsNullOrWhiteSpace(repositoriesJson))
         {
