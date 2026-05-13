@@ -14,7 +14,7 @@
       "key": "transform-demo",
       "version": 1,
       "name": "Transform Demo",
-      "maxRoundsPerRound": 3,
+      "maxStepsPerSaga": 3,
       "category": "Workflow",
       "tags": ["transform", "reference", "scriban"],
       "createdAtUtc": "2026-04-27T18:30:00Z",

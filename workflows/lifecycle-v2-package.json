@@ -14,7 +14,7 @@
       "key": "dev-flow",
       "version": 3,
       "name": "Dev Flow (PM + Developer + Reviewer)",
-      "maxRoundsPerRound": 8,
+      "maxStepsPerSaga": 8,
       "category": "Workflow",
       "tags": [
         "dev",
@@ -175,7 +175,7 @@
       "key": "dev-review-pair",
       "version": 3,
       "name": "Dev/Reviewer Pair (inner loop body)",
-      "maxRoundsPerRound": 8,
+      "maxStepsPerSaga": 8,
       "category": "Loop",
       "tags": [
         "dev",
@@ -233,7 +233,7 @@
       "key": "impl-plan-flow",
       "version": 4,
       "name": "Implementation Plan Flow",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Subflow",
       "tags": [
         "plan",
@@ -321,7 +321,7 @@
       "key": "impl-plan-loop",
       "version": 4,
       "name": "Implementation Plan — Architect/Reviewer Loop",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Loop",
       "tags": [
         "plan",
@@ -386,7 +386,7 @@
       "key": "lifecycle",
       "version": 2,
       "name": "Full Lifecycle (Brief → PRD → Plan → Build → Post-mortem)",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Workflow",
       "tags": [
         "lifecycle",
@@ -510,7 +510,7 @@
       "key": "per-task-flow",
       "version": 3,
       "name": "Per-Task Flow (outer loop body)",
-      "maxRoundsPerRound": 8,
+      "maxStepsPerSaga": 8,
       "category": "Subflow",
       "tags": [
         "dev",
@@ -614,7 +614,7 @@
       "key": "prd-bugfix-flow",
       "version": 6,
       "name": "PRD — Bug Fix Flow",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Subflow",
       "tags": [
         "PRD",
@@ -753,7 +753,7 @@
       "key": "prd-feature-flow",
       "version": 6,
       "name": "PRD — Feature Flow",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Subflow",
       "tags": [
         "PRD",
@@ -892,7 +892,7 @@
       "key": "prd-intake",
       "version": 6,
       "name": "PRD Intake",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Workflow",
       "tags": [
         "PRD",
@@ -988,7 +988,7 @@
       "key": "prd-newproject-flow",
       "version": 6,
       "name": "PRD — New Project Flow",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Subflow",
       "tags": [
         "PRD",
@@ -1127,7 +1127,7 @@
       "key": "prd-requirements-loop",
       "version": 6,
       "name": "PRD — Requirements Loop",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Loop",
       "tags": [
         "PRD",
@@ -1184,7 +1184,7 @@
       "key": "prd-socratic-loop",
       "version": 4,
       "name": "PRD — Socratic Interview Loop",
-      "maxRoundsPerRound": 5,
+      "maxStepsPerSaga": 5,
       "category": "Loop",
       "tags": [
         "PRD",
