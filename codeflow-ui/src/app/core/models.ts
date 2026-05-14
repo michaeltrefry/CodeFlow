@@ -656,6 +656,16 @@ export interface AgentInvocationOverrides {
   additionalToolIdentifiers?: string[] | null;
 }
 
+/**
+ * Epic 993 / NO-8: the tool identifiers an agent inherits through its role grants at a given
+ * version — host tool names and `mcp:<server>:<tool>` identifiers. The node-overrides tools
+ * picker renders these checked + disabled so per-node overrides stay purely additive.
+ */
+export interface AgentResolvedTools {
+  toolIdentifiers: string[];
+  enableHostTools: boolean;
+}
+
 export interface WorkflowNode {
   id: string;
   kind: WorkflowNodeKind;

@@ -35,6 +35,9 @@ public static class AgentsEndpoints
         group.MapGet("/{key}/{version:int}/package", ExportPackageAsync)
             .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
 
+        group.MapGet("/{key}/{version:int}/resolved-tools", GetResolvedToolsAsync)
+            .RequireAuthorization(CodeFlowApiDefaults.Policies.AgentsRead);
+
         group.MapPost("/package/preview", PreviewPackageImportAsync)
             .RequireAuthorization(CodeFlowApiDefaults.PolicyBundles.PackageImportWrite);
 
@@ -460,6 +463,24 @@ public static class AgentsEndpoints
         AgentPackage Package,
         IReadOnlyList<WorkflowPackageImportResolutionRequest>? Resolutions = null,
         bool? AcknowledgeDrift = null);
+
+    /// <summary>
+    /// Epic 993 / NO-8: resolve the host/MCP tool identifiers an agent inherits through its role
+    /// grants at the given version. Feeds the workflow editor's node-overrides tools picker, which
+    /// renders these checked + disabled so per-node overrides are purely additive.
+    /// </summary>
+    private static async Task<IResult> GetResolvedToolsAsync(
+        string key,
+        int version,
+        IRoleResolutionService roleResolution,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeKey(key);
+        var resolved = await roleResolution.ResolveAsync(normalized, version, cancellationToken);
+        return Results.Ok(new AgentResolvedToolsDto(
+            resolved.AllowedToolNames.ToArray(),
+            resolved.EnableHostTools));
+    }
 
     private static async Task<IResult> GetAgentVersionAsync(
         string key,
