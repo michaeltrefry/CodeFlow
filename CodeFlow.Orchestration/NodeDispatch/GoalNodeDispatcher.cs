@@ -110,6 +110,13 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
 
             var tools = await roleResolution.ResolveAsync(node.AgentKey, pinnedVersion.Value, cancellationToken);
 
+            // Epic 993 / NO-6: merge additional tools from node overrides into the role-resolved
+            // tool set. AdditionalToolIdentifiers are additive only; they never remove role grants.
+            if (node.AgentOverrides?.AdditionalToolIdentifiers is { Count: > 0 })
+            {
+                tools = MergeAdditionalTools(tools, node.AgentOverrides.AdditionalToolIdentifiers);
+            }
+
             // Epic 993 / NO-5: apply per-node overrides before building the base config.
             var effectiveConfig = AgentOverrideMerge.MergeConfiguration(
                 agentConfig.Configuration,
@@ -432,5 +439,29 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
                 ContentType: "text/plain",
                 FileName: fileName),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Epic 993 / NO-6: merge additional tools from node overrides into the role-resolved tool set.
+    /// AdditionalToolIdentifiers are additive only; they never remove role grants. Deduplicates
+    /// by adding only identifiers not already in the role's AllowedToolNames.
+    /// </summary>
+    private static ResolvedAgentTools MergeAdditionalTools(
+        ResolvedAgentTools resolved,
+        IReadOnlyList<string> additionalTools)
+    {
+        if (additionalTools.Count == 0)
+        {
+            return resolved;
+        }
+
+        // Build the merged set: start with role grants, add only new identifiers from overrides.
+        var merged = new HashSet<string>(resolved.AllowedToolNames, StringComparer.Ordinal);
+        foreach (var tool in additionalTools)
+        {
+            merged.Add(tool);
+        }
+
+        return resolved with { AllowedToolNames = merged };
     }
 }

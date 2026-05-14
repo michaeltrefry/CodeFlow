@@ -185,6 +185,13 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
 
             var resolvedTools = await roleResolution.ResolveAsync(message.AgentKey, message.AgentVersion, context.CancellationToken);
 
+            // Epic 993 / NO-6: merge additional tools from node overrides into the role-resolved
+            // tool set. AdditionalToolIdentifiers are additive only; they never remove role grants.
+            if (message.AgentOverrides?.AdditionalToolIdentifiers is { Count: > 0 })
+            {
+                resolvedTools = MergeAdditionalTools(resolvedTools, message.AgentOverrides.AdditionalToolIdentifiers);
+            }
+
             // sc-269 PR3: resolve and persist the per-invocation authority envelope, then thread
             // the resolved envelope into the tool layer so workspace command/repo/network checks
             // and the ToolAccessPolicy can self-enforce against it. Failure to record is still
@@ -448,6 +455,30 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
         var pinTuples = pins.Select(p => (p.Key, p.Version)).ToArray();
         var bodies = await promptPartialRepository.ResolveBodiesAsync(pinTuples, cancellationToken);
         return bodies.Count == 0 ? null : bodies;
+    }
+
+    /// <summary>
+    /// Epic 993 / NO-6: merge additional tools from node overrides into the role-resolved tool set.
+    /// AdditionalToolIdentifiers are additive only; they never remove role grants. Deduplicates
+    /// by adding only identifiers not already in the role's AllowedToolNames.
+    /// </summary>
+    private static ResolvedAgentTools MergeAdditionalTools(
+        ResolvedAgentTools resolved,
+        IReadOnlyList<string> additionalTools)
+    {
+        if (additionalTools.Count == 0)
+        {
+            return resolved;
+        }
+
+        // Build the merged set: start with role grants, add only new identifiers from overrides.
+        var merged = new HashSet<string>(resolved.AllowedToolNames, StringComparer.Ordinal);
+        foreach (var tool in additionalTools)
+        {
+            merged.Add(tool);
+        }
+
+        return resolved with { AllowedToolNames = merged };
     }
 
     /// <summary>
