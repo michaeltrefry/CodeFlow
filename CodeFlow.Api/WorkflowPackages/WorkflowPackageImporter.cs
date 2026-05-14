@@ -268,7 +268,8 @@ public sealed class WorkflowPackageImporter(
             ItemVar: node.ItemVar,
             GoalObjective: node.GoalObjective,
             GoalTokenBudget: node.GoalTokenBudget,
-            GoalMaxIterations: node.GoalMaxIterations);
+            GoalMaxIterations: node.GoalMaxIterations,
+            AgentOverrides: node.AgentOverrides);
 
     private static WorkflowEdgeDto ToDto(WorkflowPackageWorkflowEdge edge) =>
         new(
@@ -1808,6 +1809,7 @@ public sealed class WorkflowPackageImporter(
                         GoalObjective = node.GoalObjective,
                         GoalTokenBudget = node.GoalTokenBudget,
                         GoalMaxIterations = node.GoalMaxIterations,
+                        AgentOverridesJson = WorkflowJson.SerializeAgentOverrides(node.AgentOverrides),
                     })
                     .ToList(),
                 Edges = workflow.Edges
@@ -1970,7 +1972,8 @@ public sealed class WorkflowPackageImporter(
             NormalizeOptional(node.ItemVar),
             node.GoalObjective,
             node.GoalTokenBudget,
-            node.GoalMaxIterations);
+            node.GoalMaxIterations,
+            node.AgentOverrides);
         })) &&
         SerializedEquals(packageWorkflow.Edges, existing.Edges.Select(edge => new WorkflowPackageWorkflowEdge(
             edge.FromNodeId,

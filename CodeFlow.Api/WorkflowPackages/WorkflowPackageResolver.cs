@@ -185,7 +185,8 @@ public sealed class WorkflowPackageResolver(
                 ItemVar: NormalizeOptional(node.ItemVar),
                 GoalObjective: node.GoalObjective,
                 GoalTokenBudget: node.GoalTokenBudget,
-                GoalMaxIterations: node.GoalMaxIterations));
+                GoalMaxIterations: node.GoalMaxIterations,
+                AgentOverrides: node.AgentOverrides));
         }
 
         state.Workflows[workflowIdentity] = new WorkflowPackageWorkflow(
