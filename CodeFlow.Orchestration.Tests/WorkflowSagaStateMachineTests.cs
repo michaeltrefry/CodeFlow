@@ -136,6 +136,79 @@ public sealed class WorkflowSagaStateMachineTests
     }
 
     [Fact]
+    public async Task Handoff_ShouldThreadNodeAgentOverridesOntoPublishedInvoke()
+    {
+        // Epic 993 / NO-4: a node's AgentInvocationOverrides overlay must ride the
+        // AgentInvokeRequested message published by PublishHandoffAsync so the consumer
+        // (NO-5/NO-6) can merge it onto the agent's stored config.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var startId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+
+        var overrides = new AgentInvocationOverrides(
+            ModelProvider: "anthropic",
+            Model: "claude-opus-4-7",
+            MaxOutputTokens: 8192,
+            MaxToolCalls: 32,
+            MaxLoopDurationSeconds: 600,
+            MaxConsecutiveNonMutatingCalls: 12,
+            AdditionalToolIdentifiers: new[] { "read_file" });
+
+        var workflow = new Workflow(
+            Key: "overrides-handoff",
+            Version: 1,
+            Name: "overrides-handoff",
+            MaxStepsPerSaga: 5,
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[]
+            {
+                new WorkflowNode(startId, WorkflowNodeKind.Start, "evaluator", 1, null,
+                    AllDecisionPorts, 0, 0),
+                new WorkflowNode(reviewerId, WorkflowNodeKind.Agent, "reviewer", null, null,
+                    AllDecisionPorts, 500, 0, AgentOverrides: overrides),
+            },
+            Edges: new[]
+            {
+                new WorkflowEdge(startId, "Completed", reviewerId, WorkflowEdge.DefaultInputPort,
+                    RotatesRound: false, SortOrder: 0),
+            },
+            Inputs: Array.Empty<WorkflowInput>());
+
+        var harness = BuildHarness(workflow, new Dictionary<string, int> { ["reviewer"] = 1 });
+        await harness.Start();
+        try
+        {
+            await PublishStart(harness, workflow, traceId, roundId);
+
+            var sagaHarness = harness.GetSagaStateMachineHarness<WorkflowSagaStateMachine, WorkflowSagaStateEntity>();
+            await sagaHarness.Exists(traceId, x => x.Running);
+
+            await harness.Bus.Publish(BuildCompletion(workflow, traceId, roundId, "evaluator", 1, "Completed"));
+
+            SpinWaitUntil(() => harness.Published.Select<AgentInvokeRequested>()
+                .Any(x => x.Context.Message.AgentKey == "reviewer"));
+
+            var dispatch = harness.Published.Select<AgentInvokeRequested>()
+                .Single(x => x.Context.Message.AgentKey == "reviewer");
+
+            var actual = dispatch.Context.Message.AgentOverrides;
+            actual.Should().NotBeNull("the node's overrides must ride the published invoke");
+            actual!.ModelProvider.Should().Be("anthropic");
+            actual.Model.Should().Be("claude-opus-4-7");
+            actual.MaxOutputTokens.Should().Be(8192);
+            actual.MaxToolCalls.Should().Be(32);
+            actual.MaxLoopDurationSeconds.Should().Be(600);
+            actual.MaxConsecutiveNonMutatingCalls.Should().Be(12);
+            actual.AdditionalToolIdentifiers.Should().Equal("read_file");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task InitialAgentInvokeRequested_WithWorkflowContext_ShouldSeedSagaWorkflowInputsJson()
     {
         // Top-level traces enter via AgentInvokeRequested → Initially → ApplyInitialRequest.

@@ -301,7 +301,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             ReviewMaxRounds: message.ReviewMaxRounds,
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
             TraceWorkDir: saga.TraceWorkDir,
-            LoopContext: BuildLoopContextFromSaga(saga)));
+            LoopContext: BuildLoopContextFromSaga(saga),
+            // Epic 993: a child saga's Start node can carry per-node agent overrides too —
+            // thread them through the child-init dispatch the same as PublishHandoffAsync.
+            AgentOverrides: startNode.AgentOverrides));
     }
 
     /// <summary>
@@ -2429,7 +2432,10 @@ public sealed partial class WorkflowSagaStateMachine : MassTransitStateMachine<W
             OptOutLastRoundReminder: targetNode.OptOutLastRoundReminder,
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
             TraceWorkDir: saga.TraceWorkDir,
-            LoopContext: BuildLoopContextFromSaga(saga)));
+            LoopContext: BuildLoopContextFromSaga(saga),
+            // Epic 993: carry the node's per-node agent overrides to the consumer. Covers
+            // Agent / Hitl / Start — all three route through PublishHandoffAsync.
+            AgentOverrides: targetNode.AgentOverrides));
     }
 
     private static CodeFlow.Contracts.RetryContext? BuildRetryContextForHandoff(

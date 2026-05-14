@@ -378,7 +378,11 @@ public sealed partial class WorkflowSagaStateMachine
                 EarlyTerminated: null),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
             TraceWorkDir: saga.TraceWorkDir,
-            LoopContext: BuildLoopContextFromSaga(saga)));
+            LoopContext: BuildLoopContextFromSaga(saga),
+            // Epic 993: Swarm nodes are not override-eligible (the validator rejects
+            // AgentOverrides on a Swarm node) and the per-position contributor / synthesizer /
+            // coordinator agents have no override surface in v1 — always null here.
+            AgentOverrides: null));
     }
 
     /// <summary>
@@ -444,7 +448,9 @@ public sealed partial class WorkflowSagaStateMachine
                 EarlyTerminated: earlyTerminated),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
             TraceWorkDir: saga.TraceWorkDir,
-            LoopContext: BuildLoopContextFromSaga(saga)));
+            LoopContext: BuildLoopContextFromSaga(saga),
+            // Epic 993: Swarm is not override-eligible — see the contributor dispatch above.
+            AgentOverrides: null));
     }
 
     /// <summary>
@@ -658,7 +664,9 @@ public sealed partial class WorkflowSagaStateMachine
                 EarlyTerminated: null),
             Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
             TraceWorkDir: saga.TraceWorkDir,
-            LoopContext: BuildLoopContextFromSaga(saga)));
+            LoopContext: BuildLoopContextFromSaga(saga),
+            // Epic 993: Swarm is not override-eligible — see the contributor dispatch above.
+            AgentOverrides: null));
     }
 
     /// <summary>
@@ -798,7 +806,9 @@ public sealed partial class WorkflowSagaStateMachine
                     EarlyTerminated: null),
                 Repositories: ParseRepositoriesJson(saga.RepositoriesJson),
                 TraceWorkDir: saga.TraceWorkDir,
-                LoopContext: BuildLoopContextFromSaga(saga)));
+                LoopContext: BuildLoopContextFromSaga(saga),
+                // Epic 993: Swarm is not override-eligible — see the contributor dispatch above.
+                AgentOverrides: null));
         }
 
         return null;
