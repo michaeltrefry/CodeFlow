@@ -365,7 +365,10 @@ public sealed class CreateTraceHandler
                 // sc-602: typed per-trace workspace anchor. The saga prefers this over the
                 // legacy `workflow.workDir` bag-key fallback in ApplyInitialRequest; once Phase 3
                 // drops the bag entry, this becomes the only source.
-                TraceWorkDir: traceWorkDir),
+                TraceWorkDir: traceWorkDir,
+                // Epic 993: the top-level Start node can carry per-node agent overrides; thread
+                // them through the trace-launch dispatch the same as every other Start path.
+                AgentOverrides: startNode.AgentOverrides),
             cancellationToken);
 
         await dbContext.SaveChangesAsync(cancellationToken);
