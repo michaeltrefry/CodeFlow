@@ -107,5 +107,8 @@ public sealed class AuthorityResolverTests
 
         public Task<ResolvedAgentTools> ResolveByRoleAsync(long roleId, CancellationToken cancellationToken = default)
             => Task.FromResult(result);
+
+        public Task<ResolvedAgentTools> ResolveToolIdentifiersAsync(IEnumerable<string> toolIdentifiers, CancellationToken cancellationToken = default)
+            => Task.FromResult(ResolvedAgentTools.Empty);
     }
 }
