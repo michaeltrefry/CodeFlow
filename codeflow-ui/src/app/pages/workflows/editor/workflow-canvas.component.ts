@@ -1923,6 +1923,10 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly selectedNodeId = signal<string | null>(null);
   private readonly selectedConnectionId = signal<string | null>(null);
   private readonly portsRevision = signal(0);
+  // Epic 993 / NO-8: bumped whenever a node's agentOverrides record is mutated. WorkflowEditorNode
+  // is a plain object, not a signal, so the override-derived computeds (model picker, tool grants)
+  // would otherwise never recompute — they read this so an override edit re-renders the inspector.
+  private readonly overridesRevision = signal(0);
 
   readonly agents = signal<AgentSummary[]>([]);
   readonly workflows = signal<WorkflowSummary[]>([]);
@@ -1986,6 +1990,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   /** Models available for the currently-selected node's override provider (or the agent's
    *  inherited provider when no provider override is set). Empty when neither is known. */
   readonly overrideModelOptions = computed(() => {
+    this.overridesRevision();
     const node = this.selectedNode()?.editor;
     const provider = node?.agentOverrides?.modelProvider
       ?? this.selectedAgentDocs()?.config?.provider
@@ -2003,6 +2008,7 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
 
   /** The node's additive tool overrides as AgentRoleGrant[] for the shared tool picker. */
   readonly selectedNodeOverrideToolGrants = computed<AgentRoleGrant[]>(() => {
+    this.overridesRevision();
     const ids = this.selectedNode()?.editor.agentOverrides?.additionalToolIdentifiers ?? [];
     return ids.map(id => ({
       category: id.toLowerCase().startsWith('mcp:') ? 'Mcp' : 'Host',
@@ -3229,20 +3235,24 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     return (node.agentOverrides ??= {});
   }
 
-  /** Drop an all-empty overrides record back to null so save serializes nothing. */
+  /** Drop an all-empty overrides record back to null so save serializes nothing, then signal
+   *  the override-derived computeds to recompute (node.agentOverrides isn't a signal). Every
+   *  override handler calls this last, so it's the single re-render chokepoint. */
   private normalizeAgentOverrides(node: WorkflowEditorNode): void {
     const o = node.agentOverrides;
-    if (!o) return;
-    const isEmpty = o.modelProvider == null
-      && o.model == null
-      && o.maxOutputTokens == null
-      && o.maxToolCalls == null
-      && o.maxLoopDurationSeconds == null
-      && o.maxConsecutiveNonMutatingCalls == null
-      && (o.additionalToolIdentifiers == null || o.additionalToolIdentifiers.length === 0);
-    if (isEmpty) {
-      node.agentOverrides = null;
+    if (o) {
+      const isEmpty = o.modelProvider == null
+        && o.model == null
+        && o.maxOutputTokens == null
+        && o.maxToolCalls == null
+        && o.maxLoopDurationSeconds == null
+        && o.maxConsecutiveNonMutatingCalls == null
+        && (o.additionalToolIdentifiers == null || o.additionalToolIdentifiers.length === 0);
+      if (isEmpty) {
+        node.agentOverrides = null;
+      }
     }
+    this.overridesRevision.update(v => v + 1);
   }
 
   /** Parse a number-ish input into a positive integer, or null when blank/invalid. */
@@ -3262,7 +3272,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       overrides.modelProvider = value;
     }
     this.normalizeAgentOverrides(node);
-    this.selectedNodeId.set(this.selectedNodeId());
   }
 
   onOverrideModelChanged(node: WorkflowEditorNode, value: string): void {
@@ -3299,7 +3308,6 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       ? grants.map(g => g.toolIdentifier)
       : null;
     this.normalizeAgentOverrides(node);
-    this.selectedNodeId.set(this.selectedNodeId());
   }
 
   /** Inherited maxLoopDuration ("HH:mm:ss") rendered as whole seconds for the placeholder. */
