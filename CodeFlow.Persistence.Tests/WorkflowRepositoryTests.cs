@@ -1,3 +1,4 @@
+using CodeFlow.Contracts;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 namespace CodeFlow.Persistence.Tests;
@@ -395,6 +396,104 @@ public sealed class WorkflowRepositoryTests : IAsyncLifetime
         var startNode = reloaded.Nodes.Single(n => n.Id == startNodeId);
         startNode.CollectionExpression.Should().BeNull();
         startNode.ItemVar.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripAgentOverrides()
+    {
+        // Epic 993 / NO-1: an agent-bearing node carries an optional AgentInvocationOverrides
+        // overlay persisted as a JSON column. Every field must survive a save/load cycle, and a
+        // node without an overlay must round-trip with a null AgentOverrides.
+        var workflowKey = $"agent-overrides-{Guid.NewGuid():N}";
+        var startNodeId = Guid.NewGuid();
+        var overriddenAgentNodeId = Guid.NewGuid();
+        var plainAgentNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Agent overrides round-trip",
+            MaxStepsPerSaga: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(startNodeId, WorkflowNodeKind.Start, "kickoff", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0),
+                new WorkflowNodeDraft(overriddenAgentNodeId, WorkflowNodeKind.Agent, "reviewer", 2,
+                    null, new[] { "Completed", "Failed" }, 250, 0,
+                    AgentOverrides: new AgentInvocationOverrides(
+                        ModelProvider: "anthropic",
+                        Model: "claude-opus-4-7",
+                        MaxOutputTokens: 8192,
+                        MaxToolCalls: 32,
+                        MaxLoopDurationSeconds: 600,
+                        MaxConsecutiveNonMutatingCalls: 12,
+                        AdditionalToolIdentifiers: new[] { "read_file", "mcp:shortcut:stories-create" })),
+                new WorkflowNodeDraft(plainAgentNodeId, WorkflowNodeKind.Agent, "passthrough", 1,
+                    null, new[] { "Completed", "Failed" }, 500, 0)
+            ],
+            Edges: Array.Empty<WorkflowEdgeDraft>(),
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        var version = await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+        version.Should().Be(1);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var overridden = reloaded.Nodes.Single(n => n.Id == overriddenAgentNodeId);
+        overridden.AgentOverrides.Should().NotBeNull();
+        overridden.AgentOverrides!.ModelProvider.Should().Be("anthropic");
+        overridden.AgentOverrides.Model.Should().Be("claude-opus-4-7");
+        overridden.AgentOverrides.MaxOutputTokens.Should().Be(8192);
+        overridden.AgentOverrides.MaxToolCalls.Should().Be(32);
+        overridden.AgentOverrides.MaxLoopDurationSeconds.Should().Be(600);
+        overridden.AgentOverrides.MaxConsecutiveNonMutatingCalls.Should().Be(12);
+        overridden.AgentOverrides.AdditionalToolIdentifiers.Should()
+            .Equal("read_file", "mcp:shortcut:stories-create");
+
+        var plain = reloaded.Nodes.Single(n => n.Id == plainAgentNodeId);
+        plain.AgentOverrides.Should().BeNull("a node without an overlay must round-trip with null AgentOverrides");
+
+        var startNode = reloaded.Nodes.Single(n => n.Id == startNodeId);
+        startNode.AgentOverrides.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_ShouldRoundTripPartialAgentOverrides()
+    {
+        // A partial overlay (only some fields set) must round-trip with the unset fields null —
+        // null is the inherit-from-agent sentinel, so it must not be coerced to a default.
+        var workflowKey = $"agent-overrides-partial-{Guid.NewGuid():N}";
+        var agentNodeId = Guid.NewGuid();
+
+        var draft = new WorkflowDraft(
+            Key: workflowKey,
+            Name: "Partial agent overrides round-trip",
+            MaxStepsPerSaga: 3,
+            Nodes:
+            [
+                new WorkflowNodeDraft(agentNodeId, WorkflowNodeKind.Agent, "reviewer", 1,
+                    null, new[] { "Completed", "Failed" }, 0, 0,
+                    AgentOverrides: new AgentInvocationOverrides(MaxToolCalls: 24))
+            ],
+            Edges: Array.Empty<WorkflowEdgeDraft>(),
+            Inputs: Array.Empty<WorkflowInputDraft>());
+
+        await using var writeContext = CreateDbContext();
+        await new WorkflowRepository(writeContext).CreateNewVersionAsync(draft);
+
+        await using var readContext = CreateDbContext();
+        var reloaded = await new WorkflowRepository(readContext).GetAsync(workflowKey, 1);
+
+        var node = reloaded.Nodes.Single(n => n.Id == agentNodeId);
+        node.AgentOverrides.Should().NotBeNull();
+        node.AgentOverrides!.MaxToolCalls.Should().Be(24);
+        node.AgentOverrides.ModelProvider.Should().BeNull();
+        node.AgentOverrides.Model.Should().BeNull();
+        node.AgentOverrides.MaxOutputTokens.Should().BeNull();
+        node.AgentOverrides.MaxLoopDurationSeconds.Should().BeNull();
+        node.AgentOverrides.MaxConsecutiveNonMutatingCalls.Should().BeNull();
+        node.AgentOverrides.AdditionalToolIdentifiers.Should().BeNull();
     }
 
     [Fact]

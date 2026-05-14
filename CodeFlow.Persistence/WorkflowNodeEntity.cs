@@ -73,4 +73,6 @@ public sealed class WorkflowNodeEntity
     public int? GoalTokenBudget { get; set; }
 
     public int? GoalMaxIterations { get; set; }
+
+    public string? AgentOverridesJson { get; set; }
 }

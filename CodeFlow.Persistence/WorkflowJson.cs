@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CodeFlow.Contracts;
 
 namespace CodeFlow.Persistence;
 
@@ -108,6 +109,23 @@ public static class WorkflowJson
         var deserialized = JsonSerializer.Deserialize<Dictionary<string, string>>(
             replacementsJson, ConfigSerializerOptions);
         return deserialized is { Count: > 0 } ? deserialized : null;
+    }
+
+    public static string? SerializeAgentOverrides(AgentInvocationOverrides? overrides)
+    {
+        return overrides is null
+            ? null
+            : JsonSerializer.Serialize(overrides, ConfigSerializerOptions);
+    }
+
+    public static AgentInvocationOverrides? DeserializeAgentOverrides(string? overridesJson)
+    {
+        if (string.IsNullOrWhiteSpace(overridesJson))
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<AgentInvocationOverrides>(overridesJson, ConfigSerializerOptions);
     }
 
     public static string? SerializeStringList(IReadOnlyList<string>? values)
