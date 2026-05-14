@@ -1,3 +1,4 @@
+using CodeFlow.Contracts;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 
@@ -24,4 +25,7 @@ public sealed record AuthoritySnapshotInput(
     string? WorkflowKey = null,
     int? WorkflowVersion = null,
     WorkflowExecutionEnvelope? ContextTier = null,
-    ResolvedAgentTools? ResolvedTools = null);
+    ResolvedAgentTools? ResolvedTools = null,
+    // Epic 993 / NO-10: the dispatching node's per-node agent overrides, captured on the
+    // snapshot so the trace inspector can show what the round actually ran with.
+    AgentInvocationOverrides? AgentOverrides = null);

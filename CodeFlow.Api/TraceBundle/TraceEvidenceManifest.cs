@@ -118,7 +118,10 @@ public sealed record TraceEvidenceAuthoritySnapshot(
     string EnvelopeJson,
     string BlockedAxesJson,
     string TiersJson,
-    DateTime ResolvedAtUtc);
+    DateTime ResolvedAtUtc,
+    // Epic 993 / NO-10: the dispatching node's per-node agent overrides serialized as JSON,
+    // or null when the round's node declared no overrides.
+    string? AgentOverridesJson);
 
 public sealed record TraceEvidenceTokenUsageSummary(
     int RecordCount,

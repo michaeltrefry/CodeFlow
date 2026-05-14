@@ -13,6 +13,7 @@ import { HttpErrorResponse, HttpResponse } from '@angular/common/http';
 import { Subscription } from 'rxjs';
 import { TracesApi } from '../../core/traces.api';
 import {
+  AgentInvocationOverrides,
   TraceBundleArtifactRef,
   TraceBundleAuthoritySnapshot,
   TraceBundleManifest,
@@ -123,6 +124,10 @@ interface RefusalStageBucket {
                         @if (count > 0) {
                           <cf-chip variant="warn" dot mono>{{ count }} blocked axes</cf-chip>
                         }
+                      }
+                      @if (overridesSummaryFor(snapshot); as summary) {
+                        <cf-chip variant="accent" dot mono
+                                 title="Per-node agent overrides this round ran with">overrides: {{ summary }}</cf-chip>
                       }
                     </span>
                     <span class="muted xsmall mono">{{ snapshot.resolvedAtUtc | date:'medium' }}</span>
@@ -285,6 +290,41 @@ export class TraceBundlePanelComponent implements OnDestroy {
 
   blockedAxesCountFor(snapshot: TraceBundleAuthoritySnapshot): number {
     return this.parseBlockedAxesCount(snapshot.blockedAxesJson);
+  }
+
+  /** Epic 993 / NO-10: a compact human summary of the per-node agent overrides this round ran
+   *  with — e.g. "model=anthropic/claude-sonnet, maxToolCalls=12, +2 tools". Null when the
+   *  round's node declared no overrides (or the JSON can't be parsed). */
+  overridesSummaryFor(snapshot: TraceBundleAuthoritySnapshot): string | null {
+    if (!snapshot.agentOverridesJson) {
+      return null;
+    }
+    try {
+      const o = JSON.parse(snapshot.agentOverridesJson) as AgentInvocationOverrides;
+      const parts: string[] = [];
+      if (o.modelProvider || o.model) {
+        parts.push(`model=${o.modelProvider ?? '?'}/${o.model ?? '?'}`);
+      }
+      if (o.maxOutputTokens != null) {
+        parts.push(`maxTokens=${o.maxOutputTokens}`);
+      }
+      if (o.maxToolCalls != null) {
+        parts.push(`maxToolCalls=${o.maxToolCalls}`);
+      }
+      if (o.maxLoopDurationSeconds != null) {
+        parts.push(`maxWallClock=${o.maxLoopDurationSeconds}s`);
+      }
+      if (o.maxConsecutiveNonMutatingCalls != null) {
+        parts.push(`maxNonMutating=${o.maxConsecutiveNonMutatingCalls}`);
+      }
+      const toolCount = o.additionalToolIdentifiers?.length ?? 0;
+      if (toolCount > 0) {
+        parts.push(`+${toolCount} tool${toolCount === 1 ? '' : 's'}`);
+      }
+      return parts.length > 0 ? parts.join(', ') : null;
+    } catch {
+      return null;
+    }
   }
 
   replayStateChipVariant(state: string): 'ok' | 'err' | 'warn' | 'accent' | 'default' {

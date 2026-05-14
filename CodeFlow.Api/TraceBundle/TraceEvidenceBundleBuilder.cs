@@ -412,7 +412,8 @@ public sealed class TraceEvidenceBundleBuilder
             EnvelopeJson: entity.EnvelopeJson,
             BlockedAxesJson: entity.BlockedAxesJson,
             TiersJson: entity.TiersJson,
-            ResolvedAtUtc: entity.ResolvedAtUtc);
+            ResolvedAtUtc: entity.ResolvedAtUtc,
+            AgentOverridesJson: entity.AgentOverridesJson);
 
     private static TraceEvidenceTokenUsageRecord MapTokenUsage(TokenUsageRecordEntity entity) =>
         new(
