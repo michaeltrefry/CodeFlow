@@ -986,6 +986,77 @@ function defaultStartInput(): WorkflowInput {
               </div>
             }
 
+            @if (sel.editor.kind === 'Goal') {
+              <div class="inspector-section">
+                <p class="muted xsmall">
+                  A Goal node runs one agent in an auto-continuation loop: the agent pursues the
+                  objective across as many turns as it needs, receiving a completion-audit prompt
+                  each turn, until it calls <code>goal.update(complete)</code>,
+                  <code>goal.update(abandon)</code>, or a cap trips. The agent below is the
+                  goal-runner that drives that loop.
+                </p>
+
+                <label class="field">
+                  <span>Agent <span class="muted xsmall">(the goal-runner)</span></span>
+                  <select [ngModel]="sel.editor.agentKey ?? ''" (ngModelChange)="onGoalAgentChanged(sel.editor, $event)">
+                    <option value="">(pick agent)</option>
+                    @for (agent of agents(); track agent.key) {
+                      <option [value]="agent.key">{{ agent.key }}</option>
+                    }
+                  </select>
+                  @if (!sel.editor.agentKey) {
+                    <cf-chip variant="err" dot>An agent is required — the Goal node has nothing to run without one.</cf-chip>
+                  }
+                </label>
+
+                <label class="field">
+                  <span>Pin version <span class="muted xsmall">(blank = latest at save)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.agentVersion ?? null"
+                         (ngModelChange)="onGoalAgentVersionChanged(sel.editor, $event)" />
+                </label>
+
+                <label class="field">
+                  <span>Objective <span class="muted xsmall">(Scriban template — rendered against <code>workflow.*</code> per goal run)</span></span>
+                  <textarea class="mono goal-objective-textarea" rows="4" spellcheck="false"
+                            [ngModel]="sel.editor.goalObjective ?? ''"
+                            (ngModelChange)="onGoalObjectiveChanged(sel.editor, $event)"
+                            placeholder="{{ '{{ workflow.objective }}' }}"></textarea>
+                  @if (!sel.editor.goalObjective || !sel.editor.goalObjective.trim()) {
+                    <cf-chip variant="err" dot>Objective is required and must be non-empty.</cf-chip>
+                  }
+                </label>
+
+                <label class="field">
+                  <span>Token budget <span class="muted xsmall">(optional; &gt; 0 when set, blank = unbounded)</span></span>
+                  <input type="number" min="1"
+                         [ngModel]="sel.editor.goalTokenBudget ?? null"
+                         (ngModelChange)="onGoalTokenBudgetChanged(sel.editor, $event)" />
+                  <span class="muted xsmall">When the cumulative token spend crosses this, the node exits via <code>BudgetLimited</code> regardless of agent state.</span>
+                </label>
+
+                <label class="field">
+                  <span>Max iterations <span class="muted xsmall">(optional; blank = runtime default 50)</span></span>
+                  <input type="number" min="1" max="500"
+                         [ngModel]="sel.editor.goalMaxIterations ?? null"
+                         (ngModelChange)="onGoalMaxIterationsChanged(sel.editor, $event)" />
+                  <span class="muted xsmall">Runaway-protection safety net. The token budget is the primary cap; this just stops an unproductive loop forever.</span>
+                </label>
+
+                <div class="field">
+                  <span class="field-label">Output ports <span class="muted xsmall">(synthesized — authors don't declare them)</span></span>
+                  <ul class="port-list mono">
+                    <li><code>Success</code> <span class="muted xsmall">(agent called <code>goal.update(complete)</code> and the audit passed)</span></li>
+                    <li><code>BudgetLimited</code> <span class="muted xsmall">(token budget exhausted before completion)</span></li>
+                    <li><code>Abandoned</code> <span class="muted xsmall">(agent called <code>goal.update(abandon)</code> — objective environmentally impossible; reason in the decision payload)</span></li>
+                    <li class="implicit">
+                      <code>Failed</code> <span class="muted xsmall">(implicit; iteration cap reached or a fatal error ended the loop)</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            }
+
             <div class="inspector-section dataflow-section">
               <div class="row-spread">
                 <div class="panel-title-inline">Data flow</div>
@@ -2730,6 +2801,62 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     }
     node.label = labelFor(node);
     this.area?.update('node', node.id);
+  }
+
+  // --- Goal node (epic 978 / GN-8) ----------------------------------------------------------
+  // Goal nodes are in AGENT_BEARING_KINDS, but they must NOT reuse onAgentChanged: that handler
+  // derives the node's output ports from the picked agent's declared outputs. A goal-runner
+  // agent declares `Completed`, but a Goal node's ports are SYNTHESIZED (Success / BudgetLimited
+  // / Abandoned) — running the agent's outputs through applyNodePorts would clobber them. So
+  // Goal gets its own picker handlers that touch agentKey/agentVersion only and leave the
+  // synthesized ports intact.
+
+  onGoalAgentChanged(node: WorkflowEditorNode, value: string): void {
+    node.agentKey = value || null;
+    // labelFor(Goal) keys off goalObjective, not agentKey, so the label is unchanged — but
+    // re-running it is harmless and keeps the pattern uniform with the other handlers.
+    node.label = labelFor(node);
+    this.loadAgentDocsForNode(node);
+    this.area?.update('node', node.id);
+  }
+
+  onGoalAgentVersionChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    const version = typeof value === 'number' ? value : Number(value);
+    node.agentVersion = Number.isFinite(version) && version > 0 ? Math.floor(version) : null;
+    this.loadAgentDocsForNode(node);
+  }
+
+  onGoalObjectiveChanged(node: WorkflowEditorNode, value: string): void {
+    // Keep the empty string rather than null while the field is being edited — the validator
+    // rejects empty/whitespace at save, and the inspector chip surfaces that inline. Storing ''
+    // (not null) keeps the textarea controlled and the label preview ("(set objective)") stable.
+    node.goalObjective = value ?? '';
+    node.label = labelFor(node);
+    this.area?.update('node', node.id);
+  }
+
+  onGoalTokenBudgetChanged(node: WorkflowEditorNode, value: number | null): void {
+    // Optional; > 0 when set, blank/non-positive clears to null (unbounded). Mirrors
+    // onSwarmTokenBudgetChanged.
+    if (value === null || value === undefined) {
+      node.goalTokenBudget = null;
+      return;
+    }
+    const floored = Math.floor(value);
+    node.goalTokenBudget = floored > 0 ? floored : null;
+  }
+
+  onGoalMaxIterationsChanged(node: WorkflowEditorNode, value: number | null): void {
+    // Optional; clamp to the validator's [1, 500] range so the UI can't desync from a save-time
+    // error. Blank/non-finite clears to null, which applies the runtime default (50).
+    if (value === null || value === undefined) {
+      node.goalMaxIterations = null;
+      return;
+    }
+    const floored = Math.floor(value);
+    node.goalMaxIterations = Number.isFinite(floored) && floored > 0
+      ? Math.max(1, Math.min(500, floored))
+      : null;
   }
 
   onLoopDecisionChanged(node: WorkflowEditorNode, value: string): void {
