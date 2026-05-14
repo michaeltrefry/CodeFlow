@@ -43,7 +43,8 @@ public sealed class AuthoritySnapshotRecorder : IAuthoritySnapshotRecorder
                 TraceId: input.TraceId,
                 WorkflowKey: input.WorkflowKey,
                 WorkflowVersion: input.WorkflowVersion,
-                ContextTier: input.ContextTier),
+                ContextTier: input.ContextTier,
+                ResolvedTools: input.ResolvedTools),
             cancellationToken);
 
         var nowUtc = nowProvider().UtcDateTime;

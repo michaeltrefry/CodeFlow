@@ -33,10 +33,19 @@ public interface IAuthorityResolver
 /// Optional pre-built envelope for the runtime context tier (per-trace overrides such as a
 /// repo restriction the saga itself wants to enforce). Resolver passes through unchanged.
 /// </param>
+/// <param name="ResolvedTools">
+/// Epic 993 / NO-7: the agent's effective resolved tool set for this invocation — role grants
+/// unioned with any per-node additive tool overrides. When supplied, the resolver builds the
+/// Role tier from it instead of re-resolving role grants from <paramref name="AgentKey"/> /
+/// <paramref name="AgentVersion"/>, so node-override tools are part of the agent's effective
+/// tool set that flows through <see cref="EnvelopeIntersection"/> (and remains subject to any
+/// higher-tier restriction). Null = re-resolve role grants (legacy path / direct tests).
+/// </param>
 public sealed record ResolveAuthorityRequest(
     string AgentKey,
     int AgentVersion,
     Guid? TraceId = null,
     string? WorkflowKey = null,
     int? WorkflowVersion = null,
-    WorkflowExecutionEnvelope? ContextTier = null);
+    WorkflowExecutionEnvelope? ContextTier = null,
+    ResolvedAgentTools? ResolvedTools = null);

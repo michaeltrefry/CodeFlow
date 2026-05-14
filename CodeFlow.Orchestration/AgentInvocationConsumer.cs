@@ -201,7 +201,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
             // and the ToolAccessPolicy can self-enforce against it. Failure to record is still
             // swallowed (snapshot persistence must never break the primary invocation), but a
             // non-null envelope is passed downstream when resolution succeeds.
-            var envelopeResolution = await TryRecordAuthoritySnapshotAsync(message, context.CancellationToken);
+            var envelopeResolution = await TryRecordAuthoritySnapshotAsync(message, resolvedTools, context.CancellationToken);
 
             // Pre-resolve scope chain ONCE for this consumer call so the per-round capture
             // observer doesn't re-query the saga table on every LLM round-trip. Subflow depth is
@@ -261,6 +261,7 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
     /// </summary>
     private async Task<EnvelopeResolutionResult?> TryRecordAuthoritySnapshotAsync(
         AgentInvokeRequested message,
+        ResolvedAgentTools resolvedTools,
         CancellationToken cancellationToken)
     {
         if (authoritySnapshotRecorder is null)
@@ -277,7 +278,10 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     RoundId: message.RoundId,
                     AgentVersion: message.AgentVersion,
                     WorkflowKey: message.WorkflowKey,
-                    WorkflowVersion: message.WorkflowVersion),
+                    WorkflowVersion: message.WorkflowVersion,
+                    // Epic 993 / NO-7: hand the effective post-override tool set to the resolver
+                    // so additive node-override tools land in the envelope's Role tier.
+                    ResolvedTools: resolvedTools),
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

@@ -43,7 +43,12 @@ public sealed class AuthorityResolver : IAuthorityResolver
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var resolved = await roleResolution.ResolveAsync(request.AgentKey, request.AgentVersion, cancellationToken);
+        // Epic 993 / NO-7: when the caller supplies the already-resolved effective tool set
+        // (role grants ∪ per-node additive overrides, merged in AgentInvocationConsumer), build
+        // the Role tier from it so node-override tools are part of the agent's effective tool set
+        // that flows through the intersection. Otherwise re-resolve role grants from the DB.
+        var resolved = request.ResolvedTools
+            ?? await roleResolution.ResolveAsync(request.AgentKey, request.AgentVersion, cancellationToken);
 
         var tiers = new List<EnvelopeTier>
         {
