@@ -112,7 +112,18 @@ function grantKey(grant: AgentRoleGrant): string {
                     </label>
                   }
                   @if (tool.description) {
-                    <div class="tool-desc" [class.indented]="!readOnly()">{{ tool.description }}</div>
+                    @if (isLongDescription(tool.description)) {
+                      <div class="tool-desc-block" [class.indented]="!readOnly()">
+                        <div class="tool-desc"
+                             [class.clamped]="!isDescriptionExpanded(tool.identifier)">{{ tool.description }}</div>
+                        <button type="button" class="desc-toggle"
+                                (click)="toggleDescription(tool.identifier)">
+                          {{ isDescriptionExpanded(tool.identifier) ? 'show less' : 'show more' }}
+                        </button>
+                      </div>
+                    } @else {
+                      <div class="tool-desc" [class.indented]="!readOnly()">{{ tool.description }}</div>
+                    }
                   }
                 </li>
               }
@@ -143,6 +154,19 @@ function grantKey(grant: AgentRoleGrant): string {
     .tool-label { display: inline-flex; align-items: center; gap: 0.5rem; }
     .tool-desc { color: var(--muted); font-size: 0.8rem; }
     .tool-desc.indented { padding-left: 1.5rem; }
+    .tool-desc-block { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; }
+    .tool-desc-block.indented { padding-left: 1.5rem; }
+    .tool-desc.clamped {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .desc-toggle {
+      background: transparent; border: none; padding: 0; cursor: pointer;
+      color: var(--accent, #58a6ff); font: inherit; font-size: 0.72rem;
+    }
+    .desc-toggle:hover { text-decoration: underline; }
     .ghost-tool .tool-name { color: var(--muted); font-style: italic; }
     .deprecated-tool .tool-name { color: var(--muted); text-decoration: line-through; }
     .deprecated-tool .tool-desc { color: var(--muted); }
@@ -169,6 +193,28 @@ export class ToolPickerComponent {
 
   readonly filterText = signal('');
   private readonly collapsed = signal<Set<string>>(new Set());
+  /** Tool identifiers whose (long) description the user has expanded past the 2-line clamp. */
+  private readonly expandedDescriptions = signal<Set<string>>(new Set());
+
+  /** A description long enough to be worth clamping — short one-liners render in full with no
+   *  toggle, only multi-line / paragraph-length descriptions (e.g. apply_patch) get clamped. */
+  isLongDescription(description: string): boolean {
+    return description.length > 140 || description.includes('\n');
+  }
+
+  isDescriptionExpanded(identifier: string): boolean {
+    return this.expandedDescriptions().has(identifier);
+  }
+
+  toggleDescription(identifier: string): void {
+    const next = new Set(this.expandedDescriptions());
+    if (next.has(identifier)) {
+      next.delete(identifier);
+    } else {
+      next.add(identifier);
+    }
+    this.expandedDescriptions.set(next);
+  }
 
   private readonly lockedSet = computed(
     () => new Set(this.lockedIdentifiers().map(id => id.toLowerCase())));
