@@ -96,14 +96,95 @@ public sealed class AuthorityResolverTests
             new[] { Tiers.Tenant, Tiers.Workflow, Tiers.Role, Tiers.Context });
     }
 
+    [Fact]
+    public async Task ResolvedToolsOnRequest_BuildsRoleTierFromIt_WithoutReResolvingRoleGrants()
+    {
+        // Epic 993 / NO-7: when the consumer hands over the effective post-override tool set,
+        // the resolver must build the Role tier from it — not re-resolve role grants from the
+        // DB — so per-node additive tools land in the envelope.
+        var stub = new StubRoleResolution(new ResolvedAgentTools(
+            new[] { "role_tool" },
+            Array.Empty<McpToolDefinition>(),
+            EnableHostTools: true));
+        var resolver = new AuthorityResolver(stub);
+
+        var effectiveTools = new ResolvedAgentTools(
+            new[] { "role_tool", "node_override_tool" },
+            new[] { new McpToolDefinition("github", "list_issues", "stub", null) },
+            EnableHostTools: true);
+
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest(
+            "dev",
+            AgentVersion: 1,
+            ResolvedTools: effectiveTools));
+
+        stub.ResolveAsyncCallCount.Should().Be(0, "the supplied ResolvedTools should bypass DB role resolution");
+        result.Envelope.ToolGrants.Should().BeEquivalentTo(new[]
+        {
+            new ToolGrant("role_tool", ToolGrant.CategoryHost),
+            new ToolGrant("node_override_tool", ToolGrant.CategoryHost),
+            new ToolGrant("mcp:github:list_issues", ToolGrant.CategoryMcp)
+        });
+        result.BlockedAxes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task NullResolvedTools_FallsBackToRoleResolution()
+    {
+        var stub = new StubRoleResolution(new ResolvedAgentTools(
+            new[] { "role_tool" },
+            Array.Empty<McpToolDefinition>(),
+            EnableHostTools: true));
+        var resolver = new AuthorityResolver(stub);
+
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest("dev", AgentVersion: 1));
+
+        stub.ResolveAsyncCallCount.Should().Be(1, "no ResolvedTools supplied → resolver re-resolves role grants");
+        result.Envelope.ToolGrants.Should().ContainSingle().Which.ToolName.Should().Be("role_tool");
+    }
+
+    [Fact]
+    public async Task AdditiveOverrideTool_StillRestrictedByContextTier()
+    {
+        // Epic 993 / NO-7: additive node-override tools join at the Role tier — they do not
+        // bypass a deliberately-narrowing higher tier. A context tier that omits the override
+        // tool must still intersect it out, with denial evidence.
+        var resolver = new AuthorityResolver(new StubRoleResolution(ResolvedAgentTools.Empty));
+
+        var effectiveTools = new ResolvedAgentTools(
+            new[] { "role_tool", "node_override_tool" },
+            Array.Empty<McpToolDefinition>(),
+            EnableHostTools: true);
+
+        var contextEnvelope = WorkflowExecutionEnvelope.NoOpinion with
+        {
+            ToolGrants = new[] { new ToolGrant("role_tool", ToolGrant.CategoryHost) }
+        };
+
+        var result = await resolver.ResolveAsync(new ResolveAuthorityRequest(
+            "dev",
+            AgentVersion: 1,
+            ContextTier: contextEnvelope,
+            ResolvedTools: effectiveTools));
+
+        result.Envelope.ToolGrants.Should().ContainSingle().Which.ToolName.Should().Be("role_tool");
+        result.BlockedAxes.Should().ContainSingle(b => b.Axis == BlockedBy.Axes.ToolGrants
+            && b.RequestedValue!.Contains("node_override_tool"));
+    }
+
     private sealed class StubRoleResolution : IRoleResolutionService
     {
         private readonly ResolvedAgentTools result;
 
         public StubRoleResolution(ResolvedAgentTools result) => this.result = result;
 
+        public int ResolveAsyncCallCount { get; private set; }
+
         public Task<ResolvedAgentTools> ResolveAsync(string agentKey, int agentVersion, CancellationToken cancellationToken = default)
-            => Task.FromResult(result);
+        {
+            ResolveAsyncCallCount++;
+            return Task.FromResult(result);
+        }
 
         public Task<ResolvedAgentTools> ResolveByRoleAsync(long roleId, CancellationToken cancellationToken = default)
             => Task.FromResult(result);

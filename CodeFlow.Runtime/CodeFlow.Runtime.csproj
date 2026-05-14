@@ -13,4 +13,8 @@
     <PackageReference Include="Scriban" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeFlow.Runtime.Tests" />
+  </ItemGroup>
+
 </Project>

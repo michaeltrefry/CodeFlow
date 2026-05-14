@@ -1,3 +1,4 @@
+using CodeFlow.Runtime;
 using CodeFlow.Runtime.Authority;
 
 namespace CodeFlow.Persistence.Authority;
@@ -22,4 +23,5 @@ public sealed record AuthoritySnapshotInput(
     int AgentVersion,
     string? WorkflowKey = null,
     int? WorkflowVersion = null,
-    WorkflowExecutionEnvelope? ContextTier = null);
+    WorkflowExecutionEnvelope? ContextTier = null,
+    ResolvedAgentTools? ResolvedTools = null);

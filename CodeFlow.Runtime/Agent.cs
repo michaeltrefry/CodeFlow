@@ -150,7 +150,8 @@ public sealed class Agent : IAgentInvoker
         }
     }
 
-    private static ToolAccessPolicy MergeToolAccessPolicy(
+    // internal for targeted unit tests (Epic 993 / NO-7); not part of the public surface.
+    internal static ToolAccessPolicy MergeToolAccessPolicy(
         ResolvedAgentTools tools,
         AgentInvocationConfiguration configuration,
         WorkflowExecutionEnvelope? envelope)
