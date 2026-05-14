@@ -414,6 +414,104 @@ public sealed class RoleResolutionServiceTests : IAsyncLifetime
         resolvedV3.Should().BeSameAs(ResolvedAgentTools.Empty);
     }
 
+    [Fact]
+    public async Task ResolveToolIdentifiersAsync_returns_Empty_for_empty_or_whitespace_input()
+    {
+        await using var ctx = CreateDbContext();
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+
+        (await resolver.ResolveToolIdentifiersAsync(Array.Empty<string>()))
+            .Should().BeSameAs(ResolvedAgentTools.Empty);
+        (await resolver.ResolveToolIdentifiersAsync(new[] { "  ", "" }))
+            .Should().BeSameAs(ResolvedAgentTools.Empty);
+    }
+
+    [Fact]
+    public async Task ResolveToolIdentifiersAsync_resolves_host_tool_from_catalog()
+    {
+        await using var ctx = CreateDbContext();
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+
+        var result = await resolver.ResolveToolIdentifiersAsync(new[] { "echo" });
+
+        result.EnableHostTools.Should().BeTrue();
+        result.AllowedToolNames.Should().BeEquivalentTo(new[] { "echo" });
+        result.McpTools.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ResolveToolIdentifiersAsync_materializes_mcp_tool_from_registered_server()
+    {
+        var serverKey = $"svc-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var mcpRepo = new McpServerRepository(ctx, protector);
+
+        var serverId = await mcpRepo.CreateAsync(new McpServerCreate(
+            Key: serverKey,
+            DisplayName: "Svc",
+            Transport: McpTransportKind.StreamableHttp,
+            EndpointUrl: "https://svc.local/mcp",
+            BearerTokenPlaintext: null,
+            CreatedBy: null));
+
+        await mcpRepo.ReplaceToolsAsync(serverId, new[]
+        {
+            new McpServerToolWrite("read", "read artifact", """{"type":"object"}""", IsMutating: false),
+        });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveToolIdentifiersAsync(new[] { $"mcp:{serverKey}:read" });
+
+        result.EnableHostTools.Should().BeFalse();
+        result.McpTools.Should().ContainSingle();
+        result.McpTools.Single().FullName.Should().Be($"mcp:{serverKey}:read");
+        result.AllowedToolNames.Should().BeEquivalentTo(new[] { $"mcp:{serverKey}:read" });
+    }
+
+    [Fact]
+    public async Task ResolveToolIdentifiersAsync_warns_and_skips_ghost_host_and_mcp_identifiers()
+    {
+        var serverKey = $"svc-{Guid.NewGuid():N}";
+
+        await using var ctx = CreateDbContext();
+        using var protector = new AesGcmSecretProtector(new SecretsOptions(MasterKey));
+        var mcpRepo = new McpServerRepository(ctx, protector);
+
+        var serverId = await mcpRepo.CreateAsync(new McpServerCreate(
+            Key: serverKey,
+            DisplayName: "Svc",
+            Transport: McpTransportKind.StreamableHttp,
+            EndpointUrl: "https://svc.local/mcp",
+            BearerTokenPlaintext: null,
+            CreatedBy: null));
+
+        await mcpRepo.ReplaceToolsAsync(serverId, new[]
+        {
+            new McpServerToolWrite("read", "read", null, IsMutating: false),
+        });
+
+        var resolver = new RoleResolutionService(ctx, NullLogger<RoleResolutionService>.Instance);
+        var result = await resolver.ResolveToolIdentifiersAsync(new[]
+        {
+            "echo",                          // valid host tool
+            "not_a_real_host_tool",          // ghost host tool — warn and skip
+            $"mcp:{serverKey}:read",         // valid MCP tool
+            $"mcp:{serverKey}:removed",      // ghost MCP tool on a real server — warn and skip
+            "mcp:ghost-server:anything",     // MCP tool on an unknown server — warn and skip
+        });
+
+        result.EnableHostTools.Should().BeTrue();
+        result.AllowedToolNames.Should().BeEquivalentTo(new[]
+        {
+            "echo",
+            $"mcp:{serverKey}:read",
+        });
+        result.McpTools.Should().ContainSingle();
+        result.McpTools.Single().ToolName.Should().Be("read");
+    }
+
     private CodeFlowDbContext CreateDbContext()
     {
         var builder = new DbContextOptionsBuilder<CodeFlowDbContext>();

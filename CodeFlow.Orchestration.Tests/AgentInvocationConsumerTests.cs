@@ -1658,6 +1658,11 @@ public sealed class AgentInvocationConsumerTests
         {
             return Task.FromResult(ResolvedAgentTools.Empty);
         }
+
+        public Task<ResolvedAgentTools> ResolveToolIdentifiersAsync(IEnumerable<string> toolIdentifiers, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ResolvedAgentTools.Empty);
+        }
     }
 
     private sealed class ThrowingAgentInvoker(Exception exception) : IAgentInvoker

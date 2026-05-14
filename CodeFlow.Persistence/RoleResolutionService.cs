@@ -81,6 +81,39 @@ public sealed class RoleResolutionService : IRoleResolutionService
         return await BuildResolvedToolsAsync(grants, resolvedSkills, cancellationToken);
     }
 
+    public async Task<ResolvedAgentTools> ResolveToolIdentifiersAsync(
+        IEnumerable<string> toolIdentifiers,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(toolIdentifiers);
+
+        // Classify each bare identifier as a host tool name or an mcp:<server>:<tool> grant, then
+        // run it through the same catalog-resolution + ghost-tool warn-and-skip path used for role
+        // grants. Node overrides have no backing role, so the synthetic grants carry a
+        // "(node override)" source label that surfaces in the warn-and-skip diagnostic logs.
+        var grants = new List<GrantView>();
+        foreach (var identifier in toolIdentifiers)
+        {
+            if (string.IsNullOrWhiteSpace(identifier))
+            {
+                continue;
+            }
+
+            var trimmed = identifier.Trim();
+            var category = trimmed.StartsWith("mcp:", StringComparison.OrdinalIgnoreCase)
+                ? AgentRoleToolCategory.Mcp
+                : AgentRoleToolCategory.Host;
+            grants.Add(new GrantView("(node override)", category, trimmed));
+        }
+
+        if (grants.Count == 0)
+        {
+            return ResolvedAgentTools.Empty;
+        }
+
+        return await BuildResolvedToolsAsync(grants, Array.Empty<ResolvedSkill>(), cancellationToken);
+    }
+
     private async Task<ResolvedAgentTools> BuildResolvedToolsAsync(
         IReadOnlyList<GrantView> grants,
         IReadOnlyList<ResolvedSkill> skills,
