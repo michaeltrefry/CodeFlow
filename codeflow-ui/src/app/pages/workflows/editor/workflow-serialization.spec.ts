@@ -3,6 +3,7 @@ import type { AreaPlugin } from 'rete-area-plugin';
 import type { WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 import {
   FOR_EACH_CONTINUE_PORT,
+  GOAL_ABANDONED_PORT,
   GOAL_BUDGET_LIMITED_PORT,
   GOAL_SUCCESS_PORT,
   IMPLICIT_FAILED_PORT,
@@ -25,7 +26,8 @@ describe('defaultOutputPortsFor', () => {
     expect(defaultOutputPortsFor('Transform')).toEqual(['Out']);
     expect(defaultOutputPortsFor('Swarm')).toEqual(['Synthesized']);
     expect(defaultOutputPortsFor('ForEach')).toEqual(['Continue']);
-    expect(defaultOutputPortsFor('Goal')).toEqual([GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT]);
+    expect(defaultOutputPortsFor('Goal'))
+      .toEqual([GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT, GOAL_ABANDONED_PORT]);
   });
 });
 

@@ -9,7 +9,7 @@ import {
 import { WorkflowPayload } from '../../../core/workflows.api';
 import { NodeEditor } from 'rete';
 import { AreaPlugin } from 'rete-area-plugin';
-import { FOR_EACH_CONTINUE_PORT, GOAL_BUDGET_LIMITED_PORT, GOAL_SUCCESS_PORT, IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
+import { FOR_EACH_CONTINUE_PORT, GOAL_ABANDONED_PORT, GOAL_BUDGET_LIMITED_PORT, GOAL_SUCCESS_PORT, IMPLICIT_FAILED_PORT, REVIEW_LOOP_EXHAUSTED_PORT, WorkflowAreaExtra, WorkflowEditorConnection, WorkflowEditorNode, WorkflowSchemes } from './workflow-node-schemes';
 
 /**
  * Default declared ports when a node is first added to the canvas.
@@ -50,11 +50,13 @@ export function defaultOutputPortsFor(kind: WorkflowNodeKind): string[] {
       // serializeEditor strips it before save the same way ReviewLoop strips Exhausted.
       return ['Continue'];
     case 'Goal':
-      // Goal has two synthesized ports (epic 978): Success when the model calls
-      // `goal.update(complete)` after the audit passes, and BudgetLimited when the token
-      // budget is exhausted before completion. Authors never declare them; the canvas pads
-      // them in for rete and serializeEditor strips them on save the same way as ForEach.
-      return [GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT];
+      // Goal has three synthesized ports (epic 978): Success when the model calls
+      // `goal.update(complete)` after the audit passes, BudgetLimited when the token budget is
+      // exhausted before completion, and Abandoned when the model calls `goal.update(abandon)`
+      // because the objective is environmentally impossible (GN-7, sc-990). Authors never
+      // declare them; the canvas pads them in for rete and serializeEditor strips them on save
+      // the same way as ForEach.
+      return [GOAL_SUCCESS_PORT, GOAL_BUDGET_LIMITED_PORT, GOAL_ABANDONED_PORT];
   }
 }
 
@@ -120,15 +122,19 @@ export async function loadIntoEditor(
     if (node.kind === 'ForEach' && !declaredPorts.includes(FOR_EACH_CONTINUE_PORT)) {
       declaredPorts = [...declaredPorts, FOR_EACH_CONTINUE_PORT];
     }
-    // Goal nodes synthesize Success + BudgetLimited server-side (epic 978 validator rejects
-    // any author-declared port). Workflows from the API arrive with empty outputPorts; pad
-    // both here so rete renders wirable handles. serializeEditor strips them back out on save.
+    // Goal nodes synthesize Success + BudgetLimited + Abandoned server-side (epic 978 validator
+    // rejects any author-declared port). Workflows from the API arrive with empty outputPorts;
+    // pad all three here so rete renders wirable handles. serializeEditor strips them back out
+    // on save.
     if (node.kind === 'Goal') {
       if (!declaredPorts.includes(GOAL_SUCCESS_PORT)) {
         declaredPorts = [...declaredPorts, GOAL_SUCCESS_PORT];
       }
       if (!declaredPorts.includes(GOAL_BUDGET_LIMITED_PORT)) {
         declaredPorts = [...declaredPorts, GOAL_BUDGET_LIMITED_PORT];
+      }
+      if (!declaredPorts.includes(GOAL_ABANDONED_PORT)) {
+        declaredPorts = [...declaredPorts, GOAL_ABANDONED_PORT];
       }
     }
     const editorNode = new WorkflowEditorNode({
@@ -239,9 +245,10 @@ export function serializeEditor(
       // sc-944 validator rejects any author-declared port on a ForEach node — Continue is
       // synthesized server-side. Strip it on save the same way ReviewLoop strips Exhausted.
       .filter(p => !(node.kind === 'ForEach' && p === FOR_EACH_CONTINUE_PORT))
-      // epic 978: Goal synthesizes Success + BudgetLimited server-side; validator rejects any
-      // author-declared port on a Goal node. Strip both on save.
-      .filter(p => !(node.kind === 'Goal' && (p === GOAL_SUCCESS_PORT || p === GOAL_BUDGET_LIMITED_PORT)));
+      // epic 978: Goal synthesizes Success + BudgetLimited + Abandoned server-side; validator
+      // rejects any author-declared port on a Goal node. Strip all three on save.
+      .filter(p => !(node.kind === 'Goal'
+        && (p === GOAL_SUCCESS_PORT || p === GOAL_BUDGET_LIMITED_PORT || p === GOAL_ABANDONED_PORT)));
     const isSwarm = node.kind === 'Swarm';
     const isForEach = node.kind === 'ForEach';
     const isGoal = node.kind === 'Goal';

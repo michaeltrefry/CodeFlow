@@ -62,6 +62,13 @@ export const GOAL_SUCCESS_PORT = 'Success';
  *  (extend, postmortem-partial). Authors never declare it; padded on load, stripped on save. */
 export const GOAL_BUDGET_LIMITED_PORT = 'BudgetLimited';
 
+/** Synthesized terminal port emitted by a Goal node when the model calls
+ *  `goal.update(status="abandon", reason=...)` because the objective is environmentally
+ *  impossible (epic 978 / GN-7, sc-990). Distinct from the implicit Failed port so authors can
+ *  route abandons to a postmortem / HITL handler that acts on the agent's structured reason.
+ *  Authors never declare it; padded on load, stripped on save. */
+export const GOAL_ABANDONED_PORT = 'Abandoned';
+
 export class WorkflowEditorNode extends ClassicPreset.Node {
   readonly nodeId: string;
   readonly kind: WorkflowNodeKind;
