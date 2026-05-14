@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "codeflow.workflow-package.v1",
+  "metadata": {
+    "exportedFrom": "CodeFlow",
+    "exportedAtUtc": "2026-05-14T18:00:00Z",
+    "migrationNotes": "NO-9 reference workflow for epic 993 (node-level agent property overrides). The 'Run with overrides' Agent node references the shared node-overrides-demo-runner agent but carries an agentOverrides overlay — a different model, larger token / tool-call / wall-clock / non-mutating budgets, and two extra host tools (echo, now). The overlay applies only to this node in this workflow: it never creates an agent version and never forks the agent. Demonstrates that overrides survive a package export -> import round-trip (NO-12)."
+  },
+  "entryPoint": {
+    "key": "node-overrides-demo",
+    "version": 1
+  },
+  "workflows": [
+    {
+      "key": "node-overrides-demo",
+      "version": 1,
+      "name": "Node Overrides Demo",
+      "maxStepsPerSaga": 3,
+      "category": "Workflow",
+      "tags": ["node-overrides", "reference"],
+      "createdAtUtc": "2026-05-14T18:00:00Z",
+      "nodes": [
+        {
+          "id": "dddddddd-0001-0001-0001-000000000001",
+          "kind": "Start",
+          "agentKey": "node-overrides-demo-init",
+          "agentVersion": 1,
+          "outputPorts": ["Continue"],
+          "layoutX": 50,
+          "layoutY": 200
+        },
+        {
+          "id": "dddddddd-0001-0001-0001-000000000002",
+          "kind": "Agent",
+          "agentKey": "node-overrides-demo-runner",
+          "agentVersion": 1,
+          "outputPorts": ["Done"],
+          "layoutX": 350,
+          "layoutY": 200,
+          "agentOverrides": {
+            "modelProvider": "openai",
+            "model": "gpt-5.4",
+            "maxOutputTokens": 4000,
+            "maxToolCalls": 12,
+            "maxLoopDurationSeconds": 600,
+            "maxConsecutiveNonMutatingCalls": 4,
+            "additionalToolIdentifiers": ["echo", "now"]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "fromNodeId": "dddddddd-0001-0001-0001-000000000001",
+          "fromPort": "Continue",
+          "toNodeId": "dddddddd-0001-0001-0001-000000000002",
+          "toPort": "in",
+          "rotatesRound": false,
+          "sortOrder": 0
+        }
+      ],
+      "inputs": [
+        {
+          "key": "input",
+          "displayName": "Task",
+          "kind": "Text",
+          "required": true,
+          "description": "Free-text task handed to the Start agent, then on to the overridden runner node.",
+          "ordinal": 0
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "key": "node-overrides-demo-init",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Node Overrides Demo Init",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "systemPrompt": "You are the entry-point agent for the Node Overrides Demo flow. Acknowledge the task by writing the single word `Initialized.` as your message content, then submit on port `Continue`.",
+        "promptTemplate": "Task:\n{{ input }}\n\nAcknowledge and continue.",
+        "maxTokens": 200,
+        "temperature": 0.0,
+        "outputs": [
+          {
+            "kind": "Continue",
+            "description": "Hands the task off to the overridden runner node."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-14T18:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Continue",
+          "description": "Hands the task off to the overridden runner node."
+        }
+      ]
+    },
+    {
+      "key": "node-overrides-demo-runner",
+      "version": 1,
+      "kind": "Agent",
+      "config": {
+        "type": "agent",
+        "name": "Node Overrides Demo Runner",
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "systemPrompt": "You are a general-purpose task runner. Complete the task described in the prompt and submit a concise result on port `Done`.\n\nThis agent ships with a deliberately modest configuration. The Node Overrides Demo workflow overlays a per-node `agentOverrides` block on the node that invokes it — a larger model, bigger budgets, and the `echo` / `now` host tools — without forking this agent. Other workflows that use this same agent see only the modest defaults.",
+        "promptTemplate": "Task:\n{{ input }}\n\nComplete the task and submit your result on port `Done`.",
+        "maxTokens": 800,
+        "temperature": 0.2,
+        "outputs": [
+          {
+            "kind": "Done",
+            "description": "The completed task result. Unwired, so it becomes the workflow's terminal artifact."
+          }
+        ]
+      },
+      "createdAtUtc": "2026-05-14T18:00:00Z",
+      "createdBy": "claude",
+      "outputs": [
+        {
+          "kind": "Done",
+          "description": "The completed task result. Unwired, so it becomes the workflow's terminal artifact."
+        }
+      ]
+    }
+  ],
+  "agentRoleAssignments": [
+    { "agentKey": "node-overrides-demo-init", "roleKeys": [] },
+    { "agentKey": "node-overrides-demo-runner", "roleKeys": [] }
+  ],
+  "roles": [],
+  "skills": [],
+  "mcpServers": []
+}

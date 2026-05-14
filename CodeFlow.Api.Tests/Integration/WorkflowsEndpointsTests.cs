@@ -1080,6 +1080,46 @@ public sealed class WorkflowsEndpointsTests
     }
 
     [Fact]
+    public async Task ApplyPackageImport_NodeOverridesDemoLibraryPackage_RoundTripsAgentOverrides()
+    {
+        // Epic 993 / NO-9 + NO-12 — the node-overrides reference workflow. End-to-end proof that
+        // a node's agentOverrides overlay survives the package import path (the DTO gap NO-12
+        // closed): the demo's Agent node carries provider/model + four budget overrides + two
+        // additive host tools, and all of them must be present on the persisted node.
+        using var client = factory.CreateClient();
+
+        var packagePath = LocateLibraryPackage("node-overrides-demo-v1-package.json");
+        var packageJson = await File.ReadAllTextAsync(packagePath);
+
+        var apply = await client.PostAsync(
+            "/api/workflows/package/apply",
+            WrapPackage(packageJson));
+
+        apply.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var resultDoc = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+        resultDoc.RootElement.GetProperty("conflictCount").GetInt32().Should().Be(0);
+        resultDoc.RootElement.GetProperty("createCount").GetInt32().Should().BeGreaterThanOrEqualTo(3);
+
+        var detailJson = await client.GetStringAsync("/api/workflows/node-overrides-demo/1");
+        using var detailDoc = JsonDocument.Parse(detailJson);
+        var nodes = detailDoc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+
+        var agentNode = nodes.Single(n =>
+            string.Equals(n.GetProperty("kind").GetString(), "Agent", StringComparison.Ordinal));
+        var overrides = agentNode.GetProperty("agentOverrides");
+        overrides.ValueKind.Should().Be(JsonValueKind.Object,
+            "the package import path must persist the node's agentOverrides overlay (NO-12)");
+        overrides.GetProperty("modelProvider").GetString().Should().Be("openai");
+        overrides.GetProperty("model").GetString().Should().Be("gpt-5.4");
+        overrides.GetProperty("maxOutputTokens").GetInt32().Should().Be(4000);
+        overrides.GetProperty("maxToolCalls").GetInt32().Should().Be(12);
+        overrides.GetProperty("maxLoopDurationSeconds").GetInt32().Should().Be(600);
+        overrides.GetProperty("maxConsecutiveNonMutatingCalls").GetInt32().Should().Be(4);
+        overrides.GetProperty("additionalToolIdentifiers").EnumerateArray()
+            .Select(e => e.GetString()).Should().BeEquivalentTo(new[] { "echo", "now" });
+    }
+
+    [Fact]
     public async Task ApplyPackageImport_GoalWithReviewV1_RoundTripsGoalPlusPostmortem()
     {
         // Epic 978 / GN-6 — the postmortem wrapper around goal-test. End-to-end import sanity:
