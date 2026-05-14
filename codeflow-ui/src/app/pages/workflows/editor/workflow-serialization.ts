@@ -165,7 +165,8 @@ export async function loadIntoEditor(
       itemVar: node.itemVar,
       goalObjective: node.goalObjective,
       goalTokenBudget: node.goalTokenBudget,
-      goalMaxIterations: node.goalMaxIterations
+      goalMaxIterations: node.goalMaxIterations,
+      agentOverrides: node.agentOverrides
     });
     idToNode.set(node.id, editorNode);
     await editor.addNode(editorNode);
@@ -284,7 +285,11 @@ export function serializeEditor(
       itemVar: isForEach ? node.itemVar : null,
       goalObjective: isGoal ? node.goalObjective : null,
       goalTokenBudget: isGoal ? node.goalTokenBudget : null,
-      goalMaxIterations: isGoal ? node.goalMaxIterations : null
+      goalMaxIterations: isGoal ? node.goalMaxIterations : null,
+      // Epic 993: passed through untouched. The editor only surfaces the Overrides tab for
+      // agent-bearing kinds (NO-8), and the API validator (NO-3) rejects overrides on any
+      // other kind — so a non-agent node never carries a value here in practice.
+      agentOverrides: node.agentOverrides ?? null
     };
   });
 

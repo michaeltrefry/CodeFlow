@@ -245,6 +245,63 @@ describe('serializeEditor', () => {
     }));
   });
 
+  it('round-trips per-node agent invocation overrides on an agent-bearing node', () => {
+    // Epic 993 / NO-2: an agent-bearing node carries an optional agentOverrides overlay that
+    // serializeEditor must pass through to the save payload untouched.
+    const agentNode = editorNode({
+      id: 'rete-agent',
+      nodeId: 'agent-1',
+      kind: 'Agent',
+      agentKey: 'reviewer',
+      agentVersion: 2,
+      outputPortNames: ['Approved', IMPLICIT_FAILED_PORT],
+      agentOverrides: {
+        modelProvider: 'anthropic',
+        model: 'claude-opus-4-7',
+        maxOutputTokens: 8192,
+        maxToolCalls: 32,
+        maxLoopDurationSeconds: 600,
+        maxConsecutiveNonMutatingCalls: 12,
+        additionalToolIdentifiers: ['read_file', 'mcp:shortcut:stories-create'],
+      },
+    });
+    const editor = fakeEditor([agentNode], []);
+    const area = fakeArea([['rete-agent', { x: 0, y: 0 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'k', name: 'n', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0].agentOverrides).toEqual({
+      modelProvider: 'anthropic',
+      model: 'claude-opus-4-7',
+      maxOutputTokens: 8192,
+      maxToolCalls: 32,
+      maxLoopDurationSeconds: 600,
+      maxConsecutiveNonMutatingCalls: 12,
+      additionalToolIdentifiers: ['read_file', 'mcp:shortcut:stories-create'],
+    });
+  });
+
+  it('serializes agentOverrides as null when the node carries no overlay', () => {
+    const agentNode = editorNode({
+      id: 'rete-agent',
+      nodeId: 'agent-1',
+      kind: 'Agent',
+      outputPortNames: ['Approved', IMPLICIT_FAILED_PORT],
+    });
+    const editor = fakeEditor([agentNode], []);
+    const area = fakeArea([['rete-agent', { x: 0, y: 0 }]]);
+
+    const payload = serializeEditor(editor, area, {
+      key: 'k', name: 'n', maxRoundsPerRound: 1,
+      category: 'Workflow', tags: [], inputs: [],
+    });
+
+    expect(payload.nodes[0].agentOverrides).toBeNull();
+  });
+
   it('filters implicit failed ports and preserves canvas/connection metadata', () => {
     const agentNode = editorNode({
       id: 'rete-agent',

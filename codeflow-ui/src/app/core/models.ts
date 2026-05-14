@@ -638,6 +638,24 @@ export type WorkflowTransformOutputType = 'string' | 'json';
 
 export type WorkflowSwarmProtocol = 'Sequential' | 'Coordinator';
 
+/**
+ * Epic 993: per-workflow-node overlay of a small set of agent invocation properties, applied
+ * at invocation time on top of the agent's stored config WITHOUT creating a new agent version
+ * or forking the agent. Every field is nullable and inherit-by-default — a null field means
+ * "use the agent's value". Only meaningful on agent-bearing node kinds (Agent/Hitl/Start/Goal).
+ */
+export interface AgentInvocationOverrides {
+  modelProvider?: string | null;
+  model?: string | null;
+  maxOutputTokens?: number | null;
+  maxToolCalls?: number | null;
+  maxLoopDurationSeconds?: number | null;
+  maxConsecutiveNonMutatingCalls?: number | null;
+  /** Additive only — extra tools granted on top of the agent's role-derived tool set. Host
+   *  tool names and/or `mcp:<server>:<tool>` identifiers. Never replaces the role's grants. */
+  additionalToolIdentifiers?: string[] | null;
+}
+
 export interface WorkflowNode {
   id: string;
   kind: WorkflowNodeKind;
@@ -681,6 +699,10 @@ export interface WorkflowNode {
   // Goal nodes only. Safety-net cap on continuation iterations. Token budget is the primary
   // cap; this exists so a runaway prompt cannot loop forever. Null defaults to 50 at runtime.
   goalMaxIterations?: number | null;
+  // Epic 993: per-node agent invocation overrides. Only meaningful on agent-bearing node kinds
+  // (Agent/Hitl/Start/Goal); the API validator rejects it on every other kind. Null = the node
+  // runs the agent's configuration unchanged.
+  agentOverrides?: AgentInvocationOverrides | null;
 }
 
 export interface WorkflowEdge {
