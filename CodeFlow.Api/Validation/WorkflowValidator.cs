@@ -90,6 +90,37 @@ public static class WorkflowValidator
     internal const string SwarmProtocolSequential = "Sequential";
     internal const string SwarmProtocolCoordinator = "Coordinator";
 
+    /// <summary>Node kinds that dispatch an agent and can therefore carry per-node
+    /// <c>AgentInvocationOverrides</c> (epic 993). A non-null overlay on any other kind is
+    /// rejected — the overrides have nowhere to apply.</summary>
+    internal static readonly HashSet<WorkflowNodeKind> AgentOverrideEligibleKinds =
+        new() { WorkflowNodeKind.Start, WorkflowNodeKind.Agent, WorkflowNodeKind.Hitl, WorkflowNodeKind.Goal };
+
+    /// <summary>Inclusive bounds for the numeric <c>AgentInvocationOverrides</c> fields (epic 993).
+    /// Loose ceilings — these catch typos and pasted garbage, not policy. The runtime, not the
+    /// validator, is the source of truth for what a given provider/model actually accepts.</summary>
+    public const int MinOverrideMaxOutputTokens = 1;
+    public const int MaxOverrideMaxOutputTokens = 200_000;
+    public const int MinOverrideMaxToolCalls = 1;
+    public const int MaxOverrideMaxToolCalls = 200;
+    public const int MinOverrideMaxLoopDurationSeconds = 1;
+    public const int MaxOverrideMaxLoopDurationSeconds = 3_600;
+    public const int MinOverrideMaxConsecutiveNonMutatingCalls = 1;
+    public const int MaxOverrideMaxConsecutiveNonMutatingCalls = 100;
+
+    /// <summary>Identifier shape for an MCP tool grant in
+    /// <c>AgentInvocationOverrides.AdditionalToolIdentifiers</c>: <c>mcp:&lt;server&gt;:&lt;tool&gt;</c>.
+    /// Server existence is intentionally NOT checked at validation time (no DB hit) — runtime
+    /// resolution logs and skips ghost tools, mirroring <c>RoleResolutionService</c>.</summary>
+    internal static readonly System.Text.RegularExpressions.Regex McpToolIdentifierPattern =
+        new(@"^mcp:[^:]+:[^:]+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Host tool names known to the runtime catalog — the allowlist a node-override
+    /// additive host tool must appear in. Mirrors <c>RoleResolutionService</c>'s host-tool set.</summary>
+    private static readonly HashSet<string> HostToolNames = HostToolProvider.GetCatalog()
+        .Select(tool => tool.Name)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     public static async Task<ValidationResult> ValidateAsync(
         string key,
         string? name,
@@ -156,6 +187,15 @@ public static class WorkflowValidator
             if (declaredPortViolation is not null)
             {
                 return ValidationResult.Fail(declaredPortViolation);
+            }
+
+            // Epic 993: a node's optional AgentInvocationOverrides overlay. Checked for every
+            // node kind — the overlay is only meaningful on agent-bearing kinds, so a non-null
+            // overlay anywhere else is a hard error rather than silently ignored.
+            var overridesValidation = ValidateAgentOverrides(node);
+            if (!overridesValidation.IsValid)
+            {
+                return overridesValidation;
             }
 
             switch (node.Kind)
@@ -938,6 +978,104 @@ public static class WorkflowValidator
         }
 
         return ValidationResult.Ok();
+    }
+
+    /// <summary>
+    /// Epic 993 — validates a node's optional <c>AgentInvocationOverrides</c> overlay. Runs for
+    /// every node: the overlay only has somewhere to apply on agent-bearing kinds, so a non-null
+    /// overlay on any other kind is rejected. Beyond the kind gate it checks the provider/model
+    /// both-or-neither coupling, the numeric-field sanity bounds, and the additive-tool identifier
+    /// format. MCP server existence is intentionally NOT checked here (no DB hit) — runtime
+    /// resolution logs and skips ghost tools the same way <c>RoleResolutionService</c> does.
+    /// </summary>
+    private static ValidationResult ValidateAgentOverrides(WorkflowNodeDto node)
+    {
+        if (node.AgentOverrides is not { } overrides)
+        {
+            return ValidationResult.Ok();
+        }
+
+        if (!AgentOverrideEligibleKinds.Contains(node.Kind))
+        {
+            return ValidationResult.Fail(
+                $"Node {node.Id} of kind {node.Kind} carries agentOverrides, but per-node agent "
+                + "overrides are only valid on agent-bearing nodes (Start, Agent, Hitl, Goal).");
+        }
+
+        // Provider + model are a both-or-neither pair — overriding the model without naming the
+        // provider (or vice versa) is ambiguous about which provider the model belongs to.
+        var hasProvider = !string.IsNullOrWhiteSpace(overrides.ModelProvider);
+        var hasModel = !string.IsNullOrWhiteSpace(overrides.Model);
+        if (hasProvider != hasModel)
+        {
+            return ValidationResult.Fail(
+                $"Node {node.Id} agentOverrides sets only "
+                + (hasProvider ? "modelProvider" : "model")
+                + " — modelProvider and model must be overridden together or left both null.");
+        }
+        if (hasProvider && !LlmProviderKeys.IsKnown(overrides.ModelProvider))
+        {
+            return ValidationResult.Fail(
+                $"Node {node.Id} agentOverrides has modelProvider '{overrides.ModelProvider}'. "
+                + $"Allowed values are: {string.Join(", ", LlmProviderKeys.All)}.");
+        }
+
+        // Numeric fields: each is optional; when set it must fall inside a loose sanity range.
+        var numericError =
+            CheckOverrideRange(node, "maxOutputTokens", overrides.MaxOutputTokens,
+                MinOverrideMaxOutputTokens, MaxOverrideMaxOutputTokens)
+            ?? CheckOverrideRange(node, "maxToolCalls", overrides.MaxToolCalls,
+                MinOverrideMaxToolCalls, MaxOverrideMaxToolCalls)
+            ?? CheckOverrideRange(node, "maxLoopDurationSeconds", overrides.MaxLoopDurationSeconds,
+                MinOverrideMaxLoopDurationSeconds, MaxOverrideMaxLoopDurationSeconds)
+            ?? CheckOverrideRange(node, "maxConsecutiveNonMutatingCalls", overrides.MaxConsecutiveNonMutatingCalls,
+                MinOverrideMaxConsecutiveNonMutatingCalls, MaxOverrideMaxConsecutiveNonMutatingCalls);
+        if (numericError is not null)
+        {
+            return ValidationResult.Fail(numericError);
+        }
+
+        // Additive tools: each identifier must resolve to a known host tool name or be a
+        // well-formed mcp:<server>:<tool> grant. Duplicates are rejected so the saved overlay is
+        // canonical (the runtime merge unions against the role set; a deduped list keeps it clean).
+        if (overrides.AdditionalToolIdentifiers is { Count: > 0 } toolIds)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rawId in toolIds)
+            {
+                var id = rawId?.Trim();
+                if (string.IsNullOrEmpty(id))
+                {
+                    return ValidationResult.Fail(
+                        $"Node {node.Id} agentOverrides.additionalToolIdentifiers contains a blank entry.");
+                }
+                if (!seen.Add(id))
+                {
+                    return ValidationResult.Fail(
+                        $"Node {node.Id} agentOverrides.additionalToolIdentifiers lists '{id}' more than once.");
+                }
+                var isHostTool = HostToolNames.Contains(id);
+                var isMcpTool = McpToolIdentifierPattern.IsMatch(id);
+                if (!isHostTool && !isMcpTool)
+                {
+                    return ValidationResult.Fail(
+                        $"Node {node.Id} agentOverrides.additionalToolIdentifiers has '{id}', which is "
+                        + "neither a known host tool name nor a well-formed 'mcp:<server>:<tool>' identifier.");
+                }
+            }
+        }
+
+        return ValidationResult.Ok();
+    }
+
+    private static string? CheckOverrideRange(WorkflowNodeDto node, string field, int? value, int min, int max)
+    {
+        if (value is { } v && (v < min || v > max))
+        {
+            return $"Node {node.Id} agentOverrides.{field} = {v}, which must be between {min} and {max} "
+                + "(or null to inherit the agent's value).";
+        }
+        return null;
     }
 
     private static async Task<IReadOnlyDictionary<string, IReadOnlyCollection<string>>> ResolveAgentOutputsAsync(
