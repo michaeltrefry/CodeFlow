@@ -41,5 +41,14 @@ public sealed class AgentInvocationAuthorityEntity
     /// </summary>
     public string TiersJson { get; set; } = "[]";
 
+    /// <summary>
+    /// Epic 993 / NO-10: the dispatching node's per-node <see cref="CodeFlow.Contracts.AgentInvocationOverrides"/>
+    /// serialized as JSON, or null when the node declared no overrides. Captures what the round
+    /// actually ran with — the provider/model/budget/additive-tool overlay — so the trace
+    /// inspector can show "this round ran with overrides" without re-deriving it from the
+    /// (possibly-since-changed) workflow definition.
+    /// </summary>
+    public string? AgentOverridesJson { get; set; }
+
     public DateTime ResolvedAtUtc { get; set; }
 }

@@ -1190,6 +1190,9 @@ export interface TraceBundleAuthoritySnapshot {
   blockedAxesJson: string;
   tiersJson: string;
   resolvedAtUtc: string;
+  /** Epic 993 / NO-10: the dispatching node's per-node agent overrides serialized as JSON,
+   *  or null when the round's node declared no overrides. */
+  agentOverridesJson: string | null;
 }
 
 export interface TraceBundleTokenUsageRecord {

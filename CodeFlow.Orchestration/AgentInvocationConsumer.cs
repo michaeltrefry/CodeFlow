@@ -281,7 +281,10 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     WorkflowVersion: message.WorkflowVersion,
                     // Epic 993 / NO-7: hand the effective post-override tool set to the resolver
                     // so additive node-override tools land in the envelope's Role tier.
-                    ResolvedTools: resolvedTools),
+                    ResolvedTools: resolvedTools,
+                    // Epic 993 / NO-10: capture the node's overrides on the snapshot so the
+                    // trace inspector can show what the round actually ran with.
+                    AgentOverrides: message.AgentOverrides),
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

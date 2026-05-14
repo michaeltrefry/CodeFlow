@@ -61,6 +61,11 @@ public sealed class AuthoritySnapshotRecorder : IAuthoritySnapshotRecorder
             EnvelopeJson = JsonSerializer.Serialize(resolution.Envelope, AuthorityJson.Options),
             BlockedAxesJson = JsonSerializer.Serialize(resolution.BlockedAxes, AuthorityJson.Options),
             TiersJson = JsonSerializer.Serialize(resolution.Tiers, AuthorityJson.Options),
+            // Epic 993 / NO-10: capture the dispatching node's per-node overrides (null when the
+            // node declared none) so the trace inspector can show what the round actually ran with.
+            AgentOverridesJson = input.AgentOverrides is null
+                ? null
+                : JsonSerializer.Serialize(input.AgentOverrides, AuthorityJson.Options),
             ResolvedAtUtc = nowUtc
         });
         await dbContext.SaveChangesAsync(cancellationToken);

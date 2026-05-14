@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CodeFlow.Contracts;
 using CodeFlow.Persistence.Authority;
 using CodeFlow.Runtime.Authority;
 using FluentAssertions;
@@ -84,6 +85,53 @@ public sealed class AuthoritySnapshotRecorderTests : IAsyncLifetime
         stored.EnvelopeJson.Should().Contain("apply_patch");
         stored.BlockedAxesJson.Should().Be("[]");
         stored.TiersJson.Should().Contain("\"name\":\"role\"");
+        // No overrides on the input → the snapshot's overrides column stays null.
+        stored.AgentOverridesJson.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RecordsAgentOverridesJson_WhenInputCarriesOverrides()
+    {
+        // Epic 993 / NO-10: when the dispatching node carried per-node overrides, the snapshot
+        // persists them so the trace inspector can show what the round actually ran with.
+        var traceId = Guid.NewGuid();
+        var roundId = Guid.NewGuid();
+        var resolver = new StubResolver(new EnvelopeResolutionResult(
+            Envelope: WorkflowExecutionEnvelope.NoOpinion,
+            BlockedAxes: Array.Empty<BlockedBy>(),
+            Tiers: Array.Empty<EnvelopeTier>()));
+
+        await using var dbContext = CreateDbContext();
+        var recorder = new AuthoritySnapshotRecorder(
+            resolver,
+            dbContext,
+            refusalSink: null,
+            NullLogger<AuthoritySnapshotRecorder>.Instance);
+
+        await recorder.ResolveAndRecordAsync(new AuthoritySnapshotInput(
+            AgentKey: "dev",
+            TraceId: traceId,
+            RoundId: roundId,
+            AgentVersion: 1,
+            AgentOverrides: new AgentInvocationOverrides(
+                ModelProvider: "anthropic",
+                Model: "claude-sonnet",
+                MaxToolCalls: 12,
+                AdditionalToolIdentifiers: new[] { "echo" })));
+
+        await using var verify = CreateDbContext();
+        var repo = new AgentInvocationAuthorityRepository(verify);
+        var stored = await repo.GetByRoundAsync(traceId, roundId);
+
+        stored.Should().NotBeNull();
+        stored!.AgentOverridesJson.Should().NotBeNull();
+        var roundTripped = JsonSerializer.Deserialize<AgentInvocationOverrides>(
+            stored.AgentOverridesJson!, AuthorityJson.Options);
+        roundTripped.Should().NotBeNull();
+        roundTripped!.ModelProvider.Should().Be("anthropic");
+        roundTripped.Model.Should().Be("claude-sonnet");
+        roundTripped.MaxToolCalls.Should().Be(12);
+        roundTripped.AdditionalToolIdentifiers.Should().Equal("echo");
     }
 
     [Fact]

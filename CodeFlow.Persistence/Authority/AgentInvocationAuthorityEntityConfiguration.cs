@@ -53,6 +53,10 @@ public sealed class AgentInvocationAuthorityEntityConfiguration : IEntityTypeCon
             .HasColumnType("longtext")
             .IsRequired();
 
+        builder.Property(e => e.AgentOverridesJson)
+            .HasColumnName("agent_overrides_json")
+            .HasColumnType("longtext");
+
         builder.Property(e => e.ResolvedAtUtc)
             .HasColumnName("resolved_at")
             .HasColumnType("datetime(6)")
