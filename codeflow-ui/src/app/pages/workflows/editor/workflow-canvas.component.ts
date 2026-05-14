@@ -301,6 +301,23 @@ function defaultStartInput(): WorkflowInput {
               <div class="muted xsmall">ID <code class="mono">{{ sel.editor.nodeId }}</code></div>
             </div>
 
+            <div class="inspector-tabs" role="tablist">
+              <button type="button" class="inspector-tab" role="tab"
+                      [class.active]="effectiveInspectorTab() === 'properties'"
+                      (click)="inspectorTab.set('properties')">Properties</button>
+              @if (selectedNodeHasScriptsTab()) {
+                <button type="button" class="inspector-tab" role="tab"
+                        [class.active]="effectiveInspectorTab() === 'scripts'"
+                        (click)="inspectorTab.set('scripts')">Scripts</button>
+              }
+              @if (selectedNodeHasOverridesTab()) {
+                <button type="button" class="inspector-tab" role="tab"
+                        [class.active]="effectiveInspectorTab() === 'overrides'"
+                        (click)="inspectorTab.set('overrides')">Overrides</button>
+              }
+            </div>
+
+            @if (effectiveInspectorTab() === 'properties') {
             @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start') {
               <div class="inspector-section">
                 <label class="field">
@@ -359,56 +376,6 @@ function defaultStartInput(): WorkflowInput {
                         <li class="error">{{ msg }}</li>
                       }
                     </ul>
-                  }
-                </div>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Input script <span class="muted xsmall">(optional)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.inputScript ?? ''"
-                    [markers]="inputScriptMarkers()"
-                    [ambientLibs]="inputScriptAmbientLibs()"
-                    snippetKind="input-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
-                  @if (inputScriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
-                  } @else if (inputScriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
-                  }
-                </div>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Output script <span class="muted xsmall">(optional)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>after</em> the agent completes. Sees <code>output</code> (the agent's output with <code>output.decision</code> and <code>output.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setOutput('…')</code> to rewrite the downstream artifact, or <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.outputScript ?? ''"
-                    [markers]="scriptMarkers()"
-                    [ambientLibs]="outputScriptAmbientLibs()"
-                    snippetKind="output-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
-                  @if (scriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
-                  } @else if (scriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
                   }
                 </div>
               </div>
@@ -481,56 +448,6 @@ function defaultStartInput(): WorkflowInput {
                         <li class="error">{{ msg }}</li>
                       }
                     </ul>
-                  }
-                </div>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>once</em> in this saga's scope <em>before</em> the child workflow is dispatched. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what the child saga receives, or <code>setContext('key', value)</code> / <code>setWorkflow('key', value)</code> to seed bag values the child sees. Leave blank to pass the upstream artifact through unchanged.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.inputScript ?? ''"
-                    [markers]="inputScriptMarkers()"
-                    [ambientLibs]="inputScriptAmbientLibs()"
-                    snippetKind="input-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
-                  @if (inputScriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
-                  } @else if (inputScriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
-                  }
-                </div>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>once</em> in this saga's scope <em>after</em> the child workflow terminates. Sees <code>output</code> (the artifact the child returned) with <code>output.decision</code> set to the child's terminal port name. Call <code>setNodePath('…')</code> to override the outgoing port (limited to the child's terminal ports plus <code>Failed</code>), <code>setOutput('…')</code> to rewrite the artifact propagated downstream, or <code>setContext</code>/<code>setWorkflow</code> to accumulate context. Leave blank to route by the child's terminal port verbatim.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.outputScript ?? ''"
-                    [markers]="scriptMarkers()"
-                    [ambientLibs]="outputScriptAmbientLibs()"
-                    snippetKind="output-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
-                  @if (scriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
-                  } @else if (scriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
                   }
                 </div>
               </div>
@@ -624,56 +541,6 @@ function defaultStartInput(): WorkflowInput {
                 <p class="muted xsmall">
                   The child workflow can read <code>{{ '{{round}}' }}</code>, <code>{{ '{{maxRounds}}' }}</code>, <code>{{ '{{isLastRound}}' }}</code> from prompts and scripts.
                 </p>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>once</em> before round 1 — never per iteration. The artifact <code>setInput('…')</code> writes is the seed for every iteration. <code>setContext</code>/<code>setWorkflow</code> writes are visible to the child throughout the loop. To mutate per-round behavior, put scripts on nodes <em>inside</em> the child workflow instead.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.inputScript ?? ''"
-                    [markers]="inputScriptMarkers()"
-                    [ambientLibs]="inputScriptAmbientLibs()"
-                    snippetKind="input-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
-                  @if (inputScriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
-                  } @else if (inputScriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
-                  }
-                </div>
-              </div>
-
-              <div class="inspector-section">
-                <div class="field">
-                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
-                  <p class="muted xsmall">
-                    Runs <em>once</em> after the loop terminates — never per iteration. <code>output.decision</code> is the port that closed the loop: either the child's exit port (the one that wasn't <code>loopDecision</code>) or <code>Exhausted</code> (round budget spent). <code>setNodePath('…')</code> may route to any of the boundary's wirable ports plus <code>Failed</code>.
-                  </p>
-                  <cf-monaco-script-editor
-                    class="script-editor"
-                    [value]="sel.editor.outputScript ?? ''"
-                    [markers]="scriptMarkers()"
-                    [ambientLibs]="outputScriptAmbientLibs()"
-                    snippetKind="output-script"
-                    [snippetInLoop]="selectedNodeInLoop()"
-                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
-                </div>
-                <div class="row">
-                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
-                  @if (scriptValidationError()) {
-                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
-                  } @else if (scriptValidationOk()) {
-                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
-                  }
-                </div>
               </div>
             }
 
@@ -1207,6 +1074,175 @@ function defaultStartInput(): WorkflowInput {
                 <p class="muted xsmall">No data-flow scope for this node — its persistence id isn't in the saved snapshot. Save the workflow to refresh.</p>
               }
             </div>
+            }
+
+            @if (effectiveInspectorTab() === 'scripts') {
+            @if (sel.editor.kind === 'Agent' || sel.editor.kind === 'Hitl' || sel.editor.kind === 'Start') {
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Input script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>before</em> this node receives its input. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what this node receives. May also <code>setContext('key', value)</code>. Leave blank to pass the upstream artifact through unchanged.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
+                  } @else if (inputScriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Output script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>after</em> the agent completes. Sees <code>output</code> (the agent's output with <code>output.decision</code> and <code>output.decisionPayload</code> attached) and <code>context</code>, and calls <code>setNodePath('…')</code> to choose an outgoing port. May also <code>setOutput('…')</code> to rewrite the downstream artifact, or <code>setContext('key', value)</code> to accumulate workflow context. Leave blank to route by the emitted decision kind.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
+                  @if (scriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
+                  } @else if (scriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'Subflow') {
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> in this saga's scope <em>before</em> the child workflow is dispatched. Sees <code>input</code> (the upstream artifact) and <code>context</code>/<code>workflow</code>. Call <code>setInput('…')</code> to rewrite what the child saga receives, or <code>setContext('key', value)</code> / <code>setWorkflow('key', value)</code> to seed bag values the child sees. Leave blank to pass the upstream artifact through unchanged.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
+                  } @else if (inputScriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> in this saga's scope <em>after</em> the child workflow terminates. Sees <code>output</code> (the artifact the child returned) with <code>output.decision</code> set to the child's terminal port name. Call <code>setNodePath('…')</code> to override the outgoing port (limited to the child's terminal ports plus <code>Failed</code>), <code>setOutput('…')</code> to rewrite the artifact propagated downstream, or <code>setContext</code>/<code>setWorkflow</code> to accumulate context. Leave blank to route by the child's terminal port verbatim.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
+                  @if (scriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
+                  } @else if (scriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+            }
+
+            @if (sel.editor.kind === 'ReviewLoop') {
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary input script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> before round 1 — never per iteration. The artifact <code>setInput('…')</code> writes is the seed for every iteration. <code>setContext</code>/<code>setWorkflow</code> writes are visible to the child throughout the loop. To mutate per-round behavior, put scripts on nodes <em>inside</em> the child workflow instead.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.inputScript ?? ''"
+                    [markers]="inputScriptMarkers()"
+                    [ambientLibs]="inputScriptAmbientLibs()"
+                    snippetKind="input-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'input', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'input')">Validate</button>
+                  @if (inputScriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ inputScriptValidationError() }}</cf-chip>
+                  } @else if (inputScriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+
+              <div class="inspector-section">
+                <div class="field">
+                  <span class="field-label">Boundary output script <span class="muted xsmall">(optional, fires <em>once</em>)</span></span>
+                  <p class="muted xsmall">
+                    Runs <em>once</em> after the loop terminates — never per iteration. <code>output.decision</code> is the port that closed the loop: either the child's exit port (the one that wasn't <code>loopDecision</code>) or <code>Exhausted</code> (round budget spent). <code>setNodePath('…')</code> may route to any of the boundary's wirable ports plus <code>Failed</code>.
+                  </p>
+                  <cf-monaco-script-editor
+                    class="script-editor"
+                    [value]="sel.editor.outputScript ?? ''"
+                    [markers]="scriptMarkers()"
+                    [ambientLibs]="outputScriptAmbientLibs()"
+                    snippetKind="output-script"
+                    [snippetInLoop]="selectedNodeInLoop()"
+                    (valueChange)="onNodeScriptChanged(sel.editor, 'output', $event)"></cf-monaco-script-editor>
+                </div>
+                <div class="row">
+                  <button type="button" (click)="validateNodeScript(sel.editor, 'output')">Validate</button>
+                  @if (scriptValidationError()) {
+                    <cf-chip variant="err" dot>{{ scriptValidationError() }}</cf-chip>
+                  } @else if (scriptValidationOk()) {
+                    <cf-chip variant="ok" dot>Script parses OK</cf-chip>
+                  }
+                </div>
+              </div>
+            }
+            }
+
+            @if (effectiveInspectorTab() === 'overrides') {
+              <div class="inspector-section">
+                <p class="muted xsmall">
+                  Per-node agent property overrides — model/provider, token &amp; tool-call budgets,
+                  and additive tools — land here in the next slice. They overlay the agent's own
+                  settings for this node only, without forking the agent.
+                </p>
+              </div>
+            }
           } @else if (selectedConnection(); as sel) {
             <div class="inspector-section">
               <div class="row-spread">
@@ -1358,7 +1394,7 @@ function defaultStartInput(): WorkflowInput {
     :host { display: block; height: 100%; }
     .editor-layout {
       display: grid;
-      grid-template-columns: 1fr 360px;
+      grid-template-columns: 1fr 420px;
       grid-template-rows: 100%;
       gap: 0;
       height: calc(100vh - var(--header-height, 64px));
@@ -1550,6 +1586,28 @@ function defaultStartInput(): WorkflowInput {
       padding: 0.75rem 0;
     }
     .inspector-section:first-of-type { border-top: none; padding-top: 0; }
+    .inspector-tabs {
+      display: flex;
+      gap: 0.25rem;
+      border-bottom: 1px solid var(--border);
+      margin: 0.75rem 0;
+    }
+    .inspector-tab {
+      flex: 1;
+      padding: 0.4rem 0.5rem;
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .inspector-tab:hover { color: inherit; }
+    .inspector-tab.active {
+      color: inherit;
+      border-bottom-color: var(--accent, #58a6ff);
+    }
     .field {
       display: block;
       margin-bottom: 0.75rem;
@@ -1875,6 +1933,31 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     if (!id || !this.editor) return null;
     const node = this.editor.getNode(id) as WorkflowEditorNode | undefined;
     return node ? { editor: node } : null;
+  });
+
+  /** Epic 993 / NO-11: which node-inspector tab the author last picked. */
+  readonly inspectorTab = signal<'properties' | 'scripts' | 'overrides'>('properties');
+
+  /** Kinds with input/output script overlays get a Scripts tab. */
+  readonly selectedNodeHasScriptsTab = computed(() => {
+    const kind = this.selectedNode()?.editor.kind;
+    return kind === 'Agent' || kind === 'Hitl' || kind === 'Start'
+      || kind === 'Subflow' || kind === 'ReviewLoop';
+  });
+
+  /** Per-node agent overrides apply to agent-bearing single-agent kinds (epic 993 v1 scope). */
+  readonly selectedNodeHasOverridesTab = computed(() => {
+    const kind = this.selectedNode()?.editor.kind;
+    return kind === 'Agent' || kind === 'Hitl' || kind === 'Start' || kind === 'Goal';
+  });
+
+  /** The active tab clamped to what the selected node actually offers — selecting a node kind
+   *  that lacks the last-picked tab falls back to Properties without losing the raw preference. */
+  readonly effectiveInspectorTab = computed(() => {
+    const tab = this.inspectorTab();
+    if (tab === 'scripts' && !this.selectedNodeHasScriptsTab()) return 'properties';
+    if (tab === 'overrides' && !this.selectedNodeHasOverridesTab()) return 'properties';
+    return tab;
   });
 
   readonly selectedConnection = computed<SelectedConnection | null>(() => {
