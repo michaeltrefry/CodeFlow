@@ -44,7 +44,13 @@ public sealed record AgentInvokeRequested(
     // iteration. Renderer maps these to top-level prompt-template variables (loop.item, loop.index,
     // loop.count, loop.isLast) the same way ReviewRound becomes `round`. Null on every dispatch
     // outside a ForEach iteration.
-    ForEachInvocationContext? LoopContext = null);
+    ForEachInvocationContext? LoopContext = null,
+    // Epic 993: the dispatching workflow node's optional per-node agent invocation overrides.
+    // Populated from WorkflowNode.AgentOverrides on every Agent / Hitl / Start dispatch (the
+    // AgentInvocationConsumer merges it onto the agent's stored config). Null when the node
+    // declares no overlay. Goal nodes do NOT ride this message — GoalNodeDispatcher runs the
+    // agent loop in-process and applies the overlay directly.
+    AgentInvocationOverrides? AgentOverrides = null);
 
 /// <summary>
 /// Per-invocation Swarm context piggybacked onto <see cref="AgentInvokeRequested"/> when the
