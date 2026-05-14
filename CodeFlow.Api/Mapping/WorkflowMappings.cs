@@ -60,7 +60,8 @@ internal static class WorkflowMappings
                 ItemVar: node.ItemVar,
                 GoalObjective: node.GoalObjective,
                 GoalTokenBudget: node.GoalTokenBudget,
-                GoalMaxIterations: node.GoalMaxIterations))
+                GoalMaxIterations: node.GoalMaxIterations,
+                AgentOverrides: node.AgentOverrides))
             .ToArray(),
         Edges: workflow.Edges
             .Select(edge => new WorkflowEdgeDto(

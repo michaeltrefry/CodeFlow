@@ -1,6 +1,6 @@
 import { AngularArea2D } from 'rete-angular-plugin/20';
 import { ClassicPreset, GetSchemes } from 'rete';
-import { WorkflowNodeKind, WorkflowSwarmProtocol, WorkflowTransformOutputType } from '../../../core/models';
+import { AgentInvocationOverrides, WorkflowNodeKind, WorkflowSwarmProtocol, WorkflowTransformOutputType } from '../../../core/models';
 
 type ClassicSchemes = GetSchemes<
   ClassicPreset.Node,
@@ -106,6 +106,9 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
   goalObjective: string | null = null;
   goalTokenBudget: number | null = null;
   goalMaxIterations: number | null = null;
+  // Epic 993: per-node agent invocation overrides. Surfaced in the node inspector's Overrides
+  // tab for agent-bearing kinds (NO-8); null = the node runs the agent's config unchanged.
+  agentOverrides: AgentInvocationOverrides | null = null;
   traceState: WorkflowNodeTraceState = null;
   /**
    * Token Usage Tracking [Slice 7]: optional per-node overlay populated by the
@@ -154,6 +157,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     goalObjective?: string | null;
     goalTokenBudget?: number | null;
     goalMaxIterations?: number | null;
+    agentOverrides?: AgentInvocationOverrides | null;
   }) {
     super(params.label);
     this.nodeId = params.nodeId;
@@ -182,6 +186,7 @@ export class WorkflowEditorNode extends ClassicPreset.Node {
     this.goalObjective = params.goalObjective ?? null;
     this.goalTokenBudget = params.goalTokenBudget ?? null;
     this.goalMaxIterations = params.goalMaxIterations ?? null;
+    this.agentOverrides = params.agentOverrides ?? null;
 
     if (params.kind !== 'Start') {
       this.addInput('in', new ClassicPreset.Input(new ClassicPreset.Socket('port'), 'in', true));

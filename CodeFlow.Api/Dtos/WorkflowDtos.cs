@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 
 namespace CodeFlow.Api.Dtos;
@@ -57,7 +58,10 @@ public sealed record WorkflowNodeDto(
     string? ItemVar = null,
     string? GoalObjective = null,
     int? GoalTokenBudget = null,
-    int? GoalMaxIterations = null);
+    int? GoalMaxIterations = null,
+    // Epic 993: per-node agent invocation overrides. Only meaningful on agent-bearing node
+    // kinds (Agent / Hitl / Start / Goal); the validator rejects it on every other kind.
+    AgentInvocationOverrides? AgentOverrides = null);
 
 public sealed record WorkflowEdgeDto(
     Guid FromNodeId,
