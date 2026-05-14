@@ -132,11 +132,16 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     message.ReviewRound,
                     message.OptOutLastRoundReminder);
 
-            var invocationConfig = agentConfig.Configuration with
+            // Epic 993 / NO-5: apply per-node overrides before building the invocation config.
+            var effectiveConfig = AgentOverrideMerge.MergeConfiguration(
+                agentConfig.Configuration,
+                message.AgentOverrides);
+
+            var invocationConfig = effectiveConfig with
             {
                 PromptTemplate = effectivePromptTemplate,
                 Variables = AgentPromptScopeBuilder.Merge(
-                    agentConfig.Configuration.Variables,
+                    effectiveConfig.Variables,
                     AgentPromptScopeBuilder.BuildContextVariables(message.ContextInputs),
                     AgentPromptScopeBuilder.BuildWorkflowVariables(message.WorkflowContext),
                     AgentPromptScopeBuilder.BuildReviewLoopVariables(
@@ -149,12 +154,12 @@ public sealed class AgentInvocationConsumer : IConsumer<AgentInvokeRequested>
                     // a ForEach so the keys stay absent from the scope (rather than dangling as
                     // empty strings) for non-loop prompts.
                     AgentPromptScopeBuilder.BuildLoopVariables(message.LoopContext),
-                    // Expose the resolved per-invocation budget so prompts can reference real
-                    // numbers (e.g. `## You have {{ maxToolCalls }} tool calls available`) and
-                    // ground their own stop conditions in concrete percentages. Falls back to
-                    // InvocationLoopBudget.Default when the agent didn't override the runtime
-                    // budget so the variable is always populated.
-                    AgentPromptScopeBuilder.BuildBudgetVariables(agentConfig.Configuration.Budget),
+                    // Expose the resolved per-invocation budget (after override merge) so prompts
+                    // can reference real numbers (e.g. `## You have {{ maxToolCalls }} tool calls
+                    // available`) and ground their own stop conditions in concrete percentages.
+                    // Falls back to InvocationLoopBudget.Default when the agent didn't override
+                    // the runtime budget so the variable is always populated.
+                    AgentPromptScopeBuilder.BuildBudgetVariables(effectiveConfig.Budget),
                     AgentPromptScopeBuilder.BuildInputVariables(input)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs

@@ -110,19 +110,24 @@ public sealed class GoalNodeDispatcher : IWorkflowNodeDispatcher
 
             var tools = await roleResolution.ResolveAsync(node.AgentKey, pinnedVersion.Value, cancellationToken);
 
+            // Epic 993 / NO-5: apply per-node overrides before building the base config.
+            var effectiveConfig = AgentOverrideMerge.MergeConfiguration(
+                agentConfig.Configuration,
+                node.AgentOverrides);
+
             // Mirror AgentInvocationConsumer.Consume's variable-merge so the agent's prompt
             // template sees the same `context.*`, `workflow.*`, `input.*`, and budget vars on
             // every iteration. NOTE: we use the rendered objective as the input value so a
             // prompt-template that interpolates `{{ input }}` (like the existing dev-agent)
             // sees the objective text. The orchestrator separately injects the continuation
             // prompt as the user message starting on iteration 2.
-            var baseConfig = agentConfig.Configuration with
+            var baseConfig = effectiveConfig with
             {
                 Variables = AgentPromptScopeBuilder.Merge(
-                    agentConfig.Configuration.Variables,
+                    effectiveConfig.Variables,
                     AgentPromptScopeBuilder.BuildContextVariables(contextInputs),
                     AgentPromptScopeBuilder.BuildWorkflowVariables(workflowInputs),
-                    AgentPromptScopeBuilder.BuildBudgetVariables(agentConfig.Configuration.Budget),
+                    AgentPromptScopeBuilder.BuildBudgetVariables(effectiveConfig.Budget),
                     AgentPromptScopeBuilder.BuildInputVariables(renderedObjective)),
                 DeclaredOutputs = agentConfig.DeclaredOutputs.Count > 0
                     ? agentConfig.DeclaredOutputs
