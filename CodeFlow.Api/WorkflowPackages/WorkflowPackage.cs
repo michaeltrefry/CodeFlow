@@ -1,3 +1,4 @@
+using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using System.Text.Json.Nodes;
@@ -105,7 +106,11 @@ public sealed record WorkflowPackageWorkflowNode(
     // the runtime default — currently 50 in GoalNodeDispatcher).
     string? GoalObjective = null,
     int? GoalTokenBudget = null,
-    int? GoalMaxIterations = null);
+    int? GoalMaxIterations = null,
+    // Epic 993 / NO-12: per-node agent invocation overrides. Carried through the package so a
+    // node's provider/model/budget/additive-tool overlay survives an export → import cycle.
+    // Null on nodes without overrides (and on non-agent-bearing kinds).
+    AgentInvocationOverrides? AgentOverrides = null);
 
 public sealed record WorkflowPackageWorkflowEdge(
     Guid FromNodeId,

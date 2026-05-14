@@ -1,4 +1,5 @@
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime;
 using CodeFlow.Runtime.Mcp;
@@ -84,6 +85,56 @@ public sealed class WorkflowPackageResolverTests
 
         var child = package.Workflows.Single(w => w.Key == "child-flow");
         child.Nodes.Single().AgentVersion.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_carries_node_agent_overrides_into_the_package()
+    {
+        // Epic 993 / NO-12: the package export path must forward a node's per-node agent
+        // overrides so they survive an export → import round-trip.
+        var startId = Guid.NewGuid();
+        var overrides = new AgentInvocationOverrides(
+            ModelProvider: "anthropic",
+            Model: "claude-sonnet",
+            MaxToolCalls: 9,
+            AdditionalToolIdentifiers: new[] { "echo" });
+
+        var workflows = new Dictionary<(string Key, int Version), Workflow>(StringTupleComparer.Ordinal)
+        {
+            [("override-flow", 1)] = new(
+                Key: "override-flow",
+                Version: 1,
+                Name: "Override Flow",
+                MaxStepsPerSaga: 1,
+                CreatedAtUtc: new DateTime(2026, 5, 14, 0, 0, 0, DateTimeKind.Utc),
+                Nodes:
+                [
+                    new WorkflowNode(startId, WorkflowNodeKind.Start, "writer", 1, null, ["Completed"], 0, 0)
+                        with { AgentOverrides = overrides },
+                ],
+                Edges: [],
+                Inputs: []),
+        };
+
+        var agents = new Dictionary<(string Key, int Version), AgentConfig>(StringTupleComparer.Ordinal)
+        {
+            [("writer", 1)] = CreateAgent("writer", 1, """{"provider":"openai","model":"gpt-5","systemPrompt":"Write"}"""),
+        };
+
+        var resolver = CreateResolver(
+            workflows,
+            agents,
+            latestWorkflowVersions: new Dictionary<string, int>(StringComparer.Ordinal) { ["override-flow"] = 1 },
+            latestAgentVersions: new Dictionary<string, int>(StringComparer.Ordinal) { ["writer"] = 1 });
+
+        var package = await resolver.ResolveAsync("override-flow", 1);
+
+        var node = package.Workflows.Single().Nodes.Single(n => n.Id == startId);
+        node.AgentOverrides.Should().NotBeNull();
+        node.AgentOverrides!.ModelProvider.Should().Be("anthropic");
+        node.AgentOverrides.Model.Should().Be("claude-sonnet");
+        node.AgentOverrides.MaxToolCalls.Should().Be(9);
+        node.AgentOverrides.AdditionalToolIdentifiers.Should().Equal("echo");
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using CodeFlow.Api.Mcp;
 using CodeFlow.Api.WorkflowPackages;
+using CodeFlow.Contracts;
 using CodeFlow.Persistence;
 using CodeFlow.Runtime.Mcp;
 using FluentAssertions;
@@ -703,6 +704,87 @@ public sealed class WorkflowPackageImporterTests
 
         var importedRole = await dbContext.AgentRoles.SingleAsync(role => role.Key == "writer-tools");
         WorkflowJson.DeserializeTags(importedRole.TagsJson).Should().Equal("author", "tools");
+    }
+
+    /// <summary>
+    /// Epic 993 / NO-12: the workflow-package node DTO now carries <c>AgentOverrides</c>, so a
+    /// node's per-node agent overrides survive an export → import cycle instead of being
+    /// silently dropped on the package path.
+    /// </summary>
+    [Fact]
+    public async Task ApplyAsync_PreservesNodeAgentOverrides()
+    {
+        await using var dbContext = CreateDbContext();
+        var importer = NewImporter(dbContext);
+
+        var overrides = new AgentInvocationOverrides(
+            ModelProvider: "anthropic",
+            Model: "claude-sonnet",
+            MaxOutputTokens: 4096,
+            MaxToolCalls: 7,
+            MaxLoopDurationSeconds: 600,
+            MaxConsecutiveNonMutatingCalls: 3,
+            AdditionalToolIdentifiers: new[] { "echo", "mcp:shortcut:stories-create" });
+
+        var startNode = new WorkflowPackageWorkflowNode(
+            Id: Guid.NewGuid(),
+            Kind: WorkflowNodeKind.Start,
+            AgentKey: "writer",
+            AgentVersion: 1,
+            OutputScript: null,
+            OutputPorts: new[] { "Completed" },
+            LayoutX: 0,
+            LayoutY: 0,
+            AgentOverrides: overrides);
+
+        var workflow = new WorkflowPackageWorkflow(
+            Key: "overrides-root",
+            Version: 1,
+            Name: "Overrides Root",
+            MaxStepsPerSaga: 1,
+            Category: WorkflowCategory.Workflow,
+            Tags: Array.Empty<string>(),
+            CreatedAtUtc: DateTime.UtcNow,
+            Nodes: new[] { startNode },
+            Edges: Array.Empty<WorkflowPackageWorkflowEdge>(),
+            Inputs: Array.Empty<WorkflowPackageWorkflowInput>());
+
+        var agent = new WorkflowPackageAgent(
+            Key: "writer",
+            Version: 1,
+            Kind: AgentKind.Agent,
+            Config: SimpleAgentConfig(),
+            CreatedAtUtc: DateTime.UtcNow,
+            CreatedBy: "no-12-test",
+            Outputs: new[] { new WorkflowPackageAgentOutput("Completed", "Done", null) });
+
+        var package = new WorkflowPackage(
+            SchemaVersion: WorkflowPackageDefaults.SchemaVersion,
+            Metadata: new WorkflowPackageMetadata("test", DateTime.UtcNow),
+            EntryPoint: new WorkflowPackageReference(workflow.Key, workflow.Version),
+            Workflows: new[] { workflow },
+            Agents: new[] { agent },
+            AgentRoleAssignments: Array.Empty<WorkflowPackageAgentRoleAssignment>(),
+            Roles: Array.Empty<WorkflowPackageRole>(),
+            Skills: Array.Empty<WorkflowPackageSkill>(),
+            McpServers: Array.Empty<WorkflowPackageMcpServer>());
+
+        await importer.ApplyAsync(package, CancellationToken.None);
+
+        var imported = await dbContext.Workflows
+            .Include(w => w.Nodes)
+            .SingleAsync(w => w.Key == "overrides-root" && w.Version == 1);
+        var node = imported.Nodes.Single();
+        var persisted = WorkflowJson.DeserializeAgentOverrides(node.AgentOverridesJson);
+
+        persisted.Should().NotBeNull("the package import path must persist node AgentOverrides");
+        persisted!.ModelProvider.Should().Be("anthropic");
+        persisted.Model.Should().Be("claude-sonnet");
+        persisted.MaxOutputTokens.Should().Be(4096);
+        persisted.MaxToolCalls.Should().Be(7);
+        persisted.MaxLoopDurationSeconds.Should().Be(600);
+        persisted.MaxConsecutiveNonMutatingCalls.Should().Be(3);
+        persisted.AdditionalToolIdentifiers.Should().Equal("echo", "mcp:shortcut:stories-create");
     }
 
     private static WorkflowPackageImporter NewImporter(CodeFlowDbContext dbContext) =>
