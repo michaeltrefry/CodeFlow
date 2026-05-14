@@ -82,11 +82,13 @@ fields nullable, null = inherit. It lives on `WorkflowNode.AgentOverrides`,
 persisted as the `AgentOverridesJson` column, threaded onto the
 `AgentInvokeRequested` message, and merged in `AgentInvocationConsumer` (and the
 in-process `GoalNodeDispatcher`) on top of the agent's stored config before the
-invocation runs.
+invocation runs. Workflow-package export / import carries `AgentOverrides`, so a
+node's overrides survive an export → import round-trip.
 
-## Known limitation
+## See also
 
-Workflow-package **export / import** does not yet carry `AgentOverrides` — a
-node's overrides are dropped when the workflow is exported as a package. Until
-that gap is closed, overrides are reliable for workflows authored and saved in
-place, but not round-tripped through a package. (Tracked separately.)
+- [In-place agent editing](../agent-in-place-edit.md) — the heavyweight
+  fork-based counterpart.
+- `workflows/node-overrides-demo-v1-package.json` — a reference workflow whose
+  Agent node carries an `agentOverrides` overlay (different model, larger
+  budgets, two extra host tools).
