@@ -213,6 +213,7 @@ Recurring author boilerplate has been replaced with declarative configuration:
 - **Built-in rejection history.** `WorkflowNode.RejectionHistoryConfig = { Enabled, MaxBytes, Format }` on a ReviewLoop accumulates each round's rejection into `workflow.__loop.rejectionHistory`, exposed un-prefixed as `{{ rejectionHistory }}` to the child's templates. UTF-8-safe trim, idempotent on redelivery. See [docs/features/rejection-history.md](./docs/features/rejection-history.md).
 - **Mirror output to workflow variable.** `WorkflowNode.MirrorOutputToWorkflowVar = "key"` copies the agent's submitted artifact into `workflow.key` **before** the output script runs. Replaces the Pattern-1 capture script. See [docs/features/mirror-output-to-workflow-var.md](./docs/features/mirror-output-to-workflow-var.md).
 - **Per-port artifact replacement.** `WorkflowNode.OutputPortReplacements = { "PortName": "workflowVarKey" }` swaps the outbound artifact for a workflow variable on a specific port — applied **after** the output script, so port binding wins over `setOutput()`. Replaces the Pattern-2 replace-on-port script. See [docs/features/replace-artifact-from-workflow-var.md](./docs/features/replace-artifact-from-workflow-var.md).
+- **Node-level agent overrides.** `WorkflowNode.AgentOverrides` overlays a small set of invocation properties (provider+model, output-token / tool-call / wall-clock / non-mutating-call budgets, additive tools) on an Agent/Hitl/Start/Goal node — inherit-by-default, **no agent version, no fork**. The lightweight counterpart to in-place agent edit. See [docs/features/node-overrides.md](./docs/features/node-overrides.md).
 
 ### Workflow templates
 
@@ -365,6 +366,7 @@ CodeFlow is deployed to `https://codeflow.trefry.net` on a Linode host fronted b
 - [Built-in rejection history (P3)](./docs/features/rejection-history.md)
 - [Mirror output to workflow variable (P4)](./docs/features/mirror-output-to-workflow-var.md)
 - [Replace artifact from workflow variable (P5)](./docs/features/replace-artifact-from-workflow-var.md)
+- [Node-level agent property overrides](./docs/features/node-overrides.md)
 - [Prompt partials (P1 / F3 + P2 auto-injection)](./docs/features/prompt-partials.md)
 - [Workflow templates (S3-S7)](./docs/features/workflow-templates.md)
 
