@@ -3,6 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
   AgentConfig,
+  AgentResolvedTools,
   AgentSummary,
   AgentVersion,
   AgentVersionSummary,
@@ -41,6 +42,14 @@ export class AgentsApi {
 
   getLatest(key: string): Observable<AgentVersion> {
     return this.http.get<AgentVersion>(`/api/agents/${encodeURIComponent(key)}`);
+  }
+
+  /** Epic 993 / NO-8: the host/MCP tool identifiers an agent resolves through its role grants
+   *  at a given version. Feeds the workflow editor's node-overrides tools picker. */
+  getResolvedTools(key: string, version: number): Observable<AgentResolvedTools> {
+    return this.http.get<AgentResolvedTools>(
+      `/api/agents/${encodeURIComponent(key)}/${version}/resolved-tools`
+    );
   }
 
   create(key: string, config: AgentConfig, tags?: string[]): Observable<{ key: string; version: number }> {

@@ -116,6 +116,29 @@ public sealed class AgentsEndpointsTests
     }
 
     [Fact]
+    public async Task GetResolvedTools_AgentWithNoRoles_ReturnsEmptyToolSet()
+    {
+        // Epic 993 / NO-8: the node-overrides tools picker reads this endpoint to lock the
+        // agent's role-inherited tools. An agent with no role assignments resolves to an empty
+        // set — the picker simply renders nothing locked.
+        using var client = factory.CreateClient();
+
+        var key = $"resolved-tools-{Guid.NewGuid():N}";
+        var create = await client.PostAsJsonAsync("/api/agents", new
+        {
+            key,
+            config = new { provider = "openai", model = "gpt-5", systemPrompt = "Resolve me." }
+        });
+        create.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resolved = await client.GetFromJsonAsync<ResolvedToolsDto>($"/api/agents/{key}/1/resolved-tools");
+
+        resolved.Should().NotBeNull();
+        resolved!.ToolIdentifiers.Should().BeEmpty();
+        resolved.EnableHostTools.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task BulkRetire_HidesSelectedAgents()
     {
         using var client = factory.CreateClient();
@@ -704,6 +727,8 @@ public sealed class AgentsEndpointsTests
     }
 
     private sealed record VersionDto(string Key, int Version, DateTime CreatedAtUtc, string? CreatedBy);
+
+    private sealed record ResolvedToolsDto(IReadOnlyList<string> ToolIdentifiers, bool EnableHostTools);
 
     private sealed record CreateResponse(string Key, int Version);
 

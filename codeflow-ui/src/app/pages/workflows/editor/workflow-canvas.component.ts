@@ -17,6 +17,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { forkJoin } from 'rxjs';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PageContextService } from '../../../core/page-context.service';
 import { formatHttpError } from '../../../core/format-error';
@@ -25,9 +26,16 @@ import { AreaExtensions, AreaPlugin } from 'rete-area-plugin';
 import { ConnectionPlugin, Presets as ConnectionPresets } from 'rete-connection-plugin';
 import { AngularPlugin, Presets as AngularPresets } from 'rete-angular-plugin/20';
 import { AgentsApi } from '../../../core/agents.api';
+import { HostToolsApi } from '../../../core/host-tools.api';
+import { McpServersApi } from '../../../core/mcp-servers.api';
+import { LlmProvidersApi } from '../../../core/llm-providers.api';
 import {
   AgentConfig,
+  AgentInvocationOverrides,
+  AgentRoleGrant,
   AgentSummary,
+  HostTool,
+  LlmProviderModelOption,
   MAX_WORKFLOW_TAGS,
   WORKFLOW_CATEGORIES,
   WorkflowCategory,
@@ -37,6 +45,7 @@ import {
   WorkflowSwarmProtocol,
   WorkflowTransformOutputType
 } from '../../../core/models';
+import { ToolPickerComponent, McpServerToolCatalog } from '../../../shared/tool-picker/tool-picker.component';
 import { NodeDataflowScope, WorkflowDataflowSnapshot, WorkflowsApi } from '../../../core/workflows.api';
 import { ButtonComponent } from '../../../ui/button.component';
 import { ChipComponent } from '../../../ui/chip.component';
@@ -110,6 +119,9 @@ interface SelectedAgentDocs {
   agentKey: string;
   agentVersion: number;
   config: AgentConfig;
+  /** Epic 993 / NO-8: tool identifiers the agent inherits via its role grants — host names +
+   *  `mcp:<server>:<tool>`. Null while the resolved-tools request is still in flight. */
+  resolvedToolIdentifiers: string[] | null;
 }
 
 interface PortReferenceRow {
@@ -166,7 +178,7 @@ function defaultStartInput(): WorkflowInput {
 @Component({
   selector: 'cf-workflow-canvas',
   standalone: true,
-  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, ChipComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent],
+  imports: [CommonModule, FormsModule, MonacoScriptEditorComponent, TagInputComponent, ButtonComponent, ChipComponent, NodeContextMenuComponent, AgentInPlaceEditDialogComponent, PublishForkDialogComponent, VersionUpdateDialogComponent, WorkflowVersionHistoryDialogComponent, ToolPickerComponent],
   providers: [WorkflowCanvasDialogOrchestrator],
   changeDetection: ChangeDetectionStrategy.Default,
   template: `
@@ -1237,11 +1249,90 @@ function defaultStartInput(): WorkflowInput {
             @if (effectiveInspectorTab() === 'overrides') {
               <div class="inspector-section">
                 <p class="muted xsmall">
-                  Per-node agent property overrides — model/provider, token &amp; tool-call budgets,
-                  and additive tools — land here in the next slice. They overlay the agent's own
-                  settings for this node only, without forking the agent.
+                  Per-node overrides overlay the agent's settings for <em>this node only</em> — they
+                  never fork the agent or create a version. Every field is inherit-by-default: leave
+                  it blank to use the agent's own value.
                 </p>
+                @if (!sel.editor.agentKey) {
+                  <p class="muted xsmall">Pick an agent in the Properties tab to configure overrides.</p>
+                } @else {
+                  <label class="field">
+                    <span>Model provider</span>
+                    <select [ngModel]="sel.editor.agentOverrides?.modelProvider ?? ''"
+                            (ngModelChange)="onOverrideProviderChanged(sel.editor, $event)">
+                      <option value="">(inherit — {{ selectedAgentDocs()?.config?.provider ?? 'agent default' }})</option>
+                      @for (p of overrideProviderOptions(); track p) {
+                        <option [value]="p">{{ p }}</option>
+                      }
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Model</span>
+                    <select [ngModel]="sel.editor.agentOverrides?.model ?? ''"
+                            (ngModelChange)="onOverrideModelChanged(sel.editor, $event)"
+                            [disabled]="!sel.editor.agentOverrides?.modelProvider">
+                      <option value="">(inherit — {{ selectedAgentDocs()?.config?.model ?? 'agent default' }})</option>
+                      @for (m of overrideModelOptions(); track m) {
+                        <option [value]="m">{{ m }}</option>
+                      }
+                    </select>
+                    @if (sel.editor.agentOverrides?.modelProvider && !sel.editor.agentOverrides?.model) {
+                      <cf-chip variant="warn" dot>Pick a model — provider and model are a both-or-neither pair.</cf-chip>
+                    }
+                  </label>
+                  <label class="field">
+                    <span>Max output tokens</span>
+                    <input type="number" min="1"
+                           [ngModel]="sel.editor.agentOverrides?.maxOutputTokens ?? null"
+                           (ngModelChange)="onOverrideMaxOutputTokensChanged(sel.editor, $event)"
+                           [placeholder]="'Inherited: ' + (selectedAgentDocs()?.config?.maxTokens ?? '—')" />
+                  </label>
+                  <label class="field">
+                    <span>Max tool calls</span>
+                    <input type="number" min="1"
+                           [ngModel]="sel.editor.agentOverrides?.maxToolCalls ?? null"
+                           (ngModelChange)="onOverrideMaxToolCallsChanged(sel.editor, $event)"
+                           [placeholder]="'Inherited: ' + (selectedAgentDocs()?.config?.budget?.maxToolCalls ?? '—')" />
+                  </label>
+                  <label class="field">
+                    <span>Max wall-clock duration <span class="muted xsmall">(seconds)</span></span>
+                    <input type="number" min="1"
+                           [ngModel]="sel.editor.agentOverrides?.maxLoopDurationSeconds ?? null"
+                           (ngModelChange)="onOverrideMaxLoopDurationSecondsChanged(sel.editor, $event)"
+                           [placeholder]="'Inherited: ' + (inheritedMaxLoopDurationSeconds() ?? '—')" />
+                  </label>
+                  <label class="field">
+                    <span>Max consecutive non-mutating tool calls</span>
+                    <input type="number" min="1"
+                           [ngModel]="sel.editor.agentOverrides?.maxConsecutiveNonMutatingCalls ?? null"
+                           (ngModelChange)="onOverrideMaxConsecutiveNonMutatingCallsChanged(sel.editor, $event)"
+                           [placeholder]="'Inherited: ' + (selectedAgentDocs()?.config?.budget?.maxConsecutiveNonMutatingCalls ?? '—')" />
+                  </label>
+                }
               </div>
+
+              @if (sel.editor.agentKey) {
+                <div class="inspector-section">
+                  <div class="field">
+                    <span class="field-label">Additional tools <span class="muted xsmall">(additive — never removes role grants)</span></span>
+                    <p class="muted xsmall">
+                      Tools the agent already has through its role are checked and locked. Check
+                      additional tools to grant them on top — for this node, in this workflow only.
+                    </p>
+                    @if (selectedAgentDocs()?.resolvedToolIdentifiers === null) {
+                      <p class="muted xsmall">Loading the agent's inherited tools…</p>
+                    }
+                    <cf-tool-picker
+                      [hostTools]="hostTools()"
+                      [mcpServers]="mcpToolCatalogs()"
+                      [value]="selectedNodeOverrideToolGrants()"
+                      [lockedIdentifiers]="selectedNodeInheritedToolIdentifiers()"
+                      lockedChipLabel="inherited"
+                      lockedChipTitle="Granted by the agent's role — locked here; node overrides are additive only."
+                      (valueChange)="onOverrideAdditionalToolsChanged(sel.editor, $event)"></cf-tool-picker>
+                  </div>
+                </div>
+              }
             }
           } @else if (selectedConnection(); as sel) {
             <div class="inspector-section">
@@ -1797,6 +1888,9 @@ function defaultStartInput(): WorkflowInput {
 export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   private readonly api = inject(WorkflowsApi);
   private readonly agentsApi = inject(AgentsApi);
+  private readonly hostToolsApi = inject(HostToolsApi);
+  private readonly mcpServersApi = inject(McpServersApi);
+  private readonly llmProvidersApi = inject(LlmProvidersApi);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly injector = inject(Injector);
@@ -1879,6 +1973,42 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
   readonly selectedSynthesizerDocs = signal<SelectedAgentDocs | null>(null);
   readonly selectedSynthesizerDocsLoading = signal(false);
   readonly selectedSynthesizerDocsError = signal<string | null>(null);
+
+  // Epic 993 / NO-8: catalogs for the node-overrides tab. Loaded once in ngAfterViewInit.
+  readonly llmModels = signal<LlmProviderModelOption[]>([]);
+  readonly hostTools = signal<HostTool[]>([]);
+  readonly mcpToolCatalogs = signal<McpServerToolCatalog[]>([]);
+
+  /** Distinct LLM providers offered in the overrides provider picker. */
+  readonly overrideProviderOptions = computed(() =>
+    [...new Set(this.llmModels().map(m => m.provider))].sort());
+
+  /** Models available for the currently-selected node's override provider (or the agent's
+   *  inherited provider when no provider override is set). Empty when neither is known. */
+  readonly overrideModelOptions = computed(() => {
+    const node = this.selectedNode()?.editor;
+    const provider = node?.agentOverrides?.modelProvider
+      ?? this.selectedAgentDocs()?.config?.provider
+      ?? null;
+    if (!provider) return [] as string[];
+    return this.llmModels()
+      .filter(m => m.provider === provider)
+      .map(m => m.model)
+      .sort();
+  });
+
+  /** Tool identifiers the selected node's agent inherits via its role — picker locks these. */
+  readonly selectedNodeInheritedToolIdentifiers = computed(() =>
+    this.selectedAgentDocs()?.resolvedToolIdentifiers ?? []);
+
+  /** The node's additive tool overrides as AgentRoleGrant[] for the shared tool picker. */
+  readonly selectedNodeOverrideToolGrants = computed<AgentRoleGrant[]>(() => {
+    const ids = this.selectedNode()?.editor.agentOverrides?.additionalToolIdentifiers ?? [];
+    return ids.map(id => ({
+      category: id.toLowerCase().startsWith('mcp:') ? 'Mcp' : 'Host',
+      toolIdentifier: id
+    }));
+  });
 
   /** VZ1: F2 dataflow snapshot for the workflow's current saved version. Null until first
    *  load completes (or for unsaved new workflows). The snapshot is the on-disk truth, so
@@ -2223,7 +2353,9 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
           nodeEditorId,
           agentKey: version.key,
           agentVersion: version.version,
-          config: version.config ?? {}
+          config: version.config ?? {},
+          // Swarm synthesizer slots don't carry per-node overrides — no resolved-tools fetch.
+          resolvedToolIdentifiers: null
         });
         this.selectedSynthesizerDocsLoading.set(false);
       },
@@ -2274,9 +2406,28 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
           nodeEditorId,
           agentKey: version.key,
           agentVersion: version.version,
-          config: version.config ?? {}
+          config: version.config ?? {},
+          resolvedToolIdentifiers: null
         });
         this.selectedAgentDocsLoading.set(false);
+
+        // Epic 993 / NO-8: also resolve the agent's role-derived tool set so the node-overrides
+        // tools picker can render those checked + disabled. Best-effort — a failure just leaves
+        // the picker without locked entries rather than blocking the inspector.
+        this.agentsApi.getResolvedTools(version.key, version.version)
+          .pipe(takeUntilDestroyed(this.destroyRef))
+          .subscribe({
+            next: resolved => {
+              const docs = this.selectedAgentDocs();
+              if (!docs || docs.nodeEditorId !== nodeEditorId || docs.agentVersion !== version.version) return;
+              this.selectedAgentDocs.set({ ...docs, resolvedToolIdentifiers: resolved.toolIdentifiers });
+            },
+            error: () => {
+              const docs = this.selectedAgentDocs();
+              if (!docs || docs.nodeEditorId !== nodeEditorId || docs.agentVersion !== version.version) return;
+              this.selectedAgentDocs.set({ ...docs, resolvedToolIdentifiers: [] });
+            }
+          });
       },
       error: err => {
         const selected = this.selectedNode();
@@ -2302,6 +2453,35 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
       next: agents => this.agents.set(agents),
       error: err => this.error.set(`Failed to load agents: ${err.message ?? err}`)
     });
+
+    // Epic 993 / NO-8: catalogs powering the node-overrides tab. Best-effort — a failed load
+    // just leaves the overrides picker / model dropdown empty, it never blocks the editor.
+    this.llmProvidersApi.listModels().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: models => this.llmModels.set(models),
+      error: () => { /* overrides model picker stays empty */ }
+    });
+    this.hostToolsApi.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: tools => this.hostTools.set(tools),
+      error: () => { /* overrides tools picker host group stays empty */ }
+    });
+    this.mcpServersApi.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: servers => {
+        const active = servers.filter(s => !s.isArchived);
+        if (active.length === 0) {
+          this.mcpToolCatalogs.set([]);
+          return;
+        }
+        forkJoin(active.map(s => this.mcpServersApi.getTools(s.id)))
+          .pipe(takeUntilDestroyed(this.destroyRef))
+          .subscribe({
+            next: toolLists => this.mcpToolCatalogs.set(
+              active.map<McpServerToolCatalog>((server, i) => ({ server, tools: toolLists[i] }))),
+            error: () => { /* overrides tools picker MCP groups stay empty */ }
+          });
+      },
+      error: () => { /* overrides tools picker MCP groups stay empty */ }
+    });
+
     this.api.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: workflows => {
         this.workflows.set(workflows);
@@ -3038,6 +3218,97 @@ export class WorkflowCanvasComponent implements AfterViewInit, OnDestroy {
     const version = typeof value === 'number' ? value : Number(value);
     node.agentVersion = Number.isFinite(version) && version > 0 ? Math.floor(version) : null;
     this.loadAgentDocsForNode(node);
+  }
+
+  // ── Epic 993 / NO-8: per-node agent property overrides ──────────────────────────────────
+  // Every override field is inherit-by-default — a null field means "use the agent's value".
+  // The handlers mutate node.agentOverrides in place, then normalize the record back to null
+  // when it carries no overrides at all so serialization stays clean.
+
+  private ensureAgentOverrides(node: WorkflowEditorNode): AgentInvocationOverrides {
+    return (node.agentOverrides ??= {});
+  }
+
+  /** Drop an all-empty overrides record back to null so save serializes nothing. */
+  private normalizeAgentOverrides(node: WorkflowEditorNode): void {
+    const o = node.agentOverrides;
+    if (!o) return;
+    const isEmpty = o.modelProvider == null
+      && o.model == null
+      && o.maxOutputTokens == null
+      && o.maxToolCalls == null
+      && o.maxLoopDurationSeconds == null
+      && o.maxConsecutiveNonMutatingCalls == null
+      && (o.additionalToolIdentifiers == null || o.additionalToolIdentifiers.length === 0);
+    if (isEmpty) {
+      node.agentOverrides = null;
+    }
+  }
+
+  /** Parse a number-ish input into a positive integer, or null when blank/invalid. */
+  private static positiveIntOrNull(value: number | string | null): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  }
+
+  onOverrideProviderChanged(node: WorkflowEditorNode, value: string): void {
+    const overrides = this.ensureAgentOverrides(node);
+    if (!value) {
+      // Provider + model are a both-or-neither pair — clearing the provider clears the model.
+      overrides.modelProvider = null;
+      overrides.model = null;
+    } else {
+      overrides.modelProvider = value;
+    }
+    this.normalizeAgentOverrides(node);
+    this.selectedNodeId.set(this.selectedNodeId());
+  }
+
+  onOverrideModelChanged(node: WorkflowEditorNode, value: string): void {
+    const overrides = this.ensureAgentOverrides(node);
+    overrides.model = value || null;
+    this.normalizeAgentOverrides(node);
+  }
+
+  onOverrideMaxOutputTokensChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    this.ensureAgentOverrides(node).maxOutputTokens = WorkflowCanvasComponent.positiveIntOrNull(value);
+    this.normalizeAgentOverrides(node);
+  }
+
+  onOverrideMaxToolCallsChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    this.ensureAgentOverrides(node).maxToolCalls = WorkflowCanvasComponent.positiveIntOrNull(value);
+    this.normalizeAgentOverrides(node);
+  }
+
+  onOverrideMaxLoopDurationSecondsChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    this.ensureAgentOverrides(node).maxLoopDurationSeconds = WorkflowCanvasComponent.positiveIntOrNull(value);
+    this.normalizeAgentOverrides(node);
+  }
+
+  onOverrideMaxConsecutiveNonMutatingCallsChanged(node: WorkflowEditorNode, value: number | string | null): void {
+    this.ensureAgentOverrides(node).maxConsecutiveNonMutatingCalls = WorkflowCanvasComponent.positiveIntOrNull(value);
+    this.normalizeAgentOverrides(node);
+  }
+
+  /** Tools picker emits the full grant list; we persist only the additive identifiers (the
+   *  agent's role-inherited tools are locked in the picker and never enter this list). */
+  onOverrideAdditionalToolsChanged(node: WorkflowEditorNode, grants: AgentRoleGrant[]): void {
+    const overrides = this.ensureAgentOverrides(node);
+    overrides.additionalToolIdentifiers = grants.length > 0
+      ? grants.map(g => g.toolIdentifier)
+      : null;
+    this.normalizeAgentOverrides(node);
+    this.selectedNodeId.set(this.selectedNodeId());
+  }
+
+  /** Inherited maxLoopDuration ("HH:mm:ss") rendered as whole seconds for the placeholder. */
+  inheritedMaxLoopDurationSeconds(): number | null {
+    const raw = this.selectedAgentDocs()?.config?.budget?.maxLoopDuration;
+    if (!raw) return null;
+    const parts = raw.split(':').map(Number);
+    if (parts.length !== 3 || parts.some(p => !Number.isFinite(p))) return null;
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
   }
 
   onOutputPortsChanged(node: WorkflowEditorNode, value: string): void {

@@ -32,6 +32,16 @@ public sealed record AgentVersionDto(
     string? CreatedBy,
     bool IsRetired);
 
+/// <summary>
+/// Epic 993 / NO-8: the tool identifiers an agent resolves through its role grants at a
+/// given version — host tool names and <c>mcp:&lt;server&gt;:&lt;tool&gt;</c> identifiers. The
+/// workflow editor's node-overrides tools picker uses this to render the agent's inherited
+/// tools checked + disabled, so the author only adds tools on top.
+/// </summary>
+public sealed record AgentResolvedToolsDto(
+    IReadOnlyList<string> ToolIdentifiers,
+    bool EnableHostTools);
+
 public sealed record BulkRetireKeysRequest(IReadOnlyList<string>? Keys);
 
 public sealed record BulkRetireKeysResponse(

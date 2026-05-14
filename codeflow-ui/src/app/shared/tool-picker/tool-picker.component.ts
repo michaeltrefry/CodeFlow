@@ -87,14 +87,18 @@ function grantKey(grant: AgentRoleGrant): string {
                       }
                     </span>
                   } @else {
-                    <label>
+                    <label [class.locked]="isLocked(tool)">
                       <input
                         type="checkbox"
-                        [checked]="isSelected(tool)"
+                        [checked]="isSelected(tool) || isLocked(tool)"
+                        [disabled]="isLocked(tool)"
                         (change)="toggle(tool, $event)"
                       />
                       <span class="tool-label">
                         <span class="tool-name">{{ tool.label }}</span>
+                        @if (isLocked(tool)) {
+                          <cf-chip mono [title]="lockedChipTitle()">{{ lockedChipLabel() }}</cf-chip>
+                        }
                         @if (tool.isGhost) {
                           <cf-chip variant="warn" mono>ghost</cf-chip>
                         }
@@ -142,6 +146,7 @@ function grantKey(grant: AgentRoleGrant): string {
     .ghost-tool .tool-name { color: var(--muted); font-style: italic; }
     .deprecated-tool .tool-name { color: var(--muted); text-decoration: line-through; }
     .deprecated-tool .tool-desc { color: var(--muted); }
+    .tool-item label.locked { opacity: 0.7; }
     .muted.small { font-size: 0.8rem; color: var(--muted); }
   `]
 })
@@ -150,10 +155,23 @@ export class ToolPickerComponent {
   readonly mcpServers = input<McpServerToolCatalog[]>([]);
   readonly value = input<AgentRoleGrant[]>([]);
   readonly readOnly = input<boolean>(false);
+  /**
+   * Epic 993 / NO-8: tool identifiers that are inherited context — rendered checked + disabled
+   * so they can't be toggled. Used by the workflow-editor node-overrides picker to lock the
+   * agent's role-resolved tools while the author only adds tools on top. Bare identifiers
+   * (host tool name or `mcp:<server>:<tool>`), matched case-insensitively against each tool.
+   */
+  readonly lockedIdentifiers = input<string[]>([]);
+  /** Label + tooltip for the chip shown next to locked tools. Defaults suit the role context. */
+  readonly lockedChipLabel = input<string>('locked');
+  readonly lockedChipTitle = input<string>('Inherited — cannot be changed here.');
   readonly valueChange = output<AgentRoleGrant[]>();
 
   readonly filterText = signal('');
   private readonly collapsed = signal<Set<string>>(new Set());
+
+  private readonly lockedSet = computed(
+    () => new Set(this.lockedIdentifiers().map(id => id.toLowerCase())));
 
   readonly groups = computed<DisplayGroup[]>(() => {
     const filter = this.filterText().trim().toLowerCase();
@@ -272,12 +290,17 @@ export class ToolPickerComponent {
     return this.value().some(g => g.category === tool.category && g.toolIdentifier === tool.identifier);
   }
 
+  /** Epic 993 / NO-8: inherited tool — rendered checked + disabled, not part of `value`. */
+  isLocked(tool: DisplayTool): boolean {
+    return this.lockedSet().has(tool.identifier.toLowerCase());
+  }
+
   selectedCount(group: DisplayGroup): number {
-    return group.tools.filter(t => this.isSelected(t)).length;
+    return group.tools.filter(t => this.isSelected(t) || this.isLocked(t)).length;
   }
 
   toggle(tool: DisplayTool, event: Event): void {
-    if (this.readOnly()) return;
+    if (this.readOnly() || this.isLocked(tool)) return;
     const checked = (event.target as HTMLInputElement).checked;
     const current = this.value();
     if (checked) {
@@ -298,7 +321,7 @@ export class ToolPickerComponent {
     // Skip ghosts and deprecated tools — admins can still add a deprecated tool by hand if
     // they really want, but bulk select-all shouldn't pull legacy surface into a fresh role.
     const additions = group.tools
-      .filter(t => !t.isGhost && !t.isDeprecated)
+      .filter(t => !t.isGhost && !t.isDeprecated && !this.isLocked(t))
       .map<AgentRoleGrant>(t => ({ category: t.category, toolIdentifier: t.identifier }))
       .filter(g => !existingKeys.has(grantKey(g)));
     if (additions.length > 0) {
