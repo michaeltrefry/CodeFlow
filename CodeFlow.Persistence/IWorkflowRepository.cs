@@ -1,3 +1,5 @@
+using CodeFlow.Contracts;
+
 namespace CodeFlow.Persistence;
 
 public interface IWorkflowRepository
@@ -132,7 +134,8 @@ public sealed record WorkflowNodeDraft(
     string? ItemVar = null,
     string? GoalObjective = null,
     int? GoalTokenBudget = null,
-    int? GoalMaxIterations = null);
+    int? GoalMaxIterations = null,
+    AgentInvocationOverrides? AgentOverrides = null);
 
 public sealed record WorkflowEdgeDraft(
     Guid FromNodeId,

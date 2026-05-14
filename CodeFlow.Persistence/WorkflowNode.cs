@@ -1,3 +1,5 @@
+using CodeFlow.Contracts;
+
 namespace CodeFlow.Persistence;
 
 public sealed record WorkflowNode(
@@ -70,4 +72,10 @@ public sealed record WorkflowNode(
     // Goal nodes (epic 978): safety-net cap on continuation iterations within the goal loop.
     // Token budget is the primary cap; this exists so a runaway prompt cannot loop forever.
     // Null defaults to 50 at runtime; must be > 0 when set.
-    int? GoalMaxIterations = null);
+    int? GoalMaxIterations = null,
+    // Epic 993: per-node overlay of agent invocation properties (provider/model, max output
+    // tokens, loop budget, additive tools). Applied at invocation time on top of the agent's
+    // stored config WITHOUT creating a new agent version or forking the agent. Null = the node
+    // runs the agent's configuration unchanged. Only meaningful on agent-bearing node kinds
+    // (Agent / Hitl / Start / Goal); the validator rejects it on every other kind.
+    AgentInvocationOverrides? AgentOverrides = null);

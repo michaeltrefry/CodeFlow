@@ -147,6 +147,10 @@ public sealed class WorkflowNodeEntityConfiguration : IEntityTypeConfiguration<W
         builder.Property(node => node.GoalMaxIterations)
             .HasColumnName("goal_max_iterations");
 
+        builder.Property(node => node.AgentOverridesJson)
+            .HasColumnName("agent_overrides_json")
+            .HasColumnType("longtext");
+
         builder.HasOne(node => node.Workflow)
             .WithMany(workflow => workflow.Nodes)
             .HasForeignKey(node => node.WorkflowId)

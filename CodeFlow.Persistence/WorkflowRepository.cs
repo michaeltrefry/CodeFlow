@@ -278,6 +278,7 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
                         GoalObjective = node.GoalObjective,
                         GoalTokenBudget = node.GoalTokenBudget,
                         GoalMaxIterations = node.GoalMaxIterations,
+                        AgentOverridesJson = WorkflowJson.SerializeAgentOverrides(node.AgentOverrides),
                     })
                     .ToList(),
                 Edges = draft.Edges
@@ -407,7 +408,8 @@ public sealed class WorkflowRepository(CodeFlowDbContext dbContext) : IWorkflowR
             entity.ItemVar,
             entity.GoalObjective,
             entity.GoalTokenBudget,
-            entity.GoalMaxIterations);
+            entity.GoalMaxIterations,
+            WorkflowJson.DeserializeAgentOverrides(entity.AgentOverridesJson));
     }
 
     private static WorkflowEdge Map(WorkflowEdgeEntity entity)
